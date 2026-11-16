@@ -1,11 +1,11 @@
 ---
 title: Introduction
-description: What dux is, the mental model behind it, and how the pieces fit together.
+description: What yaran is, the mental model behind it, and how the pieces fit together.
 group: Getting started
 order: 1
 ---
 
-`dux` runs multiple AI coding agents in parallel, usually one git worktree each, and
+`yaran` runs multiple AI coding agents in parallel, usually one git worktree each, and
 straight in a folder you already have when you want that instead. It spawns the real
 CLI for each agent (Claude Code, Codex, Copilot, Grok, OpenCode, or anything else you can run
 in a terminal) inside an embedded pseudo-terminal. No protocol layer, no adapters, no
@@ -13,17 +13,17 @@ JSON-RPC. Just the tools you already use, side by side, each in its own branch.
 
 ## Two front ends, one workspace
 
-dux has a terminal UI and a web UI. Both are first class, and both share the same
+yaran has a terminal UI and a web UI. Both are first class, and both share the same
 projects, agents, worktrees and config file, so an agent you start in one is the same
 agent in the other.
 
 The terminal UI:
 
-![The dux terminal UI: six agents listed on the left with three of them working, the selected agent's live terminal in the middle, and its changed files on the right.](/screens/tui-two-front-ends.png#full)
+![The yaran terminal UI: six agents listed on the left with three of them working, the selected agent's live terminal in the middle, and its changed files on the right.](/screens/tui-two-front-ends.png#full)
 
 The same workspace in the browser:
 
-![The same six agents in the dux web UI, the same three working, the same agent selected, with its terminal in the middle and its changed files on the right.](/screens/web-two-front-ends.png#full)
+![The same six agents in the yaran web UI, the same three working, the same agent selected, with its terminal in the middle and its changed files on the right.](/screens/web-two-front-ends.png#full)
 
 They differ on purpose:
 
@@ -36,26 +36,26 @@ To know whether something is available where you are, ask the surface. The termi
 help overlay and command palette list what it can do; the browser's cog menu and row
 menus list what it can do.
 
-The web UI is [server mode](/docs/server-mode), started with `dux server`, flipped on
+The web UI is [server mode](/docs/server-mode), started with `yaran server`, flipped on
 from a running terminal UI, or served quietly in the background of one. It is always
-one dux, so moving between the front ends never starts a second copy of anything, and
+one yaran, so moving between the front ends never starts a second copy of anything, and
 your agents keep running either way.
 
 ## The mental model
 
-dux has three nouns:
+yaran has three nouns:
 
-- **Projects** are git repositories you have added to dux. A project points at a
+- **Projects** are git repositories you have added to yaran. A project points at a
   checkout on disk and remembers your preferences for it.
 - **Agents** are sessions running inside a project. Each one gets its own git worktree
   on its own branch, so two agents on the same repo never step on each other. A
   **standalone agent** is the exception you ask for by name: it runs in a folder you
-  already have, with no branch and no worktree of dux's, and dux never creates, moves
+  already have, with no branch and no worktree of yaran's, and yaran never creates, moves
   or removes that folder. See [Creating agents](/docs/creating-agents).
 - **Providers** are the CLIs that power agents. Claude, Codex, OpenCode, Copilot, and Grok
   ship configured out of the box, and you can wire up any other command yourself.
 
-The flow is: add a project, spin up an agent, pick a provider. dux creates the worktree,
+The flow is: add a project, spin up an agent, pick a provider. yaran creates the worktree,
 launches the CLI in a real terminal, and tracks the session so you can walk away and
 reconnect later.
 
@@ -67,7 +67,7 @@ Both front ends lay the workspace out the same way:
   search filter and a project chooser. Your project and standalone terminals are rows of
   the same list, sorted with the agents.
 - The **center pane** shows the focused agent's live terminal, and it is a real typing
-  surface on both front ends: focus it and your keystrokes go to the agent, while dux's
+  surface on both front ends: focus it and your keystrokes go to the agent, while yaran's
   own shortcuts keep working around them.
   - The terminal UI adds a fullscreen toggle that passes input straight through, and its
     center pane doubles as the diff view.
@@ -85,24 +85,24 @@ agent streams its work and the sidebar marks the agent as typing.
 ![The terminal UI: the agent list on the left, a running agent's terminal in the middle with a prompt being typed into it, and the changed files on the right.](/screens/tui-typing-in-pane.png)
 
 > [!IMPORTANT]
-> In the terminal UI's windowed layout, not every key reaches the agent. dux keeps its
+> In the terminal UI's windowed layout, not every key reaches the agent. yaran keeps its
 > own chords for itself: pane navigation, the command palette, tab switching, and the
-> rest of its bindings fire in dux instead of typing into the agent. Fullscreen sends
+> rest of its bindings fire in yaran instead of typing into the agent. Fullscreen sends
 > everything straight to the agent, so it is the escape hatch when the agent needs a key
-> dux normally keeps.
+> yaran normally keeps.
 
 > [!TIP]
 > Three ways to get a key to the agent while windowed:
 >
-> - **Free the chord.** Every dux binding is configurable under `[keys]`; see
+> - **Free the chord.** Every yaran binding is configurable under `[keys]`; see
 >   [Configuration](/docs/configuration#keybindings).
 > - **Send Tab to the agent.** Tab has its own switch, `[ui] tab_reaches_agent`, because it
 >   moves between panes rather than typing. Turn it on and Tab and Shift-Tab go to the
 >   agent, with `Ctrl-o` and `Ctrl-y` moving between panes instead.
-> - **See what dux receives.** The `input-debugging` palette command shows exactly what
->   dux gets for each keypress: the key it reads and the bytes your terminal sent for it.
->   Two chords that show the same key and the same bytes are two dux cannot tell apart,
->   and a key dux cannot read at all says so. It is what you want open while crafting a
+> - **See what yaran receives.** The `input-debugging` palette command shows exactly what
+>   yaran gets for each keypress: the key it reads and the bytes your terminal sent for it.
+>   Two chords that show the same key and the same bytes are two yaran cannot tell apart,
+>   and a key yaran cannot read at all says so. It is what you want open while crafting a
 >   binding.
 
 In the terminal UI, focus-next and focus-previous keys move between panes, and every
@@ -114,7 +114,7 @@ and a resizable Changes split; see
 ### When an agent deletes its own working copy
 
 An agent works inside a git worktree, and it can remove that worktree from inside it:
-merging its branch and then deleting the branch takes the directory with it. dux cannot
+merging its branch and then deleting the branch takes the directory with it. yaran cannot
 stop that, so it says so instead. The changed-files pane goes quiet with a sentence naming
 the directory that is gone, and the agent's row says **working copy missing** where it
 would normally name the project.
@@ -137,7 +137,7 @@ depends on its CLI:
   their conversation intact (Grok is assumed to behave like Claude, not measured separately).
 - **Codex, OpenCode and any other CLI that can pick its conversation back up** cannot follow
   the folder. The confirmation offers to restart those tabs, *ticked by default*: once the
-  working copy is back, dux shuts them down politely and starts each again so it continues
+  working copy is back, yaran shuts them down politely and starts each again so it continues
   its conversation there.
 - **A second tab of the same CLI** starts fresh, because only one tab per CLI gets its
   conversation back. The message afterwards says so.
@@ -152,9 +152,9 @@ actually happened:
 
 - **The branch still exists locally.** It is checked out again and its commits are exactly
   where the agent left them.
-- **It is gone locally but still on the remote.** dux creates it again from
+- **It is gone locally but still on the remote.** yaran creates it again from
   `origin/<branch>`, holding everything that had been pushed.
-- **It is gone everywhere.** dux creates it again from the project's source branch, and the
+- **It is gone everywhere.** yaran creates it again from the project's source branch, and the
   commits that branch held are *not* coming back.
 
 ### Very large diffs in the terminal UI
@@ -165,7 +165,7 @@ one on disk.
 
 - Over **1 MiB, or 20,000 lines**, the diff is still drawn, without syntax highlighting.
   Added and removed lines keep their green and red; only the token colors inside them go.
-- Over **16 MiB, or 200,000 lines**, dux does not diff the file itself. It asks git for the
+- Over **16 MiB, or 200,000 lines**, yaran does not diff the file itself. It asks git for the
   diff instead and shows the first **4,000 lines** of it (or the first 2 MiB, whichever
   comes first), with the added and removed colors and no syntax highlighting. When there is
   more than it shows, a line above it says how many lines the whole diff has. If git cannot
@@ -182,19 +182,19 @@ since there is no text diff to cut.
 The browser's diffs are the editor's, and they have a limit of their own; see
 [Git without leaving the browser](/docs/web-git).
 
-## Where dux keeps its files
+## Where yaran keeps its files
 
-dux stores everything in one directory:
+yaran stores everything in one directory:
 
-- **Linux:** `~/.config/dux/`
-- **macOS:** `~/.dux/`
+- **Linux:** `~/.config/yaran/`
+- **macOS:** `~/.yaran/`
 
-Inside are `config.toml` (your settings), `sessions.sqlite3` (session state), `dux.log`
+Inside are `config.toml` (your settings), `sessions.sqlite3` (session state), `yaran.log`
 (the first place to look when something misbehaves), a `themes/` directory for themes
 you write, and `worktrees/`, which holds the checkouts your agents work in.
 
 > [!NOTE]
-> That directory is **yours alone**. dux makes it owner-only on every startup, and sets
+> That directory is **yours alone**. yaran makes it owner-only on every startup, and sets
 > owner-only permissions on the files it manages. Your config and session database can
 > hold environment variables you set for a project, which is exactly where an API token
 > tends to live, so no other user on the machine gets to read them.
@@ -203,21 +203,21 @@ you write, and `worktrees/`, which holds the checkouts your agents work in.
 > pass only ever removes group and world access, never your own.
 
 > [!WARNING]
-> Making `config.toml` read-only does **not** stop dux saving over it. A save writes a
+> Making `config.toml` read-only does **not** stop yaran saving over it. A save writes a
 > new file and renames it into place, which needs write permission on the directory
 > rather than on the file, so a read-only config is replaced anyway and comes back
-> owner-writable. If you need a config dux cannot touch, keep it somewhere dux does not
+> owner-writable. If you need a config yaran cannot touch, keep it somewhere yaran does not
 > write to.
 
 A `config.toml` that is a symlink (into a dotfiles repository, say) **stays a symlink**:
 
 - Saves write through it to the file it points at, owner-only like any save.
-- If that file is missing, dux will not start, and a reload keeps the running settings,
-  password included. dux never creates the file or replaces the link.
+- If that file is missing, yaran will not start, and a reload keeps the running settings,
+  password included. yaran never creates the file or replaces the link.
 - The startup pass that tightens modes never follows a symlink, so it leaves the linked
   file's mode alone.
-- A mode dux cannot set is a warning, not an error, so a directory on a volume without
-  `chmod` still works and dux still starts.
+- A mode yaran cannot set is a warning, not an error, so a directory on a volume without
+  `chmod` still works and yaran still starts.
 
 ## Where to go next
 
@@ -225,11 +225,11 @@ A `config.toml` that is a symlink (into a dotfiles repository, say) **stays a sy
   get in, with or without the optional password, before you expose it.
 - [The workspace in the browser](/docs/web-workspace): the browser layout, its
   terminals, and the phone experience.
-- [Reaching dux over Tailscale](/docs/tailscale): open your workspace on your phone,
+- [Reaching yaran over Tailscale](/docs/tailscale): open your workspace on your phone,
   and the caveats that come with it.
 - [Configuration](/docs/configuration): the config file, where it lives, and how it
   expands environment variables.
 - [First run & what's new](/docs/first-run-and-whats-new): the welcome screen, the
   what's-new screen, and how to turn either automatic screen off.
 - [Managing Themes](/docs/themes): switch the look, or build your own.
-- [Custom CLI Agents](/docs/custom-agents): teach dux to drive any CLI you like.
+- [Custom CLI Agents](/docs/custom-agents): teach yaran to drive any CLI you like.

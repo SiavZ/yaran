@@ -1,18 +1,18 @@
 ---
 title: Supported agents
-description: The five agents dux ships wired in, what each one can and cannot do inside dux, and how to add any other CLI.
+description: The five agents yaran ships wired in, what each one can and cannot do inside yaran, and how to add any other CLI.
 group: Getting started
 order: 1.5
 ---
 
-dux runs an agent the way you would in a terminal: it starts the CLI in your agent's
+yaran runs an agent the way you would in a terminal: it starts the CLI in your agent's
 working copy and shows you its screen. Five agents come wired in, with a provider entry
 each in `config.toml`, and `claude` is the default for new agents until you pick another.
 
 > [!TIP]
-> dux works with any agent. If a CLI runs in a terminal, dux can run it: add a
+> yaran works with any agent. If a CLI runs in a terminal, yaran can run it: add a
 > `[providers.<name>]` block with its `command` to `config.toml` and it shows up in the
-> place dux lets you pick a provider, like the five below. No adapters, no plugins. See
+> place yaran lets you pick a provider, like the five below. No adapters, no plugins. See
 > [Custom CLI agents](/docs/custom-agents).
 
 ## What every agent gets
@@ -36,7 +36,7 @@ how they read a pasted path. That is what the table and notes below cover.
 | Copilot | `copilot` | Never | Progress yes, finished turn after a setting |
 | Grok | `grok` | Yes, per worktree | Not verified yet |
 
-When an agent's CLI is missing, dux says so and prints its install line for you:
+When an agent's CLI is missing, yaran says so and prints its install line for you:
 
 - **Claude Code:** `curl -fsSL https://claude.ai/install.sh | bash`
 - **Codex:** `brew install --cask codex`
@@ -59,20 +59,20 @@ The default provider.
 
 - **Resume:** per worktree, on a recent enough Codex build.
 - **Needs-you indicator:** set `tui.notification_method` in Codex's config to any value
-  to light up dux's attention indicators.
+  to light up yaran's attention indicators.
 - **Pasted paths:** single-quoted, because Codex reads its input like a shell and takes
   only one token: a bare path with a space in it would fail silently.
 - **Attachment length:** Codex accepts at most 1000 characters in one attachment. Past
-  that, dux still saves the file and shows you its full path to reference yourself,
+  that, yaran still saves the file and shows you its full path to reference yourself,
   rather than sending something Codex would silently ignore.
 
 ## OpenCode
 
-- **Resume:** per worktree. If resuming hangs before OpenCode shows anything, dux waits
+- **Resume:** per worktree. If resuming hangs before OpenCode shows anything, yaran waits
   three seconds, then starts it fresh instead of leaving you with a blank screen.
-- **Needs-you indicator:** none that dux can see today, because its notifications go
+- **Needs-you indicator:** none that yaran can see today, because its notifications go
   through plugins. Its rows never light up on their own; when a future version rings a
-  bell, dux picks it up with no change on your side.
+  bell, yaran picks it up with no change on your side.
 - **Pasted paths:** go in as written.
 
 ## Copilot
@@ -93,23 +93,23 @@ The default provider.
 
 ## Grok
 
-xAI's Grok CLI, started as `grok`. dux treats it like Claude Code, because Grok has been
-seen behaving like it inside dux. The pasted-path form and how a running tab handles a
+xAI's Grok CLI, started as `grok`. yaran treats it like Claude Code, because Grok has been
+seen behaving like it inside yaran. The pasted-path form and how a running tab handles a
 recreated working copy have not been measured separately for Grok.
 
 - **Sign-in:** Grok asks you to sign in the first time it runs. Run `grok login` in a
-  terminal if you would rather do it ahead of time. When you drive a remote dux, the first-run
+  terminal if you would rather do it ahead of time. When you drive a remote yaran, the first-run
   sign-in opens a browser on the server, so run `grok login --device-auth` instead.
 - **Resume:** reopen a stopped agent and Grok continues the most recent conversation for
   that worktree's directory, using its own `--continue`. If resuming hangs before Grok
-  shows anything, dux waits three seconds, then starts it fresh.
+  shows anything, yaran waits three seconds, then starts it fresh.
 - **Needs-you indicator:** not verified yet, so its rows may not light up on their own.
-- **Pasted paths:** go in as written, the form dux uses for Claude Code. That is assumed
+- **Pasted paths:** go in as written, the form yaran uses for Claude Code. That is assumed
   rather than measured for Grok, and `web_dragdrop_paste` in its provider block
   changes it if your version wants quoting.
 - **Your own block:** a `[providers.grok]` you wrote yourself keeps every key you set. If
   you run a different CLI named `grok`, set `resume_args = []` (or its own resume flags),
-  because dux fills in `--continue` otherwise.
+  because yaran fills in `--continue` otherwise.
 
 ## Changing any of this
 

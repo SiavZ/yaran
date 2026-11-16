@@ -5,16 +5,16 @@ group: Guides
 order: 36
 ---
 
-dux runs each agent inside an embedded terminal. On its own that means an agent cannot
+yaran runs each agent inside an embedded terminal. On its own that means an agent cannot
 tell what terminal it is really in, and anything it emits (a desktop notification, a
-clipboard write, a clickable link) stops at dux. The `[capabilities]` section opens both
+clipboard write, a clickable link) stops at yaran. The `[capabilities]` section opens both
 directions.
 
 ## Terminal identity
 
 Agents decide whether to send desktop notifications by sniffing environment variables to
 work out which terminal they are in. Hand one a bare, unrecognized terminal and several
-agents, Claude Code among them, quietly send nothing. So dux tells the agent what
+agents, Claude Code among them, quietly send nothing. So yaran tells the agent what
 terminal it is really sitting in.
 
 ```toml
@@ -30,7 +30,7 @@ The modes:
   terminal renders well.
 - **`mirror`** always mirrors the real host terminal, tmux see-through included.
 - **`ghostty`**, **`iterm2`**, or **`kitty`** force that identity outright.
-- **`none`** presents nothing. The agent inherits dux's own environment untouched, so
+- **`none`** presents nothing. The agent inherits yaran's own environment untouched, so
   agents like Claude Code will likely detect an unknown terminal and stay quiet. Reach
   for this if a forced identity ever confuses a tool.
 
@@ -41,14 +41,14 @@ The modes:
 
 ### Seeing through tmux
 
-Run dux inside tmux and the terminal an agent would otherwise detect is tmux, not the
-real thing. In `auto` and `mirror`, dux presents the outer terminal (kitty, ghostty, or
+Run yaran inside tmux and the terminal an agent would otherwise detect is tmux, not the
+real thing. In `auto` and `mirror`, yaran presents the outer terminal (kitty, ghostty, or
 iTerm2) instead. It also strips the tmux markers, so the agent emits plain escape
-sequences and dux re-wraps them when forwarding.
+sequences and yaran re-wraps them when forwarding.
 
 ### Plain shells get an identity too
 
-Identity is not an agent privilege. Every shell dux opens gets it, so a terminal you open
+Identity is not an agent privilege. Every shell yaran opens gets it, so a terminal you open
 for yourself sees the same terminal an agent would. There are three kinds:
 
 - A **companion terminal** belongs to an agent and opens in that agent's worktree.
@@ -66,7 +66,7 @@ for yourself sees the same terminal an agent would. There are three kinds:
 
 Nothing closes a standalone terminal for you. Removing a project closes that project's
 terminals and deleting an agent closes that agent's; neither touches one that belongs to
-nobody. It ends when you close it, or when dux shuts down.
+nobody. It ends when you close it, or when yaran shuts down.
 
 Closing a terminal works like closing a terminal window: a job you disowned or started with
 `nohup` keeps running. Deleting an agent together with its worktree is the exception: every
@@ -85,7 +85,7 @@ clipboard_passthrough = "focused" # the default
 ```
 
 - **`passthrough`** (default `true`) is the master switch for sending an agent's notification, progress,
-  and clipboard escape sequences **out of dux**. In the terminal UI that is the whole
+  and clipboard escape sequences **out of yaran**. In the terminal UI that is the whole
   host forward: turn it off and your terminal receives nothing the agent emits. In the
   web UI the only thing forwarded outward is the clipboard write, so turning it off seals
   that.
@@ -99,7 +99,7 @@ clipboard_passthrough = "focused" # the default
 > [!IMPORTANT]
 > `passthrough` does **not** switch off browser desktop notifications. `web_notifications`
 > below is the only setting for those. Clipboard **read** requests are never forwarded on
-> either surface, because the reply would be typed straight back into dux.
+> either surface, because the reply would be typed straight back into yaran.
 
 Which agents' notifications go out depends on the surface:
 
@@ -127,14 +127,14 @@ Which agents' notifications go out depends on the surface:
 web_notifications = true   # the default
 ```
 
-In the web UI there is no host terminal to forward to, so dux bridges an agent's
+In the web UI there is no host terminal to forward to, so yaran bridges an agent's
 notifications into real browser desktop notifications. This is the web-only switch for
 them, and it has no effect on the terminal UI. Two things gate them, on purpose:
 
-1. **The dux browser window has to be backgrounded.** dux never pops a desktop
-   notification while you are looking at dux. The gate is the window being hidden or
+1. **The yaran browser window has to be backgrounded.** yaran never pops a desktop
+   notification while you are looking at yaran. The gate is the window being hidden or
    unfocused, not which agent you have selected.
-2. **You have to opt in.** dux never auto-prompts for notification permission. Open
+2. **You have to opt in.** yaran never auto-prompts for notification permission. Open
    **Preferences…** from the cog menu and use **Enable browser notifications** once. It
    sits under the **Desktop notifications** setting it unlocks, and appears only while
    notifications are enabled in config and you have not granted permission yet.
@@ -142,7 +142,7 @@ them, and it has no effect on the terminal UI. Two things gate them, on purpose:
 Clipboard writes work here too, under the same `clipboard_passthrough` switch: at
 `"focused"` or `"always"` with the tab focused, an agent's write lands on **your**
 browser's clipboard, not the server's. The browser only accepts a write within a few seconds
-(about 5 in Chrome) of your last key press or click; otherwise dux shows a **Copy** button
+(about 5 in Chrome) of your last key press or click; otherwise yaran shows a **Copy** button
 instead. The details are in
 [the workspace page](/docs/web-workspace#clipboard-the-classic-terminal-model).
 
@@ -154,40 +154,40 @@ hyperlinks = true   # the default
 ```
 
 Agents and plenty of CLI tools emit hyperlinks: text carrying a URL under the surface,
-like a "View the PR" line that is secretly a link. With `hyperlinks` on, dux renders them
+like a "View the PR" line that is secretly a link. With `hyperlinks` on, yaran renders them
 as real clickable links in the terminal UI (as long as your host terminal supports them)
 and in the web terminal. The web opens only `http` and `https` links, in a fresh tab with
 no way to reach back into the app.
 
 In the terminal UI a click on a link opens it too, in the browser of the machine running
-dux, and the agent never sees that click.
+yaran, and the agent never sees that click.
 
 - **Click:** the *release* opens it. Press and let go on the same link and it opens; a sweep
   that ends anywhere else opens nothing. A sweep that ends still on the link counts as a
   click on it.
 - **Select a URL** under an agent that is tracking the mouse: hold `Shift` and drag, the same
-  force-a-selection gesture that works anywhere else in the pane. On dux's side `Shift` is the
+  force-a-selection gesture that works anywhere else in the pane. On yaran's side `Shift` is the
   select-text modifier and never opens anything.
 - **Send the click to the agent:** hold `Ctrl` to give that click to an agent that is
   tracking the mouse. With no such agent there is nothing to send it to, so `Ctrl` and a
   click just opens the link like any other.
-- **Your own terminal's link gesture** still works as it always did. dux holds the mouse, so
+- **Your own terminal's link gesture** still works as it always did. yaran holds the mouse, so
   in kitty that is `Shift` and a click.
 
 > [!IMPORTANT]
-> In the web terminal, dux is the **only** thing that opens a link. While the agent has
+> In the web terminal, yaran is the **only** thing that opens a link. While the agent has
 > mouse reporting on, a click on a link is not passed through to it, because the agent
-> would open the URL on the machine running dux rather than on the device in your hand.
+> would open the URL on the machine running yaran rather than on the device in your hand.
 > Every other click still reaches the app. To give the app a particular click, hold `Cmd`
-> on macOS or `Ctrl` elsewhere; dux then opens nothing.
+> on macOS or `Ctrl` elsewhere; yaran then opens nothing.
 
 Selecting a link's text works the ordinary way: hold `Option` on macOS or `Shift`
 elsewhere and drag, the same gesture that selects anywhere else while an app has the
-mouse. That is a selection, not a click, so dux opens nothing.
+mouse. That is a selection, not a click, so yaran opens nothing.
 
 ## Pasting into the terminal UI
 
-When you paste into the terminal UI, dux routes the text to whatever currently has your
+When you paste into the terminal UI, yaran routes the text to whatever currently has your
 keys: a text field (a modal, a filter, the commit box, where single-line fields fold line
 breaks into spaces), or the agent when its pane is what you are typing into. If the
 agent's CLI has bracketed paste on, which agent CLIs do, the CLI sees a single paste
@@ -211,7 +211,7 @@ dialog, in its Terminal UI section:
 
 | Value | What it does |
 |---|---|
-| `"auto"` | The default. dux asks your terminal whether it speaks the Kitty keyboard protocol and turns it on when it says yes. Inside tmux, dux turns on tmux's extended keys when tmux is set up for them. |
+| `"auto"` | The default. yaran asks your terminal whether it speaks the Kitty keyboard protocol and turns it on when it says yes. Inside tmux, yaran turns on tmux's extended keys when tmux is set up for them. |
 | `"on"` | Turns the Kitty keyboard protocol on without asking. Inside tmux, the same as `"auto"`, plus a warning on the status line when tmux is not set up. |
 | `"off"` | Reads keys exactly as a classic terminal sends them. Nothing is switched on in your terminal or in tmux. |
 
@@ -219,33 +219,33 @@ A change takes effect the next time the terminal UI starts. The `input-debugging
 command shows what your terminal sends for each key.
 
 > [!TIP]
-> Inside tmux, dux needs tmux 3.2 or newer and this line in your `tmux.conf`:
+> Inside tmux, yaran needs tmux 3.2 or newer and this line in your `tmux.conf`:
 >
 > ```tmux
 > set -s extended-keys on
 > ```
 >
-> On tmux 3.5 and newer, whose default format dux cannot read, add this line too:
+> On tmux 3.5 and newer, whose default format yaran cannot read, add this line too:
 >
 > ```tmux
 > set -s extended-keys-format csi-u
 > ```
 >
-> After reloading tmux's config, run the `force-redraw` palette command and dux checks tmux's
+> After reloading tmux's config, run the `force-redraw` palette command and yaran checks tmux's
 > settings again.
 
 > [!IMPORTANT]
-> Agents and shells inside dux still receive classic keys, the bytes a classic terminal sends.
+> Agents and shells inside yaran still receive classic keys, the bytes a classic terminal sends.
 > A program cannot tell Ctrl-i from Tab or Ctrl-Shift-l from Ctrl-l: those distinctions serve
-> dux's own bindings. Shift-Enter reaches a program as the same byte as Ctrl-j, so a shell
+> yaran's own bindings. Shift-Enter reaches a program as the same byte as Ctrl-j, so a shell
 > treats it like Ctrl-j and runs the command line.
 
 > [!IMPORTANT]
-> In the windowed pane, Ctrl, Alt and Super chords (Ctrl-Enter included) still belong to dux.
+> In the windowed pane, Ctrl, Alt and Super chords (Ctrl-Enter included) still belong to yaran.
 > They reach the agent in fullscreen.
 
 > [!NOTE]
-> If dux is killed with `kill -9`, your terminal or tmux pane can be left with extended keys on,
+> If yaran is killed with `kill -9`, your terminal or tmux pane can be left with extended keys on,
 > and your shell then sees escape codes for Ctrl chords. Running `reset` clears it.
 
 ## Getting a file to the agent
@@ -267,7 +267,7 @@ them all:
 
 ```toml
 [capabilities]
-terminal_identity = "none"       # inherit dux's own environment, present nothing
+terminal_identity = "none"       # inherit yaran's own environment, present nothing
 passthrough = false              # TUI: forward nothing to the host terminal
                                  # web: never mirror OSC 52 clipboard writes
 clipboard_passthrough = "off"    # both surfaces: never mirror OSC 52 clipboard writes

@@ -1,0 +1,793 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+
+import type { ChangesSlice, YaranState } from "@/lib/store"
+import type { ChangedFileView } from "@/lib/types"
+import { stubMatchMedia, type MatchMediaStub } from "@/test/matchMedia"
+
+// Expanding a folded folder in the Changes pane: the toggle, the lazy load of
+// one level at a time, what shows while it loads or when it fails, and that
+// every row inside is a full row, selectable and actionable like any other.
+
+const openEditor = vi.fn()
+let mockState: YaranState
+const mockListeners = new Set<() => void>()
+function publishMockState() {
+  act(() => {
+    for (const listener of mockListeners) listener()
+  })
+}
+vi.mock("@/lib/store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/store")>()
+  const { useSyncExternalStore } = await import("react")
+  const subscribe = (listener: () => void) => {
+    mockListeners.add(listener)
+    return () => void mockListeners.delete(listener)
+  }
+  return {
+    ...actual,
+    useYaran: () => mockState,
+    useYaranSelector: <T,>(select: (state: YaranState) => T): T =>
+      useSyncExternalStore(subscribe, () => select(mockState)),
+    openEditor: (...args: unknown[]) => openEditor(...args),
+  }
+})
+
+const stageOne = vi.fn(async (_id: string, _path: string) => ({
+  left_out_repositories: 0,
+  left_out_worktrees: 0,
+}))
+const stageMany = vi.fn(async (_id: string, paths: string[]) => ({
+  done: paths,
+  refused: [] as string[],
+}))
+vi.mock("@/lib/git", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/git")>()
+  return {
+    ...actual,
+    git: {
+      ...actual.git,
+      stage: (...args: [string, string]) => stageOne(...args),
+      stageMany: (...args: [string, string[]]) => stageMany(...args),
+    },
+  }
+})
+
+// Each call answers when the test says so.
+type Answer = { resolve: (rows: ChangedFileView[]) => void; reject: (e: Error) => void }
+const answers: Answer[] = []
+const fetchFolderChildren = vi.fn(
+  (_s: string, dir: string, side: string, signal?: AbortSignal) =>
+    new Promise<{ dir: string; side: string; children: ChangedFileView[] }>(
+      (resolve, reject) => {
+        answers.push({
+          resolve: (children) => resolve({ dir, side, children }),
+          reject,
+        })
+        signal?.addEventListener("abort", () => reject(new ChangesFetchAborted()))
+      },
+    ),
+)
+vi.mock("@/lib/changesApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/changesApi")>()
+  return {
+    ...actual,
+    fetchFolderChildren: (...args: [string, string, string, AbortSignal]) =>
+      fetchFolderChildren(...args),
+  }
+})
+
+let bootMedia: MatchMediaStub | null = null
+function installBootStubs() {
+  const mem = new Map<string, string>()
+  vi.stubGlobal("localStorage", {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => void mem.set(k, String(v)),
+    removeItem: (k: string) => void mem.delete(k),
+    clear: () => mem.clear(),
+  })
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.reject(new Error("offline test"))),
+  )
+  bootMedia?.restore()
+  bootMedia = stubMatchMedia()
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
+  if (!Element.prototype.getAnimations) {
+    Element.prototype.getAnimations = () => []
+  }
+}
+
+installBootStubs()
+const { ChangedFiles } = await import("./ChangedFiles")
+const { ChangesFetchAborted, ChangesFetchError } = await import("@/lib/changesApi")
+const { resetExpansionsForTests } = await import("@/lib/changesExpansion")
+
+function file(path: string, extra: Partial<ChangedFileView> = {}): ChangedFileView {
+  return {
+    path,
+    status: "??",
+    additions: 1,
+    deletions: 0,
+    binary: false,
+    diff_excluded: false,
+    ...extra,
+  }
+}
+function folder(path: string, count: number, fingerprint = "f1"): ChangedFileView {
+  return file(path, { kind: "directory", file_count: count, additions: 0, fingerprint })
+}
+
+function slice(unstaged: ChangedFileView[], rev = 1): ChangesSlice {
+  return { sessionId: "s1", phase: "loaded", rev, staged: [], unstaged, error: null }
+}
+
+function toggle(name: string): HTMLButtonElement {
+  return screen.getByRole("button", { name: new RegExp(`^${name}`) }) as HTMLButtonElement
+}
+
+async function answer(index: number, rows: ChangedFileView[]) {
+  await act(async () => {
+    answers[index]!.resolve(rows)
+    await Promise.resolve()
+  })
+}
+
+beforeEach(() => {
+  installBootStubs()
+  resetExpansionsForTests()
+  answers.length = 0
+  fetchFolderChildren.mockClear()
+  openEditor.mockClear()
+  stageOne.mockClear()
+  stageMany.mockClear()
+  mockState = {
+    selectedSessionId: "s1",
+    changes: slice([folder("node_modules", 3), file("notes.md")]),
+  } as unknown as YaranState
+})
+
+afterEach(() => {
+  cleanup()
+  resetExpansionsForTests()
+})
+
+describe("expanding a folded folder", () => {
+  it("is a real button that says whether it is expanded and which container it opens", async () => {
+    render(<ChangedFiles />)
+    const button = toggle("node_modules/")
+    expect(button.tagName).toBe("BUTTON")
+    expect(button.getAttribute("aria-expanded")).toBe("false")
+
+    fireEvent.click(button)
+
+    expect(button.getAttribute("aria-expanded")).toBe("true")
+    const controls = button.getAttribute("aria-controls")!
+    expect(document.getElementById(controls)).not.toBeNull()
+    expect(fetchFolderChildren).toHaveBeenCalledWith(
+      "s1",
+      "node_modules",
+      "unstaged",
+      expect.any(AbortSignal),
+    )
+    expect(screen.getByText("Loading…")).toBeTruthy()
+
+    await answer(0, [folder("node_modules/pkg0", 2), file("node_modules/top.js")])
+
+    expect(screen.queryByText("Loading…")).toBeNull()
+    const group = within(document.getElementById(controls)!)
+    expect(group.getByText("pkg0/")).toBeTruthy()
+    expect(group.getByText("top.js")).toBeTruthy()
+
+    fireEvent.click(button)
+    expect(button.getAttribute("aria-expanded")).toBe("false")
+    expect(screen.queryByText("top.js")).toBeNull()
+  })
+
+  // Rows that hold widgets (a checkbox, a toggle, a menu) are a treegrid in
+  // the ARIA practices: the list is the treegrid, each section a rowgroup,
+  // each row carries its level and (on a folder) whether it is expanded, and
+  // every control sits in a gridcell.
+  it("is a treegrid whose rows say their level and whether they are expanded", async () => {
+    render(<ChangedFiles />)
+    const grid = screen.getByRole("treegrid", { name: "Changed files" })
+    const folderRow = toggle("node_modules/").closest('[role="row"]')!
+    expect(folderRow.getAttribute("aria-level")).toBe("2")
+    expect(folderRow.getAttribute("aria-expanded")).toBe("false")
+    for (const cell of folderRow.children) {
+      expect(cell.getAttribute("role")).toBe("gridcell")
+    }
+    expect(within(grid).getAllByRole("rowgroup").length).toBeGreaterThan(0)
+    // The section heading is a row too, its button in a gridcell.
+    const heading = screen.getByRole("button", { name: /^Unstaged/ })
+    expect(heading.closest('[role="gridcell"]')?.closest('[role="row"]')).not.toBeNull()
+
+    fireEvent.click(toggle("node_modules/"))
+    expect(folderRow.getAttribute("aria-expanded")).toBe("true")
+    await answer(0, [file("node_modules/top.js")])
+    const childRow = screen.getByText("top.js").closest('[role="row"]')!
+    expect(childRow.getAttribute("aria-level")).toBe("3")
+    expect(childRow.getAttribute("aria-expanded")).toBeNull()
+    const contents = document.getElementById(
+      toggle("node_modules/").getAttribute("aria-controls")!,
+    )!
+    expect(contents.contains(childRow)).toBe(true)
+  })
+
+  it("expands a folder inside an expanded one, a level deeper", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [folder("node_modules/pkg0", 2), file("node_modules/top.js")])
+
+    fireEvent.click(toggle("pkg0/"))
+    expect(fetchFolderChildren).toHaveBeenLastCalledWith(
+      "s1",
+      "node_modules/pkg0",
+      "unstaged",
+      expect.any(AbortSignal),
+    )
+    await answer(1, [file("node_modules/pkg0/a.js"), file("node_modules/pkg0/b.js")])
+
+    const aRow = screen.getByText("a.js").closest('[role="row"]')!
+    expect(aRow.getAttribute("aria-level")).toBe("4")
+  })
+
+  it("says why a folder could not be listed, and Retry asks again", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await act(async () => {
+      answers[0]!.reject(new ChangesFetchError("the repository is busy", 409))
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText(/the repository is busy/)).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(fetchFolderChildren).toHaveBeenCalledTimes(2)
+    expect(screen.getByText("Loading…")).toBeTruthy()
+    await answer(1, [file("node_modules/top.js")])
+    expect(screen.getByText("top.js")).toBeTruthy()
+  })
+
+  it("says a folder's failure once, in the server's own words", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await act(async () => {
+      answers[0]!.reject(
+        new ChangesFetchError("Could not list the folder. index.lock exists", 409),
+      )
+      await Promise.resolve()
+    })
+    const text = document.body.textContent ?? ""
+    expect(text.match(/Could not list/g)).toHaveLength(1)
+    expect(text).toContain("Could not list the folder. index.lock exists")
+  })
+
+  // A folder that holds nothing now says so, and its toggle still names a
+  // container that exists.
+  it("says so when an expanded folder turns out to hold nothing", async () => {
+    render(<ChangedFiles />)
+    const button = toggle("node_modules/")
+    fireEvent.click(button)
+    await answer(0, [])
+    expect(screen.getByText("Nothing git lists here anymore.")).toBeTruthy()
+    expect(document.getElementById(button.getAttribute("aria-controls")!)).not.toBeNull()
+  })
+
+  // A quiet refresh that fails keeps the rows, and the folder says so quietly
+  // with a way to try again.
+  it("marks a folder whose quiet refresh failed, and retries from the mark", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 4, "f2"), file("notes.md")], 2),
+    } as unknown as YaranState
+    publishMockState()
+    await act(async () => {
+      answers[1]!.reject(new ChangesFetchError("the repository is busy", 409))
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText("top.js")).toBeTruthy()
+    const retry = screen.getByRole("button", { name: /Couldn.t refresh/ })
+    fireEvent.click(retry)
+    expect(fetchFolderChildren).toHaveBeenCalledTimes(3)
+    await answer(2, [file("node_modules/top.js"), file("node_modules/new.js")])
+    expect(screen.queryByRole("button", { name: /Couldn.t refresh/ })).toBeNull()
+  })
+
+  // The toggle stretches to the row's height, and baseline alignment in a
+  // stretched box parks its text at the top while the chevron centres, so the
+  // toggle centres and only the text group keeps the shared baseline.
+  it("centres the expand toggle's items and keeps the name and counts on one baseline inside it", () => {
+    render(<ChangedFiles />)
+    const button = toggle("node_modules/")
+    expect(button.className).toContain("items-center")
+    expect(button.className).not.toContain("items-baseline")
+    const name = within(button).getByText(/node_modules/)
+    const group = name.closest(".items-baseline")
+    expect(group).not.toBeNull()
+    expect(button.contains(group)).toBe(true)
+    expect(group).not.toBe(button)
+  })
+
+  // A coarse pointer at desktop width gets the 44px floor on every control the
+  // expand adds, like the row's other controls.
+  it("gives every expand control the touch floor under a coarse pointer", async () => {
+    render(<ChangedFiles />)
+    const button = toggle("node_modules/")
+    expect(button.className).toContain("pointer-coarse:min-h-11")
+    fireEvent.click(button)
+    await act(async () => {
+      answers[0]!.reject(new ChangesFetchError("the repository is busy", 409))
+      await Promise.resolve()
+    })
+    expect(screen.getByRole("button", { name: "Retry" }).className).toContain(
+      "pointer-coarse:min-h-11",
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    await answer(1, [file("node_modules/top.js")])
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 4, "f2"), file("notes.md")], 2),
+    } as unknown as YaranState
+    publishMockState()
+    await act(async () => {
+      answers[2]!.reject(new ChangesFetchError("the repository is busy", 409))
+      await Promise.resolve()
+    })
+    expect(
+      screen.getByRole("button", { name: /Couldn.t refresh/ }).className,
+    ).toContain("pointer-coarse:min-h-11")
+    // Clear space on both sides of it, apart from the folder's name and the ⋯.
+    expect(
+      screen.getByRole("button", { name: /Couldn.t refresh/ }).closest('[role="gridcell"]')!
+        .className,
+    ).toContain("px-2")
+  })
+
+  // Every count in the pane is grouped the same way the rows write theirs.
+  it("groups the digits of the section badge like the rows do", () => {
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 30_000), file("notes.md")]),
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    expect(screen.getByText("30,001")).toBeTruthy()
+    fireEvent.click(screen.getByLabelText("Select node_modules"))
+    const bar = within(
+      screen.getByRole("toolbar", { name: "Actions for the selected files" }),
+    )
+    expect(bar.getByRole("button", { name: /Stage 30,000/ })).toBeTruthy()
+  })
+
+  it("makes every row inside a full row: diff, menu actions and selection", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+
+    fireEvent.click(screen.getByText("top.js"))
+    expect(openEditor).toHaveBeenCalledWith(
+      expect.anything(),
+      "node_modules/top.js",
+      "diff",
+    )
+
+    fireEvent.click(screen.getByLabelText("Actions for node_modules/top.js"))
+    fireEvent.click(within(await screen.findByRole("menu")).getByText("Stage"))
+    await vi.waitFor(() =>
+      expect(stageOne).toHaveBeenCalledWith("s1", "node_modules/top.js"),
+    )
+
+    fireEvent.click(screen.getByLabelText("Select node_modules/top.js"))
+    const bar = within(
+      screen.getByRole("toolbar", { name: "Actions for the selected files" }),
+    )
+    fireEvent.click(bar.getByRole("button", { name: /Stage 1/ }))
+    await vi.waitFor(() =>
+      expect(stageMany).toHaveBeenCalledWith("s1", ["node_modules/top.js"]),
+    )
+  })
+
+  it("counts a checked row inside a checked folder once, in the folder", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+    fireEvent.click(screen.getByLabelText("Select node_modules"))
+    fireEvent.click(screen.getByLabelText("Select node_modules/top.js"))
+
+    const bar = within(
+      screen.getByRole("toolbar", { name: "Actions for the selected files" }),
+    )
+    fireEvent.click(bar.getByRole("button", { name: /Stage 3/ }))
+    await vi.waitFor(() => expect(stageMany).toHaveBeenCalledWith("s1", ["node_modules"]))
+  })
+
+  it("refreshes an expanded folder quietly when its row moves, and forgets it when it goes", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 4, "f2"), file("notes.md")], 2),
+    } as unknown as YaranState
+    publishMockState()
+    expect(fetchFolderChildren).toHaveBeenCalledTimes(2)
+    // What is on screen stays until the answer lands.
+    expect(screen.getByText("top.js")).toBeTruthy()
+    expect(screen.queryByText("Loading…")).toBeNull()
+    await answer(1, [file("node_modules/top.js"), file("node_modules/new.js")])
+    expect(screen.getByText("new.js")).toBeTruthy()
+
+    mockState = {
+      ...mockState,
+      changes: slice([file("notes.md")], 3),
+    } as unknown as YaranState
+    publishMockState()
+    expect(screen.queryByText("top.js")).toBeNull()
+  })
+
+  it("remembers what was expanded when the pane comes back for the same agent", async () => {
+    const { unmount } = render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+    unmount()
+
+    render(<ChangedFiles />)
+    expect(toggle("node_modules/").getAttribute("aria-expanded")).toBe("true")
+    expect(screen.getByText("top.js")).toBeTruthy()
+    expect(fetchFolderChildren).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers no toggle on a repository of its own", () => {
+    mockState = {
+      ...mockState,
+      changes: slice([file("vendor/lib", { kind: "nested_repository", additions: 0 })]),
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    expect(screen.queryByRole("button", { name: /^vendor\/lib/ })).toBeNull()
+  })
+})
+
+describe("what is checked under an expanded folder", () => {
+  function bar() {
+    return within(screen.getByRole("toolbar", { name: "Actions for the selected files" }))
+  }
+
+  // "Select all" is every row shown, the rows inside expanded folders too.
+  it("Select all checks the rows inside expanded folders, and Select none clears them", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+    fireEvent.click(screen.getByLabelText("Select notes.md"))
+
+    fireEvent.click(bar().getByRole("button", { name: /Select all/ }))
+    const child = screen.getByLabelText("Select node_modules/top.js")
+    expect(child.getAttribute("aria-checked")).toBe("true")
+
+    fireEvent.click(bar().getByRole("button", { name: /Select none/ }))
+    expect(child.getAttribute("aria-checked")).toBe("false")
+  })
+
+  // A collapsed folder's rows are not shown, so they are not checked either.
+  it("collapsing a folder unchecks the rows under it", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+    fireEvent.click(screen.getByLabelText("Select node_modules/top.js"))
+    fireEvent.click(screen.getByLabelText("Select notes.md"))
+    expect(bar().getByRole("button", { name: /Stage 2/ })).toBeTruthy()
+
+    fireEvent.click(toggle("node_modules/"))
+    expect(bar().getByRole("button", { name: /Stage 1/ })).toBeTruthy()
+
+    fireEvent.click(toggle("node_modules/"))
+    await answer(1, [file("node_modules/top.js")])
+    expect(
+      screen.getByLabelText("Select node_modules/top.js").getAttribute("aria-checked"),
+    ).toBe("false")
+  })
+
+  // A sub-folder that left its parent takes its checked rows with it: nothing
+  // hidden is counted or sent.
+  it("drops a checked row inside a sub-folder that left its parent", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [folder("node_modules/pkg0", 1), file("node_modules/top.js")])
+    fireEvent.click(toggle("pkg0/"))
+    await answer(1, [file("node_modules/pkg0/a.js")])
+    fireEvent.click(screen.getByLabelText("Select node_modules/pkg0/a.js"))
+    fireEvent.click(screen.getByLabelText("Select notes.md"))
+
+    // The listing moves; the folder's new answer no longer holds pkg0.
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 1, "f2"), file("notes.md")], 2),
+    } as unknown as YaranState
+    publishMockState()
+    await answer(2, [file("node_modules/top.js")])
+
+    expect(screen.queryByText("a.js")).toBeNull()
+    fireEvent.click(bar().getByRole("button", { name: /Stage 1/ }))
+    await vi.waitFor(() => expect(stageMany).toHaveBeenCalledWith("s1", ["notes.md"]))
+  })
+
+  // A checked folder a verb does not act on covers nothing: the rows checked
+  // inside it are acted on and counted on their own.
+  it("does not let a folder that cannot act swallow the rows checked inside it", async () => {
+    mockState = {
+      ...mockState,
+      changes: slice([
+        file("vendor", {
+          kind: "directory",
+          file_count: 0,
+          nested_repositories: 1,
+          repositories_inside: ["vendor/lib"],
+          additions: 0,
+        }),
+      ]),
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("vendor/"))
+    await answer(0, [file("vendor/lib", { kind: "nested_repository", additions: 0 })])
+    fireEvent.click(screen.getByLabelText("Select vendor"))
+    fireEvent.click(bar().getByRole("button", { name: /Select all/ }))
+
+    expect(bar().getByRole("button", { name: /Stage 1/ })).toBeTruthy()
+    expect(bar().getByRole("button", { name: /Discard 1/ })).toBeTruthy()
+    fireEvent.click(bar().getByRole("button", { name: /Stage 1/ }))
+    await vi.waitFor(() => expect(stageMany).toHaveBeenCalledWith("s1", ["vendor/lib"]))
+  })
+
+  // A check belongs to a row on screen: a row that leaves (staged elsewhere)
+  // takes its check with it, and does not come back checked when it returns.
+  it("forgets the check of a row that left, even when it comes back", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js"), file("node_modules/b.js")])
+    fireEvent.click(screen.getByLabelText("Select node_modules/top.js"))
+
+    // `git add node_modules/top.js` elsewhere: the folder's answer loses it.
+    mockState = {
+      ...mockState,
+      changes: {
+        ...slice([folder("node_modules", 2, "f2"), file("notes.md")], 2),
+        staged: [file("node_modules/top.js", { status: "A" })],
+      },
+    } as unknown as YaranState
+    publishMockState()
+    await answer(1, [file("node_modules/b.js")])
+
+    // `git reset` brings it back.
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 3, "f3"), file("notes.md")], 3),
+    } as unknown as YaranState
+    publishMockState()
+    await answer(2, [file("node_modules/top.js"), file("node_modules/b.js")])
+
+    expect(
+      screen.getByLabelText("Select node_modules/top.js").getAttribute("aria-checked"),
+    ).toBe("false")
+    expect(
+      screen.queryByRole("toolbar", { name: "Actions for the selected files" }),
+    ).toBeNull()
+  })
+
+  // A sub-folder that grew is asked for again once its parent's answer says so.
+  it("asks again for an expanded sub-folder that grew", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [folder("node_modules/pkg0", 1, "p1")])
+    fireEvent.click(toggle("pkg0/"))
+    await answer(1, [file("node_modules/pkg0/a.js")])
+
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 2, "f2"), file("notes.md")], 2),
+    } as unknown as YaranState
+    publishMockState()
+    await answer(2, [folder("node_modules/pkg0", 2, "p2")])
+    expect(fetchFolderChildren).toHaveBeenLastCalledWith(
+      "s1",
+      "node_modules/pkg0",
+      "unstaged",
+      expect.any(AbortSignal),
+    )
+    await answer(3, [file("node_modules/pkg0/a.js"), file("node_modules/pkg0/b.js")])
+    expect(screen.getByText("b.js")).toBeTruthy()
+  })
+})
+
+// The whole journey a user takes: open a folder, open one inside it, check a
+// file there, stage it, and see the listing's answer fold everything back up.
+describe("a user expanding and staging inside a folder", () => {
+  it("goes from a folded row to a staged file inside it", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [folder("node_modules/pkg0", 2), file("node_modules/top.js")])
+    fireEvent.click(toggle("pkg0/"))
+    await answer(1, [file("node_modules/pkg0/a.js"), file("node_modules/pkg0/b.js")])
+
+    fireEvent.click(screen.getByLabelText("Select node_modules/pkg0/a.js"))
+    const bar = within(
+      screen.getByRole("toolbar", { name: "Actions for the selected files" }),
+    )
+    fireEvent.click(bar.getByRole("button", { name: /Stage 1/ }))
+    await vi.waitFor(() =>
+      expect(stageMany).toHaveBeenCalledWith("s1", ["node_modules/pkg0/a.js"]),
+    )
+
+    // The server's next listing: the folder now holds two files, one staged.
+    mockState = {
+      ...mockState,
+      changes: {
+        ...slice([folder("node_modules", 2, "f2"), file("notes.md")], 2),
+        staged: [file("node_modules/pkg0/a.js", { status: "A" })],
+      },
+    } as unknown as YaranState
+    publishMockState()
+    expect(screen.getByText("node_modules/pkg0/a.js")).toBeTruthy()
+    expect(fetchFolderChildren).toHaveBeenCalledTimes(3)
+  })
+})
+
+// The treegrid's keyboard, APG row-focus mode: a row holds focus, the arrows
+// move and fold, Home and End jump, Tab enters the grid once and leaves it.
+describe("the changes treegrid keyboard", () => {
+  function rowOf(text: string): HTMLElement {
+    return screen.getByText(text).closest('[role="row"]') as HTMLElement
+  }
+  function key(name: string) {
+    fireEvent.keyDown(document.activeElement!, { key: name })
+  }
+  function focusedRowText(): string {
+    const row = (document.activeElement as HTMLElement).closest('[role="row"]')
+    return row?.textContent ?? ""
+  }
+
+  it("puts headings at level 1 and numbers every row", async () => {
+    render(<ChangedFiles />)
+    const grid = screen.getByRole("treegrid", { name: "Changed files" })
+    const heading = screen.getByRole("button", { name: /^Unstaged/ }).closest('[role="row"]')!
+    expect(heading.getAttribute("aria-level")).toBe("1")
+    expect(rowOf("notes.md").getAttribute("aria-level")).toBe("2")
+    // heading, node_modules, notes.md
+    expect(grid.getAttribute("aria-rowcount")).toBe("3")
+    expect(heading.getAttribute("aria-rowindex")).toBe("1")
+    expect(rowOf("notes.md").getAttribute("aria-rowindex")).toBe("3")
+  })
+
+  it("is one tab stop, the active row, with the other rows' controls out of the tab order", () => {
+    render(<ChangedFiles />)
+    const rows = screen.getAllByRole("row")
+    expect(rows.filter((row) => row.tabIndex === 0)).toHaveLength(1)
+    const notes = rowOf("notes.md")
+    expect(notes.tabIndex).toBe(-1)
+    expect(
+      within(notes).getByLabelText("Actions for notes.md").getAttribute("tabindex"),
+    ).toBe("-1")
+  })
+
+  it("moves between rows with Up, Down, Home and End, headings included", () => {
+    render(<ChangedFiles />)
+    const first = screen.getAllByRole("row").find((row) => row.tabIndex === 0)!
+    first.focus()
+    expect(focusedRowText()).toContain("Unstaged")
+    key("ArrowDown")
+    expect(focusedRowText()).toContain("node_modules/")
+    key("ArrowDown")
+    expect(focusedRowText()).toContain("notes.md")
+    key("ArrowUp")
+    expect(focusedRowText()).toContain("node_modules/")
+    key("End")
+    expect(focusedRowText()).toContain("notes.md")
+    key("Home")
+    expect(focusedRowText()).toContain("Unstaged")
+    // The row that holds focus is the one tab stop now.
+    key("ArrowDown")
+    expect(rowOf("node_modules/").tabIndex).toBe(0)
+  })
+
+  it("expands with Right, steps in with Right, steps out with Left and folds with Left", async () => {
+    render(<ChangedFiles />)
+    rowOf("node_modules/").focus()
+    key("ArrowRight")
+    expect(fetchFolderChildren).toHaveBeenCalledTimes(1)
+    await answer(0, [file("node_modules/top.js")])
+    expect(focusedRowText()).toContain("node_modules/")
+    key("ArrowRight")
+    expect(focusedRowText()).toContain("top.js")
+    key("ArrowLeft")
+    expect(focusedRowText()).toContain("node_modules/")
+    key("ArrowLeft")
+    expect(toggle("node_modules/").getAttribute("aria-expanded")).toBe("false")
+    expect(screen.queryByText("top.js")).toBeNull()
+  })
+
+  it("keeps Enter for the row's own act and Space for its checkbox", async () => {
+    render(<ChangedFiles />)
+    rowOf("notes.md").focus()
+    key("Enter")
+    expect(openEditor).toHaveBeenCalledWith(expect.anything(), "notes.md", "diff")
+    key(" ")
+    expect(screen.getByLabelText("Select notes.md").getAttribute("aria-checked")).toBe("true")
+    rowOf("node_modules/").focus()
+    key("Enter")
+    expect(toggle("node_modules/").getAttribute("aria-expanded")).toBe("true")
+  })
+
+  // Focus never falls out of the grid when the row holding it goes: a
+  // collapse lands it on the folder, a refresh on the row now in its place.
+  it("moves focus to the folder when a collapse takes the focused row away", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/top.js")])
+    rowOf("top.js").focus()
+
+    fireEvent.click(toggle("node_modules/"))
+
+    expect(screen.queryByText("top.js")).toBeNull()
+    expect(document.activeElement).toBe(rowOf("node_modules/"))
+    expect(rowOf("node_modules/").tabIndex).toBe(0)
+  })
+
+  it("moves focus to the row now in its place when a refresh removes a row with no folder above", () => {
+    mockState = {
+      ...mockState,
+      changes: slice([file("a.md"), file("notes.md"), file("z.md")]),
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    rowOf("notes.md").focus()
+
+    mockState = {
+      ...mockState,
+      changes: slice([file("a.md"), file("z.md")], 2),
+    } as unknown as YaranState
+    publishMockState()
+
+    expect(screen.queryByText("notes.md")).toBeNull()
+    expect(document.activeElement).toBe(rowOf("z.md"))
+  })
+
+  it("moves focus to the folder when a refresh removes a row inside it", async () => {
+    render(<ChangedFiles />)
+    fireEvent.click(toggle("node_modules/"))
+    await answer(0, [file("node_modules/a.js"), file("node_modules/top.js")])
+    rowOf("top.js").focus()
+
+    mockState = {
+      ...mockState,
+      changes: slice([folder("node_modules", 1, "f2"), file("notes.md")], 2),
+    } as unknown as YaranState
+    publishMockState()
+    await answer(1, [file("node_modules/a.js")])
+
+    expect(document.activeElement).toBe(rowOf("node_modules/"))
+  })
+
+  it("brings a row outside the window in before focusing it", () => {
+    const many = Array.from({ length: 400 }, (_, index) =>
+      file(`src/file${String(index).padStart(3, "0")}.ts`, { status: "M" }),
+    )
+    mockState = { ...mockState, changes: slice(many) } as unknown as YaranState
+    render(<ChangedFiles />)
+    expect(screen.queryByText("src/file399.ts")).toBeNull()
+    screen.getAllByRole("row").find((row) => row.tabIndex === 0)!.focus()
+    key("End")
+    expect(focusedRowText()).toContain("src/file399.ts")
+    key("Home")
+    expect(focusedRowText()).toContain("Unstaged")
+  })
+})

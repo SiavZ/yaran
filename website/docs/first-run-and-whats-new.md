@@ -5,7 +5,7 @@ group: Getting started
 order: 3
 ---
 
-dux shows a screen on its own in two situations: when it is brand new to your machine,
+yaran shows a screen on its own in two situations: when it is brand new to your machine,
 and when you start a version you have not seen yet. Both are dismissible with a button,
 and both can be reopened later. The browser shows them too, not just the terminal UI.
 
@@ -20,10 +20,10 @@ an empty sidebar. It is a short orientation:
   other's files.
 - **What a provider is:** whatever AI CLI you point it at. If a tool runs in a
   terminal, it can be a provider.
-- **That dux has two front ends:** a terminal UI and a web UI over the same projects,
+- **That yaran has two front ends:** a terminal UI and a web UI over the same projects,
   agents, worktrees and config, and how to start the web one.
 - **Where your config file lives**, as the real path on *this* machine:
-  `~/.config/dux/config.toml` on Linux, `~/.dux/config.toml` on macOS. That file is
+  `~/.config/yaran/config.toml` on Linux, `~/.yaran/config.toml` on macOS. That file is
   written fully commented, and it is the documentation.
 
 Underneath sit the same three steps: add a project, create an agent, launch. Then:
@@ -36,11 +36,11 @@ Underneath sit the same three steps: add a project, create an agent, launch. The
 
 Here is the whole thing on a fresh install, rubber duck included:
 
-![The dux welcome screen in the terminal UI: a rubber duck drawn in braille dots on the left, the orientation text on the right explaining projects, agents and providers, an Add a project button beside a Close button and a link to getdux.app along the bottom, and the close key named on the frame itself.](/screens/tui-welcome-screen.png)
+![The yaran welcome screen in the terminal UI: a rubber duck drawn in braille dots on the left, the orientation text on the right explaining projects, agents and providers, an Add a project button beside a Close button and a link to getdux.app along the bottom, and the close key named on the frame itself.](/screens/tui-welcome-screen.png)
 
 ## What's new after an update
 
-When dux starts and you are running a version whose screen you have not seen, you get a
+When yaran starts and you are running a version whose screen you have not seen, you get a
 **What's new** screen for the release you moved to. It renders that release's headline,
 its opening paragraphs, and the titles of its feature sections. The GitHub changelog
 and installer boilerplate are left out. One button opens the full notes on GitHub, the
@@ -59,25 +59,25 @@ back to an older release shows that release's notes too.
 >
 > It also never records itself as the version you saw, so running a development build
 > between two releases cannot swallow the next release's notes. If you open **What's
-> new** yourself on one, dux shows the newest published release.
+> new** yourself on one, yaran shows the newest published release.
 
 ## Where the notes come from
 
-dux fetches the matching release from GitHub's public API at launch. No token, nothing
+yaran fetches the matching release from GitHub's public API at launch. No token, nothing
 to configure, and the result is cached next to your config (for six hours) so
 relaunching a dozen times does not mean a dozen requests.
 
-If the fetch cannot get through and dux has no saved copy of those notes, it shows
+If the fetch cannot get through and yaran has no saved copy of those notes, it shows
 nothing and says nothing. A saved copy of the same version is shown instead, unless GitHub
 answered that there is no such release, in which case nothing is shown. What
 happens next depends on why the fetch failed:
 
 - **Something that might work later** (offline, a timeout, a rate limit, a GitHub
   hiccup): the version is **not** recorded as seen, so the notes are waiting for you on
-  a later launch that has a network. Starting dux on a plane does not cost you a
+  a later launch that has a network. Starting yaran on a plane does not cost you a
   release's notes.
 - **A definitive "no such release"** (normal for a locally built or unpublished
-  binary): the answer cannot change, so dux records the version and stops asking.
+  binary): the answer cannot change, so yaran records the version and stops asking.
 
 ## Opening either screen on demand
 

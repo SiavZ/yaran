@@ -1,7 +1,7 @@
 // The page a browser gets if a broken [server.auth] section ever reaches a
-// running dux.
+// running yaran.
 //
-// dux itself never gets there: a broken section stops the start and a reload
+// yaran itself never gets there: a broken section stops the start and a reload
 // refuses it, so the page is the fail-closed answer to a state no real run can
 // be put in. The scene therefore answers the page's one status read itself,
 // with the server's real answer for this browser and the one field the broken

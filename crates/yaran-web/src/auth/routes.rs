@@ -1,0 +1,816 @@
+//! `/api/v1/auth/*`: the status read and the login (public), and the sign-out,
+//! the password change and the no-password warning's dismissal (protected like
+//! any other route). Every one sits under the same-origin check for mutations.
+//!
+//! The answers follow the contract the browser reads (`lib/authApi.ts`,
+//! `lib/authActions.ts`, `lib/authErrors.ts`): a refusal is JSON with an
+//! `error` code and, where the browser shows one, a `message` in words.
+
+use axum::body::Body;
+use axum::extract::{Request, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Extension, Json, Router};
+use yaran_core::auth::{MinimumFailure, Password};
+use yaran_core::web_sessions::{NewToken, SessionKind};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use zeroize::Zeroizing;
+
+use super::provenance::ClientClass;
+use super::{RequestAuth, Verify, cookie};
+use crate::server::AppState;
+
+pub(crate) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/auth/status", get(status))
+        .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/cli-login", post(cli_login))
+        .route("/api/v1/auth/cli-logout", post(cli_logout))
+        .route("/api/v1/auth/password", post(change_password))
+        .route(
+            "/api/v1/auth/dismiss-no-auth-warning",
+            post(dismiss_no_auth_warning),
+        )
+}
+
+/// What the status says about a `[server.auth]` that cannot be used: the
+/// reason, to this machine and the tailnet, or only `true` to anyone else,
+/// whose page then shows no detail of its own (decided).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum BrokenDoc {
+    Reason(String),
+    Broken(bool),
+}
+
+/// `GET /api/v1/auth/status`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about the asking device sent to the web client as JSON booleans"
+)]
+pub(crate) struct StatusDoc {
+    pub(crate) password_set: bool,
+    pub(crate) required_here: bool,
+    pub(crate) signed_in: bool,
+    pub(crate) client_class: &'static str,
+    pub(crate) transport_encrypted: bool,
+    pub(crate) no_auth_warning: bool,
+    pub(crate) weak_password: bool,
+    pub(crate) can_set_first_password: bool,
+    pub(crate) auth_broken: Option<BrokenDoc>,
+    pub(crate) minimum_password_length: u32,
+    pub(crate) minimum_password_score: u8,
+    /// Why this device, which reached yaran over loopback, is treated as the
+    /// network (so it signs in, and cannot set the first password): yaran could
+    /// not rule out that the request was relayed from elsewhere. One line, with
+    /// setting names in backticks. `null` otherwise. Shown, never decided on.
+    pub(crate) required_reason: Option<String>,
+    /// This yaran's instance id, which a restart keeps, so a page or the command
+    /// line can tell a different yaran at the same address from a restart of
+    /// its own. Public on purpose: it is random and says nothing. A
+    /// consistency check only, never an auth, trust, ownership or ban input.
+    pub(crate) instance: Option<String>,
+}
+
+async fn status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Response {
+    let mut doc = state.auth.status(&auth.0);
+    doc.instance = state.engine.instance_id().map(str::to_string);
+    let mut response = Json(doc).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn refusal(status: StatusCode, body: serde_json::Value) -> Response {
+    (status, Json(body)).into_response()
+}
+
+fn rate_limited(limited: super::admission::Limited) -> Response {
+    let seconds = limited.seconds;
+    let from = limited.held_by.words();
+    let mut response = refusal(
+        StatusCode::TOO_MANY_REQUESTS,
+        json!({
+            "error": "rate_limited",
+            "retry_after_seconds": seconds,
+            // Whose failures this waits out, in words, for the browser's own
+            // sentence: never "from this address" for a shared count.
+            "from": from,
+            "message": format!(
+                "Too many sign-in attempts {from} right now. Try again in {seconds} {}.",
+                if seconds == 1 { "second" } else { "seconds" }
+            ),
+        }),
+    );
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&seconds.to_string()).expect("digits"),
+    );
+    response
+}
+
+fn busy() -> Response {
+    let mut response = refusal(
+        StatusCode::TOO_MANY_REQUESTS,
+        json!({
+            "error": "rate_limited",
+            "retry_after_seconds": 1,
+            "message": "yaran is checking too many passwords right now. Try again shortly.",
+        }),
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    response
+}
+
+fn bad_request(message: &str) -> Response {
+    refusal(
+        StatusCode::BAD_REQUEST,
+        json!({ "error": "bad_request", "message": message }),
+    )
+}
+
+fn too_long(maximum: u32) -> Response {
+    refusal(
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": "password_too_long",
+            "maximum": maximum,
+            "message": format!(
+                "That password is longer than yaran accepts ({maximum} bytes, max_password_bytes)."
+            ),
+        }),
+    )
+}
+
+fn server_error(message: &str) -> Response {
+    refusal(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        json!({ "error": "internal", "message": message }),
+    )
+}
+
+/// Why a request body could not be read in full.
+#[derive(Clone, Copy)]
+enum BodyRead {
+    /// More than the limit arrived.
+    TooLarge,
+    /// The body failed before it ended, a dropped connection most often.
+    Failed,
+}
+
+/// Read a request body of at most `limit` bytes into a buffer that is wiped
+/// when dropped.
+async fn bounded_body(body: Body, limit: usize) -> Result<Zeroizing<Vec<u8>>, BodyRead> {
+    use futures_util::StreamExt;
+
+    let mut buffer = Zeroizing::new(Vec::new());
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| BodyRead::Failed)?;
+        if chunk.len() > limit.saturating_sub(buffer.len()) {
+            return Err(BodyRead::TooLarge);
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(buffer)
+}
+
+/// The refusal for a body [`bounded_body`] could not read.
+fn unread_body(why: BodyRead, max_password_bytes: u32) -> Response {
+    match why {
+        BodyRead::TooLarge => too_long(max_password_bytes),
+        BodyRead::Failed => bad_request("The request did not arrive in full. Try again."),
+    }
+}
+
+/// A configured byte cap as a length. A `u32` always fits a `usize` on the
+/// 64-bit targets yaran supports.
+fn byte_cap(max_bytes: u32) -> usize {
+    usize::try_from(max_bytes).unwrap_or(usize::MAX)
+}
+
+/// The most a body carrying `fields` passwords of at most `max_bytes` each can
+/// need: JSON may escape every byte of a password as six (`\u00XX`), plus room
+/// for the keys and punctuation. Applied before anything is parsed or hashed.
+fn body_limit(max_bytes: u32, fields: usize) -> usize {
+    byte_cap(max_bytes).saturating_mul(6).saturating_mul(fields) + 1024
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    password: String,
+    /// Who is signing in, for the log; only the command line sends one.
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// `POST /api/v1/auth/login` with `{password}`.
+async fn login(
+    State(state): State<AppState>,
+    Extension(auth): Extension<RequestAuth>,
+    request: Request,
+) -> Response {
+    let token = match sign_in(&state, &auth, request, SessionKind::Browser).await {
+        SignIn::Token(token, _) => token,
+        SignIn::Refused(refusal) => return refusal,
+    };
+    let a = &auth.0;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        cookie::set(
+            a.cookie_port,
+            &token.cookie_value,
+            a.snapshot.config.cookie_secure,
+            a.classification.https_route(),
+        ),
+    );
+    response
+}
+
+/// `POST /api/v1/auth/cli-login` with `{password, label}`: a bearer token instead of a
+/// cookie. `expires_at` is null because the token ends only after `cli_token_idle_days` unused.
+async fn cli_login(
+    State(state): State<AppState>,
+    Extension(auth): Extension<RequestAuth>,
+    request: Request,
+) -> Response {
+    match sign_in(&state, &auth, request, SessionKind::Cli).await {
+        SignIn::Token(token, label) => {
+            let label: String = label.unwrap_or_default().chars().take(80).collect();
+            yaran_core::logger::info(&format!(
+                "[server] the command line signed in{}",
+                if label.is_empty() {
+                    String::new()
+                } else {
+                    format!(" as {label:?}")
+                }
+            ));
+            Json(json!({ "token": token.cookie_value, "expires_at": null })).into_response()
+        }
+        SignIn::Refused(refusal) => refusal,
+    }
+}
+
+/// `POST /api/v1/auth/cli-logout`: end every bearer token the request carried;
+/// `204` even when it carried none.
+async fn cli_logout(
+    State(state): State<AppState>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Response {
+    for digest in &auth.0.bearer {
+        state.auth.end_session(*digest).await;
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// How a sign-in ended: a session's token (and who asked for it), or the
+/// refusal to answer with.
+enum SignIn {
+    Token(NewToken, Option<String>),
+    Refused(Response),
+}
+
+/// The password check every sign-in route shares, ending in a session of `kind`;
+/// a refusal is the finished response to send.
+async fn sign_in(
+    state: &AppState,
+    auth: &RequestAuth,
+    request: Request,
+    kind: SessionKind,
+) -> SignIn {
+    let snapshot = state.auth.snapshot();
+    let config = &snapshot.config;
+    let raw = match bounded_body(
+        request.into_body(),
+        body_limit(config.max_password_bytes, 1),
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(why) => return SignIn::Refused(unread_body(why, config.max_password_bytes)),
+    };
+    let Ok(body) = serde_json::from_slice::<LoginBody>(&raw) else {
+        return SignIn::Refused(bad_request(
+            "The sign-in request must be JSON with a password field.",
+        ));
+    };
+    drop(raw);
+    let password = Password::new(body.password);
+    if password.byte_len() > byte_cap(config.max_password_bytes) {
+        return SignIn::Refused(too_long(config.max_password_bytes));
+    }
+    if !snapshot.has_password() {
+        return SignIn::Refused(no_password());
+    }
+    let a = &auth.0;
+    match state.auth.verify(&a.classification, password).await {
+        Verify::Right {
+            generation,
+            strength,
+        } => {
+            state.auth.note_strength(&generation, strength);
+            match state.auth.issue_session(&a.facts, &generation, kind).await {
+                Ok(super::Issued::Session(token)) => SignIn::Token(token, body.label),
+                Ok(super::Issued::Blocked) => SignIn::Refused(super::middleware::blocked()),
+                Ok(super::Issued::Stale) => SignIn::Refused(password_changed_meanwhile()),
+                Err(error) => SignIn::Refused(server_error(&format!(
+                    "Could not start a session: {error:#}"
+                ))),
+            }
+        }
+        Verify::Wrong => SignIn::Refused(refusal(
+            StatusCode::UNAUTHORIZED,
+            json!({ "error": "wrong_password", "message": "That password is not right." }),
+        )),
+        Verify::Blocked => SignIn::Refused(super::middleware::blocked()),
+        Verify::Wait(limited) => SignIn::Refused(rate_limited(limited)),
+        Verify::Busy => SignIn::Refused(busy()),
+        Verify::NoPassword => SignIn::Refused(no_password()),
+        Verify::Stale => SignIn::Refused(password_changed_meanwhile()),
+        Verify::Failed(error) => SignIn::Refused(server_error(&format!(
+            "Could not check the password: {error}"
+        ))),
+    }
+}
+
+/// The answer to a sign-in on a yaran with no password.
+fn no_password() -> Response {
+    refusal(
+        StatusCode::CONFLICT,
+        json!({
+            "error": "no_password",
+            "message": "No password is set on this yaran, so there is nothing to sign in to.",
+        }),
+    )
+}
+
+/// The answer to a sign-in whose password changed while it was checked.
+fn password_changed_meanwhile() -> Response {
+    refusal(
+        StatusCode::CONFLICT,
+        json!({
+            "error": "password_changed",
+            "message": "The password changed while this sign-in was being checked. Sign in with the new one.",
+        }),
+    )
+}
+
+/// `POST /api/v1/auth/logout`: end this browser's session and clear its
+/// cookie. Answers 204 even when there was no session, because the browser
+/// asked for exactly that outcome.
+async fn logout(
+    State(state): State<AppState>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Response {
+    let a = &auth.0;
+    // Every session the browser presented, not just the one that let it in:
+    // signing out must leave nothing behind (decided, after review).
+    for digest in &a.presented {
+        state.auth.end_session(*digest).await;
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        cookie::clear(
+            a.cookie_port,
+            a.snapshot.config.cookie_secure,
+            a.classification.https_route(),
+        ),
+    );
+    response
+}
+
+#[derive(Deserialize)]
+struct PasswordBody {
+    #[serde(default)]
+    current: Option<String>,
+    new: String,
+}
+
+/// Why a new password is refused, in the contract's shape: too short names the
+/// minimum, too weak carries the score and zxcvbn's feedback.
+fn below_minimums(check: &yaran_core::auth::MinimumCheck) -> Response {
+    for failure in &check.failures {
+        match failure {
+            MinimumFailure::TooShort { minimum, .. } => {
+                return refusal(
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "password_too_short",
+                        "minimum": minimum,
+                        "message": format!(
+                            "That password is too short: yaran asks for at least {minimum} characters."
+                        ),
+                    }),
+                );
+            }
+            MinimumFailure::TooLong { maximum, .. } => return too_long(*maximum),
+            // A browser's password field cannot type one, so such a password
+            // could never be used to sign in here.
+            MinimumFailure::ControlCharacter => {
+                return refusal(
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "password_control_character",
+                        "message": "That password contains a line break, a tab or another \
+                                    control character, which a browser's password field \
+                                    cannot type, so yaran refused it.",
+                    }),
+                );
+            }
+            MinimumFailure::TooWeak { .. } => {}
+        }
+    }
+    let strength = &check.strength;
+    refusal(
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": "weak_password",
+            "score": strength.score,
+            "message": format!(
+                "That password is too easy to guess (it rates {}), so yaran refused it.",
+                strength.label.as_str()
+            ),
+            "feedback": {
+                "warning": strength.warning,
+                "suggestions": strength.suggestions,
+            },
+        }),
+    )
+}
+
+/// What a password write may replace, or why it may not write at all.
+enum WriteOver {
+    /// The hash the write may replace, empty for a first password.
+    Hash(String),
+    /// The refusal to send instead.
+    Refused(Response),
+}
+
+/// The hash a password write may replace: none for a first password (refused
+/// from anywhere but this machine and the tailnet), else the one `current`
+/// was checked against.
+async fn expected_hash(
+    state: &AppState,
+    a: &super::Assessment,
+    config: &yaran_core::config::ServerAuthConfig,
+    current: Option<Password>,
+) -> WriteOver {
+    match config.password_hash() {
+        None => {
+            if !matches!(
+                a.classification.class,
+                ClientClass::ThisMachine | ClientClass::Tailnet
+            ) {
+                let because = a
+                    .classification
+                    .loopback_distrusted
+                    .map_or_default(|cause| {
+                        format!(" {}", route_refusal(a.classification.via, cause))
+                    });
+                return WriteOver::Refused(refusal(
+                    StatusCode::FORBIDDEN,
+                    json!({
+                        // backtick-ok: an HTTP refusal body, not a status.
+                        "error": "first_password_not_here",
+                        "message": format!(
+                            "The first password can only be set from the machine yaran runs on, \
+                             from your tailnet, or with `yaran config set \
+                             server.auth.password`.{because}"
+                        ),
+                    }),
+                ));
+            }
+            WriteOver::Hash(String::new())
+        }
+        Some(hash) => {
+            let Some(current) = current else {
+                return WriteOver::Refused(refusal(
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "current_password_required",
+                        "message": "Changing the password needs the current one.",
+                    }),
+                ));
+            };
+            if current.byte_len() > byte_cap(config.max_password_bytes) {
+                return WriteOver::Refused(too_long(config.max_password_bytes));
+            }
+            WriteOver::Refused(match state.auth.verify(&a.classification, current).await {
+                Verify::Right { .. } => return WriteOver::Hash(hash.to_string()),
+                Verify::Wrong => refusal(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "wrong_current_password" }),
+                ),
+                Verify::Blocked => super::middleware::blocked(),
+                Verify::Wait(limited) => rate_limited(limited),
+                Verify::Busy => busy(),
+                Verify::NoPassword | Verify::Stale => refusal(
+                    StatusCode::CONFLICT,
+                    json!({
+                        "error": "password_changed",
+                        "message": "The password changed while this was being checked, so nothing was changed. Try again.",
+                    }),
+                ),
+                Verify::Failed(error) => {
+                    server_error(&format!("Could not check the current password: {error}"))
+                }
+            })
+        }
+    }
+}
+
+/// What a password write came to, judged off the async runtime.
+enum PasswordWrite {
+    /// Written, and nothing stops this run's reload from putting it in force.
+    Written {
+        /// The password hash now in the file, to apply at once.
+        hash: Option<String>,
+        /// The write that put it there.
+        file_write: Option<yaran_core::config_write::FileWrite>,
+    },
+    /// Written, but problems in the file stop this run's reload from putting
+    /// it in force.
+    NotInForce(Vec<String>),
+    /// Not written.
+    Refused(yaran_core::config_keys::SetPasswordError),
+}
+
+/// Write `new` over `expected` in `config_path`, after measuring it against
+/// the live minimums. Blocking: runs on a blocking thread.
+fn write_password(
+    config_path: &std::path::Path,
+    expected: &str,
+    new: &Password,
+    policy: &yaran_core::auth::PasswordPolicy,
+    words: &[String],
+    surface: yaran_core::config::Surface,
+) -> PasswordWrite {
+    let refs: Vec<&str> = words.iter().map(String::as_str).collect();
+    // Measured against the live minimums first, so the answer describes
+    // the minimums the browser was shown; the write re-checks the file's.
+    let check = yaran_core::auth::check_minimums(new, policy, &refs);
+    if !check.passes() {
+        return PasswordWrite::Refused(yaran_core::config_keys::SetPasswordError::BelowMinimums(
+            check,
+        ));
+    }
+    let set =
+        match yaran_core::config_keys::set_password_if_current(config_path, expected, new, &refs) {
+            Ok(set) => set,
+            Err(refused) => return PasswordWrite::Refused(refused),
+        };
+    let file_write = yaran_core::config_write::take_last_write();
+    // Not in force only when the reload of THIS run refuses the file: the
+    // problems that stop the surface whose reload applies it, judged the
+    // way `start_refusal` judges them, never "any problem remains" (a file
+    // only the other surface refuses still loads here).
+    let stopping: Vec<String> = set
+        .remaining_problems
+        .into_iter()
+        .filter(|problem| stops_reload(problem, surface))
+        .map(|problem| problem.detail)
+        .collect();
+    if !stopping.is_empty() {
+        return PasswordWrite::NotInForce(stopping);
+    }
+    // The hash now in the file is the one to apply at once; the reload
+    // that follows brings the rest along.
+    PasswordWrite::Written {
+        hash: std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|raw| yaran_core::config::auth_section_of(&raw).ok())
+            .map(|section| section.password_hash),
+        file_write,
+    }
+}
+
+/// `POST /api/v1/auth/password` with `{current?, new}`: set the first password
+/// (only from this machine or the tailnet; anywhere else it is `yaran config set`'s
+/// job), or change the password, which needs the current one. Every browser is
+/// signed out by the change, this one included.
+///
+/// This guards against a change made by accident or through the API, not
+/// against someone who already has a terminal through yaran: they can edit the
+/// config file itself.
+async fn change_password(
+    State(state): State<AppState>,
+    Extension(auth): Extension<RequestAuth>,
+    request: Request,
+) -> Response {
+    let snapshot = state.auth.snapshot();
+    let config = &snapshot.config;
+    let raw = match bounded_body(
+        request.into_body(),
+        body_limit(config.max_password_bytes, 2),
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(why) => return unread_body(why, config.max_password_bytes),
+    };
+    let Ok(body) = serde_json::from_slice::<PasswordBody>(&raw) else {
+        return bad_request(
+            "The password change must be JSON with a new field (and current, to change one).",
+        );
+    };
+    drop(raw);
+    let new = Password::new(body.new);
+    let current = body.current.map(Password::new);
+    let a = &auth.0;
+    let Some(config_path) = state.auth.config_path().cloned() else {
+        return server_error("This server has no config file to write the password to.");
+    };
+
+    // Which hash the write may replace: none for a first password, else the
+    // one the current password was checked against.
+    let expected = match expected_hash(&state, a, config, current).await {
+        WriteOver::Hash(expected) => expected,
+        WriteOver::Refused(refused) => return refused,
+    };
+
+    if new.byte_len() > byte_cap(config.max_password_bytes) {
+        return too_long(config.max_password_bytes);
+    }
+    let policy = config.password_policy();
+    let words = yaran_core::auth::guess_words();
+    let surface = state.engine.reload_surface();
+    let written = tokio::task::spawn_blocking(move || {
+        write_password(&config_path, &expected, &new, &policy, &words, surface)
+    })
+    .await;
+    match written {
+        // Stored, but the file has problems that stop yaran starting with it (they
+        // were there before; the write added none), so the reload that would
+        // put it in force is refused and the old password stays the one.
+        Ok(PasswordWrite::NotInForce(problems)) => refusal(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "password_not_in_force",
+                "message": format!(
+                    "The new password is saved in config.toml, but yaran cannot use it until \
+                     these problems in that file are fixed: {}. Until then the old password \
+                     stays in force.",
+                    problems.join("; ")
+                ),
+            }),
+        ),
+        Ok(PasswordWrite::Written { hash, file_write }) => {
+            match hash {
+                Some(hash) => state.auth.applied(
+                    move |config| config.password_hash.clone_from(&hash),
+                    file_write,
+                ),
+                None => state.auth.applied(|_| {}, file_write),
+            }
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            response.headers_mut().insert(
+                header::SET_COOKIE,
+                cookie::clear(
+                    a.cookie_port,
+                    config.cookie_secure,
+                    a.classification.https_route(),
+                ),
+            );
+            response
+        }
+        Ok(PasswordWrite::Refused(yaran_core::config_keys::SetPasswordError::BelowMinimums(
+            check,
+        ))) => below_minimums(&check),
+        Ok(PasswordWrite::Refused(yaran_core::config_keys::SetPasswordError::ChangedMeanwhile)) => {
+            refusal(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "password_changed",
+                    "message": "The password was changed by someone else meanwhile, so nothing was changed. Try again.",
+                }),
+            )
+        }
+        // What the file holds stops the change; the sentence says what to
+        // fix, so it is the answer rather than a server error.
+        Ok(PasswordWrite::Refused(yaran_core::config_keys::SetPasswordError::Refused(sentence))) => {
+            refusal(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": "password_refused_by_config",
+                    "message": format!(
+                        "The password was not changed: {sentence}"
+                    ),
+                }),
+            )
+        }
+        Ok(PasswordWrite::Refused(yaran_core::config_keys::SetPasswordError::Failed(error))) => {
+            server_error(&format!("Could not write the password: {error:#}"))
+        }
+        Err(error) => server_error(&format!("The password change stopped: {error}")),
+    }
+}
+
+/// `POST /api/v1/auth/dismiss-no-auth-warning`: the red banner's "don't show
+/// again", which writes `disable_no_auth_warning = true`.
+///
+/// With no password set this is reachable by anyone who can reach yaran, and that
+/// is decided: the warning exists only while there is no password, so whoever
+/// can press it can already drive every terminal and edit the config itself.
+/// The single-owner trust model has nothing more to protect here, and the
+/// terminal's own warnings are not silenced by it.
+async fn dismiss_no_auth_warning(State(state): State<AppState>) -> Response {
+    let Some(path) = state.auth.config_path().cloned() else {
+        return server_error("This server has no config file to save that choice to.");
+    };
+    let written = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<Option<yaran_core::config_write::FileWrite>> {
+            let key = yaran_core::config_keys::lookup("server.auth.disable_no_auth_warning")
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            yaran_core::config_keys::set_plain(&path, &key, "true")?;
+            Ok(yaran_core::config_write::take_last_write())
+        },
+    )
+    .await;
+    match written {
+        Ok(Ok(file_write)) => {
+            state
+                .auth
+                .applied(|config| config.disable_no_auth_warning = true, file_write);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Err(error)) => server_error(&format!("Could not save that choice: {error:#}")),
+        Err(error) => server_error(&format!("Saving that choice stopped: {error}")),
+    }
+}
+
+/// Whether `problem` makes the reload of `surface` refuse the file: exactly
+/// the rule [`yaran_core::config::start_refusal`] applies, under which a
+/// `yaran server` problem its command line takes the place of is not one.
+fn stops_reload(
+    problem: &yaran_core::config::StartProblem,
+    surface: yaran_core::config::Surface,
+) -> bool {
+    problem.stops(surface)
+        && !(surface == yaran_core::config::Surface::YaranServer
+            && problem.yaran_server_override.is_some())
+}
+
+/// Why a device that might have been this machine or the tailnet was not,
+/// named by the route it really took (decided, after review: the sentence
+/// once said "over loopback" for connections that never touched it). An
+/// exhaustive match, so a new route cannot inherit another's words.
+fn route_refusal(via: super::provenance::Via, cause: &str) -> String {
+    use super::provenance::Via;
+    match via {
+        Via::PlainLoopback => format!(
+            "This browser reached yaran over loopback, but {cause}, so yaran cannot tell it is \
+             this machine."
+        ),
+        // backtick-ok: part of an HTTP refusal body, not a status.
+        Via::OwnAddress => "This browser reached yaran from one of this machine's own addresses, \
+             which a relay on this machine (socat, `ssh -L`, a proxy) looks exactly like, so yaran \
+             cannot tell it is this machine."
+            .to_string(),
+        Via::Direct => format!(
+            "This device reached yaran over the tailnet, but {cause}, so yaran cannot treat it as \
+             the tailnet."
+        ),
+        Via::Forwarded => format!(
+            "This browser reached yaran through tailscale serve, but {cause}, so yaran cannot treat \
+             it as the tailnet."
+        ),
+        Via::ControlSocket => {
+            format!("This client reached yaran over its control socket, but {cause}.")
+        }
+    }
+}
+
+#[cfg(test)]
+mod route_refusal_tests {
+    use super::*;
+    use crate::auth::provenance::Via;
+
+    #[test]
+    fn only_the_loopback_route_is_said_to_be_loopback() {
+        for via in [
+            Via::PlainLoopback,
+            Via::OwnAddress,
+            Via::Direct,
+            Via::Forwarded,
+        ] {
+            let text = route_refusal(via, "something is unconfirmed");
+            assert_eq!(
+                text.contains("over loopback"),
+                via == Via::PlainLoopback,
+                "{via:?}: {text}"
+            );
+        }
+    }
+}

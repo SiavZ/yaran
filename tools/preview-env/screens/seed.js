@@ -46,7 +46,7 @@ const MACROS = [
 // counts in the Changes pane are git's own answer rather than a fixture.
 // Four added lines, which is what the Changes pane counts beside README.md.
 const README_ADDENDUM = `
-Seeded by the dux screenshot tool; this worktree is disposable.
+Seeded by the yaran screenshot tool; this worktree is disposable.
 Reshooting the docs rewrites it from scratch.
 Everything above this line is the repository's own README.
 `
@@ -72,7 +72,7 @@ function shellQuote(text) {
 
 // A heredoc whose body is never expanded, so the file lands byte for byte.
 function writeFile(path, body) {
-  return `cat > ${shellQuote(path)} <<'DUXSEEDEOF'\n${body}DUXSEEDEOF\n`
+  return `cat > ${shellQuote(path)} <<'YARANSEEDEOF'\n${body}YARANSEEDEOF\n`
 }
 
 // Agent creation is a worker chain (a branch check, a worktree, a provider
@@ -145,7 +145,7 @@ async function seedStandaloneAgent() {
   const existing = list.find((s) => s.title === "design-notes")
   if (existing && existing.workspace.folder_path === STANDALONE_FOLDER) return
   if (existing) {
-    // A folder agent from an older seed: dux removes its own record only, which
+    // A folder agent from an older seed: yaran removes its own record only, which
     // is exactly what is wanted here.
     await api("DELETE", `/api/v1/sessions/${existing.id}`)
     await sleep(1000)
@@ -208,14 +208,14 @@ async function seedTerminals(projectId) {
 // branch, a merged one on a branch its worktree was on before, both found by
 // the sync from the stand-in gh's table, and a draft from another repository
 // attached by hand. The earlier branch only has to reach the worktree's HEAD
-// reflog; dux's branch sync reads it from there.
+// reflog; yaran's branch sync reads it from there.
 const EARLIER_BRANCH = "login-session-cookie"
 const ATTACHED_PULL_REQUEST = "acme/infra#77"
 const PULL_REQUESTS_SHOWN = ["acme/demo-api#123", "acme/infra#77", "acme/demo-api#118"]
 
 function seedEarlierBranch() {
   containerSh(
-    `cd /data/dux/worktrees/demo-api/fix-login-redirect
+    `cd /data/yaran/worktrees/demo-api/fix-login-redirect
      git checkout -q ${EARLIER_BRANCH} 2>/dev/null || git checkout -q -b ${EARLIER_BRANCH}
      git checkout -q fix-login-redirect`,
   )
@@ -262,7 +262,7 @@ async function seedPullRequests() {
 // anything an earlier experiment left behind cannot join the picture. The
 // gitignored upload directory survives `git clean` and is meant to.
 function seedChangedFiles() {
-  const worktree = (branch) => `/data/dux/worktrees/demo-api/${branch}`
+  const worktree = (branch) => `/data/yaran/worktrees/demo-api/${branch}`
   // Reset to HEAD, then write: the order is what makes the counts the same on a
   // second run and keeps a file some earlier experiment left behind out of the
   // Changes pane.
@@ -295,7 +295,7 @@ async function main() {
   seedStandaloneFolder()
   await seedManagedAgents(demoApi.id)
   await seedStandaloneAgent()
-  // Deliberately after the agents: dux pulls the project before creating one,
+  // Deliberately after the agents: yaran pulls the project before creating one,
   // and the fixture remote is a URL nothing answers. Adding it now keeps the
   // pull local while the worktrees are made and still gives the pull-request
   // fixture the GitHub-looking remote it resolves against.

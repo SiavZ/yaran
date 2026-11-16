@@ -1,0 +1,10331 @@
+//! yaran configuration data model: the serde structs persisted in `config.toml`
+//! and their defaults, plus `YaranPaths` and path resolution (`resolve_root`,
+//! `discover_root`) and the env-expansion helpers (`expand_env_vars`,
+//! `expand_path`, `resolve_project_env`, …). The keybinding-aware *renderer* of
+//! the documented config, plus `ensure_config`/`save_config` orchestration and
+//! the `toml_edit` patching, live in the binary's `config` module, not here.
+
+use std::collections::BTreeMap;
+use std::env;
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, anyhow, bail};
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// The `effective_*` functions that used to live here, under the module path
+/// their callers already reach them by.
+pub use crate::config_effective::{
+    effective_agent_tabs_max, effective_log_keep, effective_log_viewer_lines,
+    effective_pr_history_branches_per_cycle, effective_pr_poll_inactive_interval_seconds,
+    effective_pr_poll_interval_seconds, effective_pr_settled_recheck_seconds,
+    effective_upload_directory,
+};
+
+/// Which surface(s) a macro is available on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum MacroSurface {
+    /// Only in the macro bar over an agent pane.
+    #[default]
+    Agent,
+    /// Only in the macro bar over a terminal pane.
+    Terminal,
+    /// In the macro bar over either kind of pane.
+    Both,
+}
+
+impl MacroSurface {
+    /// Human-readable label for UI display.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "agent only",
+            Self::Terminal => "terminal only",
+            Self::Both => "agent + terminal",
+        }
+    }
+
+    /// The canonical config/wire string for this surface, matching the
+    /// `#[serde(rename_all = "lowercase")]` representation. Use this anywhere a
+    /// `MacroSurface` crosses into TOML or JSON so the casing stays in one place.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Terminal => "terminal",
+            Self::Both => "both",
+        }
+    }
+
+    /// Parse the canonical config/wire string back into a `MacroSurface`.
+    /// Returns `None` for an unrecognized value.
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "agent" => Some(Self::Agent),
+            "terminal" => Some(Self::Terminal),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    /// Cycle to the next variant: Agent -> Terminal -> Both -> Agent.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Agent => Self::Terminal,
+            Self::Terminal => Self::Both,
+            Self::Both => Self::Agent,
+        }
+    }
+
+    /// Cycle to the previous variant: Agent -> Both -> Terminal -> Agent.
+    #[must_use]
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Agent => Self::Both,
+            Self::Both => Self::Terminal,
+            Self::Terminal => Self::Agent,
+        }
+    }
+
+    /// Whether this surface matches the given session surface.
+    pub fn matches(self, session: crate::model::SessionSurface) -> bool {
+        match self {
+            Self::Both => true,
+            Self::Agent => session == crate::model::SessionSurface::Agent,
+            Self::Terminal => session == crate::model::SessionSurface::Terminal,
+        }
+    }
+}
+
+/// A single text macro entry with surface restriction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MacroEntry {
+    /// The text the macro types into the PTY.
+    pub text: String,
+    /// The panes the macro is offered on.
+    pub surface: MacroSurface,
+}
+
+/// One macro as a change asks for it, checked the way every surface checks it;
+/// returns the name as it is saved, with its entry.
+pub(crate) fn checked_macro(
+    name: &str,
+    text: String,
+    surface: &str,
+) -> anyhow::Result<(String, MacroEntry)> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        anyhow::bail!("Macro name cannot be empty.");
+    }
+    if text.is_empty() {
+        anyhow::bail!("Macro \"{name}\" has no text. Enter the text to send.");
+    }
+    let surface = MacroSurface::from_config_str(surface).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Macro \"{name}\" has an unknown surface \"{surface}\". Use \"agent\", \"terminal\", or \"both\"."
+        )
+    })?;
+    Ok((name, MacroEntry { text, surface }))
+}
+
+/// Whether `name` may be set to `value` in the global environment, by the rule
+/// a project's env lines follow. A refusal never quotes the value.
+///
+/// # Errors
+///
+/// Fails when `name` is not a valid variable name or `value` holds a NUL byte or invalid expansion
+/// syntax.
+pub fn check_global_env_var(name: &str, value: &str) -> anyhow::Result<()> {
+    // A name that is no variable name may be a token pasted where a name
+    // goes, so it is never repeated either.
+    if !is_valid_env_name(name) {
+        anyhow::bail!(
+            "That is not a valid environment variable name: use letters, digits and \
+             underscores, not starting with a digit. Nothing was changed."
+        );
+    }
+    if value.contains('\0') || expand_env_vars(value).is_none() {
+        anyhow::bail!(
+            "The value for \"{name}\" was not saved: it holds a NUL byte or a \
+             $NAME reference that is not a valid variable name."
+        );
+    }
+    Ok(())
+}
+
+/// Text macros: a map from name to entry.
+/// Each entry is triggered from the macro bar (Ctrl+\).
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MacrosConfig {
+    /// Every macro, by name, in the order the file lists them.
+    #[serde(flatten)]
+    pub entries: IndexMap<String, MacroEntry>,
+}
+
+/// The `[defaults]` table: what a new agent starts from when nothing more specific is set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Defaults {
+    /// The global fallback provider for new agents in projects with no override.
+    pub provider: String,
+    /// The directory the project browser opens in.
+    pub start_directory: Option<String>,
+    /// Whether the new-agent name prompt starts with a random two-word pet name.
+    pub enable_randomized_pet_name_by_default: bool,
+    /// Whether yaran fast-forward pulls a project's source checkout before creating an agent
+    /// worktree.
+    #[serde(default = "default_true")]
+    pub pull_before_creating_agent_by_default: bool,
+    /// Whether creating an agent copies the project checkout's uncommitted and untracked changes
+    /// into the new worktree.
+    #[serde(default = "default_true")]
+    pub copy_uncommitted_changes_by_default: bool,
+}
+
+/// The `[providers.*]` tables: every configured provider, by name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProvidersConfig {
+    /// Each provider's command and launch settings, by provider name, in file order.
+    #[serde(flatten)]
+    pub commands: IndexMap<String, ProviderCommandConfig>,
+}
+
+/// The `[terminal]` table: the command a companion terminal runs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalConfig {
+    /// The program a terminal runs.
+    pub command: String,
+    /// The arguments passed to that program.
+    pub args: Vec<String>,
+}
+
+/// The `[startup_command_terminal]` table: the shell a project's startup command runs in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StartupCommandTerminalConfig {
+    /// The shell program the startup command is handed to.
+    pub command: String,
+    /// The arguments passed before the startup command itself.
+    pub args: Vec<String>,
+}
+
+/// Default size the log is allowed to reach before yaran rotates it, 10 MiB.
+///
+/// Rotation is by size and yaran does it itself, so a machine with no logrotate
+/// still has a bounded log. `0` means never rotate, matching how other
+/// zero-valued size settings in yaran read as off.
+pub const DEFAULT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Default number of rotated log copies kept beside the live log.
+///
+/// At the default size that is the live log plus five copies, so at most 60 MiB
+/// of plain text, and much less once the older copies are compressed. `0`
+/// rotates and discards.
+pub const DEFAULT_LOG_KEEP: u32 = 5;
+
+/// Hard ceiling on `logging.keep`, since every rotation shifts the whole set of
+/// copies and the user is unlikely to want a thousand of them.
+pub(crate) const MAX_LOG_KEEP: u32 = 1000;
+
+/// The `[logging]` table: where yaran.log lives and how it is rotated.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    /// The log level, as written: `error`, `warn`, `info` or `debug`.
+    pub level: String,
+    /// The log file's path; a relative path resolves from the yaran config directory.
+    pub path: String,
+    /// Size in bytes the log may reach before yaran rotates it. A line is written
+    /// whole, so the file stops just short of this rather than crossing it; a
+    /// single line larger than the whole limit is still written and briefly
+    /// exceeds it. `0` never rotates.
+    pub max_bytes: u64,
+    /// How many rotated copies to keep, numbered `yaran.log.1` upwards. The
+    /// oldest is deleted. `0` rotates and discards. Read through
+    /// [`effective_log_keep`].
+    pub keep: u32,
+    /// Whether a rotated copy is gzipped to `yaran.log.N.gz` in the background.
+    pub compress: bool,
+}
+
+/// The `[editor]` table: the editor that open-in-editor launches.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorConfig {
+    /// The preferred editor's name, matched against the editor CLIs on PATH.
+    pub default: String,
+}
+
+/// Default for `[cli] wait_timeout_seconds`: how long a command-line change
+/// waits for its outcome before saying it is unknown.
+pub const DEFAULT_CLI_WAIT_TIMEOUT_SECONDS: u64 = 600;
+
+/// `[cli]`: how the `yaran` command line behaves on this machine. Read by the
+/// command line only; a running yaran never uses it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CliConfig {
+    /// Seconds a change waits for its outcome; `--wait-timeout` overrides it
+    /// for one command.
+    pub wait_timeout_seconds: u64,
+}
+
+impl Default for CliConfig {
+    fn default() -> Self {
+        Self {
+            wait_timeout_seconds: DEFAULT_CLI_WAIT_TIMEOUT_SECONDS,
+        }
+    }
+}
+
+/// Default for `[git] clone_stall_seconds`.
+pub(crate) const DEFAULT_CLONE_STALL_SECONDS: u64 = 300;
+
+/// Default for `[git] network_timeout_seconds`: generous, because a large
+/// push over a slow link is slow rather than stuck.
+pub(crate) const DEFAULT_NETWORK_TIMEOUT_SECONDS: u64 = 600;
+
+/// `[git]`: how yaran runs git for you.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitConfig {
+    /// Seconds a "Clone a repository" may go without git printing any
+    /// progress before yaran stops it. There is no limit on the clone's total
+    /// time, because a big repository is slow rather than stuck.
+    pub clone_stall_seconds: u64,
+    /// Seconds a push, a pull's fetch, a pull request fetch or an `ls-remote`
+    /// yaran runs for you may take in all before yaran stops it. `0` is no limit.
+    pub network_timeout_seconds: u64,
+}
+
+impl GitConfig {
+    /// The bound on a network git command, or `None` for no limit.
+    #[must_use]
+    pub fn network_timeout(&self) -> Option<std::time::Duration> {
+        (self.network_timeout_seconds > 0)
+            .then(|| std::time::Duration::from_secs(self.network_timeout_seconds))
+    }
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        Self {
+            clone_stall_seconds: DEFAULT_CLONE_STALL_SECONDS,
+            network_timeout_seconds: DEFAULT_NETWORK_TIMEOUT_SECONDS,
+        }
+    }
+}
+
+/// Default cap on concurrent events (`/ws`) WebSocket connections; see
+/// [`ServerConfig::max_websocket_events_connections`]. Shared so the config
+/// default and the server's router default cannot drift apart.
+pub const DEFAULT_MAX_WEBSOCKET_EVENTS_CONNECTIONS: u32 = 32;
+/// Default cap on concurrent agent-PTY WebSocket connections. See
+/// [`ServerConfig::max_websocket_agent_connections`].
+pub const DEFAULT_MAX_WEBSOCKET_AGENT_CONNECTIONS: u32 = 32;
+/// Default cap on concurrent terminal-PTY WebSocket connections. See
+/// [`ServerConfig::max_websocket_terminal_connections`].
+pub const DEFAULT_MAX_WEBSOCKET_TERMINAL_CONNECTIONS: u32 = 64;
+/// Default cap on concurrent extra-tab PTY WebSocket connections across ALL
+/// agents. See [`ServerConfig::max_websocket_tab_connections`]. A pool of its
+/// own so tab sockets can never starve the agent-PTY (session-slot tab) pool.
+pub const DEFAULT_MAX_WEBSOCKET_TAB_CONNECTIONS: u32 = 64;
+
+/// Default per-agent cap on concurrent live extra-tab PTY sockets, checked
+/// before a permit is taken from the shared tab pool. See
+/// [`ServerConfig::max_websocket_tabs_per_agent`]. Keeps one agent's tabs from
+/// monopolizing that pool and starving other agents' tabs.
+pub const DEFAULT_MAX_WEBSOCKET_TABS_PER_AGENT: u32 = 8;
+
+/// Default per-agent tab cap (see [`UiConfig::agent_tabs_max`]), counting the
+/// session-slot tab, so the default 20 allows the session-slot tab plus 19 extra tabs.
+pub(crate) const DEFAULT_AGENT_TABS_MAX: u16 = 20;
+/// Hard ceiling the per-agent tab cap is clamped to, so a fat-fingered config
+/// value can't ask the app to keep unbounded live PTYs per agent.
+pub const MAX_AGENT_TABS_MAX: u16 = 100;
+
+/// Default cap on the file-search index flat walk (see
+/// [`crate::git::worktree_files`]). The web editor's file TREE is a lazy,
+/// per-directory browser and is never capped; this only bounds the flat list
+/// that backs the editor's "Search files…" box, where an incomplete result on
+/// a giant repo (e.g. a built `target/`) is acceptable. `0` disables the cap.
+pub const DEFAULT_SEARCH_INDEX_MAX_FILES: usize = 50_000;
+
+/// Default number of lines the `start-web-server` flip's log viewer keeps for
+/// scrolling back. The same lines `yaran server` prints to its terminal, whose own
+/// scrollback is the host terminal's; this is the flip's equivalent.
+pub(crate) const DEFAULT_LOG_VIEWER_LINES: usize = 2000;
+
+/// Where the control socket lives unless `[server] control_socket` says
+/// otherwise, relative to the config folder.
+pub(crate) const DEFAULT_CONTROL_SOCKET: &str = "yaran.sock";
+
+/// The most lines the flip's log viewer keeps, whatever `log_viewer_lines` says.
+/// The viewer keeps every line wrapped and ready to draw, so the bound is what
+/// keeps its memory and a resize's re-wrap small.
+pub const LOG_VIEWER_LINES_MAX: usize = 20_000;
+
+/// Default visible-time wait, in seconds, for a terminal pane's screen to
+/// arrive after its socket opens, before the pane stops waiting and offers
+/// Reconnect. Consumed by the BROWSER, which is the only side that can see
+/// whether the screen ever painted. Counted in visible time, so a backgrounded
+/// tab does not burn the budget while it is not being watched.
+pub(crate) const DEFAULT_REPLAY_WAIT_SECONDS: u32 = 8;
+
+/// Default ceiling, in seconds, on the gap between the browser's automatic
+/// reconnect attempts. The backoff grows towards this and then stays there, so
+/// a phone that has been out of signal for an hour still retries about every
+/// ten seconds rather than once an hour.
+pub(crate) const DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS: u32 = 10;
+
+/// Default number of consecutive reconnect attempts the browser makes before it
+/// stops trying and says so. Consumed by the BROWSER; the server never reads it.
+/// `0` means never give up, which is what yaran did before the budget existed. The
+/// budget refills on every attempt that connects, and a wake signal (the page
+/// coming back, the network returning) restarts a spent one, so the give-up
+/// state is reserved for a page that has been sitting in front of an unreachable
+/// server.
+pub(crate) const DEFAULT_RECONNECT_ATTEMPTS: u32 = 8;
+
+/// Default deadline, in seconds, on one reconnect attempt: an attempt that has
+/// not opened by then is abandoned and counted as failed. An unreachable host on
+/// a remote network does not refuse a connection, it hangs, so without this the
+/// budget above would take most of an hour to spend.
+pub(crate) const DEFAULT_RECONNECT_ATTEMPT_TIMEOUT_SECONDS: u32 = 10;
+
+/// Default deadline, in seconds, on one changed-files request from the web UI's
+/// Changes pane, body included. A half-open connection never settles, and a
+/// request that never settles would leave the pane loading forever; past this it
+/// is given up with an error the pane shows. Generous, because the answer for a
+/// worktree with tens of thousands of changed files is megabytes.
+pub(crate) const DEFAULT_CHANGES_REQUEST_TIMEOUT_SECONDS: u32 = 30;
+
+/// Default interval, in seconds, at which a visible page asks its terminal
+/// connection to prove it is really alive. The WebSocket-level ping the server
+/// sends is send-only with no deadline, so it cannot detect the half-open
+/// socket a Wi-Fi to cellular handoff leaves behind; this is the
+/// application-level beat that can.
+pub(crate) const DEFAULT_HEARTBEAT_SECONDS: u32 = 15;
+
+/// Default visible-time wait, in seconds, for the answer to that beat before
+/// the browser gives up on the socket and forces a plain reconnect. Generous
+/// relative to the interval on purpose: a slow mobile radio is not a dead
+/// socket, and a needless reconnect costs a replay.
+pub const DEFAULT_HEARTBEAT_DEADLINE_SECONDS: u32 = 30;
+
+/// Default deadline, in seconds, on one of a PTY socket's OPENING sends (the
+/// `connected` handshake and the scrollback replay). Server-side, and the only
+/// timing here that is: it bounds a send against a wedged peer, which would
+/// otherwise hold the socket's sink lock forever.
+///
+/// A send completes when the bytes reach the peer, so on a degraded link this
+/// measures THROUGHPUT rather than liveness, and the replay is the whole
+/// scrollback (`agent_scrollback_lines` defaults to 10000). A minute is far
+/// longer than any healthy send of that needs even on a slow cellular link, and
+/// far shorter than forever.
+pub const DEFAULT_PTY_SEND_TIMEOUT_SECONDS: u32 = 60;
+
+/// Default for `[server] operation_unknown_after_seconds`: the status line's
+/// [`crate::statusline::BUSY_LIVE_CEILING`], past which a spinner is not believed either.
+pub(crate) const DEFAULT_OPERATION_UNKNOWN_AFTER_SECONDS: u64 = 1800;
+
+/// Default for `[server] operation_retention_seconds`: how long a finished
+/// change's record can still be read by its id.
+pub(crate) const DEFAULT_OPERATION_RETENTION_SECONDS: u64 = 1800;
+
+/// Default for `[server] presence_grace_seconds`: how long a browser tab keeps
+/// protecting a terminal it was looking at after that connection was lost.
+pub(crate) const DEFAULT_PRESENCE_GRACE_SECONDS: u64 = 300;
+
+/// Default cap on concurrent `/files/tree` directory listings (see
+/// [`crate::git::list_dir`]). Each listing does one blocking `read_dir` off
+/// the async reactor; this bounds how many can run at once so a burst of tree
+/// requests can't exhaust the server's blocking-thread pool. `0` disables the
+/// bound entirely (unlimited concurrency), unlike the `0 = block everything`
+/// convention used by the `max_websocket_*_connections` family.
+pub const DEFAULT_TREE_LIST_MAX_CONCURRENCY: u32 = 8;
+
+/// Default cap on concurrent release-notes fetches (see
+/// [`crate::release_notes::load_release_notes_from`]). Each one is a blocking
+/// HTTPS round trip to the GitHub API run off the async reactor, and every
+/// browser tab can ask for it from the app menu. Small on purpose: the answer
+/// is cached with a six-hour TTL and identical for every caller, so a handful
+/// of in-flight fetches is already more than the work needs. `0` disables the
+/// bound entirely (unlimited concurrency), matching
+/// [`DEFAULT_TREE_LIST_MAX_CONCURRENCY`] rather than the `0 = block
+/// everything` convention of the `max_websocket_*_connections` family.
+pub const DEFAULT_RELEASE_NOTES_MAX_CONCURRENCY: u32 = 2;
+
+/// Default per-file size cap for a file dropped onto a web terminal or agent
+/// pane, in bytes (100 MiB).
+///
+/// It is set EXPLICITLY on the upload route because the web framework's own
+/// default body limit is 2 MB, which would reject an ordinary screenshot on a
+/// high-resolution display. `0` disables file drop entirely, matching how other
+/// zero-valued settings in yaran read as off.
+pub const DEFAULT_FILE_DROP_MAX_BYTES: usize = 100 * 1024 * 1024;
+
+/// Default cap on how many dropped-file uploads may be in flight at once.
+///
+/// The permit is taken BEFORE the request body is read, so together with
+/// [`DEFAULT_FILE_DROP_MAX_BYTES`] this bounds the worst case at roughly two
+/// hundred megabytes of buffered upload. Unlike the `max_websocket_*` family,
+/// `0` here does not block everything: it clamps to 1, because a zero-permit
+/// semaphore would deadlock every drop forever rather than disabling a feature.
+/// Disabling file drop is what the size cap's `0` is for.
+pub const DEFAULT_FILE_DROP_MAX_CONCURRENCY: u32 = 2;
+
+/// Default seconds to wait for `SIGTERMed` agents/terminals to exit before
+/// force-killing them on shutdown. Shared by the top-level
+/// [`Config::shutdown_timeout_seconds`] (TUI quit) and
+/// [`ServerConfig::shutdown_timeout_seconds`] (web/`yaran server`).
+pub(crate) const DEFAULT_SHUTDOWN_TIMEOUT_SECONDS: u16 = 30;
+
+/// Hard ceiling on a configured shutdown timeout. The field is seconds, but a
+/// `u16` reaches ~18 hours, so a fat-fingered millisecond value (e.g. `30000`)
+/// would otherwise block quit (and, on the web server, the single engine
+/// thread that services every client) for that whole time. Clamping keeps a
+/// misconfiguration from wedging shutdown while still allowing any sane grace.
+pub(crate) const MAX_SHUTDOWN_TIMEOUT_SECONDS: u16 = 600;
+
+/// Default seconds a worktree removal waits for operations still running in
+/// that worktree (a pull, a push, a commit, a branch rename, an editor save)
+/// before it gives up and keeps the worktree. Also how long deleting a project
+/// waits for an agent still being created in it.
+pub(crate) const DEFAULT_REMOVAL_WAIT_SECONDS: u16 = 120;
+
+/// Default seconds between blind GitHub PR-status safety polls. Deliberately
+/// slow: some PR checks run on events (focusing, creating or an agent exiting),
+/// and this poll is what notices a push or a change made on GitHub itself.
+pub(crate) const DEFAULT_PR_POLL_INTERVAL_SECONDS: u16 = 180;
+
+/// Hard ceiling on the PR poll interval (6 hours). Already far slower than any
+/// useful safety net, so cap there to keep a fat-fingered value from silently
+/// neutering the backstop while still allowing any sane interval.
+pub(crate) const MAX_PR_POLL_INTERVAL_SECONDS: u16 = 21_600;
+
+/// Floor on a *nonzero* PR poll interval. `0` disables the blind poll entirely;
+/// any positive value below this is clamped up so a mistyped tiny value (e.g.
+/// `1`) can't hammer the GitHub API every second.
+pub(crate) const MIN_PR_POLL_INTERVAL_SECONDS: u16 = 30;
+
+/// Default seconds between blind GitHub PR-status polls for INACTIVE agents
+/// (twelve hours). An agent the sidebar has put under Inactive is one nobody is
+/// working in, so its pull request moves rarely and nothing on screen is waiting
+/// on the answer; it is still worth an occasional look, because a merge or a
+/// close is exactly what happens to a branch after its agent is put away.
+pub(crate) const DEFAULT_PR_POLL_INACTIVE_INTERVAL_SECONDS: u32 = 43_200;
+
+/// Hard ceiling on the inactive PR poll interval (seven days). Far beyond any
+/// useful backstop already, so a fat-fingered value is clamped rather than
+/// silently turning the slow clock off; `0` is how you turn it off on purpose.
+pub(crate) const MAX_PR_POLL_INACTIVE_INTERVAL_SECONDS: u32 = 604_800;
+
+/// Default number of an agent's earlier branches the pull-request sync asks
+/// GitHub about per cycle, beside the branch it is on now. The rest wait their
+/// turn, least recently asked first, so every one is asked again within a
+/// bounded number of cycles.
+pub(crate) const DEFAULT_PR_HISTORY_BRANCHES_PER_CYCLE: u16 = 8;
+
+/// Ceiling on the earlier branches asked about per agent per cycle. Each one
+/// is a question in the same batched query, so a huge value would only make
+/// every query bigger without making any branch fresher than the poll itself.
+pub(crate) const MAX_PR_HISTORY_BRANCHES_PER_CYCLE: u16 = 50;
+
+/// Default seconds before an earlier branch whose pull requests are all merged,
+/// or a closed pull request or an earlier branch of an agent whose process
+/// exited, is asked about again (twelve hours).
+pub(crate) const DEFAULT_PR_SETTLED_RECHECK_SECONDS: u32 = 43_200;
+
+/// Ceiling on that recheck (seven days), the same as the inactive poll's.
+pub(crate) const MAX_PR_SETTLED_RECHECK_SECONDS: u32 = 604_800;
+
+/// Default seconds between re-checks of `gh` while yaran cannot use it. Five
+/// minutes is short enough that a rate limit or a brief outage clears itself
+/// long before anyone thinks to restart yaran, and long enough that a machine
+/// with no `gh` login at all spends almost nothing on asking.
+pub(crate) const DEFAULT_GITHUB_PROBE_INTERVAL_SECONDS: u16 = 300;
+
+/// Hard ceiling on the `gh` re-check interval (6 hours), matching the PR poll's
+/// ceiling: past that the re-check has stopped being a recovery path.
+pub const MAX_GITHUB_PROBE_INTERVAL_SECONDS: u16 = 21_600;
+
+/// Floor on a *nonzero* `gh` re-check interval. `0` disables the periodic
+/// re-check entirely (the on-demand re-check is always available); any positive
+/// value below this is clamped up, because each probe spawns `gh` and a mistyped
+/// `1` would spawn one every second.
+pub const MIN_GITHUB_PROBE_INTERVAL_SECONDS: u16 = 30;
+
+/// Normalize a configured `github_probe_interval_secs`: `0` means "never
+/// re-check on a timer" and is preserved; anything else is clamped into
+/// `[MIN_GITHUB_PROBE_INTERVAL_SECONDS, MAX_GITHUB_PROBE_INTERVAL_SECONDS]`.
+///
+/// Deliberately PURE, for the same reason as [`normalized_terminal_font_size`]:
+/// the periodic re-check consults this from the engine tick, which the terminal
+/// UI runs tens of times a second on its own thread, so a warning here would be
+/// a log flood rather than a message. The on-disk value is warned about and
+/// corrected exactly once, where a config is taken in
+/// ([`correct_github_probe_interval`]), which leaves this a no-op clamp on every
+/// later read.
+pub(crate) fn normalized_github_probe_interval(seconds: u16) -> u16 {
+    if seconds == 0 {
+        return 0;
+    }
+    seconds.clamp(
+        MIN_GITHUB_PROBE_INTERVAL_SECONDS,
+        MAX_GITHUB_PROBE_INTERVAL_SECONDS,
+    )
+}
+
+/// The warning a config load emits for a `ui.github_probe_interval_secs` outside
+/// the clamp, or `None` for a value already usable (`0` included, which disables
+/// the periodic re-check rather than being out of range).
+///
+/// Split out from the logging so the message can be asserted directly, mirroring
+/// [`terminal_font_size_load_warning`].
+pub fn github_probe_interval_load_warning(seconds: u16) -> Option<String> {
+    if seconds == 0
+        || (MIN_GITHUB_PROBE_INTERVAL_SECONDS..=MAX_GITHUB_PROBE_INTERVAL_SECONDS)
+            .contains(&seconds)
+    {
+        return None;
+    }
+    Some(format!(
+        "ui.github_probe_interval_secs = {seconds} is outside the valid range \
+         {MIN_GITHUB_PROBE_INTERVAL_SECONDS}..={MAX_GITHUB_PROBE_INTERVAL_SECONDS} and is \
+         being clamped (use 0 to disable the periodic re-check of the gh CLI)."
+    ))
+}
+
+/// Warn once about an out-of-range `ui.github_probe_interval_secs` and correct it
+/// in memory, so every later read of it is already valid.
+///
+/// Called from both places a config is taken in: `load_config` (which serves
+/// `yaran server` and the web) and the terminal UI's `ensure_config`. Both of those
+/// cover startup AND reload, so a user who edits the value to something silly is
+/// told once per load rather than once per engine tick.
+pub fn correct_github_probe_interval(ui: &mut UiConfig) {
+    if let Some(warning) = github_probe_interval_load_warning(ui.github_probe_interval_secs) {
+        crate::logger::warn(&warning);
+        ui.github_probe_interval_secs =
+            normalized_github_probe_interval(ui.github_probe_interval_secs);
+    }
+}
+
+/// Hard ceiling on `ui.status_clear_seconds` (the settings-PATCH endpoint
+/// clamps to this). One hour is far longer than any useful auto-clear delay;
+/// `0` ("never auto-clear") is a separate, always-allowed value handled by the
+/// caller before clamping.
+pub const MAX_STATUS_CLEAR_SECONDS: u16 = 3_600;
+
+/// Default `ui.terminal_font_size`, in pixels. Matches xterm's own default and
+/// the web `terminalFont.ts` helper's fallback.
+pub const DEFAULT_TERMINAL_FONT_SIZE: u16 = 14;
+
+/// Floor on `ui.terminal_font_size`. Below this the glyphs are unreadable.
+pub(crate) const MIN_TERMINAL_FONT_SIZE: u16 = 8;
+
+/// Ceiling on `ui.terminal_font_size`. Above this a terminal pane can no
+/// longer usefully fit any real width.
+pub(crate) const MAX_TERMINAL_FONT_SIZE: u16 = 32;
+
+/// Normalize a configured `terminal_font_size`: a value outside
+/// [`MIN_TERMINAL_FONT_SIZE`, `MAX_TERMINAL_FONT_SIZE`] degrades to
+/// [`DEFAULT_TERMINAL_FONT_SIZE`] rather than being clamped to the nearer
+/// bound, so a config value that is merely wrong (not almost right) reads as
+/// an obviously-reset default instead of a silently-nudged number.
+///
+/// Deliberately PURE: it does not log. The on-disk value is warned about and
+/// corrected exactly once, at load, in [`load_config`]; this function is then
+/// called from read paths (bootstrap projection, `set_settings`) that run far
+/// more often than the config loads, and logging from here would spam a
+/// warning on every one of those reads for a value that was already reported
+/// once. Mirrors `clampTerminalFontSize` in the web's `lib/terminalFont.ts`.
+pub fn normalized_terminal_font_size(size: u16) -> u16 {
+    if !(MIN_TERMINAL_FONT_SIZE..=MAX_TERMINAL_FONT_SIZE).contains(&size) {
+        return DEFAULT_TERMINAL_FONT_SIZE;
+    }
+    size
+}
+
+/// Hard ceiling on `ui.attention_grace_seconds` (the settings-PATCH endpoint
+/// clamps to this). Five minutes is far longer than any useful "just came
+/// back" grace window; `0` ("clear immediately") is a separate, always-allowed
+/// value handled by the caller before clamping.
+pub(crate) const MAX_ATTENTION_GRACE_SECONDS: u64 = 300;
+
+/// Convert a configured `shutdown_timeout_seconds` into the grace `Duration`
+/// every shutdown path uses, through
+/// [`crate::config_effective::effective_shutdown_timeout_seconds`], so the TUI
+/// quit, the web flip, and `yaran server` all derive the grace identically. Pure:
+/// a value above the ceiling is said once, when the config loads.
+pub fn shutdown_grace(seconds: u16) -> std::time::Duration {
+    std::time::Duration::from_secs(u64::from(
+        crate::config_effective::effective_shutdown_timeout_seconds(seconds),
+    ))
+}
+
+/// Whether the server binds this machine's Tailscale address alongside the
+/// configured host, and whether it keeps watching for that address to come and
+/// go.
+///
+/// A tri-state rather than a boolean because a laptop's tailnet address is not a
+/// property of the config, it is a property of the moment: it appears when
+/// tailscaled connects and vanishes when it does not, several times a day on a
+/// machine that suspends and roams. `Yes` and `No` are the two static answers;
+/// `Auto` is the answer that survives that churn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TailscaleMode {
+    /// Bind the Tailscale address whenever it exists, and keep looking. yaran
+    /// binds it at startup if it is there, binds it later if it appears, and
+    /// drops that one listener when it goes away. The configured host is never
+    /// affected either way. The default, and what the old
+    /// `tailscale_enabled = true` becomes.
+    #[default]
+    Auto,
+    /// Bind the Tailscale address once and then stop looking. If it is not there
+    /// yaran warns and serves the configured host only until the mode changes.
+    /// This is the pre-tri-state behavior.
+    Yes,
+    /// Never bind it and never run the detection at all. What the old
+    /// `tailscale_enabled = false` becomes, and what `--no-tailscale` forces for
+    /// a single run.
+    No,
+}
+
+impl TailscaleMode {
+    /// Parse a config string into a mode, returning `None` for an unrecognized
+    /// value so the caller decides whether to warn. Never warns itself.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "yes" => Some(Self::Yes),
+            "no" => Some(Self::No),
+            _ => None,
+        }
+    }
+
+    /// The warning text for one unrecognized value, or `None` when the value is
+    /// a mode yaran knows. Returned rather than logged so the message itself is
+    /// testable, the [`ComposeBarMode::unknown_value_warning`] precedent.
+    pub(crate) fn unknown_value_warning(s: &str) -> Option<String> {
+        if Self::parse(s).is_some() {
+            return None;
+        }
+        Some(format!(
+            "unknown [server] tailscale value {s:?}; falling back to \"auto\" \
+             (valid: auto, yes, no)"
+        ))
+    }
+
+    /// The canonical lowercase name, which is what goes in `config.toml`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Yes => "yes",
+            Self::No => "no",
+        }
+    }
+
+    /// Whether yaran should bind the Tailscale address at all. False only for
+    /// [`Self::No`], which also skips detection entirely.
+    pub fn wants_tailscale(self) -> bool {
+        match self {
+            Self::Auto | Self::Yes => true,
+            Self::No => false,
+        }
+    }
+
+    /// Whether the Tailscale leg is watched, so it can be bound and dropped as
+    /// the interface comes and goes. True only for [`Self::Auto`].
+    pub fn watches_interface(self) -> bool {
+        match self {
+            Self::Auto => true,
+            Self::Yes | Self::No => false,
+        }
+    }
+}
+
+/// What a live `[server] tailscale` mode change did to the running listener.
+///
+/// Lives beside [`TailscaleMode`] rather than in the web layer because both
+/// surfaces resolve one of these into a status line, and a copy per surface is
+/// how the two sentences drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailscaleModeOutcome {
+    /// The mode is live. `bound` is the Tailscale leg's address, or `None` when
+    /// the mode wants no leg right now (`no`, or `auto` still waiting for the
+    /// interface).
+    Applied {
+        /// The Tailscale leg's address, or `None` when no leg is wanted now.
+        bound: Option<std::net::SocketAddr>,
+    },
+    /// The Tailscale listener that was serving has been stopped.
+    Detached,
+    /// `yes` looked for a Tailscale address and found none. The mode still
+    /// saved; nothing is going to look again until a restart or a mode change.
+    NothingDetected,
+    /// There is no primary listener to derive the leg's port from, so there is
+    /// nothing to hang a Tailscale leg on.
+    NoPrimary,
+    /// A Tailscale address was found, but its listener would not bind (something
+    /// else holds that port).
+    BindFailed,
+    /// This run was started with `--no-tailscale`, which outranks the config for
+    /// as long as it runs.
+    RefusedForcedNo,
+    /// Nothing is serving, so the choice is saved and nothing else happened.
+    NotServing,
+    /// A later mode request replaced this one before it resolved.
+    Superseded,
+    /// The serve loop did not answer inside the detection window.
+    TimedOut,
+}
+
+/// One outcome rendered for a status line: the sentence, and whether it is a
+/// warning rather than plain information.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailscaleModeReport {
+    /// Whether the outcome is a warning rather than plain information.
+    pub warning: bool,
+    /// The sentence to show.
+    pub message: crate::status_text::StatusText,
+}
+
+impl TailscaleModeOutcome {
+    /// Whether the mode saved but the listener could not follow it; being
+    /// replaced by a later request, or nothing serving, is not a failure.
+    pub fn failed(self) -> bool {
+        matches!(
+            self,
+            Self::NothingDetected
+                | Self::NoPrimary
+                | Self::BindFailed
+                | Self::RefusedForcedNo
+                | Self::TimedOut
+        )
+    }
+
+    /// The sentence both surfaces show for this outcome, given the mode that was
+    /// requested. Every sentence says what happened to the listener AND that the
+    /// choice is saved, because those are two different questions a user has.
+    pub fn report(self, mode: TailscaleMode) -> TailscaleModeReport {
+        let saved = format!("[server] tailscale is saved as \"{}\".", mode.as_str());
+        match self {
+            Self::Applied { bound: Some(addr) } => TailscaleModeReport {
+                warning: false,
+                message: crate::status_text![
+                    format!("{saved} yaran is serving your Tailscale address on "),
+                    n(format!("http://{addr}")),
+                    " as well as its other address(es)."
+                ],
+            },
+            Self::Applied { bound: None } => TailscaleModeReport {
+                warning: false,
+                message: match mode {
+                    TailscaleMode::Auto => format!(
+                        "{saved} yaran is watching the Tailscale interface and binds your \
+                         Tailscale address by itself when it appears."
+                    )
+                    .into(),
+                    // On `yes` the detection found an address yaran is already
+                    // reachable on (a wildcard primary, or the tailnet address
+                    // itself), so a second listener would be the same socket.
+                    TailscaleMode::Yes => format!(
+                        "{saved} There is no separate Tailscale listener to add or remove; \
+                         the address yaran already serves covers it."
+                    )
+                    .into(),
+                    TailscaleMode::No => format!(
+                        "{saved} Nothing was serving on your Tailscale address, and nothing \
+                         will be; yaran is serving on its other address(es) only."
+                    )
+                    .into(),
+                },
+            },
+            Self::Detached => TailscaleModeReport {
+                warning: false,
+                message: format!(
+                    "{saved} yaran stopped serving on your Tailscale address and is still \
+                     serving on its other address(es); anything connected over the tailnet \
+                     loses its connection."
+                )
+                .into(),
+            },
+            Self::NothingDetected => TailscaleModeReport {
+                warning: true,
+                message: format!(
+                    "{saved} No Tailscale address was found, and \"yes\" does not look again: \
+                     yaran serves without it until you restart or choose \"auto\", which binds \
+                     it whenever the interface appears."
+                )
+                .into(),
+            },
+            Self::BindFailed => TailscaleModeReport {
+                warning: true,
+                message: format!(
+                    "{saved} Your Tailscale address was found, but its listener would not bind \
+                     (see yaran.log); yaran is serving on its other address(es). Free that port and \
+                     choose the mode again, or use \"auto\", which retries by itself."
+                )
+                .into(),
+            },
+            Self::NoPrimary => TailscaleModeReport {
+                warning: true,
+                message: format!(
+                    "{saved} yaran could not read the address of its main listener, so there is \
+                     no port to serve a Tailscale leg on; restart yaran to pick the mode up."
+                )
+                .into(),
+            },
+            Self::RefusedForcedNo => TailscaleModeReport {
+                warning: true,
+                message: format!(
+                    "{saved} This run was started with --no-tailscale, which wins for as long \
+                     as it runs, so nothing changed on the listeners; restart yaran without that \
+                     flag to use the saved mode."
+                )
+                .into(),
+            },
+            Self::NotServing => TailscaleModeReport {
+                warning: false,
+                message: format!(
+                    "{saved} Nothing is serving, so it applies when a listener starts."
+                )
+                .into(),
+            },
+            Self::Superseded => TailscaleModeReport {
+                warning: true,
+                message: format!(
+                    "{saved} Another Tailscale mode change arrived first, so this one was \
+                     dropped; the saved value is what a restart uses."
+                )
+                .into(),
+            },
+            Self::TimedOut => TailscaleModeReport {
+                warning: true,
+                message: format!(
+                    "{saved} The server did not report back in time, so yaran cannot say what \
+                     the Tailscale listener is doing; check yaran.log."
+                )
+                .into(),
+            },
+        }
+    }
+}
+
+/// The mode a single run actually serves under: `--no-tailscale` forces
+/// [`TailscaleMode::No`], otherwise the configured mode stands. One place so the
+/// CLI flag cannot be honored on one code path and forgotten on another.
+pub fn effective_tailscale_mode(
+    configured: TailscaleMode,
+    cli: &ServerCliOverrides,
+) -> TailscaleMode {
+    if cli.no_tailscale {
+        TailscaleMode::No
+    } else {
+        configured
+    }
+}
+
+/// Accept BOTH the current `[server] tailscale` string and a bare BOOLEAN, so a
+/// user who writes `tailscale = true` (the shape the setting had when it was
+/// named `tailscale_enabled`) gets the meaning-preserving mode instead of a
+/// failed config parse.
+///
+/// `true` becomes [`TailscaleMode::Yes`] and `false` becomes
+/// [`TailscaleMode::No`]: a boolean says "bind it" or "do not", and neither says
+/// "keep watching", so neither maps to `auto`. The RENAMED key is handled
+/// separately, at document level, by [`crate::config_migrate`].
+///
+/// An unrecognized STRING passes through untouched rather than being rejected
+/// here, exactly as `ui.compose_bar` does: the warn-once-and-degrade happens at
+/// load ([`tailscale_load_warning`]), so one typo does not take the whole config
+/// file down with it.
+fn deserialize_tailscale<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct TailscaleVisitor;
+
+    impl serde::de::Visitor<'_> for TailscaleVisitor {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("\"auto\", \"yes\", \"no\", or a legacy boolean")
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<String, E> {
+            Ok(if v {
+                TailscaleMode::Yes.as_str().to_string()
+            } else {
+                TailscaleMode::No.as_str().to_string()
+            })
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(TailscaleVisitor)
+}
+
+/// The one-line warning to log when `[server] tailscale` names a mode yaran does
+/// not know, or `None` when it is fine. Emitted once per load, never per read.
+pub(crate) fn tailscale_load_warning(config: &Config) -> Option<String> {
+    TailscaleMode::unknown_value_warning(&config.server.tailscale)
+}
+
+pub use crate::config_auth::{AddressBlock, AuthRequire, CookieSecure, ServerAuthConfig};
+
+/// The `[server]` table: how the web UI is served, bound and protected.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own on/off key in config.toml's [server] table, read and written by serde"
+)]
+pub struct ServerConfig {
+    /// LOCAL MODE bind host. `yaran server` binds `host:port` (plus the machine's
+    /// Tailscale address unless `tailscale` is `"no"`). Must be an IP literal such as
+    /// `127.0.0.1` (loopback, the safe default) or `0.0.0.0` (all interfaces);
+    /// hostnames are not resolved. Default `127.0.0.1`.
+    pub host: String,
+    /// LOCAL MODE port. `yaran server` and the palette flip bind `host:port` (plus
+    /// the machine's Tailscale address unless `tailscale` is `"no"`). Default 3890,
+    /// which is how you spell "yaran" on a phone keypad.
+    pub port: u16,
+    /// Tailscale binding, a tri-state: `"auto"` (the default), `"yes"`, or
+    /// `"no"`. Read through [`ServerConfig::tailscale_mode`], never compared as a
+    /// string. An unrecognized value degrades to `"auto"` with one warning at
+    /// load ([`tailscale_load_warning`]), the `ui.compose_bar` precedent.
+    ///
+    /// The BOOLEAN this setting used to be (`tailscale_enabled`) keeps working:
+    /// it is rewritten to this key on load by
+    /// [`crate::config_migrate::apply_load_migrations`] (`true` to `"yes"`,
+    /// `false` to `"no"`), and this field also accepts a bare boolean of its own
+    /// so `tailscale = true` parses (see [`deserialize_tailscale`]).
+    #[serde(deserialize_with = "deserialize_tailscale")]
+    pub tailscale: String,
+    /// Extra `Host` header values to accept when the request is NOT same-origin.
+    /// yaran is trusted-local: it always serves on `host:port` (loopback by default)
+    /// and accepts same-origin requests. List any additional hostnames a reverse
+    /// proxy forwards under (e.g. `yaran.example.com`) so those requests are not
+    /// rejected by the host guard. This machine's own `MagicDNS` name needs no entry
+    /// while `tailscale` is not `"no"`: the guard admits it by itself. A config
+    /// reload applies a change to a running server. Empty by default.
+    pub allowed_hosts: Vec<String>,
+    /// Colored, vite-style console output for `yaran server`. One of `"auto"`
+    /// (default: color only when stdout is a terminal, `NO_COLOR` is unset, and
+    /// `TERM` is not `dumb`), `"always"` (force color), or `"never"` (plain text).
+    /// An unrecognized value is treated as `"auto"` with a warning. The TUI flip's
+    /// status screen is unaffected: this only governs the `yaran server` CLI.
+    pub color: String,
+    /// Whether the server logs a per-request access line (method, path, status,
+    /// latency) to its console: `yaran server`'s stdout, and the log viewer of the
+    /// `start-web-server` flip. The `/healthz` probe is always skipped.
+    /// Default true. Also written to `server.log`, never to `yaran.log`.
+    pub access_log: bool,
+    /// How many lines the `start-web-server` flip's log viewer keeps for
+    /// scrolling back. Older lines are dropped once it is full. `yaran server`
+    /// prints the same lines to its terminal, whose scrollback is the host
+    /// terminal's own, so this only sizes the flip's viewer. Read through
+    /// [`effective_log_viewer_lines`]: 0 is read as 1 and values above
+    /// [`LOG_VIEWER_LINES_MAX`] (20000) as 20000. A negative value is not a valid
+    /// value for it, so loading resets this one setting to its default (2000)
+    /// with a warning in yaran.log. Default 2000. Applies the next time the flip
+    /// starts.
+    pub log_viewer_lines: usize,
+    /// Where every way of serving writes the server's own log: relative to the
+    /// config folder, empty for the default. Default `server.log`. Read when a
+    /// serve starts.
+    pub log_path: String,
+    /// Size in bytes the server log may reach before yaran rotates it, with the same
+    /// whole-line and `0 = never rotate` rules as `[logging] max_bytes`. Default
+    /// 10 MiB. Read when a serve starts.
+    pub log_max_bytes: u64,
+    /// How many rotated copies of the server log to keep, numbered `server.log.1`
+    /// upwards; `0` rotates and discards, and values above [`MAX_LOG_KEEP`] are
+    /// clamped. Default 5. Read when a serve starts.
+    pub log_keep: u32,
+    /// Whether a rotated server log is gzipped to `server.log.N.gz` in the
+    /// background. Default true. Read when a serve starts.
+    pub log_compress: bool,
+    /// Whether `yaran server` and the start-web-server flip show QR codes for
+    /// this machine's tailnet addresses (its Tailscale IP and its `MagicDNS`
+    /// name, the `tailscale serve` HTTPS URL when one ends at yaran), so a phone
+    /// can open yaran by pointing its camera. Shown when the serve starts and
+    /// again whenever those addresses become known or change. `yaran server`
+    /// prints them only when its output is a terminal; the background server
+    /// never shows them, because the terminal UI stays on screen. Read when a
+    /// serve starts. Default true.
+    pub qr_codes: bool,
+    /// Whether yaran serves the web UI in the BACKGROUND while the terminal UI
+    /// keeps running, instead of only through the `start-web-server` flip (which
+    /// replaces the TUI with the server and is unaffected by this setting).
+    ///
+    /// Off by default, because turning it on means a network listener exists for
+    /// as long as yaran does, guarded only by the optional `[server.auth]`
+    /// password: the same trust model the rest of `[server]` documents, now in
+    /// effect whenever the TUI is open. The
+    /// mode is toggleable at runtime through the `start-background-server` and
+    /// `stop-background-server` palette commands, and this setting decides only
+    /// whether it comes up serving at startup.
+    ///
+    /// While it serves, the terminal UI is an ordinary participant in the same
+    /// one-driver-at-a-time model the browsers use: a terminal it does not drive
+    /// is covered by the take-over card until somebody presses that card's
+    /// button.
+    pub serve_while_tui: bool,
+    /// The owner-only Unix socket yaran serves its API on to local command-line
+    /// clients, relative to the config folder. Bound once at start by the yaran
+    /// holding `dux.lock`; a path past the system limit starts yaran without it.
+    /// Default `"yaran.sock"`.
+    pub control_socket: String,
+    /// Maximum number of concurrent events (`/ws`) WebSocket connections. This is
+    /// the status/changed-files event stream every browser tab opens. Once this
+    /// many are live, further upgrade attempts are rejected with HTTP 503 until a
+    /// slot frees. Default 32. A value of 0 permanently blocks this connection
+    /// class until the server restarts. Changing this requires a server restart to
+    /// take effect: the connection-cap semaphore is built at startup and a config
+    /// reload cannot resize it.
+    pub max_websocket_events_connections: u32,
+    /// Maximum number of concurrent agent-PTY WebSocket connections. This is the
+    /// embedded-terminal stream for an agent session. Once this many are live,
+    /// further upgrade attempts are rejected with HTTP 503 until a slot frees.
+    /// Default 32. A value of 0 permanently blocks this connection class until the
+    /// server restarts. Changing this requires a server restart to take effect:
+    /// the connection-cap semaphore is built at startup and a config reload cannot
+    /// resize it.
+    pub max_websocket_agent_connections: u32,
+    /// Maximum number of concurrent terminal-PTY WebSocket connections. This is the
+    /// standalone scratch-terminal stream. Once this many are live, further upgrade
+    /// attempts are rejected with HTTP 503 until a slot frees. Default 64. A value
+    /// of 0 permanently blocks this connection class until the server restarts.
+    /// Changing this requires a server restart to take effect: the connection-cap
+    /// semaphore is built at startup and a config reload cannot resize it.
+    pub max_websocket_terminal_connections: u32,
+    /// Maximum number of concurrent extra-tab PTY WebSocket connections across
+    /// ALL agents. Tab sockets draw from THIS pool, not the agent-PTY pool, so a
+    /// few agents each showing many tabs cannot 503 every other agent's Main
+    /// terminal. Once this many are live, further tab-socket upgrades are rejected
+    /// with HTTP 503 until a slot frees. Default 64. A value of 0 permanently
+    /// blocks all extra-tab PTY sockets until the server restarts. Changing this
+    /// requires a server restart to take effect.
+    pub max_websocket_tab_connections: u32,
+    /// Maximum concurrent live extra-tab PTY WebSocket connections a SINGLE
+    /// agent may hold, checked BEFORE a permit is taken from the shared tab pool
+    /// (`max_websocket_tab_connections`). This is a per-agent fairness sub-quota on
+    /// top of that pool: it stops one agent showing many tabs from monopolizing the
+    /// pool and starving other agents' tabs. Once an agent reaches this many live
+    /// tab sockets, further tab-socket upgrades for THAT agent are rejected with
+    /// HTTP 503 until one closes. Default 8. A value of 0 permanently blocks all
+    /// extra-tab PTY sockets until the server restarts.
+    pub max_websocket_tabs_per_agent: u32,
+    /// WEB-ONLY display name for this yaran instance. Drives the browser tab
+    /// `<title>` and the brand wordmark in the web projects pane (the version
+    /// line stays directly below it). Set a distinct value per instance (e.g.
+    /// "yaran #1" or "yaran (prod)") to tell several yaran tabs apart at a glance.
+    /// Default "yaran". An empty/whitespace value falls back to "yaran" in the UI.
+    pub title: String,
+    /// WEB-ONLY favicon color for this yaran instance, so several yaran tabs are easy
+    /// to tell apart. Empty (default) keeps the original full-color yellow duck.
+    /// Otherwise one of the curated tint colors, which recolors a flat duck
+    /// silhouette in the browser tab: violet, blue, sky, cyan, teal, green, amber,
+    /// orange, red, pink, rose. Unrecognized values fall back to the default duck.
+    pub favicon: String,
+    /// Seconds the web server (`yaran server`, or the server flipped from the TUI)
+    /// waits for agents and companion terminals to exit after SIGTERM on
+    /// shutdown, before force-killing (SIGKILL) any stragglers. `0` skips the
+    /// wait and force-kills immediately; values above
+    /// [`MAX_SHUTDOWN_TIMEOUT_SECONDS`] are clamped. A second Ctrl-c/SIGTERM
+    /// during the wait forces an immediate exit. The TUI quit path uses the
+    /// top-level `shutdown_timeout_seconds` instead. Default 30.
+    pub shutdown_timeout_seconds: u16,
+    /// Maximum number of files the web editor's "Search files…" index will
+    /// collect in a single flat walk of the worktree. The file TREE is a lazy,
+    /// per-directory browser and is never capped; this bounds only the search
+    /// index, where an incomplete result on a very large repo (e.g. a built
+    /// `target/`) is an acceptable tradeoff for a bounded response. `0`
+    /// disables the cap. Default 50000. A config reload applies it to the next
+    /// search-index fetch.
+    pub search_index_max_files: usize,
+    /// Maximum number of `/files/tree` directory listings, file-search walks and
+    /// `/files/raw` image reads the web editor may run concurrently across all
+    /// sessions. Each does blocking filesystem work off the async reactor
+    /// (`spawn_blocking`); this protects the server's blocking-thread pool from
+    /// a burst (e.g. many tabs expanding directories at once, or a markdown
+    /// preview full of images) starving other blocking work like
+    /// git operations and file reads/writes. A request beyond the limit WAITS
+    /// for a free slot rather than being rejected: unlike the
+    /// `max_websocket_*_connections` family, this bounds a small, fast unit of
+    /// background work, not a long-lived connection. `0` disables the bound
+    /// entirely. Default 8. Takes effect on the next server restart.
+    pub tree_list_max_concurrency: u32,
+    /// Maximum number of release-notes fetches (`GET /api/v1/release-notes`,
+    /// behind the app menu's "What's new…") the web server may run
+    /// concurrently. Each one is a blocking HTTPS round trip to the GitHub API
+    /// run off the async reactor (`spawn_blocking`); this protects the server's
+    /// blocking-thread pool from a burst of clicks (or several browser tabs)
+    /// starving other blocking work like git operations and file reads. A
+    /// request beyond the limit WAITS for a free slot rather than being
+    /// rejected, and since the notes are cached with a six-hour TTL the waiter
+    /// usually returns immediately from cache. `0` disables the bound entirely.
+    /// Default 2. Takes effect on the next server restart.
+    pub release_notes_max_concurrency: u32,
+    /// Maximum size, in bytes, of a single file dropped onto a terminal or agent
+    /// pane in the web UI. Default 104857600 (100 MiB). Set EXPLICITLY on the
+    /// upload route, because the web framework's own default of 2 MB would
+    /// reject an ordinary screenshot. A file over the cap is refused with a
+    /// message saying so and nothing is written. `0` disables file drop
+    /// entirely: the route refuses every upload and the browser stops offering
+    /// the drop overlay. Read at startup, so changing it needs a server
+    /// restart.
+    pub file_drop_max_bytes: usize,
+    /// Maximum number of dropped-file uploads the web server will have in flight
+    /// at once. The permit is taken BEFORE the request body is read (the body is
+    /// fully buffered in memory before a handler's first line runs, so taking it
+    /// inside the handler would be too late and the memory already spent), which
+    /// is what makes this bound total buffered upload memory rather than just
+    /// serializing the work. A request beyond the limit WAITS for a free slot
+    /// rather than being refused. Default 2, so with the default size cap the
+    /// worst case is roughly 200 MiB of buffered upload. `0` clamps to 1 rather
+    /// than disabling the bound: a zero-permit semaphore would stall every drop
+    /// forever. Read at startup, so changing it needs a server restart.
+    pub file_drop_max_concurrency: u32,
+    /// How long, in seconds of VISIBLE time, a web terminal pane waits for its
+    /// screen to arrive after its connection opens, before it stops waiting and
+    /// offers a Reconnect button. Default 8.
+    ///
+    /// Read by the browser off the bootstrap document; nothing on the server
+    /// side consumes it, and a config reload retimes every open tab with no
+    /// restart.
+    pub replay_wait_seconds: u32,
+    /// The longest gap, in seconds, the web UI leaves between two automatic
+    /// reconnect attempts on a dropped connection. Default 10.
+    ///
+    /// The delay grows after each failure and stops growing here, so a device
+    /// that has been out of coverage for a long time still reconnects promptly
+    /// once it is back. Browser-side, hot-reloadable, like its siblings.
+    pub reconnect_backoff_cap_seconds: u32,
+    /// How many consecutive reconnect attempts the web UI makes before it stops
+    /// trying and offers a Reconnect button instead. Default 8; `0` means never
+    /// give up.
+    ///
+    /// An attempt that opens refills the budget, and a wake signal (the tab
+    /// becoming visible again, the device coming back online) restarts a spent
+    /// one, so this is a budget against a server that is genuinely not there
+    /// rather than against a bad minute of network. Browser-side,
+    /// hot-reloadable.
+    pub reconnect_attempts: u32,
+    /// How long, in seconds, one reconnect attempt may sit unopened before it is
+    /// abandoned and counted against the budget above. Default 10.
+    ///
+    /// An unreachable host on a remote network does not refuse the connection,
+    /// it hangs, so this is what turns "nothing is happening" into a visible
+    /// failed attempt. Browser-side, hot-reloadable.
+    pub reconnect_attempt_timeout_seconds: u32,
+    /// How long, in seconds, the Changes pane waits for one changed-files
+    /// request, body included, before giving it up with an error the pane
+    /// shows. Default 30. The browser treats 0 as the default and caps it at
+    /// ten minutes. Browser-side, hot-reloadable.
+    pub changes_request_timeout_seconds: u32,
+    /// How often, in seconds, a visible page checks that its terminal
+    /// connection is really alive. Default 15.
+    ///
+    /// A socket that has silently half-died (the classic Wi-Fi to cellular
+    /// handoff) still looks connected to the browser, so the page asks the
+    /// server to answer and treats silence as a dead connection.
+    /// Browser-side, hot-reloadable.
+    pub heartbeat_seconds: u32,
+    /// How long, in seconds of VISIBLE time, the page waits for that answer
+    /// before forcing a plain reconnect. Default 30.
+    ///
+    /// Deliberately several times the interval: a slow radio is not a dead
+    /// socket, and reconnecting needlessly costs a screen replay. A value at or
+    /// below `heartbeat_seconds` would reconnect forever, so the browser clamps
+    /// such a pair up rather than obeying it.
+    /// Browser-side, hot-reloadable.
+    pub heartbeat_deadline_seconds: u32,
+    /// How long, in seconds, the server waits for one of a terminal
+    /// connection's opening sends (the handshake and the screen replay) to
+    /// reach the browser before it gives up on that connection. Default 60.
+    ///
+    /// Unlike its four siblings this one is SERVER-side. A send completes when
+    /// the bytes arrive, so on a slow link this is a measure of throughput and
+    /// not of liveness, and the screen replay can be the whole scrollback: too
+    /// small and a phone on a bad connection can never finish attaching, which
+    /// it then retries forever. Read live, so a config reload applies to the
+    /// next connection with no restart.
+    pub pty_send_timeout_seconds: u32,
+    /// How long, in seconds, a change may run before its operation record reads
+    /// `unknown`; the record still finishes with the real outcome. Default 1800.
+    /// Read when the change starts.
+    pub operation_unknown_after_seconds: u64,
+    /// How long, in seconds, a finished change's operation record can still be
+    /// read by its id. Default 1800. Read when the change starts.
+    pub operation_retention_seconds: u64,
+    /// How long, in seconds, a browser tab still counts as attached to a terminal
+    /// whose connection was lost (not closed) while it was looked at, from its last
+    /// viewed beat. Default 300. Read when the connection is lost.
+    pub presence_grace_seconds: u64,
+    /// `[server.auth]`: the optional web login. Read FAIL-CLOSED: an invalid
+    /// section refuses the whole config rather than resetting to "no
+    /// password" (see [`crate::config_auth`] and [`load_config`]). Never
+    /// written from memory over a value already on disk: only the coordinated
+    /// mutation path (`crate::config_keys`) changes these keys.
+    pub auth: ServerAuthConfig,
+}
+
+impl ServerConfig {
+    /// The configured Tailscale mode. Silent: an unrecognized value degrades to
+    /// [`TailscaleMode::Auto`] here, because `load_config` already warned about
+    /// it once and corrected the stored value in memory. Every reader goes
+    /// through this rather than comparing the string itself.
+    pub fn tailscale_mode(&self) -> TailscaleMode {
+        TailscaleMode::parse(&self.tailscale).unwrap_or_default()
+    }
+}
+
+/// True when a config reload changed any `[server]` setting that only takes
+/// effect at startup: read when a listener binds, when the `yaran server` console
+/// is built, or when the flip's log viewer is sized. The web surface warns on
+/// this set, each sentence only where it applies; the terminal UI warns on
+/// [`server_bind_settings_changed`] alone, because it reads the console and
+/// viewer settings afresh every time it starts serving.
+pub fn server_restart_settings_changed(prev: &ServerConfig, next: &ServerConfig) -> bool {
+    server_bind_settings_changed(prev, next)
+        || server_console_settings_changed(prev, next)
+        || server_log_viewer_settings_changed(prev, next)
+        || server_log_file_settings_changed(prev, next)
+}
+
+/// True when a config reload changed a setting of `server.log`, which is opened
+/// when a serve starts, in every way of serving.
+pub fn server_log_file_settings_changed(prev: &ServerConfig, next: &ServerConfig) -> bool {
+    !server_log_file_setting_names(prev, next).is_empty()
+}
+
+/// The `server.log` settings a reload changed, by key.
+pub fn server_log_file_setting_names(
+    prev: &ServerConfig,
+    next: &ServerConfig,
+) -> Vec<&'static str> {
+    [
+        ("log_path", prev.log_path != next.log_path),
+        ("log_max_bytes", prev.log_max_bytes != next.log_max_bytes),
+        ("log_keep", prev.log_keep != next.log_keep),
+        ("log_compress", prev.log_compress != next.log_compress),
+    ]
+    .into_iter()
+    .filter_map(|(name, moved)| moved.then_some(name))
+    .collect()
+}
+
+/// True when a config reload changed a `[server]` setting read once, as the
+/// `start-web-server` flip sizes its log viewer: `log_viewer_lines`. Only a
+/// running flip owes a warning for it; the next flip reads the new value.
+pub fn server_log_viewer_settings_changed(prev: &ServerConfig, next: &ServerConfig) -> bool {
+    prev.log_viewer_lines != next.log_viewer_lines
+}
+
+/// True when a config reload changed a `[server]` setting read once, as a
+/// listener binds and its router is built; settings a running serve reads live are left out.
+pub(crate) fn server_bind_settings_changed(prev: &ServerConfig, next: &ServerConfig) -> bool {
+    !server_bind_setting_names(prev, next).is_empty()
+}
+
+/// The settings [`server_bind_settings_changed`] compares that a reload
+/// changed, by key. Every surface names them in its restart sentence.
+pub fn server_bind_setting_names(prev: &ServerConfig, next: &ServerConfig) -> Vec<&'static str> {
+    [
+        ("host", prev.host != next.host),
+        ("port", prev.port != next.port),
+        (
+            "max_websocket_events_connections",
+            prev.max_websocket_events_connections != next.max_websocket_events_connections,
+        ),
+        (
+            "max_websocket_agent_connections",
+            prev.max_websocket_agent_connections != next.max_websocket_agent_connections,
+        ),
+        (
+            "max_websocket_terminal_connections",
+            prev.max_websocket_terminal_connections != next.max_websocket_terminal_connections,
+        ),
+        (
+            "max_websocket_tab_connections",
+            prev.max_websocket_tab_connections != next.max_websocket_tab_connections,
+        ),
+        (
+            "max_websocket_tabs_per_agent",
+            prev.max_websocket_tabs_per_agent != next.max_websocket_tabs_per_agent,
+        ),
+        // The routes enforce a bind-time copy of the file-drop caps while the
+        // browser sees the reloaded value, so a change to them needs a restart.
+        (
+            "file_drop_max_bytes",
+            prev.file_drop_max_bytes != next.file_drop_max_bytes,
+        ),
+        (
+            "file_drop_max_concurrency",
+            prev.file_drop_max_concurrency != next.file_drop_max_concurrency,
+        ),
+        // Both are semaphores sized once in `build_app`.
+        (
+            "tree_list_max_concurrency",
+            prev.tree_list_max_concurrency != next.tree_list_max_concurrency,
+        ),
+        (
+            "release_notes_max_concurrency",
+            prev.release_notes_max_concurrency != next.release_notes_max_concurrency,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, moved)| moved.then_some(name))
+    .collect()
+}
+
+/// True when a config reload changed a `[server]` setting that is read once, as
+/// the `yaran server` console is built.
+///
+/// Separate from the bind set because only the standalone `yaran server` process
+/// prints its console to a terminal: the flip records the same lines into its
+/// themed viewer, which never reads `color`, and the background server's
+/// console is a no-op, so a `color` change means nothing to either and a
+/// restart warning there would name a restart that changes nothing.
+///
+/// `qr_codes` is in this set too: the codes are drawn by the `yaran server`
+/// console and by the flip's status screen, both of which read it as the serve
+/// starts, and neither one is a listener.
+pub(crate) fn server_console_settings_changed(prev: &ServerConfig, next: &ServerConfig) -> bool {
+    prev.color != next.color || prev.qr_codes != next.qr_codes
+}
+
+/// One `[providers.<name>]` table: the CLI yaran runs in a PTY for that provider, and how it launches
+/// and resumes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderCommandConfig {
+    /// The program yaran runs for the provider.
+    pub command: String,
+    /// The arguments passed on every interactive launch.
+    pub args: Vec<String>,
+    /// Extra arguments appended when a launch resumes the previous conversation; `None` or empty
+    /// means the provider cannot resume.
+    pub resume_args: Option<Vec<String>>,
+    /// Milliseconds a resumed launch may show no output before yaran kills it and launches fresh;
+    /// `None` or 0 disables the timeout.
+    pub resume_wait_timeout_ms: Option<u64>,
+    /// What to tell the user to run when the command is not found on PATH.
+    pub install_hint: Option<String>,
+    /// Scroll-forwarding policy for the wheel and PgUp/PgDn over this
+    /// provider's embedded PTY. Tri-state:
+    ///
+    /// - `None` (key absent) is auto: forward the wheel to the child when it
+    ///   asked for mouse reporting (an app that takes the mouse owns the
+    ///   wheel, alternate screen or not) and the page keys when it owns the
+    ///   alternate screen; otherwise scroll yaran's own host scrollback.
+    /// - `Some(true)`: always forward scroll and page keys to the child.
+    /// - `Some(false)`: never forward; always use yaran host scrollback.
+    pub forward_scroll: Option<bool>,
+    /// How the WEB UI writes a dropped file's path into this provider's prompt.
+    /// The raw config string, parsed at use through [`WebDragDropPaste`] so a typo
+    /// degrades gracefully instead of failing the whole config load (the
+    /// `capabilities.clipboard_passthrough` convention). `None` (key absent)
+    /// resolves to [`WebDragDropPaste::Bare`].
+    ///
+    /// See [`WebDragDropPaste`] for what each form means and which CLI needs which.
+    pub web_dragdrop_paste: Option<String>,
+}
+
+/// The form a dragged and dropped file's path takes when the web UI writes it into
+/// a provider's prompt.
+///
+/// The `web_` prefix on the config key is load-bearing: this affects the browser
+/// and nothing else. Dropping a file onto a terminal window in the terminal UI is
+/// the host terminal emulator's job, and the file is already on the machine the
+/// agent runs on.
+///
+/// The receiving end is an agent CLI, not a shell, and the CLIs do not agree on
+/// how they read a pasted path: each takes the whole pasted string and normalizes
+/// it its own way before deciding whether it names a file. The right form is
+/// therefore a property of the CLI, which is why this is a per-provider setting a
+/// maintainer can extend rather than a rule baked in here. Every row below was
+/// produced by running the CLI's own normalizer over the exact bytes yaran sends, so
+/// a new row belongs here only once someone has run the new CLI the same way.
+///
+/// | CLI                 | What it does to a pasted path                                           | Form it needs   |
+/// |---------------------|-------------------------------------------------------------------------|-----------------|
+/// | Claude Code 2.1.220 | Trims, strips ONE surrounding matching quote pair, unescapes `\X`, then  | `bare`          |
+/// |                     | matches the extension. Never splits on whitespace, so a space is        |                 |
+/// |                     | harmless bare.                                                          |                 |
+/// | Grok CLI            | Not measured separately; yaran treats it like the Claude CLI and follows   | `bare` assumed  |
+/// |                     | Claude's measured form.                                                 |                 |
+/// | `OpenCode`            | Strips ALL leading and trailing quote characters, resolves `file://`,   | `bare`          |
+/// |                     | unescapes `\X`. No shell splitting, so a space is harmless bare.        |                 |
+/// | Codex (shlex 1.3.0) | Strips one matching quote pair, resolves `file://`, otherwise runs the   | `single_quoted` |
+/// |                     | text through POSIX shell lexing and accepts it ONLY if it comes out as  |                 |
+/// |                     | exactly one token. A bare path containing a space is silently ignored.  |                 |
+/// | Copilot CLI         | Closed source, not verified. Defaulted to `bare`, the do-nothing option.| `bare` (guess)  |
+///
+/// Anything yaran does not ship, including a provider a user adds themselves, gets
+/// `bare` for the same reason.
+///
+/// Known failures, both properties of the receiving tool rather than bugs in yaran,
+/// and neither to be worked around from this side:
+///
+/// - `single_quoted` on a path containing an apostrophe breaks Claude Code. POSIX
+///   writes an embedded apostrophe as close-escape-reopen, and Claude Code's
+///   unescape step collapses that into three consecutive apostrophes, naming
+///   nothing.
+/// - Any form carrying a backslash is mangled by Claude Code's unescape step, as
+///   is a path that simply has a backslash in its name, whatever form it is sent
+///   in.
+///
+/// Getting it wrong is not usually a breakage: the normal symptom is that the file
+/// is not attached automatically and its path is left in the prompt as ordinary
+/// text, which the user can still work with.
+///
+/// A new form is one more variant plus one more arm in
+/// [`WebDragDropPaste::parse`], [`WebDragDropPaste::as_str`] and the web's
+/// `pastePayload`, with no rework anywhere else. A `file://` URL is deliberately
+/// absent: Codex and `OpenCode` both resolve one, but whether Claude Code does on
+/// its paste path is unverified, and a form should not ship on an unmeasured
+/// assumption.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WebDragDropPaste {
+    /// The path exactly as it is on disk: nothing added, nothing escaped.
+    ///
+    /// What Claude Code and `OpenCode` want. Both take the whole pasted string and
+    /// never split on whitespace, so a space needs no protection. This is the
+    /// default for every provider not listed otherwise.
+    #[default]
+    Bare,
+    /// Wrapped in single quotes, with an embedded apostrophe escaped the POSIX way
+    /// (close the quote, escape the apostrophe, reopen the quote).
+    ///
+    /// What Codex wants. It lexes the pasted text with POSIX shell rules and
+    /// accepts it only if it comes out as exactly one token, so a bare path
+    /// containing a space is silently ignored.
+    SingleQuoted,
+    /// Wrapped in double quotes, with an embedded double quote and backslash
+    /// escaped.
+    ///
+    /// Also lexes to one token for Codex, and both other CLIs strip a surrounding
+    /// pair. Offered because a future CLI may prefer it, and because a path full of
+    /// apostrophes is cleaner this way than through the close-escape-reopen dance.
+    DoubleQuoted,
+    /// No quotes, with shell-significant characters escaped by a backslash, so
+    /// `My File.png` goes out as `My\ File.png`.
+    ///
+    /// Codex accepts it (it lexes to one token) and `OpenCode` unescapes it back. It
+    /// is also what several real terminal emulators emit when you drop a file on
+    /// them, so it is the closest thing here to "what a normal terminal does".
+    /// Note the failure above: Claude Code's unescape step mangles it.
+    BackslashEscaped,
+}
+
+impl WebDragDropPaste {
+    /// Parse a config string into a mode, returning `None` for an unrecognized
+    /// value so the caller decides whether to warn. Never warns itself, so a
+    /// per-paste path can call it freely.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "bare" => Some(Self::Bare),
+            "single_quoted" => Some(Self::SingleQuoted),
+            "double_quoted" => Some(Self::DoubleQuoted),
+            "backslash_escaped" => Some(Self::BackslashEscaped),
+            _ => None,
+        }
+    }
+
+    /// The warning text for one unrecognized value, or `None` when the value is a
+    /// form yaran knows.
+    ///
+    /// Returned rather than logged so the message itself is testable: a warning
+    /// that only ever reaches a file cannot be asserted on without racing the
+    /// process-wide logger, and "warns once per load" is exactly the property
+    /// worth pinning.
+    /// `at` is the setting as printed, through the one formatter.
+    pub(crate) fn unknown_value_warning(at: &str, s: &str) -> Option<String> {
+        if Self::parse(s).is_some() {
+            return None;
+        }
+        Some(format!(
+            "unknown {at} value {s:?}; falling back to \
+             \"bare\" (valid: bare, single_quoted, double_quoted, backslash_escaped)"
+        ))
+    }
+
+    /// Parse a config string, falling back to [`WebDragDropPaste::Bare`] with a logged
+    /// warning on an unrecognized value. Call this at config load/reload (once),
+    /// not per paste, so a typo is surfaced without spamming the log; the paste
+    /// path uses the non-warning [`WebDragDropPaste::parse`].
+    pub fn from_config_str(provider: &str, s: &str) -> Self {
+        let at = shown_path(
+            "",
+            &key_path(&["providers", provider, "web_dragdrop_paste"]),
+        );
+        if let Some(warning) = Self::unknown_value_warning(&at, s) {
+            crate::logger::warn(&warning);
+        }
+        Self::parse(s).unwrap_or(Self::Bare)
+    }
+
+    /// The canonical lowercase name. This is what goes in `config.toml` and what
+    /// is projected into the web bootstrap document, so both surfaces agree.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bare => "bare",
+            Self::SingleQuoted => "single_quoted",
+            Self::DoubleQuoted => "double_quoted",
+            Self::BackslashEscaped => "backslash_escaped",
+        }
+    }
+}
+
+/// When the web UI's touch terminal puts up the mobile compose bar
+/// ([`UiConfig::compose_bar`]).
+///
+/// Three-way rather than a boolean. [`Self::Auto`] asks the browser whether touch
+/// is the primary pointing device (`pointer: coarse`), which is the right
+/// question: the compose bar exists because a soft keyboard's autocorrect, swipe
+/// and IME have nothing to correct when keystrokes go straight into a terminal.
+///
+/// A capability gate cannot finish the job. Measured on an Android tablet, with
+/// and without a physical keyboard attached, every interaction media query is
+/// identical (`pointer: coarse` true, `any-pointer: fine` true, `any-hover: hover`
+/// false). A keyboard case is invisible to the browser, so the two situations that
+/// want opposite answers are indistinguishable and only the user can resolve them.
+/// Hence [`Self::Always`] and [`Self::Never`].
+///
+/// Do not build keyboard sniffing to close that gap. Also measured: focusing an
+/// input on an Android tablet while the on-screen keyboard opened and closed
+/// produced no observable change at all. Window height, visual viewport height and
+/// `navigator.virtualKeyboard.boundingRect` were identical across two full
+/// open-and-close cycles, so there is nothing to detect after the fact either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ComposeBarMode {
+    /// Show it when the browser reports touch as the primary pointer. The
+    /// default, and what the old `compose_bar = true` migrates to.
+    #[default]
+    Auto,
+    /// Always show it, whatever the pointer says. For the tablet-with-keyboard
+    /// case the browser cannot see, when the user wants the box anyway.
+    Always,
+    /// Never show it; tapping the terminal types straight into it. What the old
+    /// `compose_bar = false` migrates to.
+    Never,
+}
+
+impl ComposeBarMode {
+    /// Parse a config string into a mode, returning `None` for an unrecognized
+    /// value so the caller decides whether to warn. Never warns itself.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    /// The warning text for one unrecognized value, or `None` when the value is
+    /// a mode yaran knows.
+    ///
+    /// Returned rather than logged so the message itself is testable, the same
+    /// reason [`WebDragDropPaste::unknown_value_warning`] gives.
+    pub(crate) fn unknown_value_warning(s: &str) -> Option<String> {
+        if Self::parse(s).is_some() {
+            return None;
+        }
+        Some(format!(
+            "unknown ui.compose_bar value {s:?}; falling back to \"auto\" \
+             (valid: auto, always, never)"
+        ))
+    }
+
+    /// Parse a config string, falling back to [`ComposeBarMode::Auto`] with a
+    /// logged warning on an unrecognized value. Call this at config load
+    /// (once), not per render.
+    pub fn from_config_str(s: &str) -> Self {
+        if let Some(warning) = Self::unknown_value_warning(s) {
+            crate::logger::warn(&warning);
+        }
+        Self::parse(s).unwrap_or(Self::Auto)
+    }
+
+    /// The canonical lowercase name. This is what goes in `config.toml` and
+    /// what is projected into the web bootstrap document, so both surfaces
+    /// agree.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+}
+
+/// Accept BOTH the current `ui.compose_bar` string and the BOOLEAN this setting
+/// used to be, so upgrading yaran never fails to parse a config a user already
+/// has on disk.
+///
+/// The migration is the meaning-preserving one: `true` was "show the bar on the
+/// mobile surface", which is exactly what [`ComposeBarMode::Auto`] now decides,
+/// and `false` was "never show it". Nothing is rewritten on disk by reading it;
+/// the value is normalized here and the next config save writes the string
+/// form, so a user who never saves keeps a working boolean indefinitely.
+///
+/// An unrecognized STRING is passed through untouched rather than rejected or
+/// coerced here. That is deliberate and matches the rest of the string-valued
+/// settings: the warn-once-and-degrade happens at load
+/// ([`compose_bar_load_warning`]) and at use ([`ComposeBarMode::from_config_str`]),
+/// so one typo does not take the whole config file down with it.
+fn deserialize_compose_bar<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ComposeBarVisitor;
+
+    impl serde::de::Visitor<'_> for ComposeBarVisitor {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("\"auto\", \"always\", \"never\", or a legacy boolean")
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<String, E> {
+            Ok(if v {
+                ComposeBarMode::Auto.as_str().to_string()
+            } else {
+                ComposeBarMode::Never.as_str().to_string()
+            })
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(ComposeBarVisitor)
+}
+
+/// The one-line warning to log when `ui.compose_bar` names a mode yaran does not
+/// know, or `None` when it is fine.
+///
+/// Split out from the parse so `load_config` can warn exactly once per load
+/// rather than once per render, the `upload_directory_load_warning` /
+/// `upload_pasted_text_chars_load_warning` precedent.
+pub(crate) fn compose_bar_load_warning(config: &Config) -> Option<String> {
+    ComposeBarMode::unknown_value_warning(&config.ui.compose_bar)
+}
+
+/// Whether the terminal UI asks its host terminal for extended keys
+/// ([`UiConfig::extended_keys`]).
+///
+/// [`Self::Auto`] asks the host terminal (and, inside tmux, reads tmux's own
+/// settings) before switching anything on; [`Self::On`] skips the question
+/// outside tmux; [`Self::Off`] is the behaviour before the setting existed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExtendedKeysMode {
+    /// Ask the host terminal and switch the Kitty keyboard protocol on when it
+    /// says yes; inside tmux, switch tmux's extended keys on when tmux is set up
+    /// for them. The default.
+    #[default]
+    Auto,
+    /// Switch the Kitty keyboard protocol on without asking; inside tmux, the
+    /// same as [`Self::Auto`] plus a warning when tmux is not set up.
+    On,
+    /// Ask nothing of the host and read keys exactly as a classic terminal
+    /// sends them.
+    Off,
+}
+
+impl ExtendedKeysMode {
+    /// Parse a config string into a mode, returning `None` for an unrecognized
+    /// value so the caller decides whether to warn. Never warns itself.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "on" => Some(Self::On),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    /// The warning text for one unrecognized value, or `None` when the value is
+    /// a mode yaran knows. Returned rather than logged so the message is testable.
+    pub(crate) fn unknown_value_warning(s: &str) -> Option<String> {
+        if Self::parse(s).is_some() {
+            return None;
+        }
+        Some(format!(
+            "unknown ui.extended_keys value {s:?}; falling back to \"auto\" \
+             (valid: auto, on, off)"
+        ))
+    }
+
+    /// Parse a config string, falling back to [`ExtendedKeysMode::Auto`] with a
+    /// logged warning on an unrecognized value.
+    pub fn from_config_str(s: &str) -> Self {
+        if let Some(warning) = Self::unknown_value_warning(s) {
+            crate::logger::warn(&warning);
+        }
+        Self::parse(s).unwrap_or(Self::Auto)
+    }
+
+    /// The canonical lowercase name, as written in `config.toml` and projected
+    /// into the web bootstrap document.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
+/// The one-line warning to log when `ui.extended_keys` names a mode yaran does
+/// not know, or `None` when it is fine. Called once per load.
+pub(crate) fn extended_keys_load_warning(config: &Config) -> Option<String> {
+    ExtendedKeysMode::unknown_value_warning(&config.ui.extended_keys)
+}
+
+/// One `[[projects]]` entry: a repository's portable identity and preferences.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// The project's unique id, matching it to its agents and worktrees in the database.
+    #[serde(default = "new_project_id")]
+    pub id: String,
+    /// The repository's path; it may use `$HOME`, `${HOME}` or `~`.
+    pub path: String,
+    /// The display name, or `None` to use the folder's name.
+    pub name: Option<String>,
+    /// The provider new agents in this project use, or `None` for the global default.
+    pub default_provider: Option<String>,
+    /// The branch new worktrees start from, carried only while syncing into the database; a saved
+    /// config omits it.
+    pub leading_branch: Option<String>,
+    /// Whether this project's agents come back at startup, or `None` to follow the global setting.
+    pub auto_reopen_agents: Option<bool>,
+    /// The command run in each new agent worktree before the provider launches.
+    pub startup_command: Option<String>,
+    /// Variables passed to the project's agent and terminal PTYs, over the global `[env]`.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// A fresh random project id.
+pub fn new_project_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+pub(crate) fn default_true() -> bool {
+    true
+}
+
+/// The `[ui]` table: layout, timing and behaviour preferences for both surfaces.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own on/off key in config.toml's [ui] table, read and written by serde"
+)]
+pub struct UiConfig {
+    /// The left pane's initial width, as a percentage of the terminal.
+    pub left_width_pct: u16,
+    /// The right (files and diff) pane's initial width, as a percentage of the terminal.
+    pub right_width_pct: u16,
+    /// The share of the center pane's height an agent's terminal dock takes in the split, as a
+    /// percentage.
+    pub terminal_dock_pct: u16,
+    /// The project count at which projects with no agents move below their own divider; 0 disables
+    /// it.
+    pub empty_project_separator_min_projects: u16,
+    /// The percentage of the right pane's height given to the staged changes and commit sections.
+    pub staged_pane_height_pct: u16,
+    /// The percentage of the staged section's height given to the commit message input.
+    pub commit_pane_height_pct: u16,
+    /// The most lines an embedded agent terminal keeps in its scrollback.
+    pub agent_scrollback_lines: usize,
+    /// Maximum number of tabs a single agent may have, counting the session-slot tab
+    /// (so 20 means the session-slot tab plus up to 19 ephemeral extra tabs). The "+"
+    /// affordance disables at the cap. `0` means use the default (20); values
+    /// above the internal ceiling are clamped with a warning. Default 20.
+    pub agent_tabs_max: u16,
+    /// Seconds before a transient status-line message (a success/info
+    /// confirmation) auto-clears. The TUI has one status line, so confirmations
+    /// take turns on it: each gets this window to itself and the next one waits,
+    /// while a warning or an error jumps the queue and drops the confirmations
+    /// behind it. A busy message stays until its operation finishes and an error
+    /// until the next message arrives, so neither is governed by this number.
+    ///
+    /// The web's toasts use this as a base for every tone (warning 3x, error 4x,
+    /// through `WARNING_DURATION_FACTOR` and `ERROR_DURATION_FACTOR` in
+    /// `crates/yaran-web/web/src/lib/notify.ts`), because a toast you have to click
+    /// away is friction a status line is not. That grading is applied entirely in
+    /// the browser, and messages marked sticky ignore it. 0 disables auto-clear:
+    /// with no window to wait out, the TUI line stops queueing and shows the most
+    /// recent message until the next one arrives.
+    pub status_clear_seconds: u16,
+    /// Seconds between background syncs of git branch names; 0 disables them.
+    pub branch_sync_interval: u16,
+    /// Whether the diff gutter shows old and new line numbers.
+    pub show_diff_line_numbers: bool,
+    /// How many spaces a tab character renders as in a diff; 0 leaves tabs as they are.
+    pub diff_tab_width: u16,
+    /// Whether pull requests are tracked for agent branches through the `gh` CLI.
+    pub github_integration: bool,
+    /// Seconds between blind GitHub PR-status safety polls. Some checks run on
+    /// events (focusing, creating or an agent exiting); this poll is what
+    /// notices a push or a change made on GitHub itself. `0` disables the blind poll
+    /// entirely (updates then come only from those events). Clamped to
+    /// [`MAX_PR_POLL_INTERVAL_SECONDS`].
+    pub pr_poll_interval_seconds: u16,
+    /// Seconds between blind GitHub PR-status polls for agents the sidebar puts
+    /// under Inactive (detached or exited). Nobody is working in one, so its
+    /// pull request is polled on a much slower clock than an active agent's.
+    /// `0` stops polling inactive agents entirely; they still refresh the
+    /// moment they become active again, and on the deliberate one-shot
+    /// triggers. Clamped to [`MAX_PR_POLL_INACTIVE_INTERVAL_SECONDS`].
+    pub pr_poll_inactive_interval_seconds: u32,
+    /// How many of an agent's earlier branches each pull-request poll asks
+    /// GitHub about, beside the branch it is on now. The rest wait their turn,
+    /// least recently asked first. `0` asks only about the current branch.
+    /// Clamped to [`MAX_PR_HISTORY_BRANCHES_PER_CYCLE`].
+    pub pr_history_branches_per_cycle: u16,
+    /// Seconds before an earlier branch whose pull requests are all merged, or
+    /// a closed pull request or an earlier branch of an agent whose process
+    /// exited, is asked about again. Clamped to between the poll's floor and
+    /// [`MAX_PR_SETTLED_RECHECK_SECONDS`].
+    pub pr_settled_recheck_seconds: u32,
+    /// Seconds between re-checks of the `gh` CLI while yaran cannot use it.
+    ///
+    /// yaran asks `gh` once at startup. When that answer is anything but "installed
+    /// and logged in" (including a rate limit, an API error or a network fault,
+    /// none of which say anything about your login) it asks again on this
+    /// interval until `gh` works, then stops asking. `0` disables the periodic
+    /// re-check; the on-demand re-check stays available on both surfaces.
+    /// Clamped to
+    /// `[MIN_GITHUB_PROBE_INTERVAL_SECONDS, MAX_GITHUB_PROBE_INTERVAL_SECONDS]`.
+    pub github_probe_interval_secs: u16,
+    /// Whether selecting text in the web terminal auto-copies it to the
+    /// clipboard (X11-style "highlight to copy"). Covers both gestures: a mouse
+    /// drag, and the lift at the end of a touch press-and-hold selection.
+    /// Changing it from the web's Preferences dialog persists the new value
+    /// here. Web-only behavior.
+    pub copy_on_select: bool,
+    /// A font name installed on the VIEWING device, placed ahead of yaran's
+    /// bundled web terminal font stack so the bundled faces still fill in
+    /// glyphs it lacks (box drawing, blocks, braille, arrows, powerline).
+    /// Empty (the default) means use the bundled stack only. Web UI only; the
+    /// TUI always uses the host terminal's own font. Changing it from the
+    /// web's Preferences dialog persists the new value here.
+    pub terminal_font_family: String,
+    /// The web terminal's font size in pixels. Valid range
+    /// [`MIN_TERMINAL_FONT_SIZE`, `MAX_TERMINAL_FONT_SIZE`]; a value outside
+    /// it is reset to [`DEFAULT_TERMINAL_FONT_SIZE`] (with a warning) when the
+    /// bootstrap document is built, so a bad config value can never reach the
+    /// browser's terminal. Web UI only. Changing it from the web's
+    /// Preferences dialog persists the new value here.
+    pub terminal_font_size: u16,
+    /// WHEN the web UI's touch terminal shows the compose bar: a buffered text
+    /// box below the accessory-bar keys where the phone keyboard's
+    /// autocorrect/swipe input work, with a Send button that delivers the message
+    /// plus a submitting Enter in one write. While it is up, tapping the terminal
+    /// focuses the compose box instead of the raw terminal input; when it is not,
+    /// a tap types directly into the terminal.
+    ///
+    /// The raw config string, parsed at use through [`ComposeBarMode`] so a typo
+    /// degrades gracefully (warn once at load and fall back) instead of failing
+    /// the whole config load, mirroring the
+    /// `pr_banner_position`/`agent_sort`/[`WebDragDropPaste`] convention. `"auto"`
+    /// (the default) lets the browser decide from the pointer, and
+    /// `"always"`/`"never"` are the manual overrides; see [`ComposeBarMode`] for
+    /// why the manual pair has to exist at all.
+    ///
+    /// A config holding the older BOOLEAN spelling still loads: see
+    /// [`deserialize_compose_bar`]. Changing it from the web's Preferences dialog
+    /// persists the new value here. Web-only behavior.
+    #[serde(deserialize_with = "deserialize_compose_bar")]
+    pub compose_bar: String,
+    /// Whether the web UI's mobile terminal screens show the terminal-keys
+    /// accessory bar (Esc, Tab, Ctrl, Alt, the arrows and paging keys). Set
+    /// to false to hide it and give those rows back to the terminal. It can be
+    /// restored from the keys button in a phone's action flap, from the Input
+    /// group of the pane's top `⋯` menu on a computer, or from the web UI's
+    /// Preferences dialog. Web-only behavior.
+    pub mobile_accessory_bar: bool,
+    /// Directory, RELATIVE to the agent's worktree, that a file dropped or pasted
+    /// onto an AGENT pane is saved into. An absolute path, a `..` traversal, or an
+    /// empty value degrades to [`DEFAULT_UPLOAD_DIRECTORY`] with one warning at
+    /// load (see [`upload_directory_load_warning`]).
+    ///
+    /// A TERMINAL pane is deliberately not covered: a file dropped on a terminal
+    /// lands in the directory that terminal is actually in, because a shell that
+    /// has been `cd`'d somewhere is showing the user where they are working.
+    ///
+    /// This pair lives on `[ui]` rather than a section of its own because a
+    /// top-level `[uploads]` section would imply the feature exists in the TUI
+    /// too, and it does not. Web-only behavior.
+    pub upload_directory: String,
+    /// Keep a `.gitignore` holding a single `*` in the upload directory, so the
+    /// uploads (and that file itself) are invisible to git. Attempted on every
+    /// upload rather than only on the creation of the directory: it costs one
+    /// exclusive-create syscall, and it puts the file back for a directory that
+    /// was created while this setting was off, or whose ignore file was
+    /// deleted. An existing `.gitignore` is never touched, whatever it holds,
+    /// and yaran never writes to `.git/info/exclude`. Web-only behavior, as
+    /// `upload_directory` is.
+    pub upload_write_gitignore: bool,
+    /// How many CHARACTERS a text paste onto an AGENT pane may run to before
+    /// the web UI saves it as a `.txt` file in [`UiConfig::upload_directory`]
+    /// and pastes that file's path instead of typing the text.
+    ///
+    /// The reason is the agent's context window: a wall of pasted text spends it
+    /// whether the agent needed all of it or not, while a path costs almost
+    /// nothing.
+    ///
+    /// `0` switches the behaviour off. A value below
+    /// [`MIN_UPLOAD_PASTED_TEXT_CHARS`] or above
+    /// [`MAX_UPLOAD_PASTED_TEXT_CHARS`] is clamped with one warning at load
+    /// (see [`upload_pasted_text_chars_load_warning`]).
+    ///
+    /// A TERMINAL pane never consults this, structurally: a long paste into a
+    /// shell is a command or a heredoc, and turning that into a file would
+    /// destroy what the user meant. The mobile compose bar IS in scope: a paste
+    /// that large is a document whichever surface receives it, and the user can
+    /// write around the path before pressing Send. Web-only behavior, as its
+    /// `upload_` companions are.
+    pub upload_pasted_text_chars: usize,
+    /// Seconds the attention indicators stay visible after yaran regains your
+    /// attention, before the focused agent's needs-attention flag clears.
+    /// Applies when you return to the yaran browser tab (web UI) and when your
+    /// terminal window regains focus (TUI). Gives you time to see which
+    /// agent(s) wanted you before the indicator vanishes. `0` clears
+    /// immediately (the pre-grace behavior). TUI note: requires a terminal
+    /// that reports focus; under tmux, set `focus-events on`. Without focus
+    /// reports the grace never applies: the focused agent's indicator clears
+    /// right away.
+    pub attention_grace_seconds: u64,
+    /// Whether agents still running when yaran last exited are reopened at startup.
+    pub auto_reopen_agents: bool,
+    /// Show the right-hand Changes pane (the changed-files list) by default.
+    /// Toggling it from the TUI's command palette, the web's Changes actions
+    /// menu, or the web's Preferences dialog persists the new value here
+    /// immediately; it is not a per-session override.
+    pub show_changes_pane: bool,
+    /// Always show the agent tab strip, and with it the terminal dock's strip,
+    /// even when a session has only one tab. Default false shows them only once
+    /// the agent has two or more tabs or two or more terminals. Changing it from the TUI's command palette or the web's
+    /// Preferences dialog persists the new value here immediately; it is a
+    /// shared preference, not a per-session override.
+    pub always_show_tab_strip: bool,
+    /// Hand `Tab` and `Shift-Tab` to a live agent in the typeable center pane
+    /// instead of cycling panes with them. Default false, because Tab has moved
+    /// between panes since yaran's first version. The pane chords bound to
+    /// `focus_next`/`focus_prev` move panes whatever this is set to.
+    pub tab_reaches_agent: bool,
+    /// Whether the terminal UI asks its host terminal for extended keys (the
+    /// Kitty keyboard protocol, or tmux's own extended keys inside tmux) so yaran
+    /// can tell apart keys a classic terminal sends identically. The raw config
+    /// string, parsed at use through [`ExtendedKeysMode`] so a typo degrades
+    /// (warn once at load, fall back to `"auto"`) instead of failing the load,
+    /// the `compose_bar` precedent. Read once when the terminal UI starts.
+    /// Programs inside yaran receive classic keys whatever it holds. Terminal UI
+    /// only.
+    pub extended_keys: String,
+    /// Show an indicator when an agent asks for attention (a permission prompt,
+    /// a finished turn). Detected from the agent's terminal notifications and
+    /// bell. When false, no attention glyph/dot/tab-title/favicon cue is shown on
+    /// either surface. Default true.
+    pub attention_indicator: bool,
+    /// Also treat a plain terminal bell as an attention request. The bell is the
+    /// most compatible signal (Codex falls back to it; Claude Code emits it in
+    /// `terminal_bell` mode) but can occasionally ring for mundane reasons, so this
+    /// switch turns it off independently of `attention_indicator`. Default true.
+    pub attention_on_bell: bool,
+    /// Suppress the AUTOMATIC first-run welcome screen. Default false (the
+    /// screen shows once, on the very first launch of a fresh install). Opening
+    /// the welcome screen deliberately still works when this is true: the flag
+    /// governs what yaran does on its own, not what the user asks for.
+    pub disable_automated_welcome_screen: bool,
+    /// Suppress the AUTOMATIC what's-new screen after an upgrade, AND the
+    /// startup fetch of the release notes that feeds it (so nothing touches the
+    /// network on launch). Default false. Opening the release notes deliberately
+    /// still works and ALWAYS fetches: this flag governs the automatic screen,
+    /// not what that screen is allowed to contain.
+    pub disable_release_notes: bool,
+    /// Where the pull-request banner sits in the agent pane: `top` or `bottom`.
+    pub pr_banner_position: String,
+    /// The agent-list sort mode, persisted so a chosen order (and the manual
+    /// drag order it enables) survives restarts and is shared across clients:
+    /// "active" (working/attention float up, the default), "updated", "created",
+    /// "name", "`name_desc`", or "manual" (the raw persisted order, which
+    /// hand-placing a row stamps).
+    ///
+    /// One setting for both surfaces. The TUI orders its sidebar by it and has
+    /// three writers: the `sort-agents` palette command, and the
+    /// `move-agent-*` and `move-terminal-*` commands, which hand-place a row and
+    /// stamp "manual". The web writes it from its sidebar sort control, where a
+    /// drag stamps "manual" the same way. Each surface offers its own subset of
+    /// the modes and displays whatever value the other one set.
+    pub agent_sort: String,
+    /// The color theme's name: a built-in theme or a file stem under the themes directory.
+    pub theme: String,
+    /// Draw the terminal UI's icons from a Nerd Font (the project folder, the
+    /// standalone star, the pull-request mark, warnings, disclosure chevrons,
+    /// the header chips) instead of the plain Unicode set. Default false: the
+    /// glyphs only render in a terminal whose font is Nerd Font patched. The
+    /// web UI draws its own icons and is unaffected. Toggling it from the TUI's
+    /// command palette or the web's Preferences dialog persists it here.
+    pub nerd_font_icons: bool,
+}
+
+/// Terminal capability controls: what identity yaran presents to an agent, and
+/// which of the escape sequences the agent emits (notifications, progress,
+/// clipboard, hyperlinks) yaran forwards to the host terminal or the browser.
+///
+/// `terminal_identity` and `clipboard_passthrough` are stored as strings and
+/// parsed at use so a typo degrades gracefully (warn and fall back) instead of
+/// failing the whole config load, mirroring the theme/color-config convention.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CapabilitiesConfig {
+    /// How yaran presents itself to the agent: `auto` (mirror the host terminal in
+    /// the TUI, force ghostty on the headless server), `mirror`, `ghostty`,
+    /// `kitty`, `iterm2`, or `none` (inherit yaran's own env unchanged).
+    pub terminal_identity: String,
+    /// Master switch for forwarding an agent's notification/progress/clipboard
+    /// sequences OUTWARD of yaran. In the TUI that is the whole host forward:
+    /// false sends the host terminal nothing. On the web the only thing an agent
+    /// forwards outward is the OSC 52 clipboard write, so false seals that.
+    /// It does NOT govern browser desktop notifications; `web_notifications`
+    /// alone does.
+    pub passthrough: bool,
+    /// Which agents' OSC 52 clipboard-SET sequences reach the clipboard, on BOTH
+    /// surfaces: `focused` (only the tab you are viewing), `always` (any tab), or
+    /// `off`. Requires `passthrough = true` on both surfaces. Clipboard READ
+    /// queries are never forwarded on either surface.
+    pub clipboard_passthrough: String,
+    /// Render OSC 8 hyperlinks as clickable (TUI host embed and web click handler).
+    pub hyperlinks: bool,
+    /// Bridge agent notification sequences to a browser Notification (WEB only).
+    /// The only switch over those: `passthrough` does not gate them, so sealing
+    /// the clipboard leaves browser notifications working. No effect on the TUI,
+    /// whose host-terminal notifications are governed by `passthrough` alone.
+    pub web_notifications: bool,
+}
+
+impl Default for CapabilitiesConfig {
+    fn default() -> Self {
+        Self {
+            terminal_identity: "auto".to_string(),
+            passthrough: true,
+            clipboard_passthrough: "focused".to_string(),
+            hyperlinks: true,
+            web_notifications: true,
+        }
+    }
+}
+
+/// Default `ui.upload_directory`: inside the worktree (so a CLI that restricts
+/// reads to its workspace can still open the file), and self-ignoring.
+pub(crate) const DEFAULT_UPLOAD_DIRECTORY: &str = ".dux/uploads";
+
+/// The most a configured `ui.upload_directory` may measure, in bytes.
+///
+/// This is the platform's own `PATH_MAX` (4096 on Linux, 1024 on macOS), and it
+/// is a conservative bound rather than an exact one: the value is only the
+/// RELATIVE tail of a path that also carries a worktree in front of it, so a
+/// relative tail that already fills `PATH_MAX` cannot fit under any worktree
+/// whatsoever. How much of the remaining room a particular worktree leaves is
+/// not knowable at load, and is left to the syscall.
+#[expect(
+    clippy::as_conversions,
+    reason = "PATH_MAX is a small positive constant, and no From or TryFrom runs in a const"
+)]
+pub(crate) const MAX_UPLOAD_DIRECTORY_BYTES: usize = libc::PATH_MAX as usize;
+
+/// Why a configured `ui.upload_directory` cannot be used, or `None` when it is
+/// usable. Pure, and phrased as a sentence fragment the warning completes.
+///
+/// **This is a check on the SHAPE of the path and nothing else.** It proves the
+/// path is relative and walks downward through named components only, so no value
+/// yaran accepts can NAME somewhere outside the worktree. It cannot prove where the
+/// path RESOLVES to: a symlinked component could still point out of the tree, and
+/// no string inspection would see it. That is enforced at creation time instead,
+/// by walking the path one component at a time from a pinned worktree handle with
+/// `O_NOFOLLOW` (see [`crate::file_drop::DropDir::open_uploads`]).
+///
+/// The control-character, NUL and length refusals are a different kind: they name
+/// a shape the FILESYSTEM will refuse. Such a directory can be created and then
+/// fail every drop into it, once per drop, with a message about the wrong subject
+/// (`Invalid argument` for a NUL, `File name too long` for an over-long path).
+/// Refusing them at load is what the warn-once-and-degrade design exists to do.
+pub(crate) fn upload_directory_rejection(configured: &str) -> Option<&'static str> {
+    let trimmed = configured.trim();
+    if trimmed.is_empty() {
+        return Some("it is empty");
+    }
+    if trimmed.contains('\0') {
+        return Some("it contains a null byte, which no filesystem can store");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Some(
+            "it contains a control character, which cannot be typed back and would scramble \
+             any terminal the path is printed to",
+        );
+    }
+    if trimmed.len() > MAX_UPLOAD_DIRECTORY_BYTES {
+        return Some("it is longer than this platform allows a path to be");
+    }
+    let path = std::path::Path::new(trimmed);
+    let mut components = 0usize;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                if name.len() > crate::file_drop::FALLBACK_NAME_MAX_BYTES {
+                    return Some(
+                        "one of its path components is longer than a filesystem will accept",
+                    );
+                }
+                components += 1;
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Some("it is an absolute path, and uploads are stored inside the worktree");
+            }
+            std::path::Component::ParentDir => {
+                return Some("it contains a \"..\" component, which would leave the worktree");
+            }
+            // `.` names the directory it sits in, so it changes nothing and is
+            // simply dropped. Refusing it was inconsistent as well as useless:
+            // MEASURED, `Path::components()` preserves a CurDir only in LEADING
+            // position, so `uploads/./x` was already accepted and normalized
+            // while `./uploads`, an ordinary way to write a relative path, was
+            // turned away. A value that is NOTHING but `.` still falls to the
+            // "names no directory" refusal below.
+            std::path::Component::CurDir => {}
+        }
+    }
+    if components == 0 {
+        return Some("it names no directory");
+    }
+    None
+}
+
+/// Default `ui.upload_pasted_text_chars`, chosen from what the measured CLIs
+/// actually do with a long paste rather than from caution about it.
+///
+/// Claude Code collapses a long paste in its composer at around 800 characters,
+/// but the collapse is VISUAL and LOSSLESS: the whole text still reaches the
+/// agent. Codex accepts a paste up to its request-size cap, orders of magnitude
+/// above any prompt someone types. Neither measured CLI truncates text at a low
+/// four-figure count.
+///
+/// 4000 characters is roughly a long page of prose: ordinary instructions, however
+/// wordy, still arrive inline as text, while an error log, a stack trace or a diff
+/// runs well past it and becomes a file the agent can read on demand. It stays a
+/// preference: a user running an unmeasured CLI that handles long pastes worse
+/// lowers it, and one who wants everything typed out sets `0`.
+pub(crate) const DEFAULT_UPLOAD_PASTED_TEXT_CHARS: usize = 4_000;
+
+/// Floor on a *nonzero* `ui.upload_pasted_text_chars`.
+///
+/// A typical multi-sentence prompt runs a few hundred characters, so a mistyped
+/// tiny value would turn ordinary instructions into files and make the agent
+/// feel broken in a way that names nothing. `0` remains the way to switch the
+/// behaviour off, and the warning says so.
+pub(crate) const MIN_UPLOAD_PASTED_TEXT_CHARS: usize = 200;
+
+/// Ceiling on `ui.upload_pasted_text_chars`.
+///
+/// Well over an order of magnitude above the default. A value up here is not a
+/// preference anyone could have arrived at from how the CLIs behave; it is a
+/// byte figure or an extra zero,
+/// and clamping it with a warning is what the warn-once-and-degrade convention
+/// is for. Switching the behaviour off has its own value, and it is `0`.
+pub(crate) const MAX_UPLOAD_PASTED_TEXT_CHARS: usize = 100_000;
+
+/// Normalize a configured `ui.upload_pasted_text_chars`: `0` is the valid
+/// "switch it off" value and is preserved; anything else is clamped into
+/// [`MIN_UPLOAD_PASTED_TEXT_CHARS`, `MAX_UPLOAD_PASTED_TEXT_CHARS`].
+///
+/// Deliberately PURE: it does not log. The on-disk value is warned about and
+/// corrected exactly once, at load, in [`load_config`]; this is then called
+/// from read paths (the bootstrap projection) that run far more often than the
+/// config loads. Same split as [`effective_upload_directory`].
+pub fn normalized_upload_pasted_text_chars(configured: usize) -> usize {
+    if configured == 0 {
+        return 0;
+    }
+    configured.clamp(MIN_UPLOAD_PASTED_TEXT_CHARS, MAX_UPLOAD_PASTED_TEXT_CHARS)
+}
+
+/// The warning [`load_config`] emits for an out-of-range
+/// `ui.upload_pasted_text_chars`, or `None` for a usable one.
+///
+/// It names the way to switch the behaviour off as well as the clamp, because
+/// somebody typing a very small number is usually reaching for "never do this"
+/// and would otherwise keep lowering it and keep being clamped.
+pub(crate) fn upload_pasted_text_chars_load_warning(configured: usize) -> Option<String> {
+    let normalized = normalized_upload_pasted_text_chars(configured);
+    if normalized == configured {
+        return None;
+    }
+    Some(format!(
+        "ui.upload_pasted_text_chars = {configured} is outside the usable range of \
+         {MIN_UPLOAD_PASTED_TEXT_CHARS} to {MAX_UPLOAD_PASTED_TEXT_CHARS} characters and is \
+         being clamped to {normalized}. Use 0 to stop saving long pastes as files entirely."
+    ))
+}
+
+/// The warning [`load_config`] emits for an unusable `ui.upload_directory`, or
+/// `None` for a usable one. Split out from the logging so the message can be
+/// asserted directly, mirroring [`terminal_font_size_load_warning`].
+pub(crate) fn upload_directory_load_warning(configured: &str) -> Option<String> {
+    let reason = upload_directory_rejection(configured)?;
+    Some(format!(
+        "ui.upload_directory = {configured:?} cannot be used because {reason}. Falling back \
+         to the default of {DEFAULT_UPLOAD_DIRECTORY:?}."
+    ))
+}
+
+/// The parsed form of `capabilities.clipboard_passthrough`. Stored as a string in
+/// config (so a typo degrades gracefully rather than failing the whole load) and
+/// parsed at use, mirroring [`crate::term_identity::TerminalIdentityMode`]. Both
+/// surfaces normalize through this so the TUI host forward and the web browser
+/// write agree on the mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardPassthroughMode {
+    /// Forward a clipboard SET only from the tab the user is currently viewing.
+    Focused,
+    /// Forward a clipboard SET from any tab, foreground or background.
+    Always,
+    /// Never forward a clipboard SET.
+    Off,
+}
+
+impl ClipboardPassthroughMode {
+    /// Parse a config string into a mode, returning `None` for an unrecognized
+    /// value so the caller can decide whether to warn. Never warns itself, so the
+    /// per-tick forward path can call it freely.
+    pub(crate) fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "focused" => Some(Self::Focused),
+            "always" => Some(Self::Always),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    /// The canonical lowercase name, used to project the normalized mode into the
+    /// web bootstrap document so both surfaces agree.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Focused => "focused",
+            Self::Always => "always",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl Default for Defaults {
+    fn default() -> Self {
+        let start_directory = home::home_dir().map(|p| p.to_string_lossy().to_string());
+        Self {
+            provider: "claude".to_string(),
+            start_directory,
+            enable_randomized_pet_name_by_default: false,
+            pull_before_creating_agent_by_default: true,
+            copy_uncommitted_changes_by_default: true,
+        }
+    }
+}
+
+impl Default for ProvidersConfig {
+    fn default() -> Self {
+        let commands = default_provider_commands()
+            .into_iter()
+            .map(|(name, config)| (name.to_string(), config))
+            .collect();
+        Self { commands }
+    }
+}
+
+impl ProviderCommandConfig {
+    /// The arguments for an interactive launch, with the resume arguments appended when `start`
+    /// resumes the previous conversation.
+    pub fn interactive_args(&self, start: crate::model::ConversationStart) -> Vec<String> {
+        let mut args = self.args.clone();
+        if start.is_resume()
+            && let Some(resume_args) = self.resume_args.as_deref().filter(|args| !args.is_empty())
+        {
+            args.extend(resume_args.iter().cloned());
+        }
+        args
+    }
+
+    /// Whether this provider has resume arguments, so it can pick its previous conversation back
+    /// up.
+    pub fn supports_session_resume(&self) -> bool {
+        self.resume_args
+            .as_ref()
+            .is_some_and(|args| !args.is_empty())
+    }
+
+    /// The effective [`WebDragDropPaste`] for this provider: the configured value when
+    /// it names a form yaran knows, and [`WebDragDropPaste::Bare`] when the key is absent
+    /// or misspelled. Silent, because a warning belongs at config load and not on
+    /// every paste; `load_config` emits it once (see `warn_on_unknown_web_dragdrop_paste_forms`).
+    pub fn resolved_web_dragdrop_paste(&self) -> WebDragDropPaste {
+        self.web_dragdrop_paste
+            .as_deref()
+            .and_then(WebDragDropPaste::parse)
+            .unwrap_or_default()
+    }
+
+    /// The FILE NAME of the command this provider runs, which is the only thing
+    /// in a `[providers.<name>]` block that identifies which CLI is on the other
+    /// end of a paste.
+    ///
+    /// The block's NAME does not: it is free text the user chooses, so
+    /// `[providers.myagent] command = "codex"` is a real Codex and
+    /// `[providers.codex] command = "something-else"` is not. Anything keyed by
+    /// the name answers for the wrong CLI in both directions at once, so the web's
+    /// per-CLI paste-length table is keyed by this instead.
+    ///
+    /// The FILE NAME rather than the whole string, because `command` may be a full
+    /// path (`/usr/local/bin/codex`), a `~`-relative one, or a bare name found on
+    /// `PATH`, and all three name the same CLI. Argument-carrying wrappers
+    /// (`command = "npx"`, `command = "mise"`) are deliberately NOT unwrapped: what
+    /// they finally exec is not knowable from config, so they resolve to the
+    /// wrapper and fall into the "no entry, no limit" case, which withholds
+    /// nothing.
+    ///
+    /// Falls back to the whole string when there is no file name to take (an empty
+    /// command, or one that is nothing but separators), so the answer is never
+    /// silently empty.
+    pub(crate) fn command_file_name(&self) -> String {
+        std::path::Path::new(&self.command).file_name().map_or_else(
+            || self.command.clone(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            path: "yaran.log".to_string(),
+            max_bytes: DEFAULT_LOG_MAX_BYTES,
+            keep: DEFAULT_LOG_KEEP,
+            compress: true,
+        }
+    }
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            command: default_terminal_command(),
+            args: default_terminal_args(),
+        }
+    }
+}
+
+impl Default for StartupCommandTerminalConfig {
+    fn default() -> Self {
+        Self {
+            command: "$SHELL".to_string(),
+            args: vec!["-l".to_string(), "-c".to_string()],
+        }
+    }
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            default: "cursor".to_string(),
+        }
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 3890,
+            tailscale: TailscaleMode::Auto.as_str().to_string(),
+            allowed_hosts: Vec::new(),
+            color: "auto".to_string(),
+            access_log: true,
+            log_viewer_lines: DEFAULT_LOG_VIEWER_LINES,
+            log_path: "server.log".to_string(),
+            log_max_bytes: DEFAULT_LOG_MAX_BYTES,
+            log_keep: DEFAULT_LOG_KEEP,
+            log_compress: true,
+            qr_codes: true,
+            serve_while_tui: false,
+            control_socket: DEFAULT_CONTROL_SOCKET.to_string(),
+            max_websocket_events_connections: DEFAULT_MAX_WEBSOCKET_EVENTS_CONNECTIONS,
+            max_websocket_agent_connections: DEFAULT_MAX_WEBSOCKET_AGENT_CONNECTIONS,
+            max_websocket_terminal_connections: DEFAULT_MAX_WEBSOCKET_TERMINAL_CONNECTIONS,
+            max_websocket_tab_connections: DEFAULT_MAX_WEBSOCKET_TAB_CONNECTIONS,
+            max_websocket_tabs_per_agent: DEFAULT_MAX_WEBSOCKET_TABS_PER_AGENT,
+            title: "yaran".to_string(),
+            favicon: String::new(),
+            shutdown_timeout_seconds: DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+            search_index_max_files: DEFAULT_SEARCH_INDEX_MAX_FILES,
+            tree_list_max_concurrency: DEFAULT_TREE_LIST_MAX_CONCURRENCY,
+            release_notes_max_concurrency: DEFAULT_RELEASE_NOTES_MAX_CONCURRENCY,
+            file_drop_max_bytes: DEFAULT_FILE_DROP_MAX_BYTES,
+            file_drop_max_concurrency: DEFAULT_FILE_DROP_MAX_CONCURRENCY,
+            replay_wait_seconds: DEFAULT_REPLAY_WAIT_SECONDS,
+            reconnect_backoff_cap_seconds: DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS,
+            reconnect_attempts: DEFAULT_RECONNECT_ATTEMPTS,
+            reconnect_attempt_timeout_seconds: DEFAULT_RECONNECT_ATTEMPT_TIMEOUT_SECONDS,
+            changes_request_timeout_seconds: DEFAULT_CHANGES_REQUEST_TIMEOUT_SECONDS,
+            heartbeat_seconds: DEFAULT_HEARTBEAT_SECONDS,
+            heartbeat_deadline_seconds: DEFAULT_HEARTBEAT_DEADLINE_SECONDS,
+            pty_send_timeout_seconds: DEFAULT_PTY_SEND_TIMEOUT_SECONDS,
+            operation_unknown_after_seconds: DEFAULT_OPERATION_UNKNOWN_AFTER_SECONDS,
+            operation_retention_seconds: DEFAULT_OPERATION_RETENTION_SECONDS,
+            presence_grace_seconds: DEFAULT_PRESENCE_GRACE_SECONDS,
+            auth: ServerAuthConfig::default(),
+        }
+    }
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            // These must stay equal to the `UiConfig` literal inside
+            // `Config::default()`. `[ui]` carries `#[serde(default)]`, so a config
+            // whose `[ui]` table omits a width fills it from here, while a fresh
+            // install writes the value the canonical template renders from
+            // `Config::default()`. When the two disagree the same setting has two
+            // defaults depending on how the user arrived, and `yaran config diff`
+            // reports a width the user never wrote as changed.
+            left_width_pct: 20,
+            right_width_pct: 23,
+            terminal_dock_pct: 50,
+            empty_project_separator_min_projects: 5,
+            staged_pane_height_pct: 50,
+            commit_pane_height_pct: 40,
+            agent_scrollback_lines: 10_000,
+            agent_tabs_max: DEFAULT_AGENT_TABS_MAX,
+            status_clear_seconds: 6,
+            branch_sync_interval: 30,
+            show_diff_line_numbers: false,
+            diff_tab_width: 4,
+            github_integration: true,
+            pr_poll_interval_seconds: DEFAULT_PR_POLL_INTERVAL_SECONDS,
+            pr_poll_inactive_interval_seconds: DEFAULT_PR_POLL_INACTIVE_INTERVAL_SECONDS,
+            pr_history_branches_per_cycle: DEFAULT_PR_HISTORY_BRANCHES_PER_CYCLE,
+            pr_settled_recheck_seconds: DEFAULT_PR_SETTLED_RECHECK_SECONDS,
+            github_probe_interval_secs: DEFAULT_GITHUB_PROBE_INTERVAL_SECONDS,
+            copy_on_select: true,
+            terminal_font_family: String::new(),
+            terminal_font_size: DEFAULT_TERMINAL_FONT_SIZE,
+            compose_bar: ComposeBarMode::Auto.as_str().to_string(),
+            mobile_accessory_bar: true,
+            upload_directory: DEFAULT_UPLOAD_DIRECTORY.to_string(),
+            upload_write_gitignore: true,
+            upload_pasted_text_chars: DEFAULT_UPLOAD_PASTED_TEXT_CHARS,
+            attention_grace_seconds: 3,
+            auto_reopen_agents: false,
+            show_changes_pane: true,
+            always_show_tab_strip: false,
+            tab_reaches_agent: false,
+            extended_keys: ExtendedKeysMode::Auto.as_str().to_string(),
+            attention_indicator: true,
+            attention_on_bell: true,
+            disable_automated_welcome_screen: false,
+            disable_release_notes: false,
+            pr_banner_position: "bottom".to_string(),
+            agent_sort: "active".to_string(),
+            theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
+            nerd_font_icons: false,
+        }
+    }
+}
+
+impl ProvidersConfig {
+    /// The named provider's settings, if it is configured.
+    pub fn get(&self, name: &str) -> Option<&ProviderCommandConfig> {
+        self.commands.get(name)
+    }
+
+    /// Adds every shipped provider that is missing, and fills the resume and drop-paste settings a
+    /// configured shipped provider leaves unset.
+    pub fn ensure_defaults(&mut self) {
+        for (name, config) in default_provider_commands() {
+            match self.commands.entry(name.to_string()) {
+                indexmap::map::Entry::Vacant(entry) => {
+                    entry.insert(config);
+                }
+                indexmap::map::Entry::Occupied(mut entry) => {
+                    if entry.get().resume_args.is_none() {
+                        entry.get_mut().resume_args = config.resume_args;
+                    }
+                    if entry.get().resume_wait_timeout_ms.is_none() {
+                        entry.get_mut().resume_wait_timeout_ms = config.resume_wait_timeout_ms;
+                    }
+                    // A config written before `web_dragdrop_paste` existed has the key
+                    // absent, and absent resolves to `bare`. That is wrong for
+                    // codex, so fill in the shipped form here rather than letting
+                    // an old config silently keep the do-nothing one. An explicit
+                    // value is left alone: config wins for explicit preferences.
+                    if entry.get().web_dragdrop_paste.is_none() {
+                        entry.get_mut().web_dragdrop_paste = config.web_dragdrop_paste;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn default_terminal_command() -> String {
+    env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "/bin/sh".to_string())
+}
+
+pub(crate) fn default_terminal_args() -> Vec<String> {
+    // Launch as a login shell so the user's profile, aliases, and prompt
+    // are loaded. The -l flag is supported by bash, zsh, fish, dash, and
+    // all POSIX shells.
+    vec!["-l".to_string()]
+}
+
+/// The providers yaran ships, and every default that goes with them.
+///
+/// `web_dragdrop_paste` here is the MEASURED result of running each CLI's own path
+/// normalizer over the bytes yaran sends. The table of what each one does, and the
+/// caveat that Copilot's and Grok's values are assumptions rather than measurements, lives on
+/// [`WebDragDropPaste`]. Read it before changing a value here.
+pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 5] {
+    [
+        (
+            "claude",
+            ProviderCommandConfig {
+                command: "claude".to_string(),
+                args: Vec::new(),
+                resume_args: Some(vec!["--continue".to_string()]),
+                resume_wait_timeout_ms: None,
+                install_hint: Some("curl -fsSL https://claude.ai/install.sh | bash".to_string()),
+                forward_scroll: None,
+                // Measured: strips one quote pair then unescapes, so quoting
+                // buys nothing and corrupts an apostrophe.
+                web_dragdrop_paste: Some(WebDragDropPaste::Bare.as_str().to_string()),
+            },
+        ),
+        (
+            "codex",
+            ProviderCommandConfig {
+                command: "codex".to_string(),
+                args: Vec::new(),
+                resume_args: Some(vec!["resume".to_string(), "--last".to_string()]),
+                resume_wait_timeout_ms: None,
+                install_hint: Some("brew install --cask codex".to_string()),
+                forward_scroll: None,
+                // Measured: falls back to POSIX shell lexing and accepts only a
+                // single token, so a bare path with a space fails silently.
+                web_dragdrop_paste: Some(WebDragDropPaste::SingleQuoted.as_str().to_string()),
+            },
+        ),
+        (
+            "opencode",
+            ProviderCommandConfig {
+                command: "opencode".to_string(),
+                args: Vec::new(),
+                resume_args: Some(vec!["--continue".to_string()]),
+                resume_wait_timeout_ms: Some(3_000),
+                install_hint: Some("curl -fsSL https://opencode.ai/install | bash".to_string()),
+                forward_scroll: None,
+                // Measured: strips quote characters and never splits on a space.
+                web_dragdrop_paste: Some(WebDragDropPaste::Bare.as_str().to_string()),
+            },
+        ),
+        (
+            "copilot",
+            ProviderCommandConfig {
+                command: "copilot".to_string(),
+                args: Vec::new(),
+                // Copilot's --continue resumes the most recent session
+                // globally, not scoped to the current working directory.
+                // Unlike claude/codex/opencode, there is no flag
+                // to limit resume to the CWD, so we disable it.
+                resume_args: None,
+                resume_wait_timeout_ms: None,
+                install_hint: Some("curl -fsSL https://gh.io/copilot-install | bash".to_string()),
+                forward_scroll: None,
+                // NOT measured: Copilot CLI is closed source. `bare` is the
+                // do-nothing option and what two of the three verified CLIs want.
+                web_dragdrop_paste: Some(WebDragDropPaste::Bare.as_str().to_string()),
+            },
+        ),
+        (
+            "grok",
+            ProviderCommandConfig {
+                command: "grok".to_string(),
+                args: Vec::new(),
+                // Grok's --continue resumes the most recent session for the
+                // current working directory.
+                resume_args: Some(vec!["--continue".to_string()]),
+                resume_wait_timeout_ms: Some(3_000),
+                install_hint: Some("curl -fsSL https://x.ai/cli/install.sh | bash".to_string()),
+                forward_scroll: None,
+                // NOT measured: assumed to read a pasted path like the Claude
+                // CLI, which it behaves like. `bare` is also the do-nothing
+                // option.
+                web_dragdrop_paste: Some(WebDragDropPaste::Bare.as_str().to_string()),
+            },
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// YaranPaths: canonical locations for runtime files
+// ---------------------------------------------------------------------------
+
+/// Where yaran keeps its files: the config directory and everything it holds.
+#[derive(Clone, Debug)]
+pub struct YaranPaths {
+    /// The yaran config directory.
+    pub root: PathBuf,
+    /// The config file, `config.toml`.
+    pub config_path: PathBuf,
+    /// The session database, `sessions.sqlite3`.
+    pub sessions_db_path: PathBuf,
+    /// The directory managed worktrees are created under.
+    pub worktrees_root: PathBuf,
+    /// Path to the lockfile that enforces a single yaran instance per
+    /// config directory. Contains the PID of the holder.
+    pub lock_path: PathBuf,
+    /// Where the control socket is bound: the default until a start that read the
+    /// config replaces it through [`YaranPaths::with_control_socket`].
+    pub socket_path: PathBuf,
+}
+
+impl YaranPaths {
+    /// Resolves the paths from `YARAN_HOME`, else the platform's config directory under the home
+    /// directory (`XDG_CONFIG_HOME` on Linux).
+    ///
+    /// # Errors
+    ///
+    /// Fails when `YARAN_HOME` is set to a relative path, or when it is unset and the home directory
+    /// cannot be determined.
+    pub fn discover() -> Result<Self> {
+        let root = resolve_root(
+            env::var_os("YARAN_HOME"),
+            home::home_dir(),
+            env::var_os("XDG_CONFIG_HOME").as_deref(),
+        )?;
+        Ok(Self {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: resolve_control_socket(&root, DEFAULT_CONTROL_SOCKET),
+            root,
+        })
+    }
+
+    /// These paths with the control socket the `[server] control_socket`
+    /// setting names.
+    #[must_use]
+    pub fn with_control_socket(mut self, setting: &str) -> Self {
+        self.socket_path = resolve_control_socket(&self.root, setting);
+        self
+    }
+
+    /// Create the config root and the worktrees directory.
+    ///
+    /// The ROOT is owner-only (`0700`), and that is the load-bearing part of
+    /// yaran's file permissions rather than a nicety: it holds `config.toml`,
+    /// `sessions.sqlite3` (which mirrors the same per-project `env` map that
+    /// made the config file `0600`), the sqlite sidecars SQLite creates itself
+    /// at runtime with no mode yaran can choose, and `yaran.log`. A directory
+    /// another local user cannot search settles all of them at once.
+    ///
+    /// It TIGHTENS on every startup, not only on first creation, so an existing
+    /// installation's `0755` root is fixed too. The tightening only clears group
+    /// and other bits, so it is idempotent and cannot lock the owner out.
+    ///
+    /// The WORKTREES directory is deliberately left at the umask default: those
+    /// are the user's own checkouts, opened in their own editor, and the mode yaran
+    /// found is the mode yaran leaves. They sit inside a `0700` root, so another
+    /// local user cannot search their way in whatever the worktrees directory
+    /// itself says; sharing a worktree with another local account means putting
+    /// the worktrees outside the config root, never loosening the root.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the config directory or the worktrees directory cannot be created.
+    pub fn ensure_dirs(&self) -> Result<()> {
+        crate::file_modes::create_private_dir_all(&self.root)
+            .with_context(|| format!("failed to create {}", self.root.display()))?;
+        // `config.toml` too, the file this matters most for since it holds `[env]`
+        // tokens. Without this pass it reaches `0600` only when
+        // `write_config_atomic` creates its temp at `0600` and renames over the
+        // original, so a config chmod'd to `0644` by hand would stay `0644` while
+        // the log and the database were corrected on every open. A missing file is
+        // not an error here and is not created, and the pass only ever clears group
+        // and other bits, so a deliberate `0400` survives.
+        crate::file_modes::restrict_to_owner_best_effort(&self.config_path, "config file");
+        fs::create_dir_all(&self.worktrees_root)
+            .with_context(|| format!("failed to create {}", self.worktrees_root.display()))?;
+        Ok(())
+    }
+}
+
+/// `[server] control_socket` as a path: relative to the config folder, or
+/// as written when absolute.
+pub(crate) fn resolve_control_socket(root: &Path, setting: &str) -> PathBuf {
+    root.join(setting)
+}
+
+pub(crate) fn resolve_root(
+    yaran_home: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+    xdg_config_home: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf> {
+    if let Some(yaran_home) = yaran_home.map(PathBuf::from) {
+        if yaran_home.is_absolute() {
+            return Ok(yaran_home);
+        }
+        bail!(
+            "YARAN_HOME must be an absolute path, got: {}",
+            yaran_home.display()
+        );
+    }
+
+    let home = home.ok_or_else(|| anyhow!("failed to determine user home directory"))?;
+    Ok(discover_root(&home, xdg_config_home))
+}
+
+pub(crate) fn discover_root(home: &Path, xdg_config_home: Option<&std::ffi::OsStr>) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = xdg_config_home;
+        home.join(".yaran")
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(xdg) = xdg_config_home.map(PathBuf::from)
+            && xdg.is_absolute()
+        {
+            return xdg.join("yaran");
+        }
+        home.join(".config").join("yaran")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Env/path helpers
+// ---------------------------------------------------------------------------
+
+/// What a variable reads in this process's environment, `None` when it is
+/// unset or not Unicode.
+pub(crate) fn process_env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+/// Expand environment variables (`$VAR`, `${VAR}`) in a config string.
+/// Returns `None` when variable syntax is invalid, a `${` with no closing
+/// brace included.
+pub(crate) fn expand_env_vars(raw: &str) -> Option<String> {
+    expand_env_vars_with(raw, &process_env_var)
+}
+
+/// [`expand_env_vars`], reading each variable through `var`.
+pub(crate) fn expand_env_vars_with(
+    raw: &str,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let mut result = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            let braced = chars.peek() == Some(&'{');
+            if braced {
+                chars.next();
+            }
+            let mut var_name = String::new();
+            let mut closed = false;
+            while let Some(&c) = chars.peek() {
+                if braced {
+                    if c == '}' {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                } else if !c.is_ascii_alphanumeric() && c != '_' {
+                    break;
+                }
+                var_name.push(c);
+                chars.next();
+            }
+            if (braced && !closed) || var_name.is_empty() || !is_valid_var_name(&var_name) {
+                return None;
+            }
+            if let Some(value) = var(&var_name) {
+                result.push_str(&value);
+            } else {
+                result.push('$');
+                if braced {
+                    result.push('{');
+                }
+                result.push_str(&var_name);
+                if braced {
+                    result.push('}');
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    Some(result)
+}
+
+pub(crate) fn resolve_project_env(env: &BTreeMap<String, String>) -> Result<Vec<(String, String)>> {
+    resolve_project_env_with(env, &process_env_var)
+}
+
+/// [`resolve_project_env`], reading each referenced variable through `var`.
+fn resolve_project_env_with(
+    env: &BTreeMap<String, String>,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<(String, String)>> {
+    let mut resolved = Vec::with_capacity(env.len());
+    for (name, value) in env {
+        validate_project_env_name(name)?;
+        let expanded = expand_env_vars_with(value, var)
+            .ok_or_else(|| anyhow!("environment variable {name} has invalid expansion syntax"))?;
+        if expanded.contains('\0') {
+            bail!("environment variable {name} contains a NUL byte");
+        }
+        resolved.push((name.clone(), expanded));
+    }
+    Ok(resolved)
+}
+
+/// The environment an agent's PTY gets: the global variables overlaid with the project's, with
+/// variable references expanded.
+///
+/// # Errors
+///
+/// Fails when a variable's name is invalid, its value has invalid expansion syntax, or the expanded
+/// value holds a NUL byte.
+pub fn resolve_agent_env(
+    global_env: &BTreeMap<String, String>,
+    project_env: &BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>> {
+    let mut merged = global_env.clone();
+    merged.extend(project_env.clone());
+    resolve_project_env(&merged)
+}
+
+/// The variables as `NAME=value` lines, one per variable, for editing as text.
+pub fn project_env_to_lines(env: &BTreeMap<String, String>) -> String {
+    env.iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Parses `NAME=value` lines back into variables, skipping blank lines.
+///
+/// # Errors
+///
+/// Fails on a line without `=`, an invalid variable name or a value holding a NUL byte, naming the
+/// line.
+pub fn parse_project_env_lines(raw: &str) -> Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+    for (index, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = trimmed.split_once('=') else {
+            bail!("line {} must use KEY=value syntax", index + 1);
+        };
+        let name = name.trim();
+        validate_project_env_name(name)
+            .with_context(|| format!("line {} has an invalid variable name", index + 1))?;
+        if value.contains('\0') {
+            bail!("line {} contains a NUL byte", index + 1);
+        }
+        expand_env_vars(value).ok_or_else(|| {
+            anyhow!(
+                "line {} has invalid environment variable expansion syntax",
+                index + 1
+            )
+        })?;
+        env.insert(name.to_string(), value.to_string());
+    }
+    Ok(env)
+}
+
+/// Whether `name` is a name yaran accepts for an environment variable, in
+/// `[env]` and in a project's `env`: `[A-Za-z_][A-Za-z0-9_]*`.
+pub(crate) fn is_valid_env_name(name: &str) -> bool {
+    is_valid_var_name(name)
+}
+
+fn validate_project_env_name(name: &str) -> Result<()> {
+    if is_valid_var_name(name) {
+        Ok(())
+    } else {
+        bail!("expected [A-Za-z_][A-Za-z0-9_]*")
+    }
+}
+
+/// Expand environment variables (`$VAR`, `${VAR}`) and tilde (`~`) in a path
+/// string.  Returns `None` when the result is unsafe (relative path, directory
+/// traversal via `..`, or invalid variable names).
+pub(crate) fn expand_path(raw: &str) -> Option<String> {
+    expand_path_with(raw, &process_env_var)
+}
+
+/// [`expand_path`], reading each variable through `var`.
+fn expand_path_with(raw: &str, var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let mut result = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+
+    result.push_str(&expand_leading_tilde(&mut chars)?);
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            result.push_str(&expand_variable(&mut chars, var)?);
+        } else {
+            result.push(ch);
+        }
+    }
+
+    if !is_safe_expanded_path(&result) {
+        return None;
+    }
+
+    Some(result)
+}
+
+/// The text a leading `~` expands to, empty when the path does not start with
+/// one. `None` rejects `~user`, whose home yaran does not resolve.
+fn expand_leading_tilde(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    if chars.peek() != Some(&'~') {
+        return Some(String::new());
+    }
+    chars.next();
+    let home = home::home_dir()?;
+    // A bare `~` is the home directory; `~/…` leaves the slash for the caller
+    // to push. Anything else names another user.
+    if chars.peek().is_some_and(|c| *c != '/') {
+        return None;
+    }
+    Some(home.to_string_lossy().into_owned())
+}
+
+/// The text the `$VAR`/`${VAR}` reference starting at `chars` expands to, or
+/// the literal reference itself when the variable is unset, so the user can see
+/// which one failed. `None` rejects a name that is not `[A-Za-z_][A-Za-z0-9_]*`,
+/// and a `${` with no closing brace. The variable is read through `var`.
+fn expand_variable(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let braced = chars.peek() == Some(&'{');
+    if braced {
+        chars.next();
+    }
+    let mut var_name = String::new();
+    let mut closed = false;
+    while let Some(&c) = chars.peek() {
+        if braced {
+            if c == '}' {
+                chars.next();
+                closed = true;
+                break;
+            }
+        } else if !c.is_ascii_alphanumeric() && c != '_' {
+            break;
+        }
+        var_name.push(c);
+        chars.next();
+    }
+    if (braced && !closed) || var_name.is_empty() || !is_valid_var_name(&var_name) {
+        return None;
+    }
+    match var(&var_name) {
+        Some(value) => Some(value),
+        None if braced => Some(format!("${{{var_name}}}")),
+        None => Some(format!("${var_name}")),
+    }
+}
+
+/// Whether an expanded path is safe to hand back: absolute, and with no `..`
+/// component that would climb out of where it points.
+fn is_safe_expanded_path(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// Returns `true` when `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_valid_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+// ---------------------------------------------------------------------------
+// Top-level Config and KeysConfig
+// ---------------------------------------------------------------------------
+
+/// The whole of `config.toml`, as yaran reads and writes it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    /// Seconds the TUI waits for agents and companion terminals to exit after
+    /// SIGTERM when quitting, before force-killing (SIGKILL) any stragglers.
+    /// `0` skips the wait and force-kills immediately; values above
+    /// [`MAX_SHUTDOWN_TIMEOUT_SECONDS`] are clamped (the unit is seconds, not
+    /// milliseconds). A second Ctrl-c/SIGTERM during the wait cuts it short. A
+    /// top-level (not `[ui]`/`[server]`) key because it is a global lifecycle
+    /// knob. This governs the plain TUI quit; once the TUI is flipped into server
+    /// mode, that shutdown uses `[server].shutdown_timeout_seconds` instead (even
+    /// though you started in the TUI).
+    ///
+    /// It also governs the per-agent DETACH grace on both surfaces, server mode
+    /// included: `Engine::begin_detach_session` reads it through
+    /// [`shutdown_grace`], so the wait quoted in the detach confirmation and the
+    /// wait the background reaper actually gives are this one number, whether
+    /// the request came from the terminal UI's palette or a browser's row menu.
+    /// The `[server]` key stays about quitting `yaran server`, not about detaching
+    /// one agent while it runs.
+    pub shutdown_timeout_seconds: u16,
+    /// Seconds a worktree removal (deleting an agent with its worktree,
+    /// deleting a project, or the worktree manager) waits for operations still
+    /// running in that worktree to finish, and a project deletion waits for an
+    /// agent still being created in it, before giving up out loud. The removal
+    /// runs on a background worker, so the wait never blocks either surface.
+    pub removal_wait_seconds: u16,
+    /// The `[defaults]` table.
+    pub defaults: Defaults,
+    /// The global `[env]` variables passed to every agent, terminal and startup command.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// The `[providers.*]` tables.
+    pub providers: ProvidersConfig,
+    /// The `[terminal]` table.
+    pub terminal: TerminalConfig,
+    /// The `[startup_command_terminal]` table.
+    pub startup_command_terminal: StartupCommandTerminalConfig,
+    /// The `[logging]` table.
+    pub logging: LoggingConfig,
+    /// The `[[projects]]` entries.
+    pub projects: Vec<ProjectConfig>,
+    /// The `[ui]` table.
+    pub ui: UiConfig,
+    /// The `[capabilities]` table.
+    #[serde(default)]
+    pub capabilities: CapabilitiesConfig,
+    /// The `[editor]` table.
+    pub editor: EditorConfig,
+    /// The `[cli]` table.
+    pub cli: CliConfig,
+    /// The `[git]` table.
+    #[serde(default)]
+    pub git: GitConfig,
+    /// The `[server]` table.
+    #[serde(default)]
+    pub server: ServerConfig,
+    /// The `[keys]` table.
+    pub keys: KeysConfig,
+    /// The `[macros]` table.
+    pub macros: MacrosConfig,
+    /// The exact text of the file this config was read from, or that yaran
+    /// wrote from it, when there is one. Never serialized. The config
+    /// writer's three-way saves start from it: a config READ from the text is
+    /// re-parsed from it as written, while for a config yaran WROTE the base is
+    /// that config itself, never a re-parse of the text (which, through the
+    /// three-way patch, can carry another writer's change yaran never had).
+    #[serde(skip)]
+    pub source_text: SourceText,
+}
+
+/// The text behind a [`Config`] (see [`Config::source_text`]), and whether
+/// the config was read from it or yaran wrote it. It never makes two configs
+/// differ: equality is about settings.
+#[derive(Clone, Default)]
+pub struct SourceText {
+    text: Option<std::sync::Arc<str>>,
+    /// For a text yaran wrote: the config that write is known to have put in
+    /// the file (the base a later save compares memory with).
+    written_base: Option<std::sync::Arc<Config>>,
+}
+
+impl SourceText {
+    /// The text this config was read from.
+    pub fn of(text: &str) -> Self {
+        Self {
+            text: Some(std::sync::Arc::from(text)),
+            written_base: None,
+        }
+    }
+
+    /// A text yaran wrote, with `base`, the config that write is known to have
+    /// put in the file. `text` is what yaran has seen of the file (the text it
+    /// read plus what it wrote). `base` is never a re-parse of the written
+    /// text, which can carry another writer's change yaran never had.
+    pub fn written(text: &str, mut base: Config) -> Self {
+        // The base's own source is dropped, so bases never nest one inside
+        // the other across saves.
+        base.source_text = SourceText::default();
+        Self {
+            text: Some(std::sync::Arc::from(text)),
+            written_base: Some(std::sync::Arc::new(base)),
+        }
+    }
+
+    /// The text, when there is one.
+    pub fn as_str(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
+    /// Whether yaran wrote the text, rather than read the config from it.
+    pub fn is_written(&self) -> bool {
+        self.written_base.is_some()
+    }
+
+    /// For a text yaran wrote, the config that write put in the file.
+    pub(crate) fn written_base(&self) -> Option<&Config> {
+        self.written_base.as_deref()
+    }
+}
+
+impl PartialEq for SourceText {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for SourceText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.text.is_some() {
+            "SourceText(..)"
+        } else {
+            "SourceText(None)"
+        })
+    }
+}
+
+/// The `[keys]` table: the key combos bound to each action.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeysConfig {
+    /// Whether hints show terminal-convention keys yaran documents but does not control.
+    pub show_terminal_keys: bool,
+    /// Each action's key combos, by the action's config name.
+    #[serde(flatten)]
+    pub bindings: BTreeMap<String, Vec<String>>,
+}
+
+impl Default for KeysConfig {
+    /// Returns a `KeysConfig` with no explicit bindings.
+    ///
+    /// The empty `bindings` map is intentional: default key assignments are
+    /// resolved at runtime by `RuntimeBindings::from_keys_config` (in the TUI
+    /// crate), which falls back to `BINDING_DEFS` for any action not present
+    /// here. `yaran-core` cannot reference `BINDING_DEFS` (it is `crokey`/
+    /// `crossterm`-coupled, binary-only), so the defaults are deliberately
+    /// omitted from this impl rather than duplicated.
+    fn default() -> Self {
+        Self {
+            show_terminal_keys: true,
+            bindings: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            shutdown_timeout_seconds: DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+            removal_wait_seconds: DEFAULT_REMOVAL_WAIT_SECONDS,
+            defaults: Defaults::default(),
+            env: BTreeMap::new(),
+            providers: ProvidersConfig::default(),
+            terminal: TerminalConfig::default(),
+            startup_command_terminal: StartupCommandTerminalConfig::default(),
+            logging: LoggingConfig::default(),
+            projects: Vec::new(),
+            ui: UiConfig {
+                left_width_pct: 20,
+                right_width_pct: 23,
+                terminal_dock_pct: 50,
+                empty_project_separator_min_projects: 5,
+                staged_pane_height_pct: 50,
+                commit_pane_height_pct: 40,
+                agent_scrollback_lines: 10_000,
+                agent_tabs_max: DEFAULT_AGENT_TABS_MAX,
+                status_clear_seconds: 6,
+                branch_sync_interval: 30,
+                show_diff_line_numbers: false,
+                diff_tab_width: 4,
+                github_integration: true,
+                pr_poll_interval_seconds: DEFAULT_PR_POLL_INTERVAL_SECONDS,
+                pr_poll_inactive_interval_seconds: DEFAULT_PR_POLL_INACTIVE_INTERVAL_SECONDS,
+                pr_history_branches_per_cycle: DEFAULT_PR_HISTORY_BRANCHES_PER_CYCLE,
+                pr_settled_recheck_seconds: DEFAULT_PR_SETTLED_RECHECK_SECONDS,
+                github_probe_interval_secs: DEFAULT_GITHUB_PROBE_INTERVAL_SECONDS,
+                copy_on_select: true,
+                terminal_font_family: String::new(),
+                terminal_font_size: DEFAULT_TERMINAL_FONT_SIZE,
+                compose_bar: ComposeBarMode::Auto.as_str().to_string(),
+                mobile_accessory_bar: true,
+                upload_directory: DEFAULT_UPLOAD_DIRECTORY.to_string(),
+                upload_write_gitignore: true,
+                upload_pasted_text_chars: DEFAULT_UPLOAD_PASTED_TEXT_CHARS,
+                attention_grace_seconds: 3,
+                auto_reopen_agents: false,
+                show_changes_pane: true,
+                always_show_tab_strip: false,
+                tab_reaches_agent: false,
+                extended_keys: ExtendedKeysMode::Auto.as_str().to_string(),
+                attention_indicator: true,
+                attention_on_bell: true,
+                disable_automated_welcome_screen: false,
+                disable_release_notes: false,
+                pr_banner_position: "bottom".to_string(),
+                agent_sort: "active".to_string(),
+                theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
+                nerd_font_icons: false,
+            },
+            capabilities: CapabilitiesConfig::default(),
+            editor: EditorConfig::default(),
+            cli: CliConfig::default(),
+            git: GitConfig::default(),
+            server: ServerConfig::default(),
+            keys: KeysConfig::default(),
+            macros: MacrosConfig::default(),
+            source_text: SourceText::default(),
+        }
+    }
+}
+
+impl Config {
+    /// The global default provider.
+    pub fn default_provider(&self) -> crate::model::ProviderKind {
+        crate::model::ProviderKind::from_str(&self.defaults.provider)
+    }
+}
+
+/// The settings for `provider`, or a bare command of the provider's own name when it is not
+/// configured.
+pub fn provider_config(
+    config: &Config,
+    provider: &crate::model::ProviderKind,
+) -> ProviderCommandConfig {
+    config
+        .providers
+        .get(provider.as_str())
+        .cloned()
+        .unwrap_or_else(|| ProviderCommandConfig {
+            command: provider.as_str().to_string(),
+            ..Default::default()
+        })
+}
+
+/// Parse and validate `s` as a complete [`Config`] (the same `toml::from_str`
+/// check [`load_config`] performs), returning the parsed value on success or a
+/// user-facing error message on failure. The web's raw config editor calls this
+/// to reject invalid TOML before it overwrites `config.toml`; it also uses the
+/// returned value to compare security-sensitive sections against the running
+/// config. Note the returned value is the raw parse (no provider defaults
+/// applied); callers that want to *adopt* the config should reload from disk via
+/// [`load_config`] so provider defaults are reapplied consistently.
+///
+/// # Errors
+///
+/// Fails with a sentence when `s` is not TOML or does not read as a config.
+pub fn validate_config_str(s: &str) -> Result<Config, String> {
+    toml::from_str::<Config>(s).map_err(|e| describe_toml_error(s, &e))
+}
+
+/// Why `config.toml` could not be used at all. Each of these means yaran cannot
+/// tell whether `[server.auth]` sets a password, and reading that as "no
+/// password" would open the web UI to anyone who can reach it, so a start
+/// refuses to run and a reload refuses to change the running config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigLoadProblem {
+    /// The file exists but could not be read.
+    Unreadable(String),
+    /// The file is not valid TOML.
+    NotToml(String),
+    /// `[server.auth]` (or the `[server]` table holding it) is invalid.
+    AuthInvalid(String),
+    /// A web UI password setting is somewhere yaran does not read one (see
+    /// [`misplaced_auth_problem_list`]); the file may have no `[server.auth]`.
+    AuthMisplaced(String),
+    /// The file was there when yaran started and is gone now. Only a reload
+    /// reports this: a first start with no file is the defaults.
+    Missing,
+    /// The file is there but holds nothing (or only whitespace). Only a
+    /// reload reports this: an editor that truncates before it writes leaves
+    /// this behind for a moment, and the defaults it would read as have no
+    /// password. A first start with an empty file is the defaults.
+    Empty,
+    /// The path is a symbolic link whose target (held here) does not exist.
+    /// Counted as missing, on a start as well as a reload: the link says
+    /// the user keeps their config somewhere, so the defaults (no password)
+    /// would be a guess.
+    DanglingLink(PathBuf),
+}
+
+/// The target of `path` when `path` is a symbolic link to something that
+/// does not exist, resolved against the link's own directory.
+pub fn dangling_link_target(path: &Path) -> Option<PathBuf> {
+    let link = std::fs::symlink_metadata(path).ok()?;
+    if !link.file_type().is_symlink() {
+        return None;
+    }
+    match std::fs::metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let target = std::fs::read_link(path).ok()?;
+            Some(match path.parent() {
+                Some(dir) if target.is_relative() => dir.join(target),
+                _ => target,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A config parse or type error, described without any of the file's text.
+///
+/// The parser's own errors quote the offending line, and a type error repeats
+/// the value it found; either can be an API token under `[env]` or a password
+/// hash, and these messages reach the status line, toasts, dialogs and
+/// yaran.log. So only the position and the kind of problem are kept: `line 2,
+/// column 16: string values must be quoted`. Not even the key name: a
+/// multi-line string or array can make any of its own lines look like one.
+pub fn describe_toml_error(raw: &str, error: &toml::de::Error) -> String {
+    describe_config_error(raw, error.message(), error.span())
+}
+
+/// [`describe_toml_error`] for a `toml_edit` parse error.
+pub fn describe_toml_edit_error(raw: &str, error: &toml_edit::TomlError) -> String {
+    describe_config_error(raw, error.message(), error.span())
+}
+
+fn describe_config_error(raw: &str, message: &str, span: Option<std::ops::Range<usize>>) -> String {
+    let kind = problem_kind(message);
+    let Some(span) = span else {
+        return kind;
+    };
+    let start = span.start.min(raw.len());
+    let before = &raw[..start];
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .map_or(0, |text| text.chars().count())
+        + 1;
+    format!("line {line}, column {column}: {kind}")
+}
+
+/// The kind of problem in a parser or serde message, with any value it
+/// repeats taken out: `invalid type: string "x", expected u32` becomes
+/// `invalid type, expected u32`, and an unknown variant drops the variant.
+pub(crate) fn problem_kind(message: &str) -> String {
+    let message = message.lines().next().unwrap_or_default().trim();
+    for prefix in ["invalid type", "invalid value", "invalid length"] {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            return match rest.find(", expected ") {
+                Some(at) => format!("{prefix}, expected {}", &rest[at + ", expected ".len()..]),
+                None => prefix.to_string(),
+            };
+        }
+    }
+    // The name serde reports missing is a field of yaran's own schema, never
+    // anything the file wrote, so it is kept: `missing field surface`.
+    // backtick-ok: matches serde's own wording, which the result drops.
+    if let Some(rest) = message.strip_prefix("missing field `")
+        && let Some((field, _)) = rest.split_once('`')
+    {
+        return format!("missing field {field}");
+    }
+    if let Some(rest) = message.strip_prefix("unknown variant") {
+        return match rest.find(", expected ") {
+            Some(at) => format!(
+                "unknown value, expected {}",
+                &rest[at + ", expected ".len()..]
+            ),
+            None => "unknown value".to_string(),
+        };
+    }
+    // Anything else (a duplicate key, an unknown field, a parser complaint):
+    // whatever it quotes before ", expected" came from the file (a key name,
+    // and a key name can be a value pasted in the wrong place), so it goes.
+    // What follows ", expected" is yaran's own vocabulary and stays.
+    match message.find(", expected ") {
+        Some(at) => format!(
+            "{}, expected {}",
+            without_quoted(&message[..at]),
+            &message[at + ", expected ".len()..]
+        ),
+        None => without_quoted(message),
+    }
+}
+
+/// `text` with every backtick-, double- and single-quoted span removed.
+fn without_quoted(text: &str) -> String {
+    let mut out = String::new();
+    let mut closing: Option<char> = None;
+    for c in text.chars() {
+        match closing {
+            Some(end) if c == end => closing = None,
+            Some(_) => {}
+            None if matches!(c, '`' | '"' | '\'') => closing = Some(c),
+            None => out.push(c),
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+impl ConfigLoadProblem {
+    /// What went wrong, in words, without the advice around it.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Unreadable(reason)
+            | Self::NotToml(reason)
+            | Self::AuthInvalid(reason)
+            | Self::AuthMisplaced(reason) => reason,
+            Self::Missing => "the file no longer exists",
+            Self::Empty => "the file is empty",
+            Self::DanglingLink(_) => "it is a symbolic link to a file that does not exist",
+        }
+    }
+}
+
+/// A [`ConfigLoadProblem`] with the file it is about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigLoadError {
+    /// The config file the problem is about.
+    pub path: PathBuf,
+    /// What is wrong with it.
+    pub problem: ConfigLoadProblem,
+}
+
+impl std::fmt::Display for ConfigLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = self.path.display();
+        match &self.problem {
+            // backtick-ok: an error value. A start that fails prints it to the
+            // terminal yaran was started from, and a refused reload relays it
+            // whole after "Config reload failed:", as the loader's error text
+            // rather than a sentence built for the status line.
+            ConfigLoadProblem::Unreadable(error) => write!(
+                f,
+                "{path} could not be read ({error}), so yaran cannot tell whether [server.auth] \
+                 sets a password for the web UI. Check the file and its permissions."
+            ),
+            ConfigLoadProblem::NotToml(error) => write!(
+                f,
+                "{path} is not valid TOML, so yaran cannot read [server.auth] and cannot tell \
+                 whether a password protects the web UI. Fix it at {error}, then start yaran \
+                 or reload the config again."
+            ),
+            ConfigLoadProblem::Missing => write!(
+                f,
+                "{path} no longer exists, so yaran cannot tell whether [server.auth] still sets a \
+                 password, and it keeps the running settings, password included. Put the file \
+                 back (or use Recover config to write the running settings to it), then reload."
+            ),
+            ConfigLoadProblem::Empty => write!(
+                f,
+                "{path} is empty, so yaran cannot tell whether [server.auth] still sets a \
+                 password, and it keeps the running settings, password included. This is usual \
+                 while an editor is mid-save: reload again once it finishes, or put your \
+                 settings back (or use Recover config to write the running settings to it). If \
+                 you emptied it on purpose, `yaran config regenerate --yes` writes a fresh \
+                 commented config (with no password), then reload."
+            ),
+            ConfigLoadProblem::DanglingLink(target) => write!(
+                f,
+                "{path} is a symbolic link to {}, which does not exist, so yaran cannot tell \
+                 whether [server.auth] sets a password for the web UI: it does not start, and a \
+                 reload keeps the running settings, password included. Restore {} or point the \
+                 link at your config file, then start yaran or reload again.",
+                target.display(),
+                target.display()
+            ),
+            ConfigLoadProblem::AuthInvalid(reason) => write!(
+                f,
+                "[server.auth] in {path} is invalid, and yaran will not guess at a password \
+                 setting. Fix the setting named below by editing that file, or with \
+                 `yaran config set server.auth.<setting> <value>` (`yaran config get server.auth` \
+                 shows what the file holds; a new password is \
+                 `yaran config set server.auth.password`).\n{reason}"
+            ),
+            ConfigLoadProblem::AuthMisplaced(reason) => write!(
+                f,
+                "{path} has a web UI password setting where yaran does not read one, and yaran will \
+                 not guess at it. Web UI password settings belong in [server.auth] (a new \
+                 password is `yaran config set server.auth.password`).\n{reason}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigLoadError {}
+
+/// Deserialize `raw` into a [`Config`], recovering from a bad field or section
+/// instead of discarding the entire file. A full-document parse success is used
+/// directly; otherwise the offending key(s) are pruned (at FIELD granularity
+/// where a single field can be isolated, else the whole top-level section), reset
+/// to their defaults, warned to the log, and the rest is kept. This means one bad
+/// value (e.g. `agent_tabs_max = -1`) can never silently discard every other
+/// setting the user configured.
+///
+/// `[server.auth]` is the exception, and it fails closed: it is taken out and
+/// read on its own BEFORE any recovery, and a problem there (or a file that is
+/// not TOML at all, where the section cannot be found) is an error rather than
+/// a reset, because its default is "no password".
+#[cfg(test)]
+fn recover_config(raw: &str) -> Result<Config, ConfigLoadProblem> {
+    recover_config_with(raw, raw, Report::Log)
+}
+
+/// Whether a read of the config logs what its recovery and corrections do.
+/// The load that yaran then runs with does, once; a check, a `get`, or the
+/// base of a save reads the same text again and says nothing, so one load is
+/// one set of log lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Report {
+    Log,
+    Quiet,
+}
+
+/// [`recover_config`] of `migrated` (the text after the load migrations),
+/// placing a name in a log line by its line in `raw` (the user's own text),
+/// logging or not as `report` says.
+fn recover_config_with(
+    migrated: &str,
+    raw: &str,
+    report: Report,
+) -> Result<Config, ConfigLoadProblem> {
+    let auth = auth_section_of(migrated)?;
+    let mut doc: toml::Table = toml::from_str::<toml::Table>(migrated)
+        .map_err(|e| ConfigLoadProblem::NotToml(describe_toml_error(migrated, &e)))?;
+    take_auth_section(&mut doc)?;
+    let mut config = recover_config_table(doc, raw, report);
+    config.server.auth = auth;
+    Ok(config)
+}
+
+/// Remove `server.auth` from `doc` and read it on its own, so the field-level
+/// recovery of `[server]` can never reset it.
+fn take_auth_section(doc: &mut toml::Table) -> Result<ServerAuthConfig, ConfigLoadProblem> {
+    let Some(server) = doc.get_mut("server") else {
+        return Ok(ServerAuthConfig::default());
+    };
+    // A `[server]` that is not a table holds no `[server.auth]`: it is left
+    // to the recovery, as yaran always read it. One holding a password setting
+    // never gets here (see [`misplaced_auth_problem_list`]).
+    let toml::Value::Table(server) = server else {
+        return Ok(ServerAuthConfig::default());
+    };
+    let Some(auth) = server.remove("auth") else {
+        return Ok(ServerAuthConfig::default());
+    };
+    parse_auth_value(auth).map_err(ConfigLoadProblem::AuthInvalid)
+}
+
+/// The one form auth key names are matched in: lowercased, with `-` and `_`
+/// removed, so `password_hash`, `password-hash`, `passwordHash` and
+/// `PASSWORD_HASH` are one name. The stray-hash rule, the misplaced-setting
+/// rule and the auth-like table rule all compare through it.
+fn auth_key_form(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '-' | '_'))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Whether `name` is, in [`auth_key_form`], a setting `[server.auth]` has.
+fn is_auth_key(name: &str) -> bool {
+    let form = auth_key_form(name);
+    crate::config_auth::auth_setting_names()
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once("password_hash"))
+        .chain(virtual_auth_settings().map(|(name, _)| name))
+        .any(|known| auth_key_form(known) == form)
+}
+
+/// The `[server.auth]` settings the command line takes that are never read
+/// from the file (`password`, which yaran stores only as its hash), each with
+/// its whole path, from the one list the command line uses
+/// ([`crate::config_keys::VIRTUAL_KEYS`]), so a new one cannot be missed.
+fn virtual_auth_settings() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
+    crate::config_keys::VIRTUAL_KEYS
+        .iter()
+        .filter_map(|(path, _)| match path {
+            ["server", "auth", name] => Some((*name, *path)),
+            _ => None,
+        })
+}
+
+/// The virtual setting `name` is, in [`auth_key_form`], with its whole
+/// path, if it is one.
+fn virtual_auth_setting(name: &str) -> Option<&'static [&'static str]> {
+    let form = auth_key_form(name);
+    virtual_auth_settings()
+        .find(|(known, _)| auth_key_form(known) == form)
+        .map(|(_, path)| path)
+}
+
+/// Whether `name` is, exactly as written, a setting `[server.auth]` has: the
+/// one spelling yaran reads there.
+fn is_exact_auth_setting(name: &str) -> bool {
+    name == "password_hash"
+        || crate::config_auth::auth_setting_names()
+            .iter()
+            .any(|known| known == name)
+}
+
+/// Every setting `[server.auth]` has, written anywhere yaran does not read it,
+/// as one structural rule over the whole parsed file. yaran would start
+/// without what the user meant to set (a password, `require`,
+/// `blocked_addresses`), reading a mistake as less protection, so each is a
+/// problem that stops the start, named by where it is (never its value),
+/// saying where it belongs, and attributed to that place.
+///
+/// Every key path is walked in every form the file can write it in: tables,
+/// arrays of tables, inline tables, inline arrays and dotted keys (which the
+/// parse makes one shape), and a quoted key holding dots (`"auth.require"`,
+/// `["server.auth"]`), split into its parts for this check only. Every
+/// segment is compared in [`auth_key_form`], so `password-hash`,
+/// `passwordHash` and `Require` are the settings they look like. A key that
+/// names an auth setting is misplaced unless its path is exactly
+/// `server` > `auth` > the setting, spelled as yaran reads it, with no array
+/// and no quoted dotted key on the way: `[Server.auth]`, `[[server.auth]]`,
+/// `["server.auth"]`, `[server.auths]`, `require` directly under `[server]`
+/// or at the top level all hold misplaced settings.
+///
+/// A plaintext `password` (the setting the command line takes and stores only
+/// as its hash) is never read from the file, so it stops the start wherever
+/// it is written, `[server.auth]` included, saying how to set one.
+///
+/// Two places are exempt. A NAME the user chose (an `[env]` variable, a
+/// provider, a macro, a variable in a project's `env` inside the
+/// `[[projects]]` list) is just a name: a provider called `password_hash` is
+/// not a password hash, though a field inside it is a field of yaran's schema
+/// like anywhere else. It is a name only when its value has the shape that
+/// map's entries have (a string for a variable, a table for a provider or a
+/// macro): `password = "…"` under `[macros]`, where a line added at the end
+/// of a file ending in `[macros]` lands, is no macro. A `[keys]` name is no
+/// name the user chose but one of yaran's bindable actions, so only an action
+/// yaran has, bound to a key or a list of keys, is exempt there.
+/// A key reached through an array is never such a name (the top-level
+/// `[[projects]]` list aside, whose entries are projects): a map of names
+/// written as an array (`[[env]]`, `[[providers]]`, `macros = [{…}]`) is no
+/// map of names, so an auth setting in it is misplaced like anywhere else.
+/// And the top-level `[auth]` the retired HTTP basic-auth feature wrote,
+/// which real configs still carry (`username = "…"`), is left alone while it
+/// holds nothing `[server.auth]` has; the documentation restore cleans it up.
+/// A table merely named like "auth" (`[path]`, `[oauth]`) and holding no
+/// auth setting is the user's own, as it always was.
+pub(crate) fn misplaced_auth_problem_list(raw: &str) -> Vec<crate::config_auth::Problem> {
+    misplaced_auth_problems_tagged(raw)
+        .into_iter()
+        .map(|(problem, _)| problem)
+        .collect()
+}
+
+/// The problems [`misplaced_auth_problem_list`] gives that are a plaintext
+/// password written in the file, each saying where it is, never its value.
+pub fn plaintext_password_problems(raw: &str) -> Vec<crate::config_auth::Problem> {
+    misplaced_auth_problems_tagged(raw)
+        .into_iter()
+        .filter_map(|(problem, plaintext)| plaintext.then_some(problem))
+        .collect()
+}
+
+/// What a printer shows in place of a plaintext password written in the
+/// file, `--show` included: it is never echoed.
+pub(crate) const PLAINTEXT_PASSWORD_NOT_SHOWN: &str =
+    "(a plaintext password; not shown, and not read)";
+
+/// One step of a key path in a config file: a key as the file writes it (a
+/// quoted key holding dots is one key), or an entry of an array.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PathStep {
+    Key(String),
+    Index(usize),
+}
+
+impl PathStep {
+    /// This step as the formatter takes it.
+    pub(crate) fn as_part(&self) -> PathPart<'_> {
+        match self {
+            PathStep::Key(key) => PathPart::Key(key),
+            PathStep::Index(index) => PathPart::Index(*index),
+        }
+    }
+}
+
+/// A plaintext password written in a config file, exactly where the start
+/// check found it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlaintextPassword {
+    /// The key's whole path as the start check's walk saw it.
+    pub steps: Vec<PathStep>,
+    /// The lines the key and its whole value sit on in the file's text,
+    /// counted from zero.
+    pub lines: std::ops::RangeInclusive<usize>,
+}
+
+/// THE answer to "is this a plaintext password": every plaintext password
+/// the start check finds in the file `raw` (the problems
+/// [`plaintext_password_problems`] gives), each with where it is. Every
+/// printer hides what this names and decides nothing of its own. Empty when
+/// `raw` is not TOML: a printer then prints none of the file's text.
+pub(crate) fn plaintext_passwords(raw: &str) -> Vec<PlaintextPassword> {
+    let Ok(file) = toml::from_str::<toml::Table>(raw) else {
+        return Vec::new();
+    };
+    let doc = toml_edit::Document::parse(raw).ok();
+    let last_line = raw.lines().count().saturating_sub(1);
+    plaintext_password_steps(&toml::Value::Table(file))
+        .into_iter()
+        .map(|steps| {
+            let lines = doc
+                .as_ref()
+                .and_then(|doc| extent_of(doc.as_item(), &steps))
+                .map_or(0..=last_line, |extent| {
+                    line_index(raw, extent.start)..=line_index(raw, extent.end.saturating_sub(1))
+                });
+            PlaintextPassword { steps, lines }
+        })
+        .collect()
+}
+
+/// The paths of the plaintext passwords the start check finds in the parsed
+/// file `file`.
+fn plaintext_password_steps(file: &toml::Value) -> Vec<Vec<PathStep>> {
+    let mut found = Vec::new();
+    misplaced_auth_settings(file, &mut AuthWalk::default(), &mut found);
+    found
+        .into_iter()
+        .filter(|misplaced| misplaced.virtual_path.is_some())
+        .map(|misplaced| misplaced.shown)
+        .collect()
+}
+
+/// The plaintext passwords the start check finds in `value`, judged as it
+/// sits at `path` (keys only, as a printer is asked for them) in a file that
+/// holds nothing else: what [`plaintext_passwords`] says of the same value
+/// in the user's file, for a printer that holds a value rather than the
+/// text it came from. Each is a whole path from the file's top.
+pub(crate) fn plaintext_passwords_at(path: &[String], value: &toml::Value) -> Vec<Vec<PathStep>> {
+    let mut file = value.clone();
+    for key in path.iter().rev() {
+        let mut table = toml::Table::new();
+        table.insert(key.clone(), file);
+        file = toml::Value::Table(table);
+    }
+    plaintext_password_steps(&file)
+}
+
+/// The zero-based line of byte `offset` in `raw`.
+fn line_index(raw: &str, offset: usize) -> usize {
+    raw[..offset.min(raw.len())].matches('\n').count()
+}
+
+/// A place in a parsed document: a whole item, a table in an array of
+/// tables, or a value inside an inline value.
+#[derive(Clone, Copy)]
+enum DocNode<'a> {
+    Item(&'a toml_edit::Item),
+    Table(&'a toml_edit::Table),
+    Value(&'a toml_edit::Value),
+}
+
+impl<'a> DocNode<'a> {
+    /// The child at `step`, with where its key starts.
+    fn child(self, step: &PathStep) -> Option<(DocNode<'a>, Option<usize>)> {
+        let key_start = |key: &toml_edit::Key| key.span().map(|span| span.start);
+        match (self, step) {
+            (
+                DocNode::Item(toml_edit::Item::Table(table)) | DocNode::Table(table),
+                PathStep::Key(key),
+            ) => {
+                let (key, child) = table.get_key_value(key)?;
+                Some((DocNode::Item(child), key_start(key)))
+            }
+            (
+                DocNode::Item(toml_edit::Item::Value(toml_edit::Value::InlineTable(table)))
+                | DocNode::Value(toml_edit::Value::InlineTable(table)),
+                PathStep::Key(key),
+            ) => {
+                let (key, child) = table.get_key_value(key)?;
+                Some((DocNode::Item(child), key_start(key)))
+            }
+            (DocNode::Item(toml_edit::Item::ArrayOfTables(tables)), PathStep::Index(index)) => {
+                Some((DocNode::Table(tables.get(*index)?), None))
+            }
+            (
+                DocNode::Item(toml_edit::Item::Value(toml_edit::Value::Array(items)))
+                | DocNode::Value(toml_edit::Value::Array(items)),
+                PathStep::Index(index),
+            ) => Some((DocNode::Value(items.get(*index)?), None)),
+            _ => None,
+        }
+    }
+
+    /// The bytes this node spans, everything below it included.
+    fn extent(self) -> Option<std::ops::Range<usize>> {
+        let (own, children): (Option<std::ops::Range<usize>>, Vec<DocNode<'a>>) = match self {
+            DocNode::Item(toml_edit::Item::Value(value)) | DocNode::Value(value) => {
+                (value.span(), Vec::new())
+            }
+            DocNode::Item(toml_edit::Item::Table(table)) | DocNode::Table(table) => (
+                table.span(),
+                table
+                    .iter()
+                    .map(|(_, child)| DocNode::Item(child))
+                    .collect(),
+            ),
+            DocNode::Item(toml_edit::Item::ArrayOfTables(tables)) => {
+                (None, tables.iter().map(DocNode::Table).collect())
+            }
+            DocNode::Item(toml_edit::Item::None) => (None, Vec::new()),
+        };
+        own.into_iter()
+            .chain(children.into_iter().filter_map(DocNode::extent))
+            .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
+    }
+}
+
+/// The bytes the key at `steps` and its whole value span in a parsed
+/// document.
+fn extent_of(root: &toml_edit::Item, steps: &[PathStep]) -> Option<std::ops::Range<usize>> {
+    let mut node = DocNode::Item(root);
+    let mut key_start = None;
+    for step in steps {
+        let (child, start) = node.child(step)?;
+        node = child;
+        key_start = start.or(key_start);
+    }
+    let extent = node.extent()?;
+    Some(key_start.map_or(extent.start, |start| start.min(extent.start))..extent.end)
+}
+
+/// [`misplaced_auth_problem_list`], each problem with whether it is a
+/// plaintext password.
+fn misplaced_auth_problems_tagged(raw: &str) -> Vec<(crate::config_auth::Problem, bool)> {
+    use crate::config_auth::Problem;
+    let Ok(file) = toml::from_str::<toml::Table>(raw) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    misplaced_auth_settings(
+        &toml::Value::Table(file),
+        &mut AuthWalk::default(),
+        &mut found,
+    );
+    found
+        .into_iter()
+        .map(|misplaced| {
+            // Printed through the one formatter, array entries included; a
+            // name it does not print is placed by its line.
+            let parts: Vec<PathPart<'_>> = misplaced.shown.iter().map(PathStep::as_part).collect();
+            let shown = shown_parts(raw, &parts);
+            let message = if let Some(path) = misplaced.virtual_path {
+                // backtick-ok: one of the reasons a ConfigLoadError carries,
+                // relayed as the loader's error text (see its Display).
+                format!(
+                    "{shown} is not read: a plaintext password is not read from config.toml; set \
+                     one with `yaran config set {}` and remove this line, so yaran will not start \
+                     until it is removed",
+                    path.join(".")
+                )
+            } else if misplaced.a_hash {
+                format!(
+                    "{shown} is not read: a password hash belongs in [server.auth] as \
+                     password_hash, so yaran will not start until it is moved there or removed"
+                )
+            } else {
+                format!(
+                    "{shown} is not read: the web UI password settings belong in [server.auth], \
+                     so yaran will not start until it is moved there or removed"
+                )
+            };
+            let plaintext = misplaced.virtual_path.is_some();
+            (Problem::about(misplaced.keys, message), plaintext)
+        })
+        .collect()
+}
+
+/// Where [`misplaced_auth_settings`] is in the file.
+#[derive(Default)]
+struct AuthWalk {
+    /// The path as printed: keys as written, array entries by index.
+    shown: Vec<PathStep>,
+    /// The keys as written, for attribution and the name rule.
+    keys: Vec<String>,
+    /// The keys with every quoted dotted key split into its parts: what the
+    /// check compares.
+    parts: Vec<String>,
+    /// Whether an array was passed on the way.
+    through_array: bool,
+    /// Whether an array other than the top-level `[[projects]]` list (the
+    /// one array of tables the schema has, whose entries are projects) was
+    /// passed on the way. Past one, no key is a name the user chose: a map
+    /// of names written as an array (`[[env]]`, `[[providers]]`,
+    /// `macros = [{…}]`) is no map of names at all.
+    through_other_array: bool,
+    /// Whether a quoted key holding dots was passed on the way.
+    through_split: bool,
+}
+
+/// An auth setting [`misplaced_auth_settings`] found where yaran does not read
+/// it.
+struct MisplacedAuth {
+    shown: Vec<PathStep>,
+    keys: Vec<String>,
+    /// Whether it is a password hash, which is said as one.
+    a_hash: bool,
+    /// The setting's whole path when it is one the command line takes and
+    /// the file never holds (a plaintext password), said as one.
+    virtual_path: Option<&'static [&'static str]>,
+}
+
+fn misplaced_auth_settings(
+    value: &toml::Value,
+    walk: &mut AuthWalk,
+    found: &mut Vec<MisplacedAuth>,
+) {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, child) in table {
+                let pieces: Vec<&str> = key.split('.').collect();
+                let split = pieces.len() > 1;
+                // The name position of a map of user-chosen names, reached
+                // without a quoted dotted key: the key is the name the user
+                // chose, never a setting.
+                // A project's `env` holds names only inside the `[[projects]]`
+                // list: a `[projects]` table is no list of projects. A value
+                // without the shape that map's entries have is no entry of
+                // it, whatever it is called.
+                let a_name = !walk.through_split
+                    && !walk.through_other_array
+                    && (walk.through_array
+                        || walk.keys.first().map(String::as_str) != Some("projects"))
+                    && names_a_user_entry(&walk.keys, key, child);
+                walk.shown.push(PathStep::Key(key.clone()));
+                walk.keys.push(key.clone());
+                if !a_name {
+                    for (at, piece) in pieces.iter().enumerate() {
+                        if !is_auth_key(piece) {
+                            continue;
+                        }
+                        let mut path = walk.parts.clone();
+                        path.extend(pieces[..=at].iter().map(|piece| (*piece).to_string()));
+                        let read_there = !walk.through_array
+                            && !walk.through_split
+                            && !split
+                            && path.len() == 3
+                            && path[0] == "server"
+                            && path[1] == "auth"
+                            && is_exact_auth_setting(piece);
+                        if !read_there {
+                            found.push(MisplacedAuth {
+                                shown: walk.shown.clone(),
+                                keys: walk.keys.clone(),
+                                a_hash: auth_key_form(piece) == auth_key_form("password_hash"),
+                                virtual_path: virtual_auth_setting(piece),
+                            });
+                            break;
+                        }
+                    }
+                }
+                let parts_before = walk.parts.len();
+                walk.parts
+                    .extend(pieces.iter().map(|piece| (*piece).to_string()));
+                let split_before = walk.through_split;
+                walk.through_split |= split;
+                misplaced_auth_settings(child, walk, found);
+                walk.through_split = split_before;
+                walk.parts.truncate(parts_before);
+                walk.keys.pop();
+                walk.shown.pop();
+            }
+        }
+        toml::Value::Array(items) => {
+            let array_before = walk.through_array;
+            let other_before = walk.through_other_array;
+            let the_projects_list = !walk.through_array && walk.keys == ["projects"];
+            walk.through_array = true;
+            walk.through_other_array |= !the_projects_list;
+            for (index, item) in items.iter().enumerate() {
+                walk.shown.push(PathStep::Index(index));
+                misplaced_auth_settings(item, walk, found);
+                walk.shown.pop();
+            }
+            walk.through_array = array_before;
+            walk.through_other_array = other_before;
+        }
+        _ => {}
+    }
+}
+
+/// Whether a key directly under `parent` (a path of keys, array entries
+/// left out) holding `value` is a name the user chose: an entry of a map of
+/// user-chosen names (`[env]`, `[providers]`, `[macros]`, `[keys]`) or of a
+/// project's `env`, with the shape that map's entries have (see
+/// [`NameRule::entry_fits`]). `[[projects]]` is a list, so a key directly in
+/// a project is one of a project's fields, never a name. A key whose value
+/// has another shape is no entry of the map at all (a string is never a
+/// macro), so it is judged like any other key: a password written at the
+/// end of a file whose last table is `[macros]` is a password.
+fn names_a_user_entry(parent: &[String], name: &str, value: &toml::Value) -> bool {
+    let rule = match parent {
+        [section] => user_name_rule(section),
+        [projects, env] if projects == "projects" && env == "env" => Some(NameRule::Variable),
+        _ => None,
+    };
+    rule.is_some_and(|rule| rule.entry_fits(name, value))
+}
+
+/// [`misplaced_auth_problem_list`]'s sentences.
+pub fn misplaced_auth_problems(raw: &str) -> Vec<String> {
+    misplaced_auth_problem_list(raw)
+        .into_iter()
+        .map(|problem| problem.message)
+        .collect()
+}
+
+/// The `[server.auth]` section of a whole config file's text, read exactly as
+/// [`load_config`] reads it. A writer checks a candidate file with this
+/// before it lands, so nothing it writes can stop yaran from starting.
+///
+/// Read from the user's own text, so an error quotes their file with its real
+/// line numbers rather than a re-serialized copy of the section.
+///
+/// # Errors
+///
+/// Fails when `raw` is not TOML, `[server.auth]` sits somewhere else, or the section does not read.
+pub fn auth_section_of(raw: &str) -> std::result::Result<ServerAuthConfig, ConfigLoadProblem> {
+    // Only `server.auth` is read; every other key is ignored here.
+    #[derive(Deserialize)]
+    struct File {
+        #[serde(default)]
+        server: Option<ServerPart>,
+    }
+    #[derive(Deserialize)]
+    struct ServerPart {
+        #[serde(default)]
+        auth: Option<ServerAuthConfig>,
+    }
+    let table = toml::from_str::<toml::Table>(raw)
+        .map_err(|e| ConfigLoadProblem::NotToml(describe_toml_error(raw, &e)))?;
+    if let Some(problem) = misplaced_auth_problems(raw).into_iter().next() {
+        return Err(ConfigLoadProblem::AuthMisplaced(problem));
+    }
+    // A `[server]` that is not a table holds no `[server.auth]` (a password
+    // setting inside it was refused just above), so there is no password,
+    // as yaran always read such a file; the rest is left to the recovery.
+    if table.get("server").is_some_and(|server| !server.is_table()) {
+        return Ok(ServerAuthConfig::default());
+    }
+    let file: File = toml::from_str(raw).map_err(|e| {
+        // A rule the section breaks as a whole (checked after every field
+        // parsed) has no position of its own; the parser then points at the
+        // start of the file. Point at the section's header instead.
+        if e.span().is_none_or(|span| span.start == 0) {
+            let kind = problem_kind(e.message());
+            let header = raw.lines().position(is_auth_section_header);
+            return ConfigLoadProblem::AuthInvalid(match header {
+                Some(index) => format!("line {} (the [server.auth] header): {kind}", index + 1),
+                None => format!("in [server.auth]: {kind}"),
+            });
+        }
+        ConfigLoadProblem::AuthInvalid(describe_toml_error(raw, &e))
+    })?;
+    Ok(file
+        .server
+        .and_then(|server| server.auth)
+        .unwrap_or_default())
+}
+
+/// Whether a line is the `[server.auth]` table header itself (spacing and
+/// quoting aside), never a table whose name merely contains it.
+fn is_auth_section_header(line: &str) -> bool {
+    let line = line.trim();
+    if !line.starts_with('[') || line.starts_with("[[") {
+        return false;
+    }
+    // Read the line as TOML on its own, so quoting, spacing and a trailing
+    // comment are the parser's business rather than a string match's.
+    let Ok(doc) = line.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    doc.get("server")
+        .and_then(|server| server.as_table())
+        .and_then(|server| server.get("auth"))
+        .and_then(|auth| auth.as_table())
+        .is_some_and(|auth| !auth.is_implicit())
+}
+
+// ---------------------------------------------------------------------------
+// Start checks: the one list of what stops yaran starting with a config file
+// ---------------------------------------------------------------------------
+//
+// Every check either surface makes at start or on reload is here, tagged
+// with the surfaces it stops. The terminal UI's `ensure_config`, `yaran
+// server`'s bootstrap, both reload workers and `yaran config get`/`set` all
+// ask [`check_start`], so a check cannot exist for one of them and not the
+// others.
+
+/// A surface a start check can stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// The terminal UI, at start and on reload.
+    TerminalUi,
+    /// `yaran server` (and the terminal UI's background server), at start and
+    /// on reload.
+    YaranServer,
+}
+
+/// One thing that stops yaran starting with a config file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartProblem {
+    /// What it is about; two problems are the same when their ids are.
+    pub id: String,
+    /// The sentence shown: which surfaces will not start, and why. It quotes
+    /// no value from the file except `[server] host`, which a sentence about
+    /// an address it cannot bind has to name; a value that may be a secret,
+    /// and a name that may be a value pasted in the wrong place, never.
+    pub message: String,
+    /// Why, without which surfaces it stops: what a caller that words the
+    /// surfaces itself lists.
+    pub detail: String,
+    /// The settings it is about, each as its path's segments. Empty for the
+    /// file as a whole.
+    pub keys: Vec<Vec<String>>,
+    /// What kind of problem it is: with one value, a rule spanning `keys`, or
+    /// one entry of a list value.
+    pub kind: crate::config_auth::ProblemKind,
+    /// Which surfaces will not start (or reload) with the file.
+    pub stops: Stops,
+    /// The `[server]` setting it is about when `yaran server`'s command line
+    /// can take the file's value out of the picture (see
+    /// [`ServerFileSetting::overriding_flags`]), so its own start judges it.
+    pub yaran_server_override: Option<ServerFileSetting>,
+}
+
+/// Which surfaces a [`StartProblem`] stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stops {
+    /// The terminal UI and `yaran server` both.
+    Both,
+    /// The terminal UI alone.
+    TerminalUi,
+    /// `yaran server` alone.
+    YaranServer,
+}
+
+impl StartProblem {
+    /// Whether this stops `surface`.
+    pub fn stops(&self, surface: Surface) -> bool {
+        match (self.stops, surface) {
+            (Stops::Both, _)
+            | (Stops::TerminalUi, Surface::TerminalUi)
+            | (Stops::YaranServer, Surface::YaranServer) => true,
+            (Stops::TerminalUi, Surface::YaranServer) | (Stops::YaranServer, Surface::TerminalUi) => {
+                false
+            }
+        }
+    }
+
+    fn new(problem: crate::config_auth::Problem, stops: Stops) -> Self {
+        let who = match stops {
+            Stops::Both => "the terminal UI and yaran server",
+            Stops::TerminalUi => "the terminal UI",
+            Stops::YaranServer => "yaran server",
+        };
+        Self {
+            message: format!("{who} will not start with this file: {}", problem.message),
+            detail: problem.message,
+            id: problem.id,
+            keys: problem.keys,
+            kind: problem.kind,
+            stops,
+            yaran_server_override: None,
+        }
+    }
+}
+
+/// Everything [`check_start`] found, and the rules spanning keys it could
+/// not judge (a key they involve does not read), which therefore were not
+/// satisfied either.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StartCheck {
+    /// Every problem found that stops yaran starting with the file.
+    pub problems: Vec<StartProblem>,
+    pub(crate) unjudgeable_rules: Vec<String>,
+}
+
+/// A check only the terminal UI's crate can make (its `[keys]`, after the
+/// key migrations its start applies), installed by it, so the one list holds
+/// it too. It gets the whole file's text and returns what it refuses.
+pub(crate) type TerminalUiCheck = fn(&str) -> Vec<String>;
+
+static TERMINAL_UI_CHECK: std::sync::OnceLock<TerminalUiCheck> = std::sync::OnceLock::new();
+
+/// Install the terminal UI's own check (see [`TerminalUiCheck`]). Called by
+/// the terminal UI's crate before it reads or judges a config file; a second
+/// install is ignored.
+pub fn install_terminal_ui_check(check: TerminalUiCheck) {
+    let _ = TERMINAL_UI_CHECK.set(check);
+}
+
+/// The migrations only the terminal UI's start applies (its `[keys]`
+/// ones: retired actions pruned, legacy ones folded), installed by it, so
+/// the one list judges the file's types as that start reads them.
+pub(crate) type TerminalUiMigration = fn(&mut toml_edit::DocumentMut);
+
+static TERMINAL_UI_MIGRATION: std::sync::OnceLock<TerminalUiMigration> = std::sync::OnceLock::new();
+
+/// Install the terminal UI's own migrations (see [`TerminalUiMigration`]);
+/// a second install is ignored.
+pub fn install_terminal_ui_migration(migration: TerminalUiMigration) {
+    let _ = TERMINAL_UI_MIGRATION.set(migration);
+}
+
+/// What the terminal UI's own `[keys]` migrations make of each `[keys]`
+/// entry in the whole config file `raw` they change, by path, with what the
+/// terminal UI uses instead: a binding folded into the action that replaced
+/// a retired one, or one it drops. Empty when the migrations are not
+/// installed (no terminal UI in this process) or change nothing.
+pub fn terminal_ui_key_corrections(raw: &str) -> Vec<(Vec<String>, String)> {
+    terminal_ui_key_corrections_with_sources(raw)
+        .into_iter()
+        .map(|correction| (correction.path, correction.reason))
+        .collect()
+}
+
+/// [`terminal_ui_key_corrections`], each binding that gained a retired one's
+/// with the path it came from.
+pub(crate) fn terminal_ui_key_corrections_with_sources(raw: &str) -> Vec<LoadCorrection> {
+    let Ok(file) = toml::from_str::<toml::Table>(raw) else {
+        return Vec::new();
+    };
+    if TERMINAL_UI_MIGRATION.get().is_none() {
+        return Vec::new();
+    }
+    let Some(read) = start_reads(raw).map(|reads| reads.terminal_ui) else {
+        return Vec::new();
+    };
+    let keys_of = |table: &toml::Table| -> toml::Table {
+        table
+            .get("keys")
+            .and_then(toml::Value::as_table)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (before, after) = (keys_of(&file), keys_of(&read));
+    let mut found = Vec::new();
+    for (name, value) in &before {
+        if after.get(name) == Some(value) {
+            continue;
+        }
+        // Where its binding went: an action that now has it and did not.
+        let moved_to = after
+            .iter()
+            .find(|(other, bound)| {
+                *other != name
+                    && before.get(*other) != Some(bound)
+                    && contains_binding(bound, value)
+            })
+            .map(|(other, _)| other.clone());
+        let reason = match (moved_to, after.get(name)) {
+            (Some(other), _) => format!("the terminal UI uses this binding as {other}"),
+            (None, Some(_)) => "the terminal UI reads this binding differently".to_string(),
+            (None, None) => {
+                "the terminal UI drops this binding: that action no longer exists".to_string()
+            }
+        };
+        found.push(LoadCorrection::new(
+            vec!["keys".to_string(), name.clone()],
+            reason,
+        ));
+    }
+    // And each action that gained the binding of a retired one.
+    for (name, value) in &after {
+        if before.get(name) == Some(value) {
+            continue;
+        }
+        let from: Vec<&String> = before
+            .iter()
+            .filter(|(old, bound)| !after.contains_key(*old) && contains_binding(value, bound))
+            .map(|(old, _)| old)
+            .collect();
+        if from.is_empty() {
+            continue;
+        }
+        let names: Vec<&str> = from.iter().map(|name| name.as_str()).collect();
+        found.push(LoadCorrection {
+            path: vec!["keys".to_string(), name.clone()],
+            reason: format!(
+                "it also carries the binding of the retired {}",
+                names.join(" and ")
+            ),
+            from: Some(vec!["keys".to_string(), from[0].clone()]),
+        });
+    }
+    found
+}
+
+/// Whether the binding `bound` carries everything `value` binds.
+fn contains_binding(bound: &toml::Value, value: &toml::Value) -> bool {
+    let items = |v: &toml::Value| -> Vec<toml::Value> {
+        match v {
+            toml::Value::Array(items) => items.clone(),
+            other => vec![other.clone()],
+        }
+    };
+    let bound = items(bound);
+    items(value).iter().all(|item| bound.contains(item))
+}
+
+/// The terminal UI's own resolution of `[keys]` for a whole config file: every
+/// action's binding as it runs (the file's, after its key migrations, or the
+/// action's default), by action name, and `show_terminal_keys`. Installed by
+/// the terminal UI, which alone knows its actions and their defaults, so
+/// `yaran config get` reports what it uses by running that resolution, never a
+/// copy of it. `None` for a `[keys]` it cannot read.
+pub(crate) type TerminalUiKeyResolution = fn(&str) -> Option<toml::Table>;
+
+static TERMINAL_UI_KEYS: std::sync::OnceLock<TerminalUiKeyResolution> = std::sync::OnceLock::new();
+
+/// Install the terminal UI's key resolution (see
+/// [`TerminalUiKeyResolution`]); a second install is ignored.
+pub fn install_terminal_ui_key_resolution(resolution: TerminalUiKeyResolution) {
+    let _ = TERMINAL_UI_KEYS.set(resolution);
+}
+
+/// Whether a `[keys]` name is one of the terminal UI's bindable actions, by
+/// the list its binding parser reads (retired and folded names included,
+/// which its load still knows). Installed by the terminal UI, which alone
+/// knows its actions.
+pub(crate) type TerminalUiKeyActions = fn(&str) -> bool;
+
+static TERMINAL_UI_KEY_ACTIONS: std::sync::OnceLock<TerminalUiKeyActions> =
+    std::sync::OnceLock::new();
+
+/// Install the terminal UI's action list (see [`TerminalUiKeyActions`]); a
+/// second install is ignored.
+pub fn install_terminal_ui_key_actions(is_action: TerminalUiKeyActions) {
+    let _ = TERMINAL_UI_KEY_ACTIONS.set(is_action);
+}
+
+/// Whether `name` is an action `[keys]` binds. Without the terminal UI's
+/// list installed no name is one, so nothing under `[keys]` is exempt from
+/// the auth checks: an unknown answer never lets a password pass as a name.
+fn is_key_action(name: &str) -> bool {
+    TERMINAL_UI_KEY_ACTIONS
+        .get()
+        .is_some_and(|is_action| is_action(name))
+}
+
+/// The `[keys]` the terminal UI uses with the whole config file `raw`, by
+/// its own resolution, when installed.
+pub fn terminal_ui_keys(raw: &str) -> Option<toml::Table> {
+    TERMINAL_UI_KEYS.get().and_then(|resolve| resolve(raw))
+}
+
+/// Every problem that stops yaran starting with the whole config file `raw`,
+/// each listed once, field by field, and each check run on its own so no
+/// problem hides another:
+///
+/// - the file is not TOML (both surfaces);
+/// - a password hash or an auth table where yaran does not read one (both);
+/// - `[server.auth]`, key by key, and its rules (both);
+/// - a setting of the wrong type, each field on its own: the terminal UI
+///   reads the file strictly, while `yaran server` resets it to its default;
+/// - `[server] host` not an IP literal (both; `--bind` overrides it for
+///   `yaran server`);
+/// - `[server] port` 0 (`yaran server`, overridable by `--port`/`--bind`; the
+///   terminal UI starts, and its background server takes any free port);
+/// - an environment variable yaran cannot use (the terminal UI);
+/// - project records that conflict, such as duplicate ids (both);
+/// - the terminal UI's own `[keys]` check, when installed (the terminal UI).
+pub fn check_start(raw: &str) -> StartCheck {
+    use crate::config_auth::Problem;
+    let mut check = StartCheck::default();
+    let both = |problem: Problem| StartProblem::new(problem, Stops::Both);
+    let file: toml::Table = match toml::from_str(raw) {
+        Ok(file) => file,
+        Err(error) => {
+            check.problems.push(both(Problem::plain(format!(
+                "the file is not valid TOML: {}",
+                problem_kind(error.message())
+            ))));
+            return check;
+        }
+    };
+    check
+        .problems
+        .extend(misplaced_auth_problem_list(raw).into_iter().map(both));
+    check
+        .problems
+        .extend(auth_section_problems(&file, raw).into_iter().map(both));
+    if let Some(auth) = file
+        .get("server")
+        .and_then(toml::Value::as_table)
+        .and_then(|server| server.get("auth"))
+    {
+        check.unjudgeable_rules = crate::config_auth::unjudgeable_rules_of(auth);
+    }
+    let Some(StartReads {
+        yaran_server: rest,
+        terminal_ui,
+        migration_failures,
+    }) = start_reads(raw)
+    else {
+        return check;
+    };
+    // A deprecated key the migrations cannot carry over stops the terminal
+    // UI, whose start runs them on the file and refuses it; `yaran server`
+    // reads such a file unmigrated, which is what the checks below judge.
+    for (key, message) in migration_failures {
+        check.problems.push(StartProblem::new(
+            Problem::about(key, message),
+            Stops::TerminalUi,
+        ));
+    }
+    // What `yaran server`'s load does about each wrong-typed value is said as
+    // it is: the value read as its default, or the entry or section around
+    // it dropped with it.
+    let plan = recovery_plan(&rest);
+    // Wrong types stop the terminal UI, so they are judged as its start reads
+    // the file: after its own `[keys]` migrations, which drop a retired
+    // action whatever its value (where they reach it: a `[keys]` written as
+    // an inline table they leave as it is, and so does its start).
+    for (place, key, kind) in wrong_typed_settings(&terminal_ui, raw) {
+        let what = Recovery::covering(&plan, &key).map_or_else(
+            || "yaran server reads it as its default".to_string(),
+            |r| r.said_of(&key, raw),
+        );
+        // The setting it is about, for attribution only; never printed.
+        check.problems.push(StartProblem::new(
+            Problem::about(key, format!("{place}: {kind} ({what})")),
+            Stops::TerminalUi,
+        ));
+    }
+    let mut config = recover_config_table(rest, raw, Report::Quiet);
+    config.providers.ensure_defaults();
+    let (config, _) = load_corrections(config);
+    check
+        .problems
+        .extend(config_start_problems(&config, Some(raw)));
+    if let Some(terminal_ui_check) = TERMINAL_UI_CHECK.get() {
+        for message in terminal_ui_check(raw) {
+            check.problems.push(StartProblem::new(
+                Problem::about(key_path(&["keys"]), message),
+                Stops::TerminalUi,
+            ));
+        }
+    }
+    check
+}
+
+/// [`check_start`]'s problems.
+pub fn start_problems_of(raw: &str) -> Vec<StartProblem> {
+    check_start(raw).problems
+}
+
+/// The first problem that stops `surface` with the whole config file `raw`,
+/// as the sentence to refuse with. For `yaran server` a problem its command
+/// line can override is left to its own start, which knows the command line.
+pub fn start_refusal(raw: &str, surface: Surface) -> Option<String> {
+    check_start(raw)
+        .problems
+        .into_iter()
+        .find(|problem| {
+            problem.stops(surface)
+                && !(surface == Surface::YaranServer && problem.yaran_server_override.is_some())
+        })
+        .map(|problem| problem.message)
+}
+
+/// The problems a set of the setting `key` would add to a file: the
+/// problems in `after` it is answerable for, judged against `before`.
+///
+/// A set is answerable for a problem with its own value (a value of the
+/// wrong type or out of its range), and for a rule spanning its key that
+/// the file satisfied before. A rule that could not be judged before was
+/// not satisfied, so breaking it is not new. A list value's entries are
+/// known by their own text: an entry is new only when no entry of the old
+/// list had its text. Problems about other settings never block a set. A
+/// problem about no setting at all is answerable whenever it is new, known
+/// by its id, so no problem is ever invisible to a set.
+pub(crate) fn problems_added_by_set<'a>(
+    before: &StartCheck,
+    after: &'a StartCheck,
+    key: &[String],
+) -> Vec<&'a StartProblem> {
+    // Compared segment by segment: a name holding a dot is one segment, so
+    // a problem about `env."FOO.BAR"` is never taken for one about `env.FOO`.
+    let related = |other: &[String]| other.starts_with(key) || key.starts_with(other);
+    let is_new = |problem: &StartProblem| before.problems.iter().all(|old| old.id != problem.id);
+    after
+        .problems
+        .iter()
+        .filter(|problem| {
+            if problem.keys.is_empty() {
+                is_new(problem)
+            } else if !problem.keys.iter().any(|other| related(other)) {
+                false
+            } else if problem.kind == crate::config_auth::ProblemKind::ListEntry {
+                is_new(problem)
+            } else if problem.kind == crate::config_auth::ProblemKind::CrossKeyRule {
+                let was_broken = before.problems.iter().any(|old| old.id == problem.id);
+                let was_unjudgeable = before.unjudgeable_rules.contains(&problem.id);
+                !was_broken && !was_unjudgeable
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Each deprecated key the load migrations cannot carry over: its path and
+/// the sentence the terminal UI's start refuses it with.
+type MigrationFailures = Vec<(Vec<String>, String)>;
+
+/// The rest of the file beside `[server.auth]` (judged on its own) as each
+/// surface's start reads it, and every deprecated key the migrations could
+/// not carry over, each with the sentence the terminal UI's start refuses it
+/// with.
+///
+/// Each read is the surface's own pipeline, on the representation it runs on:
+/// the file parsed as the `toml_edit` document it is written as, through the
+/// same migration functions in the same order, and only then read as a table.
+/// Never a re-print of the file: re-printing turns an inline table into a
+/// `[section]`, which the migrations then act on where a start's do not.
+struct StartReads {
+    /// `yaran server`'s load ([`config_from_text`]): the load migrations, or
+    /// the file as written when they fail.
+    yaran_server: toml::Table,
+    /// The terminal UI's start: the load migrations (a failure stops it, and
+    /// `migration_failures` says so), then its own `[keys]` migrations.
+    terminal_ui: toml::Table,
+    migration_failures: MigrationFailures,
+}
+
+fn start_reads(raw: &str) -> Option<StartReads> {
+    let written = raw.parse::<toml_edit::DocumentMut>().ok()?;
+    let migration_failures = crate::config_migrate::load_migration_failures(&written);
+    let mut migrated = written.clone();
+    let migrations_ran = crate::config_migrate::apply_load_migrations(&mut migrated).is_ok();
+    let yaran_server_text = if migrations_ran {
+        migrated.to_string()
+    } else {
+        raw.to_string()
+    };
+    let mut terminal_ui = if migrations_ran { migrated } else { written };
+    if let Some(migrate) = TERMINAL_UI_MIGRATION.get() {
+        migrate(&mut terminal_ui);
+    }
+    // Read as the loads read their text, `[server.auth]` taken out as
+    // `take_auth_section` takes it.
+    let beside_auth = |text: &str| -> Option<toml::Table> {
+        let mut table: toml::Table = toml::from_str(text).ok()?;
+        if let Some(toml::Value::Table(server)) = table.get_mut("server") {
+            server.remove("auth");
+        }
+        Some(table)
+    };
+    Some(StartReads {
+        yaran_server: beside_auth(&yaran_server_text)?,
+        terminal_ui: beside_auth(&terminal_ui.to_string())?,
+        migration_failures,
+    })
+}
+
+/// Every setting of the wrong type in `table`, each judged on its own down
+/// to the field that is wrong, inside a provider or any other table:
+/// (where it is, its dotted key, the kind of problem). A table that fails
+/// although none of its entries does on its own is listed whole.
+///
+/// An entry of `[env]` whose name is not a variable name is placed by its
+/// line in `raw` rather than named: such a name may be a value pasted in
+/// the wrong place.
+fn wrong_typed_settings(table: &toml::Table, raw: &str) -> Vec<(String, Vec<String>, String)> {
+    let mut found = Vec::new();
+    for (section, value) in table {
+        if !section_solo_ok(section, value.clone()) {
+            wrong_typed_inside(section, &mut Vec::new(), value, &mut found);
+        }
+    }
+    found
+        .into_iter()
+        .map(|(segments, kind)| (shown_place(raw, &segments), segments, kind))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Printing a setting's path
+// ---------------------------------------------------------------------------
+//
+// Every path yaran prints (a problem, a correction, a table `get` prints, the
+// setting a command names, a log line, `yaran config diff`) goes through the
+// formatter below, and the formatter decides from the SCHEMA. A segment the
+// file wrote is printed as itself only when the schema knows a key of that
+// name at that position (`ui.left_width_pct`, a `[server.auth]` setting), or
+// when it is an entry of a map of user-chosen names and follows that map's
+// naming rule. Anything else (an unknown key in a fixed table, a key under a
+// value that is not a table, a name that breaks its rule) may be a value
+// pasted in the wrong place, a token above all: it is never printed, and the
+// entry is placed by its line in the file instead.
+
+/// The rule a name in a map of user-chosen names must follow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NameRule {
+    /// An environment variable name.
+    Variable,
+    /// The characters a setting path allows: letters, digits, `_` and `-`.
+    Plain,
+    /// An action name: lowercase letters, digits and `_`.
+    Action,
+    /// None: the entries are a list, not names (`[[projects]]`).
+    Any,
+}
+
+impl NameRule {
+    /// Whether `name` holding `value` is an entry of a map named by this
+    /// rule: a variable's value is a string, a provider or a macro is a
+    /// table, and a list has no named entries. `[keys]` names are no names
+    /// the user chose but yaran's own bindable actions, so a binding is an
+    /// action yaran has (see [`is_key_action`]) bound to a key or a list of
+    /// keys.
+    fn entry_fits(self, name: &str, value: &toml::Value) -> bool {
+        match self {
+            Self::Variable => value.is_str(),
+            Self::Plain => value.is_table(),
+            Self::Action => {
+                is_key_action(name)
+                    && match value {
+                        toml::Value::String(_) => true,
+                        toml::Value::Array(items) => items.iter().all(toml::Value::is_str),
+                        _ => false,
+                    }
+            }
+            Self::Any => false,
+        }
+    }
+
+    fn allows(self, name: &str) -> bool {
+        let all = |ok: fn(char) -> bool| !name.is_empty() && name.chars().all(ok);
+        match self {
+            Self::Variable => is_valid_var_name(name),
+            Self::Plain => all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            Self::Action => all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            Self::Any => true,
+        }
+    }
+}
+
+/// The tables whose keys are names the user chose, each with the rule a name
+/// there follows. The ONE list: the formatter's schema and the
+/// misplaced-password rule both read it, so they cannot drift apart.
+const USER_NAMED_MAPS: &[(&str, NameRule)] = &[
+    ("env", NameRule::Variable),
+    ("providers", NameRule::Plain),
+    ("macros", NameRule::Plain),
+    ("keys", NameRule::Action),
+    ("projects", NameRule::Any),
+];
+
+/// The rule a name in the user-named map `section` must follow, if it is one.
+fn user_name_rule(section: &str) -> Option<NameRule> {
+    USER_NAMED_MAPS
+        .iter()
+        .find(|(map, _)| *map == section)
+        .map(|(_, rule)| *rule)
+}
+
+/// What the schema says of one segment under a path it knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SchemaStep {
+    /// A key the schema knows at that position.
+    Known,
+    /// An entry of a map of user-chosen names, following its rule or not.
+    Entry { follows_rule: bool },
+    /// Neither: an unknown key, or one under a value that is not a table.
+    Unknown,
+}
+
+/// The schema's own trees, from the defaults: the whole config, one
+/// provider, one macro and one project, each with every field it has.
+struct SchemaTrees {
+    config: serde_json::Value,
+    provider: serde_json::Value,
+    macro_entry: serde_json::Value,
+    project: serde_json::Value,
+}
+
+fn schema_trees() -> &'static SchemaTrees {
+    static TREES: std::sync::OnceLock<SchemaTrees> = std::sync::OnceLock::new();
+    TREES.get_or_init(|| SchemaTrees {
+        config: serde_json::to_value(Config::default()).unwrap_or_default(),
+        provider: serde_json::to_value(ProviderCommandConfig::default()).unwrap_or_default(),
+        macro_entry: serde_json::to_value(MacroEntry {
+            text: String::new(),
+            surface: MacroSurface::default(),
+        })
+        .unwrap_or_default(),
+        project: toml::from_str::<ProjectConfig>("path = \"\"")
+            .ok()
+            .and_then(|project| serde_json::to_value(project).ok())
+            .unwrap_or_default(),
+    })
+}
+
+/// What the schema says of `segment` under `parent`, a path it knows.
+fn schema_step(parent: &[String], segment: &str) -> SchemaStep {
+    let trees = schema_trees();
+    let known_in = |tree: &serde_json::Value| {
+        if tree.get(segment).is_some() {
+            SchemaStep::Known
+        } else {
+            SchemaStep::Unknown
+        }
+    };
+    let parts: Vec<&str> = parent.iter().map(String::as_str).collect();
+    // yaran's own former names: a deprecated key it still reads, a retired one
+    // a save removes, and a section it no longer reads.
+    let former = match parts.as_slice() {
+        [section] => {
+            crate::config_migrate::is_deprecated_key(section, segment)
+                || crate::config_write::is_retired_key(section, segment)
+        }
+        _ => false,
+    } || {
+        let mut whole: Vec<&str> = parts.clone();
+        whole.push(segment);
+        crate::config_write::ORPHANED_CONFIG_SECTIONS.contains(&whole.as_slice())
+            // A setting yaran accepts on the command line with no key of its
+            // own in the file (`server.auth.password`) is yaran's word too.
+            || crate::config_keys::VIRTUAL_KEYS
+                .iter()
+                .any(|(name, _)| *name == whole.as_slice())
+    };
+    // `password_hash` is yaran's own word wherever it is written: a misplaced
+    // one is named as what it is (see `misplaced_auth_problem_list`).
+    if former || segment == "password_hash" {
+        return SchemaStep::Known;
+    }
+    match parts.as_slice() {
+        ["keys"] if segment == "show_terminal_keys" => SchemaStep::Known,
+        ["providers", _] => known_in(&trees.provider),
+        ["macros", _] => known_in(&trees.macro_entry),
+        ["projects"] => known_in(&trees.project),
+        ["projects", "env"] => SchemaStep::Entry {
+            follows_rule: NameRule::Variable.allows(segment),
+        },
+        [map] if user_name_rule(map).is_some_and(|rule| rule != NameRule::Any) => {
+            SchemaStep::Entry {
+                follows_rule: user_name_rule(map).is_some_and(|rule| rule.allows(segment)),
+            }
+        }
+        _ => {
+            let mut node = &trees.config;
+            for part in &parts {
+                match node.get(*part) {
+                    Some(child) => node = child,
+                    None => return SchemaStep::Unknown,
+                }
+            }
+            if node.is_object() {
+                known_in(node)
+            } else {
+                SchemaStep::Unknown
+            }
+        }
+    }
+}
+
+/// Where the schema stops printing `segments` as written: the index of the
+/// first segment it may not print, and whether the segments after it may be
+/// printed (they may under an entry whose name breaks its rule, when the
+/// schema knows each of them there; never under an unknown key).
+fn first_hidden(segments: &[String]) -> Option<(usize, bool)> {
+    let parts: Vec<PathPart<'_>> = segments.iter().map(|s| PathPart::Key(s)).collect();
+    first_hidden_part(&parts)
+}
+
+/// [`first_hidden`] for a path that may run through arrays, giving the
+/// index among `parts` of the first key it may not print. A key of an
+/// array's element is judged against the schema's element type: an entry of
+/// `[[projects]]` against a project's fields, and an element of any other
+/// array (a list setting, or an array where the schema has a table or a
+/// value) has no keys in the schema, so each of its keys is unknown.
+fn first_hidden_part(parts: &[PathPart<'_>]) -> Option<(usize, bool)> {
+    let mut parent: Vec<String> = Vec::new();
+    // Whether the next key is a key of an array's element, and if so
+    // whether that array's elements have keys in the schema.
+    let mut element: Option<bool> = None;
+    let mut hidden: Option<(usize, SchemaStep)> = None;
+    for (index, part) in parts.iter().enumerate() {
+        let key = match part {
+            PathPart::Index(_) => {
+                element = Some(parent == ["projects"]);
+                continue;
+            }
+            PathPart::Key(key) => *key,
+        };
+        let step = match element.take() {
+            Some(false) => SchemaStep::Unknown,
+            _ => schema_step(&parent, key),
+        };
+        parent.push(key.to_string());
+        let shown = matches!(
+            step,
+            SchemaStep::Known | SchemaStep::Entry { follows_rule: true }
+        );
+        match hidden {
+            None if !shown => hidden = Some((index, step)),
+            // Past a hidden key, the rest may be printed only under an entry
+            // whose name breaks its rule, when the schema knows each of them
+            // there.
+            Some((at, SchemaStep::Entry { .. })) if !shown => {
+                return Some((at, false));
+            }
+            _ => {}
+        }
+        if matches!(hidden, Some((_, SchemaStep::Unknown))) {
+            break;
+        }
+    }
+    hidden.map(|(at, step)| (at, matches!(step, SchemaStep::Entry { .. })))
+}
+
+/// The entry at `segments` (its last one hidden), placed by its line in
+/// `raw`, inside `within` (the printed table around it, if any).
+fn line_placeholder(raw: &str, steps: &[KeyStep<'_>], within: Option<&str>) -> String {
+    match (line_of_key(raw, steps), within) {
+        (Some(line), Some(table)) => format!("the entry on line {line} of [{table}]"),
+        (Some(line), None) => format!("the entry on line {line}"),
+        (None, Some(table)) => format!("an entry of [{table}] whose name is not shown"),
+        (None, None) => "an entry whose name is not shown".to_string(),
+    }
+}
+
+/// A setting's path as yaran prints it, from its segments: `ui.left_width_pct`,
+/// or `the entry on line 2 of [env]` (`args of the entry on line 3 of
+/// [providers]`) where a segment may not be repeated (see the schema rule
+/// above).
+pub fn shown_path(raw: &str, segments: &[String]) -> String {
+    let parts: Vec<PathPart<'_>> = segments.iter().map(|s| PathPart::Key(s)).collect();
+    shown_parts(raw, &parts)
+}
+
+/// One step of a path that may run through an array of tables: a key, or
+/// the index of an entry (`projects[0]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PathPart<'a> {
+    Key(&'a str),
+    Index(usize),
+}
+
+/// [`shown_path`] for a path that may run through arrays. The keys of an
+/// element are judged against the schema's element type (see
+/// [`first_hidden_part`]): `[[projects]]` against a project's fields, and
+/// any other array's elements have no keys in the schema, so each is placed
+/// by its line.
+pub(crate) fn shown_parts(raw: &str, parts: &[PathPart<'_>]) -> String {
+    let printed = |parts: &[PathPart<'_>]| {
+        let mut out = String::new();
+        for part in parts {
+            match part {
+                PathPart::Key(key) => {
+                    if !out.is_empty() {
+                        out.push('.');
+                    }
+                    out.push_str(&dotted(&[(*key).to_string()]));
+                }
+                PathPart::Index(index) => {
+                    let _ = write!(out, "[{index}]");
+                }
+            }
+        }
+        out
+    };
+    let Some((part, rest_known)) = first_hidden_part(parts) else {
+        return printed(parts);
+    };
+    // The steps to the hidden key, an index taken with the key before it.
+    let mut steps: Vec<KeyStep<'_>> = Vec::new();
+    for (index, step) in parts[..=part].iter().enumerate() {
+        match step {
+            PathPart::Key(key) => match parts.get(index + 1) {
+                Some(PathPart::Index(entry)) if index < part => {
+                    steps.push(KeyStep::Entry(key, *entry));
+                }
+                _ => steps.push(KeyStep::Key(key)),
+            },
+            PathPart::Index(_) => {}
+        }
+    }
+    let table = (part > 0).then(|| printed(&parts[..part]));
+    let entry = line_placeholder(raw, &steps, table.as_deref());
+    let rest = &parts[part + 1..];
+    if rest_known && !rest.is_empty() {
+        format!("{} of {entry}", printed(rest))
+    } else {
+        entry
+    }
+}
+
+/// Segments joined as TOML writes a dotted key: a segment that is not a bare
+/// key (it holds a dot, a space or a quote) is quoted, so `["server.auth"]`
+/// never reads as `[server.auth]`.
+fn dotted(segments: &[String]) -> String {
+    segments
+        .iter()
+        .map(|segment| {
+            let bare = !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            if bare {
+                segment.clone()
+            } else {
+                toml::Value::String(segment.clone()).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Whether any segment of `segments` is one the formatter never prints: then
+/// no value at that path is printed either (see
+/// [`crate::config_keys::printed_value`]).
+pub fn path_is_hidden(segments: &[String]) -> bool {
+    first_hidden(segments).is_some()
+}
+
+/// Whether the last segment of `segments` is one the formatter never prints.
+pub fn name_is_hidden(_raw: &str, segments: &[String]) -> bool {
+    first_hidden(segments).is_some_and(|(index, _)| index + 1 == segments.len())
+}
+
+/// Whether any part of `parts` (a path that may run through arrays) is one
+/// the formatter never prints, so nothing at or below it is printed either.
+pub(crate) fn first_hidden_part_of(parts: &[PathPart<'_>]) -> bool {
+    first_hidden_part(parts).is_some()
+}
+
+/// [`name_is_hidden`] for a path that may run through arrays: whether its
+/// last part, a key, is one the formatter never prints.
+pub(crate) fn part_is_hidden(parts: &[PathPart<'_>]) -> bool {
+    first_hidden_part(parts).is_some_and(|(index, _)| index + 1 == parts.len())
+}
+
+/// A setting's place in a problem sentence: `[ui] left_width_pct`, or
+/// `[env] the entry on line 2` where a segment may not be repeated.
+fn shown_place(raw: &str, segments: &[String]) -> String {
+    if let Some((index, rest_known)) = first_hidden(segments) {
+        let steps: Vec<KeyStep<'_>> = segments[..=index].iter().map(|s| KeyStep::Key(s)).collect();
+        let entry = line_placeholder(raw, &steps, None);
+        let rest = &segments[index + 1..];
+        let what = if rest_known && !rest.is_empty() {
+            format!("{} of {entry}", dotted(rest))
+        } else {
+            entry
+        };
+        return if index == 0 {
+            what
+        } else {
+            format!("[{}] {what}", dotted(&segments[..index]))
+        };
+    }
+    match segments {
+        [section] => format!("[{}]", dotted(std::slice::from_ref(section))),
+        [section, inner @ ..] => format!(
+            "[{}] {}",
+            dotted(std::slice::from_ref(section)),
+            dotted(inner)
+        ),
+        [] => String::new(),
+    }
+}
+
+/// One step into a config file, for [`line_of_key`]: a key of a table, or
+/// one entry of an array of tables under a key.
+pub(crate) enum KeyStep<'a> {
+    Key(&'a str),
+    Entry(&'a str, usize),
+}
+
+/// The line the project at `index` of `projects` starts on in `raw`: its
+/// `[[projects]]` header, or its inline table.
+pub(crate) fn line_of_project(raw: &str, index: usize) -> Option<usize> {
+    let doc = toml_edit::Document::parse(raw).ok()?;
+    let projects = doc.as_table().get("projects")?;
+    let start = match projects.as_array_of_tables() {
+        Some(entries) => entries.get(index)?.span()?.start,
+        None => projects.as_array()?.get(index)?.span()?.start,
+    };
+    Some(raw.get(..start)?.matches('\n').count() + 1)
+}
+
+/// The line of `raw` the key at `path` (keys only, no arrays) is written
+/// on, for a sentence that places a setting without repeating its value.
+pub fn line_of_setting(raw: &str, path: &[&str]) -> Option<usize> {
+    let steps: Vec<KeyStep<'_>> = path.iter().map(|key| KeyStep::Key(key)).collect();
+    line_of_key(raw, &steps)
+}
+
+/// The line (from 1) where the key at `steps` is written in `raw`, so a
+/// message can point at a key whose name it must not repeat.
+pub(crate) fn line_of_key(raw: &str, steps: &[KeyStep<'_>]) -> Option<usize> {
+    let doc = toml_edit::Document::parse(raw).ok()?;
+    let (last, walk) = steps.split_last()?;
+    let mut table: &dyn toml_edit::TableLike = doc.as_table();
+    for step in walk {
+        table = match step {
+            KeyStep::Key(key) => table.get(key)?.as_table_like()?,
+            KeyStep::Entry(key, index) => {
+                let item = table.get(key)?;
+                match item.as_array_of_tables() {
+                    Some(entries) => entries.get(*index)?,
+                    // An inline array of inline tables.
+                    None => item.as_array()?.get(*index)?.as_inline_table()?,
+                }
+            }
+        };
+    }
+    let KeyStep::Key(name) = last else {
+        return None;
+    };
+    let (key, _) = table.get_key_value(name)?;
+    let start = key.span()?.start;
+    Some(raw.get(..start)?.matches('\n').count() + 1)
+}
+
+/// [`wrong_typed_settings`] for `value`, at `inner` inside `section`, which
+/// fails on its own: the entries inside it that fail on their own, narrowed
+/// the same way, or `value` itself when none does.
+fn wrong_typed_inside(
+    section: &str,
+    inner: &mut Vec<String>,
+    value: &toml::Value,
+    found: &mut Vec<(Vec<String>, String)>,
+) {
+    // `value` alone, at its place inside `section`.
+    let alone = |inner: &[String], value: &toml::Value| {
+        inner.iter().rev().fold(value.clone(), |child, key| {
+            let mut table = toml::Table::new();
+            table.insert(key.clone(), child);
+            toml::Value::Table(table)
+        })
+    };
+    let before = found.len();
+    if let toml::Value::Table(entries) = value {
+        for (key, entry) in entries {
+            inner.push(key.clone());
+            // A field missing from the table holding `entry` makes `entry`
+            // fail alone too, but it is the table's problem, never its
+            // sibling's. A value that is not a table has no fields to miss,
+            // so one failing only that way is not descended into, and the
+            // table holding it is reported below; a table is descended into,
+            // where the same holds of its own values.
+            let alone_entry = alone(inner, entry);
+            if !section_solo_ok(section, alone_entry.clone())
+                && (entry.is_table()
+                    || !section_solo_problem(section, alone_entry).starts_with("missing field"))
+            {
+                wrong_typed_inside(section, inner, entry, found);
+            }
+            inner.pop();
+        }
+    }
+    if found.len() == before {
+        let segments: Vec<String> = std::iter::once(section.to_string())
+            .chain(inner.iter().cloned())
+            .collect();
+        found.push((segments, section_solo_problem(section, alone(inner, value))));
+    }
+}
+
+/// The checks a start makes on the config it read: the server host and
+/// port, the environment variables, and the project records. `raw` is the
+/// file's text, which places a variable whose name is not a variable name
+/// by its line (the name itself may be a value pasted in the wrong place,
+/// so it is never repeated).
+fn config_start_problems(config: &Config, raw: Option<&str>) -> Vec<StartProblem> {
+    use crate::config_auth::Problem;
+    let mut problems = Vec::new();
+    if let Err(error) = parse_server_host(&config.server.host) {
+        let mut problem = StartProblem::new(
+            Problem::about(key_path(&["server", "host"]), error),
+            Stops::Both,
+        );
+        problem.yaran_server_override = Some(ServerFileSetting::Host);
+        problems.push(problem);
+    }
+    // Port 0 never stops the terminal UI's start, whatever `serve_while_tui`
+    // says: its background server binds loopback on port 0, which the system
+    // turns into a free port, and shows the address it got. Whether it is a problem depends on the port alone (the
+    // host only words it), so it is known by the port, and changing the host
+    // or `serve_while_tui` beside a port of 0 is not a new problem.
+    if let Some(detail) = port_zero_problem(&config.server.host, config.server.port) {
+        let mut problem = StartProblem::new(
+            Problem {
+                id: "server.port: 0".to_string(),
+                ..Problem::about(key_path(&["server", "port"]), detail)
+            },
+            Stops::YaranServer,
+        );
+        problem.message = format!(
+            "yaran server will not start with this file (the terminal UI starts, and its background \
+             server listens on whatever free port it is given): {}",
+            problem
+                .message
+                .split_once(": ")
+                .map_or("", |(_, rest)| rest)
+        );
+        problem.yaran_server_override = Some(ServerFileSetting::Port);
+        problems.push(problem);
+    }
+    // One problem per variable, never showing its value. A valid name says
+    // which variable; a name that is itself the problem is placed by its line.
+    let line = |steps: &[KeyStep<'_>]| raw.and_then(|raw| line_of_key(raw, steps));
+    for (name, value) in &config.env {
+        if let Some(problem) = env_variable_problem(name, value) {
+            let which = if is_valid_var_name(name) {
+                format!("global env variable {name}")
+            } else {
+                match line(&[KeyStep::Key("env"), KeyStep::Key(name)]) {
+                    Some(line) => format!("the global env variable on line {line}"),
+                    None => "a global env variable".to_string(),
+                }
+            };
+            problems.push(StartProblem::new(
+                Problem::about(key_path(&["env", name]), format!("{which}: {problem}")),
+                Stops::TerminalUi,
+            ));
+        }
+    }
+    for (index, project) in config.projects.iter().enumerate() {
+        // A project is named by its line, never by its path, name or id.
+        let label = raw.and_then(|raw| line_of_project(raw, index)).map_or_else(
+            || format!("{} (counting from 1)", index + 1),
+            |line| format!("on line {line}"),
+        );
+        for (name, value) in &project.env {
+            if let Some(problem) = env_variable_problem(name, value) {
+                let which = if is_valid_var_name(name) {
+                    format!("env variable {name} of the project {label}")
+                } else {
+                    match line(&[
+                        KeyStep::Entry("projects", index),
+                        KeyStep::Key("env"),
+                        KeyStep::Key(name),
+                    ]) {
+                        Some(line) => {
+                            format!("the env variable on line {line} of the project {label}")
+                        }
+                        None => format!("an env variable of the project {label}"),
+                    }
+                };
+                problems.push(StartProblem::new(
+                    Problem::about(key_path(&["projects"]), format!("{which}: {problem}")),
+                    Stops::TerminalUi,
+                ));
+            }
+        }
+    }
+    if let Some(duplicate) = crate::config_sync::duplicate_project(&config.projects) {
+        // Each placed by its line, never by its path, name or id.
+        let say = |index: usize| {
+            raw.and_then(|raw| line_of_project(raw, index)).map_or_else(
+                || format!("project {} (counting from 1)", index + 1),
+                |line| format!("the project on line {line}"),
+            )
+        };
+        problems.push(StartProblem::new(
+            Problem::about(
+                key_path(&["projects"]),
+                format!(
+                    "Project sync conflict in config.toml: {}",
+                    duplicate.sentence(&say(duplicate.first), &say(duplicate.second))
+                ),
+            ),
+            Stops::Both,
+        ));
+    }
+    problems
+}
+
+/// The checks the terminal UI's start makes on the config it read (see
+/// [`check_start`] for the whole list), as sentences.
+pub(crate) fn start_check_problems(config: &Config) -> Vec<String> {
+    config_start_problems(config, config.source_text.as_str())
+        .into_iter()
+        .filter(|problem| problem.stops(crate::config::Surface::TerminalUi))
+        .map(|problem| {
+            problem
+                .message
+                .split_once(": ")
+                .map_or(problem.message.clone(), |(_, rest)| rest.to_string())
+        })
+        .collect()
+}
+
+/// What is wrong with one environment variable as a start reads it (see
+/// [`resolve_project_env`]), without its value.
+fn env_variable_problem(name: &str, value: &str) -> Option<String> {
+    if !is_valid_var_name(name) {
+        return Some("the name must match [A-Za-z_][A-Za-z0-9_]*".to_string());
+    }
+    match expand_env_vars(value) {
+        None => Some("the value has invalid $VAR expansion syntax".to_string()),
+        Some(expanded) if expanded.contains('\0') => {
+            Some("the value contains a NUL byte".to_string())
+        }
+        Some(_) => None,
+    }
+}
+
+/// [`start_check_problems`], failing on the first.
+///
+/// # Errors
+///
+/// Fails with the first problem that stops yaran starting with `config`.
+pub fn start_check(config: &Config) -> Result<()> {
+    match start_check_problems(config).into_iter().next() {
+        Some(problem) => Err(anyhow!(problem)),
+        None => Ok(()),
+    }
+}
+
+/// The problems with `config`'s log files at `paths`: `[logging] path` or `[server]
+/// log_path` naming a file yaran keeps for itself, which the log would be written into.
+/// Both surfaces refuse to start, and to reload, with any of them.
+pub(crate) fn log_path_problems(config: &Config, paths: &YaranPaths) -> Vec<StartProblem> {
+    use crate::config_auth::Problem;
+    // A file as the system finds it: through every link when it exists, else
+    // through its folder's, so `..`, a linked folder and a link at the path itself
+    // all land where a write would.
+    let identity = |path: &Path| -> PathBuf {
+        if let Ok(found) = std::fs::canonicalize(path) {
+            return found;
+        }
+        match (path.parent(), path.file_name()) {
+            (Some(folder), Some(name)) => std::fs::canonicalize(folder)
+                .map_or_else(|_| path.to_path_buf(), |folder| folder.join(name)),
+            _ => path.to_path_buf(),
+        }
+    };
+    let database = paths.sessions_db_path.as_os_str();
+    let with_suffix = |suffix: &str| {
+        let mut name = database.to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let own = [
+        paths.config_path.clone(),
+        paths.sessions_db_path.clone(),
+        with_suffix("-wal"),
+        with_suffix("-shm"),
+        paths.lock_path.clone(),
+        crate::client::remotes::remotes_path(&paths.root),
+        resolve_control_socket(&paths.root, &config.server.control_socket),
+    ];
+    let yaran_log = [
+        paths.root.join("yaran.log"),
+        crate::logger::resolve_log_path(&config.logging, paths),
+    ];
+    let logs = [
+        (
+            ["logging", "path"],
+            "[logging] path",
+            crate::logger::resolve_log_path(&config.logging, paths),
+            &own[..],
+        ),
+        (
+            ["server", "log_path"],
+            "[server] log_path",
+            crate::logger::resolve_server_log_path(&config.server, paths),
+            &[&own[..], &yaran_log[..]].concat()[..],
+        ),
+    ];
+    let mut problems = Vec::new();
+    for (key, shown, log, forbidden) in logs {
+        let log = identity(&log);
+        let Some(taken) = forbidden.iter().find(|file| identity(file) == log) else {
+            continue;
+        };
+        // Named by yaran's own file, never by the value written, which the
+        // start problems never repeat.
+        let name = taken.file_name().map_or_else(
+            || taken.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        problems.push(StartProblem::new(
+            Problem::about(
+                key_path(&key),
+                format!(
+                    "{shown} points at {name}, a file yaran keeps for itself, so the log would \
+                     be written into it. Give the log a file of its own."
+                ),
+            ),
+            Stops::Both,
+        ));
+    }
+    problems
+}
+
+/// [`log_path_problems`]' first, as the sentence to refuse with.
+pub fn log_path_refusal(config: &Config, paths: &YaranPaths) -> Option<String> {
+    log_path_problems(config, paths)
+        .into_iter()
+        .next()
+        .map(|problem| problem.message)
+}
+
+/// The config yaran runs with from a whole file's text: read as a start reads
+/// it, with the corrections a load makes.
+///
+/// # Errors
+///
+/// Fails when `raw` is not TOML or carries an `[server.auth]` that does not load.
+pub fn effective_config_from_text(raw: &str) -> std::result::Result<Config, ConfigLoadProblem> {
+    config_from_text(raw, Report::Quiet).map(|config| load_corrections(config).0)
+}
+
+/// Every problem the `[server.auth]` section of a whole config file's text
+/// has, each described without positions (the same problem reads the same
+/// before and after an unrelated edit) and without values. Empty when the
+/// section loads. A `server` or `server.auth` that is not a table, or a
+/// value of the wrong type, is one problem; otherwise every rule the
+/// section breaks is listed.
+pub(crate) fn auth_problems_of(raw: &str) -> Vec<crate::config_auth::Problem> {
+    let file: toml::Table = match toml::from_str(raw) {
+        Ok(file) => file,
+        Err(error) => {
+            return vec![crate::config_auth::Problem::plain(format!(
+                "the file is not valid TOML: {}",
+                problem_kind(error.message())
+            ))];
+        }
+    };
+    let mut problems = misplaced_auth_problem_list(raw);
+    problems.extend(auth_section_problems(&file, raw));
+    problems
+}
+
+/// The problems of `[server.auth]` itself, key by key.
+fn auth_section_problems(file: &toml::Table, raw: &str) -> Vec<crate::config_auth::Problem> {
+    let Some(server) = file.get("server") else {
+        return Vec::new();
+    };
+    // Not a table: no `[server.auth]` to judge; a password setting inside it
+    // is the misplaced-auth rule's.
+    let Some(server) = server.as_table() else {
+        return Vec::new();
+    };
+    let Some(auth) = server.get("auth") else {
+        return Vec::new();
+    };
+    if !auth.is_table() {
+        return vec![crate::config_auth::Problem::plain(
+            "server.auth is not a table",
+        )];
+    }
+    crate::config_auth::rule_problems_located(auth.clone(), &|key| {
+        line_of_key(
+            raw,
+            &[
+                KeyStep::Key("server"),
+                KeyStep::Key("auth"),
+                KeyStep::Key(key),
+            ],
+        )
+    })
+}
+
+/// Read one `server.auth` value through the same deserializer every other
+/// reader uses.
+pub(crate) fn parse_auth_value(auth: toml::Value) -> Result<ServerAuthConfig, String> {
+    #[derive(Deserialize)]
+    struct Holder {
+        auth: ServerAuthConfig,
+    }
+    let mut holder = toml::Table::new();
+    holder.insert("auth".to_string(), auth);
+    let text = toml::to_string(&holder).map_err(|e| e.to_string())?;
+    toml::from_str::<Holder>(&text)
+        .map(|holder| holder.auth)
+        .map_err(|e| e.to_string())
+}
+
+/// What the field-level recovery does to one part of a file that does not
+/// read: drop one top-level field of a section (a setting, which then reads
+/// as its default, or a whole entry of a map such as one provider), or
+/// reset a whole section.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Recovery {
+    DropField { section: String, field: String },
+    ResetSection { section: String },
+}
+
+impl Recovery {
+    /// The path of what it drops or resets.
+    fn key(&self) -> Vec<String> {
+        match self {
+            Self::DropField { section, field } => vec![section.clone(), field.clone()],
+            Self::ResetSection { section } => vec![section.clone()],
+        }
+    }
+
+    /// Whether the setting at `key` is inside what it drops or resets.
+    fn covers(&self, key: &[String]) -> bool {
+        key.starts_with(&self.key())
+    }
+
+    /// The action in `plan` that covers `key`, if any.
+    fn covering<'a>(plan: &'a [Recovery], key: &[String]) -> Option<&'a Recovery> {
+        plan.iter().find(|recovery| recovery.covers(key))
+    }
+
+    /// What it drops or resets, as printed (through the one formatter, so
+    /// an entry whose name breaks its map's rule is placed by its line).
+    fn place(&self, raw: &str) -> String {
+        match self {
+            Self::DropField { section, field } => {
+                shown_place(raw, &[section.clone(), field.clone()])
+            }
+            Self::ResetSection { section } => format!("[{section}]"),
+        }
+    }
+
+    /// What `yaran server` does about the wrong value at `key`, which it covers.
+    fn said_of(&self, key: &[String], raw: &str) -> String {
+        let place = self.place(raw);
+        match self {
+            Self::DropField { .. } if self.key() == key => {
+                "yaran server reads it as its default".to_string()
+            }
+            // A stock provider's name follows the rule, so it may be said.
+            Self::DropField { section, field }
+                if section == "providers" && is_stock_provider(field) =>
+            {
+                format!(
+                    "yaran server drops all of {place} over it and runs yaran's own {field} provider"
+                )
+            }
+            Self::DropField { .. } => format!("yaran server drops all of {place} over it"),
+            Self::ResetSection { .. } => {
+                format!("yaran server resets all of {place} to its defaults over it")
+            }
+        }
+    }
+}
+
+/// Whether `name` is a provider yaran ships.
+fn is_stock_provider(name: &str) -> bool {
+    default_provider_commands()
+        .iter()
+        .any(|(stock, _)| *stock == name)
+}
+
+/// What the field-level recovery does to `doc` (see [`recover_config_table`]),
+/// in order. Empty for a document that reads as it is.
+fn recovery_plan(doc: &toml::Table) -> Vec<Recovery> {
+    if table_into_config(doc).is_ok() {
+        return Vec::new();
+    }
+    // A section that deserializes in isolation is fine (missing sections use
+    // serde defaults, so a single-section document is always structurally
+    // ok). For a bad section, drop only the offending FIELDS where each can be
+    // isolated; otherwise reset the whole section.
+    let mut plan = Vec::new();
+    for (section, value) in doc {
+        if section_solo_ok(section, value.clone()) {
+            continue;
+        }
+        if let toml::Value::Table(tbl) = value
+            && let Some((_, reset_fields)) = prune_invalid_fields(section, tbl)
+        {
+            plan.extend(reset_fields.into_iter().map(|field| Recovery::DropField {
+                section: section.clone(),
+                field,
+            }));
+            continue;
+        }
+        plan.push(Recovery::ResetSection {
+            section: section.clone(),
+        });
+    }
+    plan
+}
+
+/// The field-level recovery of every section but `[server.auth]`: the
+/// document with [`recovery_plan`] applied.
+///
+/// Every line it logs about a key goes through the one formatter against
+/// `raw`, so a name that breaks its map's rule is placed by its line.
+fn recover_config_table(doc: toml::Table, raw: &str, report: Report) -> Config {
+    let log = |level: fn(&str), line: String| {
+        if report == Report::Log {
+            level(&line);
+        }
+    };
+    let plan = recovery_plan(&doc);
+    if plan.is_empty()
+        && let Ok(cfg) = table_into_config(&doc)
+    {
+        return cfg;
+    }
+    let mut pruned = doc;
+    for recovery in &plan {
+        match recovery {
+            Recovery::DropField { section, field } => {
+                log(
+                    crate::logger::warn,
+                    format!(
+                        "config {} is invalid; resetting it to its default",
+                        recovery.place(raw)
+                    ),
+                );
+                if let Some(table) = pruned.get_mut(section).and_then(toml::Value::as_table_mut) {
+                    table.remove(field);
+                }
+            }
+            Recovery::ResetSection { section } => {
+                log(
+                    crate::logger::warn,
+                    format!(
+                        "config section {} is invalid; resetting it to defaults",
+                        recovery.place(raw)
+                    ),
+                );
+                pruned.remove(section);
+            }
+        }
+    }
+    match table_into_config(&pruned) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // The kind of problem only: the parser's own message can quote a
+            // key, and a key can be a value pasted in the wrong place.
+            log(
+                crate::logger::error,
+                format!(
+                    "config could not be recovered ({}); using defaults",
+                    problem_kind(&e)
+                ),
+            );
+            Config::default()
+        }
+    }
+}
+
+/// The section with its offending fields dropped, and the names of what was
+/// dropped, or `None` when no set of single fields explains the failure and the
+/// caller must reset the whole section. Fields are removed one at a time, each
+/// one kept out only if the section deserializes without it, so a section loses
+/// the least it can.
+fn prune_invalid_fields(section: &str, tbl: &toml::Table) -> Option<(toml::Table, Vec<String>)> {
+    let mut fixed = tbl.clone();
+    let mut reset_fields: Vec<String> = Vec::new();
+    for _ in 0..tbl.len() {
+        if section_solo_ok(section, toml::Value::Table(fixed.clone())) {
+            break;
+        }
+        let field_keys: Vec<String> = fixed.keys().cloned().collect();
+        let mut removed = false;
+        for fk in field_keys {
+            let mut trial = fixed.clone();
+            trial.remove(&fk);
+            if section_solo_ok(section, toml::Value::Table(trial.clone())) {
+                reset_fields.push(fk);
+                fixed = trial;
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            break;
+        }
+    }
+    section_solo_ok(section, toml::Value::Table(fixed.clone())).then_some((fixed, reset_fields))
+}
+
+/// True if a document containing only `section = value` deserializes into a
+/// `Config` (every other section defaulted). Used to test one section at a time.
+fn section_solo_ok(section: &str, value: toml::Value) -> bool {
+    let mut t = toml::Table::new();
+    t.insert(section.to_string(), value);
+    table_into_config(&t).is_ok()
+}
+
+/// What is wrong with a document containing only `section = value`, as the
+/// kind of problem with no value in it.
+fn section_solo_problem(section: &str, value: toml::Value) -> String {
+    let mut t = toml::Table::new();
+    t.insert(section.to_string(), value);
+    let text = toml::to_string(&t).unwrap_or_default();
+    match toml::from_str::<Config>(&text) {
+        Ok(_) => "invalid".to_string(),
+        Err(error) => problem_kind(error.message()),
+    }
+}
+
+/// Deserialize a `toml::Table` into a `Config`, round-tripping through a string so
+/// this uses the exact same path as `toml::from_str` everywhere else (no reliance
+/// on a `Value::try_into` API that varies across toml versions).
+fn table_into_config(table: &toml::Table) -> Result<Config, String> {
+    let s = toml::to_string(table).map_err(|e| e.to_string())?;
+    toml::from_str::<Config>(&s).map_err(|e| e.to_string())
+}
+
+/// Load config for a read-only consumer (the web server, and every reload).
+/// Reads `config.toml` if present; a missing file is the defaults. Always
+/// applies provider defaults. Unlike the TUI's `ensure_config`, this never
+/// creates, migrates, or writes the config file.
+///
+/// Fails closed on `[server.auth]`: a file that cannot be read, is not TOML,
+/// or carries an invalid auth section is a [`ConfigLoadError`], never a
+/// silent fallback to defaults, because the default is "no password". A
+/// start then refuses to run and a reload keeps the running config.
+///
+/// # Errors
+///
+/// Fails when the file cannot be read, is not TOML, or carries an `[server.auth]` that does not
+/// load.
+pub fn load_config(paths: &YaranPaths) -> std::result::Result<Config, ConfigLoadError> {
+    load_config_file(&paths.config_path)
+}
+
+/// [`load_config`] for a reload: a file that has disappeared since yaran started
+/// is an error ([`ConfigLoadProblem::Missing`]) rather than the defaults,
+/// because the defaults would quietly drop a password the running yaran has.
+/// A file that is empty or only whitespace ([`ConfigLoadProblem::Empty`]) is
+/// refused for the same reason: it is what an editor leaves mid-save. The
+/// emptiness is judged on the very text that is then parsed, so a file
+/// truncated between two reads cannot slip through as the defaults.
+///
+/// # Errors
+///
+/// Fails when the file is missing, empty, unreadable, not TOML, or carries an `[server.auth]` that
+/// does not load.
+pub fn load_config_for_reload(paths: &YaranPaths) -> std::result::Result<Config, ConfigLoadError> {
+    let fail = |problem| ConfigLoadError {
+        path: paths.config_path.clone(),
+        problem,
+    };
+    let Some(raw) = read_config_text(&paths.config_path)? else {
+        return Err(fail(ConfigLoadProblem::Missing));
+    };
+    if raw.trim().is_empty() {
+        return Err(fail(ConfigLoadProblem::Empty));
+    }
+    let config = config_from_read_text(&raw, &paths.config_path)?;
+    Ok(apply_load_corrections(config))
+}
+
+/// The check a surface whose reload reads the file its own way (the terminal
+/// UI's `ensure_config_for_reload`, which would otherwise create a fresh
+/// default file) runs first: the file is there. Emptiness is that reader's to
+/// judge on the text it parses.
+///
+/// # Errors
+///
+/// Fails when the file is missing, unreadable, or a link to a file that is gone.
+pub fn config_present_for_reload(paths: &YaranPaths) -> std::result::Result<(), ConfigLoadError> {
+    match read_config_text(&paths.config_path)? {
+        Some(_) => Ok(()),
+        None => Err(ConfigLoadError {
+            path: paths.config_path.clone(),
+            problem: ConfigLoadProblem::Missing,
+        }),
+    }
+}
+
+/// [`load_config`] for a bare file path.
+///
+/// # Errors
+///
+/// Fails as [`load_config`] does.
+pub fn load_config_file(config_path: &Path) -> std::result::Result<Config, ConfigLoadError> {
+    let config = load_config_file_as_written(config_path)?;
+    Ok(apply_load_corrections(config))
+}
+
+/// The file's values as written: migrated and recovered, with provider
+/// defaults, but without the in-memory corrections [`load_config`] makes to
+/// out-of-range values.
+pub(crate) fn load_config_file_as_written(
+    config_path: &Path,
+) -> std::result::Result<Config, ConfigLoadError> {
+    if let Some(raw) = read_config_text(config_path)? {
+        config_from_read_text(&raw, config_path)
+    } else {
+        let mut config = Config::default();
+        config.providers.ensure_defaults();
+        Ok(config)
+    }
+}
+
+/// Parse text read from `config_path` as every load does.
+fn config_from_read_text(
+    raw: &str,
+    config_path: &Path,
+) -> std::result::Result<Config, ConfigLoadError> {
+    // One-time migration notice: the single `[server] max_websocket_connections`
+    // cap was split into three per-class caps. The unknown key is ignored on
+    // load (ServerConfig has no deny_unknown_fields), so warn once so the
+    // operator knows their old value is no longer in effect.
+    warn_on_removed_max_websocket_connections(raw);
+    config_from_text_as_written(raw).map_err(|problem| ConfigLoadError {
+        path: config_path.to_path_buf(),
+        problem,
+    })
+}
+
+/// The config file's text as every reader takes it (a start, a reload,
+/// `yaran config get`): `None` when there is no file yet, which means the
+/// defaults; an error when it cannot be read, or when it is a link to a file
+/// that is gone, which is not "no file yet" and stops every surface.
+///
+/// # Errors
+///
+/// Fails when the file cannot be read, or is a link to a file that is gone.
+pub fn read_config_text(
+    config_path: &Path,
+) -> std::result::Result<Option<String>, ConfigLoadError> {
+    let fail = |problem| ConfigLoadError {
+        path: config_path.to_path_buf(),
+        problem,
+    };
+    match std::fs::read_to_string(config_path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match dangling_link_target(config_path) {
+                Some(target) => Err(fail(ConfigLoadProblem::DanglingLink(target))),
+                None => Ok(None),
+            }
+        }
+        Err(error) => Err(fail(ConfigLoadProblem::Unreadable(error.to_string()))),
+    }
+}
+
+/// A config's text read as every surface loads it: [`config_from_text_as_written`]
+/// with the load's in-memory corrections, without warning about them. What
+/// memory starts as, and therefore the config writer's base: a correction is
+/// never a change yaran made, so a save never writes it over what the file says.
+///
+/// # Errors
+///
+/// Fails when `raw` is not TOML or carries an `[server.auth]` that does not load.
+pub fn config_from_text_as_loaded(raw: &str) -> std::result::Result<Config, ConfigLoadProblem> {
+    config_from_text(raw, Report::Quiet).map(|config| load_corrections(config).0)
+}
+
+/// The load's in-memory corrections applied to a config a surface read
+/// itself (the terminal UI's own start), each warned about once, so every
+/// surface starts from the same config [`config_from_text_as_loaded`] reads.
+pub fn correct_loaded(config: Config) -> Config {
+    apply_load_corrections(config)
+}
+
+/// A config's text read as written: migrated in memory, recovered, with
+/// provider defaults, without the load corrections, and carrying the text
+/// itself as its [`Config::source_text`].
+pub(crate) fn config_from_text_as_written(
+    raw: &str,
+) -> std::result::Result<Config, ConfigLoadProblem> {
+    config_from_text(raw, Report::Log)
+}
+
+/// [`config_from_text_as_written`], logging or not as `report` says.
+fn config_from_text(raw: &str, report: Report) -> std::result::Result<Config, ConfigLoadProblem> {
+    // `[server.auth]` is read from the user's own text first, so an error in
+    // it names the line in the file they have to fix: the migrations below
+    // rewrite other keys, which moves the lines after them.
+    auth_section_of(raw)?;
+    // Apply load-time config migrations IN MEMORY at every entrypoint
+    // (deprecated `[server] bind` -> host/port, `prompt_for_name`, and
+    // retired-provider pruning), so `yaran serve` honors deprecated keys
+    // instead of silently dropping them. The TUI's `ensure_config`
+    // additionally PERSISTS the migrated document; here it is memory-only.
+    // A parse or migration failure falls through to the normal recovery
+    // path on the raw text (best effort, never fatal at load).
+    let migrated = raw
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|mut doc| {
+            crate::config_migrate::apply_load_migrations(&mut doc)
+                .ok()
+                .map(|_| doc.to_string())
+        })
+        .unwrap_or_else(|| raw.to_string());
+    let mut config = recover_config_with(&migrated, raw, report)?;
+    config.providers.ensure_defaults();
+    config.source_text = SourceText::of(raw);
+    Ok(config)
+}
+
+/// The corrections [`load_config`] makes in memory, each warned about once.
+fn apply_load_corrections(config: Config) -> Config {
+    let (config, corrections) = load_corrections(config);
+    for (_, warning) in corrections {
+        crate::logger::warn(&warning);
+    }
+    // Every value yaran reads as another where it is used (a level it does not
+    // know, a ceiling, `0` meaning the default, an editor it does not know),
+    // said ONCE here, so the readers themselves stay silent: several of them
+    // run every engine tick or on every bootstrap fetch.
+    let raw = config.source_text.as_str().unwrap_or_default();
+    for correction in crate::config_effective::use_time_corrections(&config) {
+        crate::logger::warn(&format!(
+            "config {}: {}",
+            shown_path(raw, &correction.path),
+            correction.reason
+        ));
+    }
+    config
+}
+
+/// A setting's path as segments, from its names.
+fn key_path(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+/// A value a load (or the terminal UI's key resolution) uses in place of
+/// what the file says at `path`, with why, and, for a value that came from
+/// another setting of the file (a deprecated key, a retired binding), that
+/// setting's path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LoadCorrection {
+    pub path: Vec<String>,
+    pub reason: String,
+    pub from: Option<Vec<String>>,
+}
+
+impl LoadCorrection {
+    fn new(path: Vec<String>, reason: String) -> Self {
+        Self {
+            path,
+            reason,
+            from: None,
+        }
+    }
+}
+
+/// Every value a load of the whole config file `raw` uses in place of what
+/// the file says, by the path of the setting (or entry) as segments, with
+/// why: an entry the load migrations drop (a retired provider's stock
+/// block), a value carried over from a deprecated key, what yaran server's
+/// recovery drops or resets, and each value the load corrects. Empty for a
+/// file that does not read.
+pub fn load_corrections_of(raw: &str) -> Vec<(Vec<String>, String)> {
+    load_corrections_with_sources(raw)
+        .into_iter()
+        .map(|correction| (correction.path, correction.reason))
+        .collect()
+}
+
+/// [`load_corrections_of`], each with the setting a carried-over value came
+/// from.
+pub(crate) fn load_corrections_with_sources(raw: &str) -> Vec<LoadCorrection> {
+    let mut found: Vec<LoadCorrection> = raw
+        .parse::<toml_edit::DocumentMut>()
+        .map_or_default(|doc| crate::config_migrate::retired_provider_prunes(&doc))
+        .into_iter()
+        .map(|(path, reason)| LoadCorrection::new(path, reason))
+        .collect();
+    // A value carried over from a deprecated key: said with where it came
+    // from (and the line), and what to write instead.
+    if let Ok(doc) = raw.parse::<toml_edit::DocumentMut>() {
+        for carried in crate::config_migrate::carried_over(&doc) {
+            let line = line_of_key(
+                raw,
+                &[
+                    KeyStep::Key(carried.old_section),
+                    KeyStep::Key(carried.old_key),
+                ],
+            )
+            .map_or_else(String::new, |line| format!(" (line {line})"));
+            // Through the one value printer, at the deprecated key's path.
+            let old_value = toml::from_str::<toml::Table>(&format!("v = {}", carried.old_value))
+                .ok()
+                .and_then(|mut read| read.remove("v"))
+                .and_then(|value| {
+                    crate::config_keys::printed_value(
+                        raw,
+                        &key_path(&[carried.old_section, carried.old_key]),
+                        &value,
+                        crate::config_keys::ValueForm::Line,
+                    )
+                })
+                .unwrap_or_else(|| crate::config_keys::NOT_SHOWN.to_string());
+            found.push(LoadCorrection {
+                path: carried.key,
+                reason: format!(
+                    "carried over from the deprecated [{}] {} = {old_value}{line}; replace it \
+                     with {}",
+                    carried.old_section, carried.old_key, carried.replace_with
+                ),
+                from: Some(key_path(&[carried.old_section, carried.old_key])),
+            });
+        }
+    }
+    // What `yaran server`'s recovery drops or resets (the terminal UI will not
+    // start with such a file at all), each with the wrong values that made it.
+    if let Some(rest) = start_reads(raw).map(|reads| reads.yaran_server) {
+        let wrong = wrong_typed_settings(&rest, raw);
+        for recovery in recovery_plan(&rest) {
+            let causes: Vec<&(String, Vec<String>, String)> = wrong
+                .iter()
+                .filter(|(_, key, _)| recovery.covers(key))
+                .collect();
+            let reason = match (&recovery, causes.as_slice()) {
+                (Recovery::DropField { .. }, [(place, key, kind)]) if *key == recovery.key() => {
+                    format!("{place}: {kind}, so yaran server reads it as its default")
+                }
+                _ => {
+                    let places: Vec<&str> =
+                        causes.iter().map(|(place, _, _)| place.as_str()).collect();
+                    let verb = if places.len() == 1 { "has" } else { "have" };
+                    let place = recovery.place(raw);
+                    let what = match &recovery {
+                        Recovery::DropField { .. } => format!("yaran server drops all of {place}"),
+                        Recovery::ResetSection { .. } => {
+                            format!("yaran server resets all of {place} to its defaults")
+                        }
+                    };
+                    if places.is_empty() {
+                        format!("{what}, because it does not read")
+                    } else {
+                        format!(
+                            "{what}, because {} {verb} the wrong type",
+                            places.join(" and ")
+                        )
+                    }
+                }
+            };
+            found.push(LoadCorrection::new(recovery.key(), reason));
+        }
+    }
+    if let Ok(config) = config_from_text(raw, Report::Quiet) {
+        found.extend(
+            load_corrections(config)
+                .1
+                .into_iter()
+                .map(|(path, reason)| LoadCorrection::new(path, reason)),
+        );
+    }
+    found
+}
+
+/// [`apply_load_corrections`] without the logging: the corrected config,
+/// and each correction's path and warning.
+fn load_corrections(mut config: Config) -> (Config, Vec<(Vec<String>, String)>) {
+    let mut corrections: Vec<(Vec<String>, String)> = Vec::new();
+    // Same idea again for an out-of-range terminal_font_size: warn ONCE here and
+    // correct it IN MEMORY, rather than letting `normalized_terminal_font_size`
+    // (now pure, see its doc comment) warn on every bootstrap read. Correcting it
+    // here also fixes on-disk persistence: a later save writes back the
+    // already-valid in-memory value instead of re-persisting the bad one.
+    if let Some(warning) = terminal_font_size_load_warning(config.ui.terminal_font_size) {
+        corrections.push((key_path(&["ui", "terminal_font_size"]), warning));
+        config.ui.terminal_font_size = DEFAULT_TERMINAL_FONT_SIZE;
+    }
+    // And once more for an upload directory that names somewhere yaran will not
+    // write (absolute, traversing, or empty). Corrected in memory here so every
+    // later upload resolves the default silently rather than warning per file.
+    if let Some(warning) = upload_pasted_text_chars_load_warning(config.ui.upload_pasted_text_chars)
+    {
+        corrections.push((key_path(&["ui", "upload_pasted_text_chars"]), warning));
+        config.ui.upload_pasted_text_chars =
+            normalized_upload_pasted_text_chars(config.ui.upload_pasted_text_chars);
+    }
+    // And once more for the `gh` re-check interval, whose read path is an engine
+    // tick rather than a bootstrap projection: correcting it here is what keeps a
+    // mistyped value from warning tens of times a second for the whole run.
+    if let Some(warning) = github_probe_interval_load_warning(config.ui.github_probe_interval_secs)
+    {
+        corrections.push((key_path(&["ui", "github_probe_interval_secs"]), warning));
+        config.ui.github_probe_interval_secs =
+            normalized_github_probe_interval(config.ui.github_probe_interval_secs);
+    }
+    if let Some(warning) = upload_directory_load_warning(&config.ui.upload_directory) {
+        corrections.push((key_path(&["ui", "upload_directory"]), warning));
+        config.ui.upload_directory = DEFAULT_UPLOAD_DIRECTORY.to_string();
+    }
+    // And once more for a `ui.compose_bar` naming a mode yaran does not know.
+    // Corrected in memory so the bootstrap projection publishes a mode the
+    // browser can act on rather than passing the typo through to it.
+    if let Some(warning) = compose_bar_load_warning(&config) {
+        corrections.push((key_path(&["ui", "compose_bar"]), warning));
+        config.ui.compose_bar = ComposeBarMode::Auto.as_str().to_string();
+    }
+    // And once more for a `ui.extended_keys` naming a mode yaran does not know.
+    if let Some(warning) = extended_keys_load_warning(&config) {
+        corrections.push((key_path(&["ui", "extended_keys"]), warning));
+        config.ui.extended_keys = ExtendedKeysMode::Auto.as_str().to_string();
+    }
+    // And once more for a `[server] tailscale` naming a mode yaran does not know.
+    // Corrected in memory so the serve path reads a real mode rather than
+    // silently treating a typo as the default on every question it asks.
+    if let Some(warning) = tailscale_load_warning(&config) {
+        corrections.push((key_path(&["server", "tailscale"]), warning));
+        config.server.tailscale = TailscaleMode::Auto.as_str().to_string();
+    }
+    (config, corrections)
+}
+
+/// The warning [`load_config`] emits when `ui.terminal_font_size` is outside
+/// [`MIN_TERMINAL_FONT_SIZE`, `MAX_TERMINAL_FONT_SIZE`], or `None` for a value
+/// already in range. Split out from the logging so the message can be asserted
+/// directly, mirroring [`web_dragdrop_paste_warnings`].
+fn terminal_font_size_load_warning(size: u16) -> Option<String> {
+    if (MIN_TERMINAL_FONT_SIZE..=MAX_TERMINAL_FONT_SIZE).contains(&size) {
+        return None;
+    }
+    Some(format!(
+        "ui.terminal_font_size = {size} is outside the valid range \
+         {MIN_TERMINAL_FONT_SIZE}..={MAX_TERMINAL_FONT_SIZE} and is being reset to \
+         the default of {DEFAULT_TERMINAL_FONT_SIZE}."
+    ))
+}
+
+/// Every warning a load would emit for an unrecognized
+/// `providers.<name>.web_dragdrop_paste`, in config order: exactly one per
+/// misspelled provider, and none at all for a config that is clean.
+///
+/// Split out from the logging so the messages can be asserted directly. The
+/// per-paste resolution ([`ProviderCommandConfig::resolved_web_dragdrop_paste`])
+/// deliberately does not go through this, which is what keeps the warning to once
+/// per load rather than once per dropped file.
+///
+/// Each names its setting through the one formatter against the file's text
+/// `raw`, so a provider name that breaks the naming rule is placed by its line.
+pub fn web_dragdrop_paste_warnings(providers: &ProvidersConfig, raw: &str) -> Vec<String> {
+    providers
+        .commands
+        .iter()
+        .filter_map(|(name, provider)| {
+            let at = shown_path(raw, &key_path(&["providers", name, "web_dragdrop_paste"]));
+            WebDragDropPaste::unknown_value_warning(&at, provider.web_dragdrop_paste.as_deref()?)
+        })
+        .collect()
+}
+
+/// Warn once when a `config.toml` still carries the removed
+/// `[server] max_websocket_connections` key. Parses the raw TOML generically so a
+/// commented-out line never trips the warning, then logs the three replacements
+/// and the `=0` semantics change. The key itself is silently ignored on load (no
+/// `deny_unknown_fields`), so this is the only place the operator learns their old
+/// value stopped taking effect.
+fn warn_on_removed_max_websocket_connections(raw: &str) {
+    if raw_has_removed_max_websocket_connections(raw) {
+        crate::logger::warn(
+            "[server] max_websocket_connections has been removed and is being ignored. It \
+             was split into max_websocket_events_connections, \
+             max_websocket_agent_connections, and max_websocket_terminal_connections. Set \
+             those per-class caps instead; a value of 0 still means disable (refuse all \
+             new connections of that class until restart).",
+        );
+    }
+}
+
+/// Pure predicate behind the migration warning: true when the raw TOML has a
+/// `[server] max_websocket_connections` key. Parses generically so a commented-out
+/// line is not detected; a parse failure returns false (the loader surfaces the
+/// real parse error separately).
+///
+/// `pub(crate)` so `config_write` can check the same condition on the write/strip
+/// path (where the TUI saves config) and emit the warning there too.
+pub(crate) fn raw_has_removed_max_websocket_connections(raw: &str) -> bool {
+    toml::from_str::<toml::Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("server")
+                .and_then(toml::Value::as_table)
+                .map(|server| server.contains_key("max_websocket_connections"))
+        })
+        .unwrap_or(false)
+}
+
+/// Check whether a provider command is available on PATH.
+/// Returns `Ok(())` if found, or `Err(message)` with a user-friendly install hint.
+pub(crate) fn check_provider_available(
+    config: &ProviderCommandConfig,
+) -> std::result::Result<(), String> {
+    if provider_command_available(&config.command) {
+        return Ok(());
+    }
+
+    let hint = config.install_hint.as_ref().map_or_else(
+        || {
+            format!(
+                "Make sure '{}' is installed and on your PATH.",
+                config.command
+            )
+        },
+        |h| format!("Install with: {h}"),
+    );
+    Err(format!(
+        "CLI tool '{}' not found on PATH. {hint}",
+        config.command
+    ))
+}
+
+fn provider_command_available(command: &str) -> bool {
+    if command.trim().is_empty() {
+        return false;
+    }
+
+    let path = Path::new(command);
+    if path.components().count() > 1 {
+        return is_executable_file(path);
+    }
+
+    env::var_os("PATH").is_some_and(|paths| provider_command_available_in_path(command, &paths))
+}
+
+fn provider_command_available_in_path(command: &str, paths: &std::ffi::OsStr) -> bool {
+    env::split_paths(paths).any(|dir| {
+        let candidate = dir.join(command);
+        is_executable_file(&candidate)
+    })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+/// One address in a [`ServerPlan`], tagged with whether binding it is REQUIRED or
+/// merely BEST-EFFORT.
+///
+/// - `required: true`: a deliberate listener (the configured `host:port` or an
+///   explicit `--bind`). A bind failure here is FATAL per the explicit-failure
+///   tenet: the operator asked for this address, so refusing to serve it silently
+///   would hide their intent.
+/// - `required: false`: an opportunistic add-on. Today this is ONLY the
+///   Tailscale leg of LOCAL MODE: it is auto-added when a Tailscale address is
+///   detected, mirroring how tailscale-NOT-detected already degrades to loopback
+///   with a warning. A bind failure here must NOT block the server: it warns
+///   loudly and serves on the remaining (bound) addresses.
+///
+/// The IPv6 loopback leg ([`PlanAddr::ipv6_loopback`]) is required too, with one
+/// exception: a machine with no IPv6 at all skips it silently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanAddr {
+    addr: std::net::SocketAddr,
+    required: bool,
+    needs_ipv6: bool,
+}
+
+impl PlanAddr {
+    /// A required (deliberate) listener: its bind failure is fatal.
+    pub fn required(addr: std::net::SocketAddr) -> Self {
+        Self {
+            addr,
+            required: true,
+            needs_ipv6: false,
+        }
+    }
+
+    /// A best-effort (opportunistic) listener: its bind failure degrades to a
+    /// warning and the server continues on the remaining addresses.
+    pub fn best_effort(addr: std::net::SocketAddr) -> Self {
+        Self {
+            addr,
+            required: false,
+            needs_ipv6: false,
+        }
+    }
+
+    /// `[::1]:port`, served beside `127.0.0.1:port` because `localhost` resolves
+    /// to both and browsers try `::1` first: without it, another program on
+    /// `[::1]:port` answers `http://localhost:port` while yaran says it serves
+    /// there. Required, so that program stops the start, except on a machine
+    /// without IPv6, where it is skipped (see [`Self::skips_bind_failure`]).
+    pub fn ipv6_loopback(port: u16) -> Self {
+        Self {
+            addr: std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+            required: true,
+            needs_ipv6: true,
+        }
+    }
+
+    /// Whether `err`, from binding this address, means the leg is skipped
+    /// silently rather than handled by [`Self::is_required`]: only the IPv6
+    /// loopback leg, and only when the machine has no IPv6 to bind it on.
+    pub fn skips_bind_failure(&self, err: &std::io::Error) -> bool {
+        self.needs_ipv6 && ipv6_unavailable(err)
+    }
+
+    /// The socket address this listener targets.
+    pub fn addr(&self) -> std::net::SocketAddr {
+        self.addr
+    }
+
+    /// Whether a bind failure on this address is fatal. `false` is only
+    /// constructible via [`PlanAddr::best_effort`], so the best-effort invariant
+    /// is enforced by the type rather than by call-site discipline.
+    pub fn is_required(&self) -> bool {
+        self.required
+    }
+}
+
+/// Whether a bind error says this machine has no IPv6 to bind on: the address
+/// family is not supported (IPv6 compiled out or disabled at boot) or the address
+/// is not configured (IPv6 disabled by sysctl, which takes `::1` off loopback).
+/// Every other error, a taken port above all, is a real failure.
+pub fn ipv6_unavailable(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::EAFNOSUPPORT | libc::EADDRNOTAVAIL)
+    )
+}
+
+/// The fully-resolved listening plan for `yaran server`, the single source of
+/// truth the binary hands to yaran-web. Lives in yaran-core because both server entry
+/// points and the resolver rules belong in the crate the binary and TUI share;
+/// keeping the plan type here avoids a yaran-web dependency from the resolver and
+/// keeps the bind rules in one place.
+///
+/// The addresses are deduplicated and listed in a stable order, each tagged
+/// [`PlanAddr::required`] (the configured/`--bind` primary, whose bind failure is
+/// fatal) or [`PlanAddr::best_effort`] (the Tailscale leg, whose bind failure
+/// degrades to a warning and serves the remaining addresses).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerPlan {
+    /// Every address to bind, deduplicated, in a stable order.
+    pub addrs: Vec<PlanAddr>,
+    /// The one REQUIRED address (the configured `host:port` or `--bind`). Kept
+    /// beside `addrs` because the Tailscale watcher has to know what the primary
+    /// listener already covers: a wildcard primary, or a primary that IS the
+    /// Tailscale address, needs no separate leg and must never grow one later.
+    pub primary: std::net::SocketAddr,
+    /// The mode this run serves under, after `--no-tailscale` is applied. The
+    /// serve path reads it to decide whether to watch the interface at all, so
+    /// the flag cannot be honored at plan time and forgotten at serve time.
+    pub tailscale: TailscaleMode,
+    /// Whether `--no-tailscale` is what produced [`Self::tailscale`], rather than
+    /// the configured value. A live mode change is REFUSED for this run when it
+    /// is set, so the two have to stay distinguishable: a configured `"no"` is a
+    /// preference the user may change while yaran runs, a flagged one is not.
+    pub forced_no: bool,
+}
+
+/// A `yaran server` command-line flag that takes the place of a `[server]`
+/// setting from the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerFlag {
+    /// `--bind <ADDR:PORT>`: the host and the port.
+    Bind,
+    /// `--port <PORT>`: the port.
+    Port,
+}
+
+impl ServerFlag {
+    /// The flag as typed.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Bind => "--bind",
+            Self::Port => "--port",
+        }
+    }
+
+    /// Whether `cli` carries it.
+    pub(crate) fn is_set(self, cli: &ServerCliOverrides) -> bool {
+        match self {
+            Self::Bind => cli.bind.is_some(),
+            Self::Port => cli.port.is_some(),
+        }
+    }
+}
+
+/// A `[server]` setting whose file value a `yaran server` flag can take the
+/// place of. The one statement of which flag does that for which setting:
+/// [`resolve_server_plan`] decides with it, and the start checks name the
+/// same flags in what they say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerFileSetting {
+    /// `[server] host`, which only `--bind` replaces.
+    Host,
+    /// `[server] port`, which `--port` or `--bind` replaces.
+    Port,
+}
+
+impl ServerFileSetting {
+    /// The flags that take the place of the file's value.
+    pub fn flags(self) -> &'static [ServerFlag] {
+        match self {
+            Self::Host => &[ServerFlag::Bind],
+            Self::Port => &[ServerFlag::Port, ServerFlag::Bind],
+        }
+    }
+
+    /// Whether `cli` takes the file's value out of the picture.
+    pub(crate) fn overridden_by(self, cli: &ServerCliOverrides) -> bool {
+        self.flags().iter().any(|flag| flag.is_set(cli))
+    }
+
+    /// The flags, for a sentence: "--bind", or "--port or --bind".
+    pub fn overriding_flags(self) -> String {
+        self.flags()
+            .iter()
+            .map(|flag| flag.name())
+            .collect::<Vec<_>>()
+            .join(" or ")
+    }
+}
+
+/// CLI overrides for the server plan. Every field is `None`/`false` when the
+/// operator passed nothing, so config values win by default and a present CLI
+/// value takes precedence.
+#[derive(Clone, Debug, Default)]
+pub struct ServerCliOverrides {
+    /// `--bind <ADDR:PORT>`: bind this exact address, overriding config host+port.
+    pub bind: Option<String>,
+    /// `--port <PORT>`: override `[server] port` only. Ignored when `bind` is set.
+    pub port: Option<u16>,
+    /// `--no-tailscale`: do not bind the Tailscale leg this run.
+    pub no_tailscale: bool,
+}
+
+/// Parse a `[server] host` value into an [`std::net::IpAddr`], trimming
+/// surrounding whitespace first. The SINGLE server-host parser, shared by
+/// [`resolve_server_plan`] (the `yaran server` bind path) and the TUI's early
+/// `validate_server_host`, so a whitespaced host parses the same way at both.
+/// Hostnames are not resolved; the value must be an IP literal such as
+/// `127.0.0.1` or `0.0.0.0`.
+pub(crate) fn parse_server_host(host: &str) -> Result<std::net::IpAddr, String> {
+    use std::str::FromStr;
+    let trimmed = host.trim();
+    std::net::IpAddr::from_str(trimmed).map_err(|_| {
+        format!(
+            "[server] host = \"{trimmed}\" is not a valid IP address. Use an IP literal such as \
+             127.0.0.1 (loopback) or 0.0.0.0 (all interfaces); hostnames are not resolved."
+        )
+    })
+}
+
+/// Why `host:port` cannot be served on, when the port is 0. Shared by
+/// [`resolve_server_plan`] and the start checks ([`check_start`]), so `yaran
+/// config set` refuses exactly what `yaran server` refuses.
+fn port_zero_problem(host: &str, port: u16) -> Option<String> {
+    let bind = match host.parse::<std::net::Ipv6Addr>() {
+        Ok(_) => format!("[{host}]:{port}"),
+        Err(_) => format!("{host}:{port}"),
+    };
+    (port == 0).then(|| {
+        format!(
+            "refusing to bind {bind}: port 0 means \"pick any free port\", so there would be no \
+             stable address to open. Set [server] port (default 3890) or pass --port / --bind with \
+             a non-zero port."
+        )
+    })
+}
+
+/// Resolve the complete `yaran server` listening plan from config + CLI overrides +
+/// the detected Tailscale address. This is the single source of truth for the
+/// bind rules; the binary reads the returned [`ServerPlan`]'s addresses.
+///
+/// yaran is trusted-local: the primary listener is always the configured
+/// `host:port` (loopback by default) or an explicit `--bind`. There is no
+/// public-bind refusal; the operator chooses the host directly, the optional
+/// `[server.auth]` password decides who may sign in, and the host guard (config
+/// `allowed_hosts`) governs which `Host` headers are accepted. `tailscale_ip` is the detected Tailscale address (or `None` when
+/// disabled / not detected); when present and not already covered by the primary
+/// bind it is added as a BEST-EFFORT leg.
+///
+/// # Errors
+///
+/// Fails when the configured or `--bind` address does not parse, or the plan breaks a bind rule.
+pub fn resolve_server_plan(
+    server: &ServerConfig,
+    cli: &ServerCliOverrides,
+    tailscale_ip: Option<std::net::IpAddr>,
+) -> Result<ServerPlan> {
+    let bind_flag: Option<std::net::SocketAddr> = cli
+        .bind
+        .as_deref()
+        .map(|raw| {
+            raw.parse().map_err(|_| {
+                anyhow!(
+                    "invalid --bind address \"{raw}\": expected IP:port, e.g. 0.0.0.0:3890 \
+                     (hostnames are not resolved)"
+                )
+            })
+        })
+        .transpose()?;
+    // Which flag takes the place of which `[server]` setting is decided in
+    // one place, [`ServerFileSetting`], which the start checks name too.
+    let host = match bind_flag {
+        Some(bind) if ServerFileSetting::Host.overridden_by(cli) => bind.ip(),
+        _ => parse_server_host(&server.host).map_err(|e| anyhow!("{e}"))?,
+    };
+    let port = if ServerFileSetting::Port.overridden_by(cli) {
+        bind_flag
+            .map(|bind| bind.port())
+            .or(cli.port)
+            .unwrap_or(server.port)
+    } else {
+        server.port
+    };
+    let bind = std::net::SocketAddr::new(host, port);
+    if let Some(problem) = port_zero_problem(&bind.ip().to_string(), bind.port()) {
+        bail!(problem);
+    }
+    let tailscale = effective_tailscale_mode(server.tailscale_mode(), cli);
+    let ts = if tailscale.wants_tailscale() {
+        tailscale_ip
+    } else {
+        None
+    };
+    Ok(ServerPlan {
+        addrs: plan_addrs(bind, ts),
+        primary: bind,
+        tailscale,
+        forced_no: cli.no_tailscale,
+    })
+}
+
+/// Primary address (REQUIRED), the IPv6 loopback beside a `127.0.0.1` primary,
+/// plus the Tailscale leg (BEST-EFFORT) when detected and not already covered. A
+/// wildcard primary (0.0.0.0 / ::) already binds the Tailscale interface, and an
+/// explicit bind to the Tailscale address is already in the list, so both cases
+/// skip the extra leg. Any other primary is the operator's own address and gets
+/// no IPv6 loopback beside it.
+pub(crate) fn plan_addrs(
+    bind: std::net::SocketAddr,
+    tailscale_ip: Option<std::net::IpAddr>,
+) -> Vec<PlanAddr> {
+    let mut addrs = vec![PlanAddr::required(bind)];
+    if bind.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST) {
+        addrs.push(PlanAddr::ipv6_loopback(bind.port()));
+    }
+    if let Some(ip) = tailscale_ip {
+        let ts = std::net::SocketAddr::new(ip, bind.port());
+        let subsumed = bind.ip().is_unspecified() || bind.ip() == ip;
+        if !subsumed && !addrs.iter().any(|p| p.addr() == ts) {
+            addrs.push(PlanAddr::best_effort(ts));
+        }
+    }
+    addrs
+}
+
+/// LOCAL MODE bind addresses for the TUI palette flip: loopback on both families
+/// (REQUIRED) plus the Tailscale leg. A thin wrapper over `plan_addrs` so the flip can never open a
+/// non-loopback primary listener.
+pub fn local_addrs(port: u16, tailscale_ip: Option<std::net::IpAddr>) -> Vec<PlanAddr> {
+    plan_addrs(
+        std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        tailscale_ip,
+    )
+}
+
+#[cfg(test)]
+mod local_addrs_tests {
+    use super::{PlanAddr, local_addrs};
+
+    #[test]
+    fn loopback_only_when_no_tailscale() {
+        let addrs = local_addrs(3890, None);
+        assert_eq!(
+            addrs,
+            vec![
+                PlanAddr::required("127.0.0.1:3890".parse().unwrap()),
+                PlanAddr::ipv6_loopback(3890),
+            ]
+        );
+    }
+
+    #[test]
+    fn loopback_required_tailscale_best_effort_when_present() {
+        // Loopback is REQUIRED (a bind failure is fatal); the auto-added Tailscale
+        // leg is BEST-EFFORT (a bind failure degrades to loopback + a warning).
+        let ts = "100.101.102.103".parse().unwrap();
+        let addrs = local_addrs(9090, Some(ts));
+        assert_eq!(
+            addrs,
+            vec![
+                PlanAddr::required("127.0.0.1:9090".parse().unwrap()),
+                PlanAddr::ipv6_loopback(9090),
+                PlanAddr::best_effort("100.101.102.103:9090".parse().unwrap()),
+            ]
+        );
+        assert!(addrs[0].is_required(), "loopback must be required");
+        assert!(addrs[1].is_required(), "so must the IPv6 loopback");
+        assert!(
+            !addrs[2].is_required(),
+            "the Tailscale leg must be best-effort"
+        );
+    }
+
+    #[test]
+    fn tailscale_ipv6_uses_bracketed_socketaddr() {
+        let ts = "fd7a:115c:a1e0::1".parse().unwrap();
+        let addrs = local_addrs(3890, Some(ts));
+        assert_eq!(
+            addrs,
+            vec![
+                PlanAddr::required("127.0.0.1:3890".parse().unwrap()),
+                PlanAddr::ipv6_loopback(3890),
+                PlanAddr::best_effort("[fd7a:115c:a1e0::1]:3890".parse().unwrap()),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolve_plan_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    fn ts() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(100, 100, 0, 1))
+    }
+    fn cli() -> ServerCliOverrides {
+        ServerCliOverrides::default()
+    }
+
+    #[test]
+    fn default_loopback_only_without_tailscale() {
+        let p = resolve_server_plan(&ServerConfig::default(), &cli(), None).unwrap();
+        assert_eq!(
+            p.addrs,
+            vec![
+                PlanAddr::required("127.0.0.1:3890".parse().unwrap()),
+                PlanAddr::ipv6_loopback(3890),
+            ]
+        );
+    }
+    #[test]
+    fn default_adds_best_effort_tailscale_leg() {
+        let p = resolve_server_plan(&ServerConfig::default(), &cli(), Some(ts())).unwrap();
+        assert_eq!(p.addrs.len(), 3);
+        assert!(!p.addrs[2].is_required());
+    }
+    #[test]
+    fn a_host_of_its_own_gets_no_ipv6_loopback_beside_it() {
+        for host in ["::1", "127.0.0.2", "192.168.1.5"] {
+            let server = ServerConfig {
+                host: host.to_string(),
+                ..ServerConfig::default()
+            };
+            let p = resolve_server_plan(&server, &cli(), None).unwrap();
+            assert_eq!(p.addrs.len(), 1, "{host}: {:?}", p.addrs);
+            assert!(
+                !p.addrs[0]
+                    .skips_bind_failure(&std::io::Error::from_raw_os_error(libc::EADDRNOTAVAIL))
+            );
+        }
+    }
+    #[test]
+    fn only_a_machine_without_ipv6_skips_the_ipv6_loopback() {
+        let leg = PlanAddr::ipv6_loopback(3890);
+        let err = std::io::Error::from_raw_os_error;
+        assert!(leg.skips_bind_failure(&err(libc::EADDRNOTAVAIL)));
+        assert!(leg.skips_bind_failure(&err(libc::EAFNOSUPPORT)));
+        assert!(!leg.skips_bind_failure(&err(libc::EADDRINUSE)));
+        assert!(!leg.skips_bind_failure(&err(libc::EACCES)));
+    }
+    #[test]
+    fn no_tailscale_suppresses_leg() {
+        let c = ServerCliOverrides {
+            no_tailscale: true,
+            ..cli()
+        };
+        assert_eq!(
+            resolve_server_plan(&ServerConfig::default(), &c, Some(ts()))
+                .unwrap()
+                .addrs
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn no_tailscale_carries_a_forced_no_flag_the_serve_can_read() {
+        // The flag has to survive plan resolution as its own fact: the mode
+        // alone reads as "the user configured no", and a live mode change has to
+        // tell that apart from "this run was told no on the command line".
+        let c = ServerCliOverrides {
+            no_tailscale: true,
+            ..cli()
+        };
+        let forced = resolve_server_plan(&ServerConfig::default(), &c, Some(ts())).unwrap();
+        assert!(forced.forced_no, "--no-tailscale must be carried");
+        assert_eq!(forced.tailscale, TailscaleMode::No);
+
+        let configured_no = ServerConfig {
+            tailscale: TailscaleMode::No.as_str().to_string(),
+            ..Default::default()
+        };
+        let plain = resolve_server_plan(&configured_no, &cli(), Some(ts())).unwrap();
+        assert!(
+            !plain.forced_no,
+            "a configured \"no\" is not a forced one: the user can still change it live"
+        );
+        assert_eq!(plain.tailscale, TailscaleMode::No);
+    }
+
+    #[test]
+    fn bind_wildcard_overrides_and_subsumes_tailscale() {
+        let c = ServerCliOverrides {
+            bind: Some("0.0.0.0:9000".into()),
+            ..cli()
+        };
+        let p = resolve_server_plan(&ServerConfig::default(), &c, Some(ts())).unwrap();
+        assert_eq!(
+            p.addrs,
+            vec![PlanAddr::required("0.0.0.0:9000".parse().unwrap())]
+        );
+    }
+    #[test]
+    fn port_flag_overrides_only_port() {
+        let c = ServerCliOverrides {
+            port: Some(7000),
+            ..cli()
+        };
+        let p = resolve_server_plan(&ServerConfig::default(), &c, None).unwrap();
+        assert_eq!(
+            p.addrs,
+            vec![
+                PlanAddr::required("127.0.0.1:7000".parse().unwrap()),
+                PlanAddr::ipv6_loopback(7000),
+            ]
+        );
+    }
+    #[test]
+    fn bind_beats_port() {
+        let c = ServerCliOverrides {
+            bind: Some("127.0.0.1:1234".into()),
+            port: Some(7000),
+            ..cli()
+        };
+        let p = resolve_server_plan(&ServerConfig::default(), &c, None).unwrap();
+        assert_eq!(
+            p.addrs,
+            vec![
+                PlanAddr::required("127.0.0.1:1234".parse().unwrap()),
+                PlanAddr::ipv6_loopback(1234),
+            ]
+        );
+    }
+    #[test]
+    fn port_zero_refused() {
+        let c = ServerConfig {
+            port: 0,
+            ..ServerConfig::default()
+        };
+        assert!(resolve_server_plan(&c, &cli(), None).is_err());
+    }
+    #[test]
+    fn invalid_bind_refused() {
+        let c = ServerCliOverrides {
+            bind: Some("nope".into()),
+            ..cli()
+        };
+        assert!(resolve_server_plan(&ServerConfig::default(), &c, None).is_err());
+    }
+    #[test]
+    fn invalid_host_refused() {
+        let c = ServerConfig {
+            host: "example.com".into(),
+            ..ServerConfig::default()
+        };
+        assert!(resolve_server_plan(&c, &cli(), None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// An environment holding only `name`, set to `value`.
+    fn only(name: &'static str, value: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |asked| (asked == name).then(|| value.to_string())
+    }
+
+    /// `[git] network_timeout_seconds` bounds the network git commands by the
+    /// configured seconds, and `0` takes the bound away.
+    #[test]
+    fn the_network_timeout_reads_seconds_and_zero_is_no_limit() {
+        let read = |text: &str| {
+            super::validate_config_str(text)
+                .unwrap()
+                .git
+                .network_timeout()
+        };
+        assert_eq!(
+            read("[git]\nnetwork_timeout_seconds = 42\n"),
+            Some(std::time::Duration::from_secs(42))
+        );
+        assert_eq!(read("[git]\nnetwork_timeout_seconds = 0\n"), None);
+    }
+
+    /// Every plaintext password the start check finds, with its whole path
+    /// as the walk saw it and the lines it spans, in every shape: through an
+    /// array of tables, a `[projects]` table, a quoted dotted key, over
+    /// several lines and as a table.
+    #[test]
+    fn plaintext_passwords_names_each_one_where_it_sits() {
+        use super::PathStep::{Index, Key};
+        let key = |name: &str| Key(name.to_string());
+        let cases: Vec<(&str, Vec<PathStep>, std::ops::RangeInclusive<usize>)> = vec![
+            (
+                "[[env]]\npassword = \"s\"\n",
+                vec![key("env"), Index(0), key("password")],
+                1..=1,
+            ),
+            (
+                "[projects.env]\npassword = \"s\"\n",
+                vec![key("projects"), key("env"), key("password")],
+                1..=1,
+            ),
+            (
+                "\"env.password\" = \"s\"\n",
+                vec![key("env.password")],
+                0..=0,
+            ),
+            (
+                "[server]\n\"auth.password\" = \"s\"\n",
+                vec![key("server"), key("auth.password")],
+                1..=1,
+            ),
+            (
+                "[ui]\nx = [{ password = \"s\" }]\n",
+                vec![key("ui"), key("x"), Index(0), key("password")],
+                1..=1,
+            ),
+            (
+                "[server.auth]\npassword = \"\"\"\ns\n\"\"\"\n",
+                vec![key("server"), key("auth"), key("password")],
+                1..=3,
+            ),
+            (
+                "[server.auth.password]\nvalue = \"s\"\n",
+                vec![key("server"), key("auth"), key("password")],
+                0..=1,
+            ),
+        ];
+        for (raw, steps, lines) in cases {
+            assert_eq!(
+                plaintext_passwords(raw),
+                vec![PlaintextPassword { steps, lines }],
+                "{raw:?}"
+            );
+            assert_eq!(plaintext_password_problems(raw).len(), 1, "{raw:?}");
+        }
+        // A project's own env variable called that is the user's name.
+        assert_eq!(
+            plaintext_passwords("[[projects]]\npath = \"/p\"\nenv = { password = \"s\" }\n"),
+            Vec::<PlaintextPassword>::new()
+        );
+        assert_eq!(
+            plaintext_passwords("[env]\npassword = \"s\"\n"),
+            Vec::<PlaintextPassword>::new()
+        );
+        // `[keys]` names are actions, and `password` is none, whatever shape
+        // its value has.
+        for raw in ["[keys]\npassword = \"s\"\n", "[keys]\npassword = [\"s\"]\n"] {
+            assert_eq!(
+                plaintext_passwords(raw)
+                    .into_iter()
+                    .map(|found| found.steps)
+                    .collect::<Vec<_>>(),
+                vec![vec![key("keys"), key("password")]],
+                "{raw:?}"
+            );
+        }
+        assert_eq!(
+            plaintext_passwords("password = \"s\"\nbroken =\n"),
+            Vec::<PlaintextPassword>::new()
+        );
+    }
+
+    /// A printer holding only a value judges it as the start check judges
+    /// the file it came from.
+    #[test]
+    fn plaintext_passwords_at_judges_a_value_where_it_sits() {
+        use super::PathStep::Key;
+        let value: toml::Value = toml::from_str::<toml::Table>("env = { password = \"s\" }\n")
+            .map(toml::Value::Table)
+            .expect("parses");
+        assert_eq!(
+            plaintext_passwords_at(&["projects".to_string()], &value),
+            vec![vec![
+                Key("projects".into()),
+                Key("env".into()),
+                Key("password".into())
+            ]]
+        );
+        let inner = value.get("env").expect("env").clone();
+        assert_eq!(
+            plaintext_passwords_at(&["env".to_string()], &inner),
+            Vec::<Vec<PathStep>>::new()
+        );
+    }
+
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn shutdown_grace_converts_and_clamps_to_the_ceiling() {
+        use std::time::Duration;
+        // 0 = immediate force; ordinary values pass through as seconds.
+        assert_eq!(shutdown_grace(0), Duration::ZERO);
+        assert_eq!(shutdown_grace(30), Duration::from_secs(30));
+        // At and below the ceiling, unchanged.
+        assert_eq!(
+            shutdown_grace(MAX_SHUTDOWN_TIMEOUT_SECONDS),
+            Duration::from_secs(u64::from(MAX_SHUTDOWN_TIMEOUT_SECONDS))
+        );
+        // A fat-fingered millisecond value (e.g. 30000) is clamped to the ceiling
+        // rather than blocking shutdown for hours.
+        assert_eq!(
+            shutdown_grace(30_000),
+            Duration::from_secs(u64::from(MAX_SHUTDOWN_TIMEOUT_SECONDS))
+        );
+        assert_eq!(
+            shutdown_grace(u16::MAX),
+            Duration::from_secs(u64::from(MAX_SHUTDOWN_TIMEOUT_SECONDS))
+        );
+    }
+
+    #[test]
+    fn ui_config_default_terminal_font_settings() {
+        let ui = UiConfig::default();
+        assert_eq!(ui.terminal_font_family, "");
+        assert_eq!(ui.terminal_font_size, DEFAULT_TERMINAL_FONT_SIZE);
+    }
+
+    #[test]
+    fn normalized_terminal_font_size_passes_through_in_range_values() {
+        assert_eq!(
+            normalized_terminal_font_size(MIN_TERMINAL_FONT_SIZE),
+            MIN_TERMINAL_FONT_SIZE
+        );
+        assert_eq!(
+            normalized_terminal_font_size(MAX_TERMINAL_FONT_SIZE),
+            MAX_TERMINAL_FONT_SIZE
+        );
+        assert_eq!(normalized_terminal_font_size(18), 18);
+    }
+
+    #[test]
+    fn normalized_terminal_font_size_degrades_out_of_range_values_to_the_default() {
+        assert_eq!(
+            normalized_terminal_font_size(MIN_TERMINAL_FONT_SIZE - 1),
+            DEFAULT_TERMINAL_FONT_SIZE
+        );
+        assert_eq!(
+            normalized_terminal_font_size(MAX_TERMINAL_FONT_SIZE + 1),
+            DEFAULT_TERMINAL_FONT_SIZE
+        );
+        assert_eq!(normalized_terminal_font_size(0), DEFAULT_TERMINAL_FONT_SIZE);
+        assert_eq!(
+            normalized_terminal_font_size(u16::MAX),
+            DEFAULT_TERMINAL_FONT_SIZE
+        );
+    }
+
+    #[test]
+    fn terminal_font_size_load_warning_is_none_for_in_range_values() {
+        assert_eq!(
+            terminal_font_size_load_warning(MIN_TERMINAL_FONT_SIZE),
+            None
+        );
+        assert_eq!(
+            terminal_font_size_load_warning(MAX_TERMINAL_FONT_SIZE),
+            None
+        );
+        assert_eq!(terminal_font_size_load_warning(18), None);
+    }
+
+    #[test]
+    fn terminal_font_size_load_warning_names_the_bad_value_and_the_default() {
+        let warning = terminal_font_size_load_warning(500).expect("warning expected");
+        assert!(warning.contains("500"));
+        assert!(warning.contains(&DEFAULT_TERMINAL_FONT_SIZE.to_string()));
+    }
+
+    #[test]
+    fn load_config_degrades_an_out_of_range_terminal_font_size_and_persists_the_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[ui]\nterminal_font_size = 500\n")
+            .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+        // The in-memory value is corrected at load, so `normalized_terminal_font_size`
+        // (now a pure clamp used elsewhere) never has to run to reach a valid value,
+        // and a later save persists the corrected default rather than 500.
+        assert_eq!(config.ui.terminal_font_size, DEFAULT_TERMINAL_FONT_SIZE);
+    }
+
+    #[test]
+    fn load_config_leaves_an_in_range_terminal_font_size_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[ui]\nterminal_font_size = 22\n")
+            .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+        assert_eq!(config.ui.terminal_font_size, 22);
+    }
+
+    // ── ui.upload_directory ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_usable_upload_directory_is_kept_as_written() {
+        for value in [".dux/uploads", "uploads", "tmp/yaran/drops", ".uploads"] {
+            assert_eq!(effective_upload_directory(value), value);
+            assert_eq!(upload_directory_load_warning(value), None, "for {value:?}");
+        }
+    }
+
+    #[test]
+    fn an_upload_directory_is_normalized_to_its_components() {
+        // Surrounding whitespace and repeated or trailing separators are
+        // cosmetic, not a rejection: the walk that creates the directory works
+        // in components anyway, so these all name the same place.
+        assert_eq!(effective_upload_directory("  uploads  "), "uploads");
+        assert_eq!(effective_upload_directory("uploads/"), "uploads");
+        assert_eq!(effective_upload_directory(".yaran//uploads"), ".dux/uploads");
+    }
+
+    #[test]
+    fn a_curdir_component_is_normalized_away_wherever_it_sits() {
+        // `./uploads` is an ordinary way to write a relative path and names
+        // exactly the same directory as `uploads`, so rejecting it bought no
+        // safety at all. It was also INCONSISTENT, which is how the defect
+        // showed: MEASURED, `Path::components()` keeps a CurDir only in LEADING
+        // position and drops it everywhere else, so `uploads/./x` was already
+        // being accepted and quietly normalized to `uploads/x` while the
+        // leading form was refused.
+        assert_eq!(effective_upload_directory("./uploads"), "uploads");
+        assert_eq!(effective_upload_directory("./"), DEFAULT_UPLOAD_DIRECTORY);
+        assert_eq!(upload_directory_load_warning("./uploads"), None);
+        assert_eq!(effective_upload_directory("uploads/./x"), "uploads/x");
+        assert_eq!(upload_directory_load_warning("uploads/./x"), None);
+        // A trailing `.` is dropped by `components()` too, leaving the named
+        // directory behind, so it names a real place and is kept.
+        assert_eq!(effective_upload_directory("uploads/."), "uploads");
+        assert_eq!(upload_directory_load_warning("uploads/."), None);
+    }
+
+    #[test]
+    fn an_unusable_upload_directory_degrades_to_the_default_and_says_why() {
+        // Each of these would put a dropped file somewhere the agent's worktree
+        // does not own, so each degrades rather than being obeyed. The check is
+        // on the path SHAPE; a symlinked component is refused later, at
+        // creation time, by `file_drop::DropDir::open_uploads`.
+        //
+        // The last three are a different kind of unusable: they name a shape
+        // the filesystem itself will refuse. They are checked HERE, at load,
+        // because the alternative is what shipped: the value passes, the
+        // directory is even created for the control-character case, and then
+        // every single drop fails at the syscall with a message about the wrong
+        // thing entirely (`Invalid argument` for a NUL, `File name too long`
+        // for an over-long one). Catching them at load is the whole point of
+        // the warn-once-and-degrade design.
+        let long_component = "a".repeat(crate::file_drop::FALLBACK_NAME_MAX_BYTES + 1);
+        let long_path = "ab/".repeat(MAX_UPLOAD_DIRECTORY_BYTES / 3 + 1);
+        let cases = [
+            ("", "empty"),
+            ("   ", "empty"),
+            ("/tmp/uploads", "absolute"),
+            ("/", "absolute"),
+            ("../uploads", ".."),
+            (".yaran/../../uploads", ".."),
+            ("uploads/..", ".."),
+            (".", "names no directory"),
+            ("./", "names no directory"),
+            ("uploads\nx", "control character"),
+            ("uploads\u{1b}x", "control character"),
+            ("uploads\u{0}x", "null byte"),
+            (long_component.as_str(), "component"),
+            (long_path.as_str(), "longer than"),
+        ];
+        for (value, expected_reason) in cases {
+            assert_eq!(
+                effective_upload_directory(value),
+                DEFAULT_UPLOAD_DIRECTORY,
+                "{value:?} must degrade to the default"
+            );
+            let warning = upload_directory_load_warning(value)
+                .unwrap_or_else(|| panic!("{value:?} must warn"));
+            assert!(
+                warning.contains(expected_reason),
+                "the warning for {value:?} must say why ({expected_reason}), got: {warning}"
+            );
+            assert!(
+                warning.contains(DEFAULT_UPLOAD_DIRECTORY),
+                "the warning for {value:?} must name the fallback, got: {warning}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_config_corrects_a_bad_upload_directory_so_nothing_can_warn_about_it_again() {
+        // What this pins is the CORRECTION, which is the thing that makes the
+        // warn-once property true: `load_config` replaces the value in memory,
+        // so every later read (and every save) sees a usable directory and has
+        // nothing left to warn about. Without it the pure normalizer would
+        // silently degrade on every single upload instead.
+        //
+        // It deliberately does NOT observe the log line, and the name no longer
+        // claims to. `logger::warn` writes through a process-wide `OnceLock`
+        // that any other test may already have set, so watching it from here
+        // would be order-dependent. The line itself is asserted directly, from
+        // the pure `upload_directory_load_warning`, by
+        // `an_unusable_upload_directory_degrades_to_the_default_and_says_why`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(
+            &paths.config_path,
+            "[ui]\nupload_directory = \"../escape\"\n",
+        )
+        .expect("write config");
+
+        assert!(
+            upload_directory_load_warning("../escape").is_some(),
+            "the value on disk must be one that warns, or this proves nothing"
+        );
+        let config = load_config(&paths).expect("config loads");
+        assert_eq!(config.ui.upload_directory, DEFAULT_UPLOAD_DIRECTORY);
+        assert_eq!(
+            upload_directory_load_warning(&config.ui.upload_directory),
+            None,
+            "the corrected value must not warn a second time"
+        );
+    }
+
+    #[test]
+    fn load_config_leaves_a_usable_upload_directory_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(
+            &paths.config_path,
+            "[ui]\nupload_directory = \"tmp/drops\"\nupload_write_gitignore = false\n",
+        )
+        .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+        assert_eq!(config.ui.upload_directory, "tmp/drops");
+        assert!(!config.ui.upload_write_gitignore);
+    }
+
+    // ── ui.upload_pasted_text_chars ──────────────────────────────────────────
+
+    #[test]
+    fn a_usable_pasted_text_threshold_is_kept_as_written() {
+        for value in [
+            MIN_UPLOAD_PASTED_TEXT_CHARS,
+            DEFAULT_UPLOAD_PASTED_TEXT_CHARS,
+            2_500,
+            MAX_UPLOAD_PASTED_TEXT_CHARS,
+        ] {
+            assert_eq!(normalized_upload_pasted_text_chars(value), value);
+            assert_eq!(
+                upload_pasted_text_chars_load_warning(value),
+                None,
+                "for {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pasted_text_threshold_of_zero_is_preserved_as_the_off_switch() {
+        // `0` is the documented way to switch the behaviour off, so it must
+        // never be clamped up to the floor.
+        assert_eq!(normalized_upload_pasted_text_chars(0), 0);
+        assert_eq!(upload_pasted_text_chars_load_warning(0), None);
+    }
+
+    #[test]
+    fn a_tiny_pasted_text_threshold_is_raised_to_the_floor_and_says_so() {
+        assert_eq!(
+            normalized_upload_pasted_text_chars(5),
+            MIN_UPLOAD_PASTED_TEXT_CHARS
+        );
+        let warning = upload_pasted_text_chars_load_warning(5).expect("warning expected");
+        assert!(warning.contains('5'), "{warning}");
+        assert!(
+            warning.contains(&MIN_UPLOAD_PASTED_TEXT_CHARS.to_string()),
+            "{warning}"
+        );
+        // The way out has to be in the message, or a user who wanted the
+        // feature off will keep lowering the number and keep being clamped.
+        assert!(warning.contains('0'), "{warning}");
+    }
+
+    #[test]
+    fn an_enormous_pasted_text_threshold_is_clamped_to_the_ceiling() {
+        assert_eq!(
+            normalized_upload_pasted_text_chars(usize::MAX),
+            MAX_UPLOAD_PASTED_TEXT_CHARS
+        );
+        let warning =
+            upload_pasted_text_chars_load_warning(MAX_UPLOAD_PASTED_TEXT_CHARS + 1).expect("warns");
+        assert!(
+            warning.contains(&MAX_UPLOAD_PASTED_TEXT_CHARS.to_string()),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn load_config_corrects_an_unusable_pasted_text_threshold_in_memory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[ui]\nupload_pasted_text_chars = 3\n")
+            .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+        assert_eq!(
+            config.ui.upload_pasted_text_chars,
+            MIN_UPLOAD_PASTED_TEXT_CHARS
+        );
+        assert_eq!(
+            upload_pasted_text_chars_load_warning(config.ui.upload_pasted_text_chars),
+            None,
+            "the corrected value must not warn a second time"
+        );
+    }
+
+    #[test]
+    fn load_config_keeps_a_pasted_text_threshold_of_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[ui]\nupload_pasted_text_chars = 0\n")
+            .expect("write config");
+
+        assert_eq!(
+            load_config(&paths)
+                .expect("config loads")
+                .ui
+                .upload_pasted_text_chars,
+            0
+        );
+    }
+
+    #[test]
+    fn validate_config_str_accepts_a_full_render_and_rejects_garbage() {
+        // The canonical plain render of the default config must round-trip
+        // through the validator (this is exactly what the web editor writes).
+        let rendered = crate::config_write::render_config_plain(&Config::default());
+        assert!(
+            validate_config_str(&rendered).is_ok(),
+            "rendered default config must validate:\n{rendered}"
+        );
+        assert!(
+            validate_config_str("this is = = not valid toml").is_err(),
+            "garbage must be rejected"
+        );
+        // Structurally-valid TOML with a wrong-typed field must also be rejected
+        // (deserialization failure, not just a parse failure); otherwise the web
+        // editor would accept a value the engine can't load.
+        assert!(
+            validate_config_str("[ui]\nagent_scrollback_lines = \"lots\"\n").is_err(),
+            "a string for a numeric field must be rejected"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn config_root_uses_hidden_home_dir_on_macos() {
+        let root = discover_root(
+            Path::new("/example/home"),
+            Some(std::ffi::OsStr::new("/tmp/ignored")),
+        );
+        assert_eq!(root, PathBuf::from("/example/home/.yaran"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn config_root_uses_xdg_config_home_when_absolute() {
+        let root = discover_root(
+            Path::new("/example/home"),
+            Some(std::ffi::OsStr::new("/tmp/xdg")),
+        );
+        assert_eq!(root, PathBuf::from("/tmp/xdg/yaran"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn config_root_falls_back_to_dot_config_when_xdg_missing() {
+        let root = discover_root(Path::new("/example/home"), None);
+        assert_eq!(root, PathBuf::from("/example/home/.config/yaran"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn config_root_ignores_relative_xdg_config_home() {
+        let root = discover_root(
+            Path::new("/example/home"),
+            Some(std::ffi::OsStr::new("relative/path")),
+        );
+        assert_eq!(root, PathBuf::from("/example/home/.config/yaran"));
+    }
+
+    #[test]
+    fn resolve_root_uses_yaran_home_when_absolute() {
+        let root = resolve_root(Some("/custom/yaran".into()), None, None).unwrap();
+        assert_eq!(root, PathBuf::from("/custom/yaran"));
+    }
+
+    #[test]
+    fn resolve_root_errors_on_relative_yaran_home() {
+        let err = resolve_root(
+            Some("relative/path".into()),
+            Some(PathBuf::from("/home")),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("YARAN_HOME must be an absolute path"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.to_string().contains("relative/path"),
+            "error should contain the bad path: {err}"
+        );
+    }
+
+    /// The config directory's mode is what actually protects the files inside
+    /// it, because SQLite creates its `-wal`/`-shm` sidecars itself at runtime
+    /// and offers no way to set their mode. A directory another local user
+    /// cannot search makes the files' own modes moot.
+    #[test]
+    fn ensure_dirs_makes_the_config_root_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("yaran");
+        let paths = test_paths(&root);
+        paths.ensure_dirs().unwrap();
+        let mode = fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
+    }
+
+    /// Everyone upgrading already has a `0755` directory, so tightening has to
+    /// happen on startup or the change reaches nobody. `ensure_dirs` runs on
+    /// every startup and the tightening is idempotent.
+    #[test]
+    fn ensure_dirs_tightens_a_config_root_left_world_readable_by_an_older_install() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("yaran");
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        let paths = test_paths(&root);
+        paths.ensure_dirs().unwrap();
+        let mode = fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
+    }
+
+    /// The config file is what the shipped template comment promises is made
+    /// `0600` on EVERY start, and it was the one file nothing tightened.
+    /// `write_config_atomic` creates its temp at `0600` and renames over the
+    /// original, which is why a fresh install looks correct, but that only runs
+    /// on first creation or when a save actually changes the document, so a
+    /// `config.toml` chmod'd to `0644` by hand stayed `0644` forever while the
+    /// log and the database were corrected on every open. It holds `[env]`
+    /// tokens, so it is the file the promise mattered most for.
+    #[test]
+    fn ensure_dirs_tightens_a_config_file_left_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("yaran");
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        fs::write(&paths.config_path, "[env]\nTOKEN = \"secret\"\n").unwrap();
+        fs::set_permissions(&paths.config_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        paths.ensure_dirs().unwrap();
+
+        let mode = fs::metadata(&paths.config_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
+    }
+
+    /// And the other half of the same promise: yaran only ever REMOVES group and
+    /// world access, so a config deliberately left read-only at `0400` keeps
+    /// its owner bits through the tightening pass.
+    #[test]
+    fn ensure_dirs_leaves_a_read_only_config_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("yaran");
+        fs::create_dir_all(&root).unwrap();
+        let paths = test_paths(&root);
+        fs::write(&paths.config_path, "[env]\n").unwrap();
+        fs::set_permissions(&paths.config_path, fs::Permissions::from_mode(0o400)).unwrap();
+
+        paths.ensure_dirs().unwrap();
+
+        let mode = fs::metadata(&paths.config_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o400, "expected 0400, got {mode:o}");
+    }
+
+    /// A config that is not there yet must not be an error, and must not be
+    /// conjured into existence by the tightening pass.
+    #[test]
+    fn ensure_dirs_does_not_create_a_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("yaran");
+        let paths = test_paths(&root);
+        paths.ensure_dirs().unwrap();
+        assert!(!paths.config_path.exists());
+    }
+
+    /// The worktrees directory holds the user's own checkouts, which they open
+    /// in their own editor. yaran does not tighten it; it sits inside the
+    /// now-`0700` root, which is where the protection belongs.
+    ///
+    /// The GROUP AND OTHER bits are what this test is actually about. It used
+    /// to assert `mode & 0o700 == 0o700`, which is equally true of `0755` and
+    /// `0700`, so tightening the worktrees directory left it passing and the
+    /// tenet it exists to defend was unprotected. The directory is pre-created
+    /// at a known `0755` so the assertion does not depend on the test runner's
+    /// umask.
+    #[test]
+    fn ensure_dirs_leaves_the_worktrees_directory_untightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("yaran");
+        let paths = test_paths(&root);
+        fs::create_dir_all(&paths.worktrees_root).unwrap();
+        fs::set_permissions(&paths.worktrees_root, fs::Permissions::from_mode(0o755)).unwrap();
+
+        paths.ensure_dirs().unwrap();
+
+        let mode = fs::metadata(&paths.worktrees_root)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "the worktrees directory must be left exactly as it was, got {mode:o}"
+        );
+        assert_ne!(
+            mode & 0o077,
+            0,
+            "the group and other bits must survive; yaran does not tighten the user's checkouts"
+        );
+    }
+
+    /// The companion to the above: a freshly created worktrees directory is not
+    /// tightened either. Asserted against the process umask so it stays true
+    /// wherever it runs, and it still fails outright if yaran starts forcing
+    /// `0700` here.
+    #[test]
+    fn ensure_dirs_creates_the_worktrees_directory_without_tightening_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("yaran");
+        let paths = test_paths(&root);
+        paths.ensure_dirs().unwrap();
+
+        // What the umask alone would leave on a new directory, measured by
+        // making one right here rather than assumed.
+        let reference = tmp.path().join("reference");
+        fs::create_dir(&reference).unwrap();
+        let expected = fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+
+        let mode = fs::metadata(&paths.worktrees_root)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, expected,
+            "expected the umask default {expected:o}, got {mode:o}"
+        );
+    }
+
+    fn test_paths(root: &std::path::Path) -> YaranPaths {
+        YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn a_log_may_not_be_written_into_a_file_yaran_keeps_for_itself() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("yaran");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        // Another way into the same folder.
+        std::os::unix::fs::symlink(&root, dir.path().join("alias")).unwrap();
+        let alias = dir.path().join("alias");
+        let paths = test_paths(&root);
+        let at = |relative: &str| alias.join(relative).display().to_string();
+        let cases = vec![
+            (
+                "logging",
+                "config.toml".to_string(),
+                Some(("[logging] path", "config.toml")),
+            ),
+            (
+                "logging",
+                "sessions.sqlite3".to_string(),
+                Some(("[logging] path", "sessions.sqlite3")),
+            ),
+            (
+                "logging",
+                "sessions.sqlite3-wal".to_string(),
+                Some(("[logging] path", "sessions.sqlite3-wal")),
+            ),
+            (
+                "logging",
+                "sub/../sessions.sqlite3-shm".to_string(),
+                Some(("[logging] path", "sessions.sqlite3-shm")),
+            ),
+            (
+                "logging",
+                at("dux.lock"),
+                Some(("[logging] path", "dux.lock")),
+            ),
+            (
+                "logging",
+                "remotes.toml".to_string(),
+                Some(("[logging] path", "remotes.toml")),
+            ),
+            (
+                "logging",
+                "yaran.sock".to_string(),
+                Some(("[logging] path", "yaran.sock")),
+            ),
+            (
+                "server",
+                "yaran.log".to_string(),
+                Some(("[server] log_path", "yaran.log")),
+            ),
+            (
+                "server",
+                at("config.toml"),
+                Some(("[server] log_path", "config.toml")),
+            ),
+            (
+                "server",
+                "ctl.sock".to_string(),
+                Some(("[server] log_path", "ctl.sock")),
+            ),
+            ("logging", "yaran.log".to_string(), None),
+            ("logging", String::new(), None),
+            ("server", "server.log".to_string(), None),
+            ("server", String::new(), None),
+            ("server", "sub/other.log".to_string(), None),
+        ];
+        for (section, value, expected) in cases {
+            let mut config = Config::default();
+            config.server.control_socket = if value == "ctl.sock" {
+                "ctl.sock".to_string()
+            } else {
+                "yaran.sock".to_string()
+            };
+            match section {
+                "logging" => config.logging.path = value.clone(),
+                _ => config.server.log_path = value.clone(),
+            }
+            let problems = log_path_problems(&config, &paths);
+            match expected {
+                None => assert!(problems.is_empty(), "{section} {value}: {problems:?}"),
+                Some((key, file)) => {
+                    assert_eq!(problems.len(), 1, "{section} {value}: {problems:?}");
+                    let problem = &problems[0];
+                    assert!(
+                        problem.stops(crate::config::Surface::TerminalUi)
+                            && problem.stops(crate::config::Surface::YaranServer)
+                    );
+                    assert!(problem.message.contains(key), "{}", problem.message);
+                    assert!(problem.message.contains(file), "{}", problem.message);
+                    assert_eq!(
+                        log_path_refusal(&config, &paths).as_deref(),
+                        Some(problem.message.as_str())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_root_errors_on_empty_yaran_home() {
+        let err = resolve_root(Some("".into()), Some(PathBuf::from("/home")), None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("YARAN_HOME must be an absolute path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_root_falls_through_when_yaran_home_unset() {
+        let root = resolve_root(None, Some(PathBuf::from("/example/home")), None).unwrap();
+        // Should delegate to discover_root with platform defaults
+        #[cfg(target_os = "macos")]
+        assert_eq!(root, PathBuf::from("/example/home/.yaran"));
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(root, PathBuf::from("/example/home/.config/yaran"));
+    }
+
+    #[test]
+    fn the_control_socket_resolves_from_the_config_folder_unless_absolute() {
+        let root = Path::new("/home/me/.config/yaran");
+        for (setting, want) in [
+            ("yaran.sock", "/home/me/.config/yaran/yaran.sock"),
+            ("run/control.sock", "/home/me/.config/yaran/run/control.sock"),
+            ("/tmp/yaran-ctl.sock", "/tmp/yaran-ctl.sock"),
+        ] {
+            assert_eq!(
+                resolve_control_socket(root, setting),
+                PathBuf::from(want),
+                "{setting}"
+            );
+        }
+        let paths = YaranPaths {
+            root: root.to_path_buf(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        }
+        .with_control_socket("/run/user/1000/yaran.sock");
+        assert_eq!(paths.socket_path, PathBuf::from("/run/user/1000/yaran.sock"));
+        assert_eq!(ServerConfig::default().control_socket, "yaran.sock");
+    }
+
+    // ── expand_path tests ────────────────────────────────────────────────
+
+    #[test]
+    fn expand_path_absolute_unchanged() {
+        assert_eq!(
+            expand_path("/absolute/path").as_deref(),
+            Some("/absolute/path")
+        );
+    }
+
+    #[test]
+    fn expand_path_tilde() {
+        let home = home::home_dir().expect("home dir");
+        let result = expand_path("~/projects/foo").unwrap();
+        assert_eq!(result, format!("{}/projects/foo", home.display()));
+    }
+
+    #[test]
+    fn expand_path_bare_tilde() {
+        let home = home::home_dir().expect("home dir");
+        assert_eq!(expand_path("~").unwrap(), home.to_string_lossy());
+    }
+
+    #[test]
+    fn expand_path_dollar_var() {
+        let var = only("YARAN_TEST_VAR_1", "/test/value");
+        let result = expand_path_with("$YARAN_TEST_VAR_1/subdir", &var).unwrap();
+        assert_eq!(result, "/test/value/subdir");
+    }
+
+    #[test]
+    fn expand_path_braced_var() {
+        let var = only("YARAN_TEST_VAR_2", "/braced");
+        let result = expand_path_with("${YARAN_TEST_VAR_2}/sub", &var).unwrap();
+        assert_eq!(result, "/braced/sub");
+    }
+
+    #[test]
+    fn expand_path_unresolved_var_kept_literal() {
+        // Unresolved var is preserved literally; if the overall path is still
+        // absolute the function succeeds (the path just won't exist on disk).
+        let result = expand_path("/prefix/$NONEXISTENT_YARAN_VAR_999/suffix");
+        assert_eq!(
+            result.as_deref(),
+            Some("/prefix/$NONEXISTENT_YARAN_VAR_999/suffix")
+        );
+    }
+
+    #[test]
+    fn expand_path_rejects_relative() {
+        assert!(expand_path("relative/path").is_none());
+    }
+
+    #[test]
+    fn expand_path_rejects_dotdot_relative() {
+        assert!(expand_path("../relative/path").is_none());
+    }
+
+    #[test]
+    fn expand_path_rejects_traversal() {
+        let var = only("YARAN_TEST_VAR_3", "/safe");
+        assert!(expand_path_with("$YARAN_TEST_VAR_3/../etc/passwd", &var).is_none());
+    }
+
+    #[test]
+    fn expand_path_rejects_command_substitution() {
+        assert!(expand_path("$(whoami)/foo").is_none());
+    }
+
+    #[test]
+    fn expand_path_rejects_tilde_user() {
+        // `~otheruser/foo` is not supported.
+        assert!(expand_path("~otheruser/foo").is_none());
+    }
+
+    #[test]
+    fn expand_path_rejects_empty_var_name() {
+        assert!(expand_path("$/foo").is_none());
+    }
+
+    #[test]
+    fn expand_path_rejects_empty_braced_var_name() {
+        assert!(expand_path("${}/foo").is_none());
+    }
+
+    #[test]
+    fn an_unterminated_braced_reference_is_rejected() {
+        assert!(expand_path("${HOME").is_none());
+        assert!(parse_project_env_lines("GOOD=${HOME").is_err());
+    }
+
+    /// What the docs promise for `log_viewer_lines`: 0 is read as 1 (by the
+    /// viewer), and a negative value is not a valid value at all, so that one
+    /// setting goes back to its default with a warning in yaran.log while the rest
+    /// of `[server]` is kept.
+    #[test]
+    fn a_negative_log_viewer_lines_falls_back_to_its_default() {
+        let recovered =
+            recover_config("[server]\nlog_viewer_lines = -5\nport = 4321\n").expect("recovers");
+        assert_eq!(recovered.server.log_viewer_lines, DEFAULT_LOG_VIEWER_LINES);
+        assert_eq!(recovered.server.port, 4321);
+        assert_eq!(effective_log_viewer_lines(0), 1);
+    }
+
+    #[test]
+    fn recover_config_keeps_the_settings_around_one_invalid_field() {
+        let recovered = recover_config(
+            "[ui]\nagent_tabs_max = -1\nleft_width_pct = 33\n\n[server]\nport = 4321\n",
+        )
+        .expect("recovers");
+        assert_eq!(
+            recovered.ui.agent_tabs_max,
+            Config::default().ui.agent_tabs_max,
+            "the offending field goes back to its default"
+        );
+        assert_eq!(recovered.ui.left_width_pct, 33, "its neighbour survives");
+        assert_eq!(recovered.server.port, 4321, "other sections survive");
+    }
+
+    #[test]
+    fn recover_config_resets_a_section_whose_fields_cannot_be_isolated() {
+        let recovered = recover_config("ui = 5\n\n[server]\nport = 4321\n").expect("recovers");
+        assert_eq!(
+            recovered.ui.left_width_pct,
+            Config::default().ui.left_width_pct,
+            "a section that is not even a table resets whole"
+        );
+        assert_eq!(recovered.server.port, 4321);
+    }
+
+    // ── [server.auth] fails closed ───────────────────────────────────────────
+
+    fn a_real_hash() -> String {
+        crate::auth::hash_password(&crate::auth::Password::new(
+            "correct horse battery staple".to_string(),
+        ))
+        .expect("hash")
+    }
+
+    /// The error points at the user's own file by its real line number, and
+    /// quotes none of it.
+    #[test]
+    fn an_auth_error_points_at_the_users_own_line() {
+        let raw = "# my config\n\n[ui]\nleft_width_pct = 20\n\n[server.auth]\nrequire = \"lan\"\n";
+        let err = recover_config(raw).expect_err("refused");
+        let ConfigLoadProblem::AuthInvalid(reason) = &err else {
+            panic!("{err:?}");
+        };
+        assert!(reason.contains("line 7"), "{reason}");
+        assert!(
+            !reason.contains('(') && !reason.contains("lan"),
+            "the real line, never the key or the value: {reason}"
+        );
+    }
+
+    /// A file that is not valid TOML because of an unquoted token must not
+    /// have the token quoted back in the error, which reaches the status
+    /// line, toasts, modals and yaran.log. The line, column and key name stay.
+    #[test]
+    fn an_error_quoting_a_line_never_carries_its_value() {
+        let raw = "[env]\nGITHUB_TOKEN = ghp_abcdef123456\n";
+        let err = recover_config(raw).expect_err("not toml");
+        let text = err.reason().to_string();
+        assert!(!text.contains("ghp_abcdef123456"), "{text}");
+        assert!(
+            !text.contains("GITHUB_TOKEN"),
+            "not even the key name: {text}"
+        );
+        assert!(text.contains("line 2"), "{text}");
+
+        let raw = "[server.auth]\npassword_hash = \"$argon2id$v=19$nope\"\n";
+        let err = recover_config(raw).expect_err("bad hash");
+        assert!(
+            !err.reason().contains("$argon2id$v=19$nope"),
+            "{}",
+            err.reason()
+        );
+    }
+
+    /// The header found for a rule error is exactly `[server.auth]`, never a
+    /// table whose name merely contains it.
+    /// A written source keeps the config its write put in the file, without
+    /// that config's own source: bases never nest, however many saves run.
+    #[test]
+    fn a_written_source_never_nests_the_one_before_it() {
+        let mut config = Config::default();
+        let mut source = SourceText::of("[ui]\n");
+        for round in 0..3 {
+            config.source_text = source.clone();
+            source = SourceText::written(&format!("# {round}\n"), config.clone());
+            let base = source.written_base().expect("a written base");
+            assert!(base.source_text.as_str().is_none(), "round {round}");
+        }
+    }
+
+    fn a_password_hash() -> String {
+        crate::auth::hash_password(&crate::auth::Password::new(
+            "correct horse battery staple".to_string(),
+        ))
+        .expect("hash")
+    }
+
+    /// An editor that has emptied config.toml mid-save must not make a reload
+    /// read the defaults, which have no password: an empty or blank file is
+    /// refused like a deleted one, and the next real file loads as usual.
+    #[test]
+    fn a_reload_of_an_emptied_config_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        let body = format!("[server.auth]\npassword_hash = \"{}\"\n", a_password_hash());
+        std::fs::write(&paths.config_path, &body).unwrap();
+        assert!(
+            load_config_for_reload(&paths)
+                .expect("a real file loads")
+                .server
+                .auth
+                .has_password()
+        );
+
+        for emptied in ["", " \n\t\n"] {
+            std::fs::write(&paths.config_path, emptied).unwrap();
+            let error = load_config_for_reload(&paths).expect_err("refused");
+            assert_eq!(error.problem, ConfigLoadProblem::Empty, "{emptied:?}");
+            let message = error.to_string();
+            assert!(message.contains("is empty"), "{message}");
+            assert!(message.contains("keeps the running settings"), "{message}");
+            assert!(message.contains("yaran config regenerate --yes"), "{message}");
+        }
+
+        std::fs::write(&paths.config_path, &body).unwrap();
+        assert!(load_config_for_reload(&paths).is_ok());
+    }
+
+    /// config.toml kept as a symlink (into a dotfiles repository, say) whose
+    /// target disappears while yaran runs: a reload is refused like a deleted
+    /// file, naming the link and its missing target, never read as the
+    /// defaults, which have no password.
+    #[test]
+    fn a_reload_through_a_dangling_symlink_keeps_the_running_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        let target = dir.path().join("dotfiles-config.toml");
+        std::fs::write(
+            &target,
+            format!("[server.auth]\npassword_hash = \"{}\"\n", a_password_hash()),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&target, &paths.config_path).unwrap();
+        let running = load_config(&paths).expect("starts");
+        assert!(running.server.auth.has_password());
+
+        std::fs::remove_file(&target).unwrap();
+        let error = load_config_for_reload(&paths).expect_err("refused");
+        assert_eq!(
+            error.problem,
+            ConfigLoadProblem::DanglingLink(target.clone())
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(&paths.config_path.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(config_present_for_reload(&paths).is_err());
+        assert!(
+            std::fs::symlink_metadata(&paths.config_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    /// A start through a config.toml symlink whose target is missing is
+    /// refused, naming the link and the target: the defaults would mean no
+    /// password, and nothing is created at either path.
+    #[test]
+    fn a_start_through_a_dangling_symlink_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        let target = dir.path().join("gone.toml");
+        std::os::unix::fs::symlink(&target, &paths.config_path).unwrap();
+        let error = load_config(&paths).expect_err("refused");
+        let message = error.to_string();
+        assert!(
+            message.contains(&paths.config_path.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(!target.exists(), "nothing was created at the target");
+    }
+
+    /// `yaran server` refuses an invalid [server.auth] at startup and names the
+    /// line in the user's own file, not in the text the in-memory migrations
+    /// made of it (a deprecated `bind` becomes two keys, shifting lines).
+    #[test]
+    fn the_startup_error_names_the_line_in_the_users_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        let body = "[server]\nbind = \"0.0.0.0:9000\"\n\n[server.auth]\nsession_idle_seconds = \"sixty\"\n";
+        std::fs::write(&paths.config_path, body).unwrap();
+        let error = load_config(&paths).expect_err("refused").to_string();
+        assert!(error.contains("line 5,"), "{error}");
+    }
+
+    #[test]
+    fn an_auth_rule_error_never_points_at_a_look_alike_header() {
+        let raw = "[server.authority]\nx = 1\n\n[server.auth]\nminimum_password_score = 9\n";
+        let text = recover_config(raw)
+            .expect_err("refused")
+            .reason()
+            .to_string();
+        assert!(text.contains("line 4"), "{text}");
+        // The header search a position-less rule error falls back to.
+        for header in [
+            "[server.auth]",
+            "  [server.auth]  ",
+            "[ server . auth ]",
+            "[\"server\".\"auth\"]",
+            "[server.auth] # mine",
+        ] {
+            assert!(is_auth_section_header(header), "{header}");
+        }
+        for header in [
+            "[server.oauth]",
+            "[server.oauthauth]",
+            "[server.auth.extra]",
+            "[server]",
+            "[[server.auth]]",
+            "server.auth = 1",
+        ] {
+            assert!(!is_auth_section_header(header), "{header}");
+        }
+    }
+
+    /// A rule `[server.auth]` breaks as a whole (a value out of range) points
+    /// at the section's own header line, not at a made-up line 1.
+    #[test]
+    fn an_auth_rule_error_points_at_the_section_header() {
+        let raw = "[ui]\nleft_width_pct = 20\n\n[server.auth]\nminimum_password_score = 9\n";
+        let err = recover_config(raw).expect_err("refused");
+        let text = err.reason().to_string();
+        assert!(text.contains("line 4"), "{text}");
+        assert!(!text.contains("line 1,"), "{text}");
+        // The full-config readers (the terminal UI's load, the raw editor)
+        // must point at it too.
+        let text = validate_config_str(raw).unwrap_err();
+        assert!(text.contains("line 4"), "{text}");
+        assert!(!text.contains("line 1,"), "{text}");
+        // And a section written inline under [server].
+        let inline = "[ui]
+left_width_pct = 20
+
+[server]
+auth = { minimum_password_score = 9 }
+";
+        let text = recover_config(inline)
+            .expect_err("refused")
+            .reason()
+            .to_string();
+        assert!(!text.contains("line 1,"), "{text}");
+        // A file that starts with the section: line 1 is the header, and the
+        // message says so rather than reading like a made-up position.
+        let first = "[server.auth]\nminimum_password_score = 9\n";
+        let text = recover_config(first)
+            .expect_err("refused")
+            .reason()
+            .to_string();
+        assert!(text.contains("line 1 (the [server.auth] header)"), "{text}");
+    }
+
+    /// A parser message about a duplicate or unknown key would name the key
+    /// the file wrote; that name is file text too, and can be a value pasted
+    /// where a key should be. It is never repeated.
+    #[test]
+    fn duplicate_and_unknown_key_errors_repeat_no_name_from_the_file() {
+        for (body, secret) in [
+            (
+                "[env]\nghp_dupsecret = \"1\"\nghp_dupsecret = \"2\"\n",
+                "ghp_dupsecret",
+            ),
+            (
+                "[server.auth]\nghp_unknownsecret = 1\n",
+                "ghp_unknownsecret",
+            ),
+            ("[server]\n[server]\n", "[server]"),
+        ] {
+            let err = recover_config(body).expect_err(body);
+            let text = err.reason().to_string();
+            assert!(!text.contains(secret), "{body:?}: {text}");
+            assert!(text.starts_with("line "), "{text}");
+        }
+    }
+
+    /// Text inside a multi-line string or array is never read back as a key
+    /// name: an error there says only where it is and what is wrong.
+    #[test]
+    fn errors_inside_multi_line_values_name_no_key_and_quote_nothing() {
+        for (body, secret) in [
+            (
+                "[env]\nCERT = \"\"\"\nmy_secret_part=QUJDREVGRw\n\"\"\"\nBAD = ,\n",
+                "my_secret_part",
+            ),
+            (
+                "[server]\nallowed_hosts = [\n  \"a\",\n[hidden_secret_line\n]\n",
+                "hidden_secret_line",
+            ),
+            (
+                "[env]\nX = \"\"\"\n[looks_like_a_header_secret]\nk=v\n",
+                "looks_like_a_header_secret",
+            ),
+        ] {
+            let err = recover_config(body).expect_err(body);
+            let text = err.reason().to_string();
+            assert!(!text.contains(secret), "{body:?}: {text}");
+            assert!(!text.contains('('), "no key name at all: {text}");
+            assert!(text.starts_with("line "), "{text}");
+        }
+    }
+
+    /// Config errors carry no file text and no value in any shape: a line
+    /// with no `=`, the continuation of a multi-line string, an element of a
+    /// multi-line array, and a type error that would repeat the value. They
+    /// say the line, the column and what is wrong.
+    #[test]
+    fn config_errors_never_carry_file_text_or_values() {
+        let cases: [(&str, &str, &str); 5] = [
+            ("[env]\nGITHUB_TOKEN ghp_secret1\n", "ghp_secret1", "line 2"),
+            ("[env]\nX = \"\"\"\nghp_secret2\n", "ghp_secret2", "line 4"),
+            (
+                "[server]\nallowed_hosts = [\n  \"a\",\n  ghp_secret3,\n]\n",
+                "ghp_secret3",
+                "line 4",
+            ),
+            (
+                "[server.auth]\nsession_idle_seconds = \"ghp_secret4\"\n",
+                "ghp_secret4",
+                "line 2",
+            ),
+            (
+                "[env]\nGITHUB_TOKEN = ghp_secret5\n",
+                "ghp_secret5",
+                "line 2",
+            ),
+        ];
+        for (body, secret, line) in cases {
+            let err = recover_config(body).expect_err(body);
+            let text = ConfigLoadError {
+                path: PathBuf::from("/x/config.toml"),
+                problem: err,
+            }
+            .to_string();
+            assert!(!text.contains(secret), "{body:?}: {text}");
+            assert!(text.contains(line), "{body:?}: {text}");
+            assert!(!text.contains(" | "), "no quoted file text: {text}");
+        }
+        let err = validate_config_str("[env]\nTOKEN = 12345678\n").unwrap_err();
+        assert!(!err.contains("12345678"), "{err}");
+        assert!(err.contains("line 2") && !err.contains("TOKEN"), "{err}");
+    }
+
+    /// The advice fits any problem in the section, not only the password.
+    #[test]
+    fn the_auth_error_advice_names_the_ways_to_fix_any_key() {
+        let err = ConfigLoadError {
+            path: PathBuf::from("/x/config.toml"),
+            problem: ConfigLoadProblem::AuthInvalid("bad require".to_string()),
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("yaran config set server.auth.<setting>"),
+            "{text}"
+        );
+        assert!(text.contains("yaran config get server.auth"), "{text}");
+        assert!(!text.contains("set a new password"), "{text}");
+    }
+
+    #[test]
+    fn a_file_that_is_not_toml_is_refused_because_its_password_cannot_be_read() {
+        let err = recover_config("[ui\nnot toml at all").expect_err("refused");
+        assert!(matches!(err, ConfigLoadProblem::NotToml(_)), "{err:?}");
+    }
+
+    #[test]
+    fn an_invalid_password_hash_is_refused_rather_than_read_as_no_password() {
+        let err =
+            recover_config("[server.auth]\npassword_hash = \"hunter2\"\n").expect_err("refused");
+        let ConfigLoadProblem::AuthInvalid(reason) = &err else {
+            panic!("{err:?}");
+        };
+        assert!(reason.contains("PHC"), "{reason}");
+    }
+
+    #[test]
+    fn wrong_types_in_server_auth_are_refused() {
+        for body in [
+            "[server.auth]\nsession_idle_seconds = \"sixty\"\n",
+            "[server.auth]\nblocked_addresses = 5\n",
+            "[server]\nauth = \"on\"\n",
+            "[server.auth]\npasword_hash = \"\"\n",
+        ] {
+            let err = recover_config(body).expect_err(body);
+            assert!(
+                matches!(err, ConfigLoadProblem::AuthInvalid(_)),
+                "{body}: {err:?}"
+            );
+        }
+    }
+
+    /// A `[server]` that is not a table is read as yaran always read it (the
+    /// recovery resets it), unless it holds a web UI password setting, which
+    /// is refused as misplaced, never as an invalid `[server.auth]`.
+    #[test]
+    fn a_server_section_that_is_not_a_table_reads_as_yaran_always_read_it() {
+        for body in ["server = 5\n", "server = []\n", "[[server]]\nport = 1\n"] {
+            let config = recover_config(body).expect("read as before");
+            assert_eq!(config.server.port, Config::default().server.port, "{body}");
+        }
+        for body in [
+            "[[server]]\npassword_hash = \"x\"\n",
+            "[[server]]\n[server.auth]\npassword_hash = \"x\"\n",
+            "server = [{auth = {require = \"network\"}}]\n",
+        ] {
+            let err = recover_config(body).expect_err("misplaced");
+            assert!(
+                matches!(err, ConfigLoadProblem::AuthMisplaced(_)),
+                "{body}: {err:?}"
+            );
+            let shown = ConfigLoadError {
+                path: PathBuf::from("config.toml"),
+                problem: err,
+            }
+            .to_string();
+            assert!(!shown.contains("[server.auth] in"), "{shown}");
+            assert!(shown.contains("belong in [server.auth]"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_valid_auth_section_survives_the_recovery_of_a_bad_neighbour() {
+        let hash = a_real_hash();
+        let body = format!(
+            "[server]\nport = \"not a port\"\nhost = \"127.0.0.1\"\n\n[server.auth]\n\
+             password_hash = \"{hash}\"\nrequire = \"everywhere\"\n\n[ui]\nagent_tabs_max = -1\n"
+        );
+        let config = recover_config(&body).expect("recovered");
+        assert_eq!(
+            config.server.port,
+            Config::default().server.port,
+            "the bad field resets"
+        );
+        assert_eq!(config.server.auth.password_hash(), Some(hash.as_str()));
+        assert_eq!(config.server.auth.require, AuthRequire::Everywhere);
+        assert_eq!(
+            config.ui.agent_tabs_max,
+            Config::default().ui.agent_tabs_max
+        );
+    }
+
+    #[test]
+    fn load_config_reads_a_missing_file_as_no_password() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        let config = load_config(&paths).expect("no file is the defaults");
+        assert!(!config.server.auth.has_password());
+    }
+
+    #[test]
+    fn load_config_refuses_each_unreadable_auth_shape_and_names_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        for body in [
+            "[server\n",
+            "[server.auth]\npassword_hash = \"$argon2id$nope\"\n",
+            "[server.auth]\nrequire = 3\n",
+        ] {
+            std::fs::write(&paths.config_path, body).expect("write");
+            let err = load_config(&paths).expect_err(body);
+            let text = err.to_string();
+            assert!(
+                text.contains(&paths.config_path.display().to_string()),
+                "the error names the file: {text}"
+            );
+            assert!(
+                text.contains("server.auth"),
+                "the error names the section: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_config_refuses_a_file_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::create_dir(&paths.config_path).expect("a directory where the file should be");
+        let err = load_config(&paths).expect_err("a directory cannot be read as a file");
+        assert!(
+            matches!(err.problem, ConfigLoadProblem::Unreadable(_)),
+            "{err:?}"
+        );
+        let _ = std::fs::Permissions::from_mode(0o600);
+    }
+
+    #[test]
+    fn load_config_reads_a_valid_password_hash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        let hash = a_real_hash();
+        std::fs::write(
+            &paths.config_path,
+            format!("[server.auth]\npassword_hash = \"{hash}\"\n"),
+        )
+        .expect("write");
+        let config = load_config(&paths).expect("valid");
+        assert_eq!(config.server.auth.password_hash(), Some(hash.as_str()));
+    }
+
+    #[test]
+    fn prune_invalid_fields_drops_only_what_it_has_to() {
+        let mut section = toml::Table::new();
+        section.insert("agent_tabs_max".to_string(), toml::Value::Integer(-1));
+        section.insert("left_width_pct".to_string(), toml::Value::Integer(33));
+        let (fixed, reset) = prune_invalid_fields("ui", &section).expect("the field is isolated");
+        assert_eq!(reset, vec!["agent_tabs_max".to_string()]);
+        assert!(fixed.contains_key("left_width_pct"));
+
+        let mut clean = toml::Table::new();
+        clean.insert("left_width_pct".to_string(), toml::Value::Integer(33));
+        let (fixed, reset) = prune_invalid_fields("ui", &clean).expect("a clean section is kept");
+        assert_eq!(reset, Vec::<String>::new());
+        assert_eq!(fixed, clean);
+
+        let mut two_bad = toml::Table::new();
+        two_bad.insert("agent_tabs_max".to_string(), toml::Value::Integer(-1));
+        two_bad.insert(
+            "left_width_pct".to_string(),
+            toml::Value::String("wide".to_string()),
+        );
+        assert_eq!(
+            prune_invalid_fields("ui", &two_bad),
+            None,
+            "no single removal rescues it, so the caller resets the section"
+        );
+    }
+
+    #[test]
+    fn recover_config_keeps_a_clean_document_intact() {
+        let recovered = recover_config("[ui]\nleft_width_pct = 21\n").expect("recovers");
+        assert_eq!(recovered.ui.left_width_pct, 21);
+    }
+
+    #[test]
+    fn expand_leading_tilde_answers_each_shape() {
+        let home = home::home_dir()
+            .expect("home dir")
+            .to_string_lossy()
+            .into_owned();
+        let mut plain = "/etc".chars().peekable();
+        assert_eq!(expand_leading_tilde(&mut plain).as_deref(), Some(""));
+        assert_eq!(plain.next(), Some('/'), "a path with no tilde is untouched");
+
+        let mut bare = "~".chars().peekable();
+        assert_eq!(expand_leading_tilde(&mut bare), Some(home.clone()));
+
+        let mut rooted = "~/src".chars().peekable();
+        assert_eq!(expand_leading_tilde(&mut rooted), Some(home));
+        assert_eq!(rooted.next(), Some('/'), "the slash is left for the caller");
+
+        let mut other_user = "~someone/src".chars().peekable();
+        assert_eq!(expand_leading_tilde(&mut other_user), None);
+    }
+
+    #[test]
+    fn expand_variable_reads_both_forms_and_stops_at_the_name() {
+        let var = only("YARAN_TEST_VAR_4", "/value");
+        let mut plain = "YARAN_TEST_VAR_4/rest".chars().peekable();
+        assert_eq!(expand_variable(&mut plain, &var).as_deref(), Some("/value"));
+        assert_eq!(plain.collect::<String>(), "/rest");
+
+        let mut braced = "{YARAN_TEST_VAR_4}/rest".chars().peekable();
+        assert_eq!(
+            expand_variable(&mut braced, &var).as_deref(),
+            Some("/value")
+        );
+        assert_eq!(braced.collect::<String>(), "/rest");
+
+        let mut unset = "NONEXISTENT_YARAN_VAR_998/rest".chars().peekable();
+        assert_eq!(
+            expand_variable(&mut unset, &var).as_deref(),
+            Some("$NONEXISTENT_YARAN_VAR_998"),
+            "an unset variable keeps its literal reference"
+        );
+        let mut unset_braced = "{NONEXISTENT_YARAN_VAR_998}".chars().peekable();
+        assert_eq!(
+            expand_variable(&mut unset_braced, &var).as_deref(),
+            Some("${NONEXISTENT_YARAN_VAR_998}"),
+            "the braces are part of the literal reference"
+        );
+
+        assert_eq!(
+            expand_variable(&mut "(whoami)".chars().peekable(), &var),
+            None
+        );
+        assert_eq!(expand_variable(&mut "{}".chars().peekable(), &var), None);
+        assert_eq!(expand_variable(&mut "1BAD".chars().peekable(), &var), None);
+    }
+
+    #[test]
+    fn is_safe_expanded_path_requires_absolute_without_parent_dirs() {
+        assert!(is_safe_expanded_path("/srv/data"));
+        assert!(!is_safe_expanded_path("relative/path"));
+        assert!(!is_safe_expanded_path("/srv/../etc/passwd"));
+        assert!(!is_safe_expanded_path(""));
+    }
+
+    #[test]
+    fn project_env_lines_parse_and_expand() {
+        let var = only("YARAN_TEST_PROJECT_ENV_SOURCE", "secret");
+        let env = parse_project_env_lines("EDITOR=true\nAPI_KEY=${YARAN_TEST_PROJECT_ENV_SOURCE}")
+            .expect("parse env");
+        let resolved = resolve_project_env_with(&env, &var).expect("resolve env");
+        assert!(resolved.contains(&("EDITOR".to_string(), "true".to_string())));
+        assert!(resolved.contains(&("API_KEY".to_string(), "secret".to_string())));
+    }
+
+    #[test]
+    fn project_env_lines_reject_invalid_names_and_expansions() {
+        assert!(parse_project_env_lines("1BAD=value").is_err());
+        assert!(parse_project_env_lines("GOOD=${}").is_err());
+        assert!(parse_project_env_lines("MISSING_EQUALS").is_err());
+    }
+
+    #[test]
+    fn agent_env_merges_global_and_project_with_project_override() {
+        let global = BTreeMap::from([
+            ("EDITOR".to_string(), "true".to_string()),
+            ("API_KEY".to_string(), "global".to_string()),
+        ]);
+        let project = BTreeMap::from([("API_KEY".to_string(), "project".to_string())]);
+
+        let resolved = resolve_agent_env(&global, &project).expect("resolve env");
+
+        assert!(resolved.contains(&("EDITOR".to_string(), "true".to_string())));
+        assert!(resolved.contains(&("API_KEY".to_string(), "project".to_string())));
+        assert!(!resolved.contains(&("API_KEY".to_string(), "global".to_string())));
+    }
+
+    fn write_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(path, "#!/bin/sh\nexit 0\n").expect("write fixture command");
+        let mut permissions = std::fs::metadata(path)
+            .expect("fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod fixture command");
+    }
+
+    #[test]
+    fn provider_command_path_lookup_accepts_executable_from_path() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let command = dir.path().join("custom-tool");
+        write_executable(&command);
+        let paths = std::env::join_paths([dir.path()]).expect("join path");
+
+        assert!(provider_command_available_in_path(
+            "custom-tool",
+            paths.as_os_str()
+        ));
+    }
+
+    #[test]
+    fn provider_command_path_lookup_rejects_missing_command() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let paths = std::env::join_paths([dir.path()]).expect("join path");
+
+        assert!(!provider_command_available_in_path(
+            "missing-tool",
+            paths.as_os_str()
+        ));
+    }
+
+    #[test]
+    fn provider_command_path_lookup_accepts_absolute_executable() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let command = dir.path().join("custom-tool");
+        write_executable(&command);
+
+        assert!(provider_command_available(&command.to_string_lossy()));
+    }
+
+    #[test]
+    fn provider_command_path_lookup_rejects_non_executable_path() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let command = dir.path().join("custom-tool");
+        std::fs::write(&command, "#!/bin/sh\n").expect("write fixture command");
+
+        assert!(!provider_command_available(&command.to_string_lossy()));
+    }
+
+    #[test]
+    fn provider_availability_error_uses_install_hint() {
+        let cfg = ProviderCommandConfig {
+            command: "definitely-missing-provider-command".to_string(),
+            install_hint: Some("install custom-tool".to_string()),
+            ..Default::default()
+        };
+
+        let err = check_provider_available(&cfg).expect_err("command should be missing");
+        assert!(err.contains("definitely-missing-provider-command"));
+        assert!(err.contains("Install with: install custom-tool"));
+    }
+
+    // ── load_config tests ────────────────────────────────────────────────
+
+    fn make_test_paths(root: &std::path::Path) -> YaranPaths {
+        YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.to_path_buf(),
+        }
+    }
+
+    /// #30: the ONE server-host parser is trimming and shared, so a config with
+    /// surrounding whitespace parses consistently at the early check and at
+    /// `resolve_server_plan` (which previously parsed untrimmed and failed a
+    /// value the TUI's trimming check had accepted).
+    #[test]
+    fn parse_server_host_trims_and_parses() {
+        assert_eq!(
+            parse_server_host("  0.0.0.0  ").expect("ok"),
+            std::net::IpAddr::from([0, 0, 0, 0])
+        );
+        assert!(parse_server_host("not-an-ip").is_err());
+    }
+
+    #[test]
+    fn resolve_server_plan_accepts_a_whitespaced_host() {
+        let server = ServerConfig {
+            host: " 0.0.0.0 ".to_string(),
+            ..ServerConfig::default()
+        };
+        let plan = resolve_server_plan(&server, &ServerCliOverrides::default(), None)
+            .expect("a whitespaced host must resolve");
+        assert!(
+            plan.addrs
+                .iter()
+                .any(|a| a.addr().ip() == std::net::IpAddr::from([0, 0, 0, 0]))
+        );
+    }
+
+    /// #4: a deprecated `[server] bind` with a NON-loopback address must be
+    /// migrated IN MEMORY by `load_config` (host + port), so every entrypoint,
+    /// including `yaran serve`, honors it instead of silently binding loopback.
+    #[test]
+    fn load_config_migrates_deprecated_server_bind_in_memory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[server]\nbind = \"0.0.0.0:9000\"\n")
+            .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 9000);
+    }
+
+    /// #31: an untouched stock block for a retired provider (gemini) must be
+    /// pruned IN MEMORY by `load_config` so `yaran serve`'s provider pickers stop
+    /// offering it (previously only the TUI's `ensure_config` pruned it).
+    #[test]
+    fn load_config_prunes_a_retired_stock_provider_in_memory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        // The exact stock gemini block yaran shipped (as its renderer wrote it).
+        std::fs::write(
+            &paths.config_path,
+            "[providers.gemini]\ncommand = \"gemini\"\nargs = []\nresume_args = [\"--resume\"]\nresume_wait_timeout_ms = 0\ninstall_hint = \"brew install gemini-cli\"\n",
+        )
+        .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+        assert!(
+            !config.providers.commands.contains_key("gemini"),
+            "an untouched stock retired provider must be pruned"
+        );
+    }
+
+    /// #31: a CUSTOMIZED block for a retired provider is preserved (config wins
+    /// for explicit preferences).
+    #[test]
+    fn load_config_keeps_a_customized_retired_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(
+            &paths.config_path,
+            "[providers.gemini]\ncommand = \"/opt/my-gemini\"\nargs = []\nresume_args = [\"--resume\"]\nresume_wait_timeout_ms = 0\n",
+        )
+        .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+        assert!(
+            config.providers.commands.contains_key("gemini"),
+            "a user-customized retired provider block must be kept"
+        );
+    }
+
+    #[test]
+    fn load_config_reads_the_github_probe_interval() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(
+            &paths.config_path,
+            "[ui]\ngithub_probe_interval_secs = 900\n",
+        )
+        .expect("write config");
+
+        assert_eq!(
+            load_config(&paths)
+                .expect("config loads")
+                .ui
+                .github_probe_interval_secs,
+            900
+        );
+    }
+
+    #[test]
+    fn load_config_defaults_the_github_probe_interval_when_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[ui]\ngithub_integration = true\n")
+            .expect("write config");
+
+        assert_eq!(
+            load_config(&paths)
+                .expect("config loads")
+                .ui
+                .github_probe_interval_secs,
+            DEFAULT_GITHUB_PROBE_INTERVAL_SECONDS,
+        );
+    }
+
+    #[test]
+    fn load_config_corrects_an_out_of_range_github_probe_interval_in_memory() {
+        // The tick that consults this interval runs tens of times a second on
+        // the terminal UI's own thread, so the value it reads has to be already
+        // valid: the warning belongs here, at the one place a config is taken in.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[ui]\ngithub_probe_interval_secs = 1\n")
+            .expect("write config");
+
+        assert_eq!(
+            load_config(&paths)
+                .expect("config loads")
+                .ui
+                .github_probe_interval_secs,
+            MIN_GITHUB_PROBE_INTERVAL_SECONDS,
+        );
+    }
+
+    #[test]
+    fn load_config_keeps_a_github_probe_interval_of_zero() {
+        // 0 disables the periodic re-check and is not out of range.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "[ui]\ngithub_probe_interval_secs = 0\n")
+            .expect("write config");
+
+        assert_eq!(
+            load_config(&paths)
+                .expect("config loads")
+                .ui
+                .github_probe_interval_secs,
+            0
+        );
+    }
+
+    #[test]
+    fn correcting_the_github_probe_interval_warns_once_and_then_never_again() {
+        // The whole point of correcting in memory: a second pass over the
+        // already-corrected value has nothing to say, so no read path can
+        // re-raise the warning however often it runs.
+        let mut ui = UiConfig {
+            github_probe_interval_secs: 1,
+            ..Default::default()
+        };
+        let first = github_probe_interval_load_warning(ui.github_probe_interval_secs)
+            .expect("an out-of-range interval warns");
+        assert!(
+            first.contains(&MIN_GITHUB_PROBE_INTERVAL_SECONDS.to_string())
+                && first.contains(&MAX_GITHUB_PROBE_INTERVAL_SECONDS.to_string()),
+            "the warning names the range it is clamping into: {first}",
+        );
+
+        correct_github_probe_interval(&mut ui);
+        assert_eq!(
+            ui.github_probe_interval_secs,
+            MIN_GITHUB_PROBE_INTERVAL_SECONDS
+        );
+        assert_eq!(
+            github_probe_interval_load_warning(ui.github_probe_interval_secs),
+            None,
+            "the corrected value must never warn again",
+        );
+    }
+
+    #[test]
+    fn an_in_range_github_probe_interval_never_warns() {
+        for seconds in [
+            0,
+            MIN_GITHUB_PROBE_INTERVAL_SECONDS,
+            DEFAULT_GITHUB_PROBE_INTERVAL_SECONDS,
+            MAX_GITHUB_PROBE_INTERVAL_SECONDS,
+        ] {
+            assert_eq!(github_probe_interval_load_warning(seconds), None);
+        }
+    }
+
+    #[test]
+    fn load_config_reads_custom_provider_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(
+            &paths.config_path,
+            r#"
+[providers.claude]
+command = "/custom/claude"
+
+[ui]
+github_integration = false
+"#,
+        )
+        .expect("write config");
+
+        let config = load_config(&paths).expect("config loads");
+
+        assert_eq!(
+            config.providers.commands["claude"].command, "/custom/claude",
+            "custom provider command should be loaded from config.toml"
+        );
+        assert!(
+            !config.ui.github_integration,
+            "ui.github_integration should be false per config.toml"
+        );
+        // Provider defaults must still be populated (e.g. codex should exist).
+        assert!(
+            config.providers.commands.contains_key("codex"),
+            "ensure_defaults should add missing default providers"
+        );
+    }
+
+    #[test]
+    fn load_config_falls_back_to_defaults_when_file_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        // No config.toml written: file does not exist.
+
+        let config = load_config(&paths).expect("config loads");
+
+        // Provider defaults must be present.
+        assert!(
+            config.providers.commands.contains_key("claude"),
+            "claude provider should be present via defaults"
+        );
+        assert!(
+            config.providers.commands.contains_key("codex"),
+            "codex provider should be present via defaults"
+        );
+    }
+
+    #[test]
+    fn server_config_defaults_when_section_absent() {
+        // A config TOML with no [server] section must still parse and yield the
+        // safe local defaults (loopback host, port 3890, Tailscale on "auto").
+        let config: Config = toml::from_str("").expect("empty config should parse");
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 3890);
+        assert_eq!(config.server.tailscale_mode(), TailscaleMode::Auto);
+        assert_eq!(config.server.allowed_hosts, Vec::<String>::new());
+    }
+
+    #[test]
+    fn tailscale_mode_parses_the_three_values_case_insensitively() {
+        assert_eq!(TailscaleMode::parse("auto"), Some(TailscaleMode::Auto));
+        assert_eq!(TailscaleMode::parse("yes"), Some(TailscaleMode::Yes));
+        assert_eq!(TailscaleMode::parse("no"), Some(TailscaleMode::No));
+        assert_eq!(TailscaleMode::parse("  YES  "), Some(TailscaleMode::Yes));
+        // A value yaran does not know is None here; the caller decides to warn.
+        assert_eq!(TailscaleMode::parse("maybe"), None);
+        assert_eq!(TailscaleMode::parse("true"), None);
+    }
+
+    #[test]
+    fn an_unknown_tailscale_value_warns_and_degrades_to_auto() {
+        let warning = TailscaleMode::unknown_value_warning("maybe")
+            .expect("an unknown value must produce a warning");
+        assert!(warning.contains("maybe"), "must quote the value: {warning}");
+        assert!(
+            warning.contains("auto") && warning.contains("yes") && warning.contains("no"),
+            "must list the valid values: {warning}"
+        );
+        assert!(
+            TailscaleMode::unknown_value_warning("no").is_none(),
+            "a known value must not warn"
+        );
+
+        // And the degrade itself: a config carrying the typo still reads as auto
+        // rather than refusing to parse.
+        let config: Config = toml::from_str("[server]\ntailscale = \"maybe\"\n")
+            .expect("a typo must not fail the whole config parse");
+        assert_eq!(config.server.tailscale_mode(), TailscaleMode::Auto);
+    }
+
+    #[test]
+    fn tailscale_mode_answers_the_two_questions_the_serve_path_asks() {
+        // Whether to bind at all, and whether to keep watching. Every serve-path
+        // decision goes through these two, so they are pinned per variant.
+        assert!(TailscaleMode::Auto.wants_tailscale());
+        assert!(TailscaleMode::Yes.wants_tailscale());
+        assert!(!TailscaleMode::No.wants_tailscale());
+        assert!(TailscaleMode::Auto.watches_interface());
+        assert!(!TailscaleMode::Yes.watches_interface());
+        assert!(!TailscaleMode::No.watches_interface());
+    }
+
+    #[test]
+    fn every_live_mode_outcome_names_the_saved_value_and_grades_itself() {
+        use std::net::SocketAddr;
+        let leg: SocketAddr = "100.64.0.5:8080".parse().unwrap();
+        let cases = [
+            (
+                TailscaleModeOutcome::Applied { bound: Some(leg) },
+                TailscaleMode::Yes,
+                false,
+            ),
+            (
+                TailscaleModeOutcome::Applied { bound: None },
+                TailscaleMode::Auto,
+                false,
+            ),
+            (TailscaleModeOutcome::Detached, TailscaleMode::No, false),
+            (
+                TailscaleModeOutcome::NothingDetected,
+                TailscaleMode::Yes,
+                true,
+            ),
+            (TailscaleModeOutcome::BindFailed, TailscaleMode::Yes, true),
+            (TailscaleModeOutcome::NoPrimary, TailscaleMode::Auto, true),
+            (
+                TailscaleModeOutcome::RefusedForcedNo,
+                TailscaleMode::Auto,
+                true,
+            ),
+            (TailscaleModeOutcome::NotServing, TailscaleMode::Yes, false),
+            (TailscaleModeOutcome::Superseded, TailscaleMode::No, true),
+            (TailscaleModeOutcome::TimedOut, TailscaleMode::Auto, true),
+        ];
+        for (outcome, mode, warning) in cases {
+            let report = outcome.report(mode);
+            assert_eq!(
+                report.warning, warning,
+                "{outcome:?} must grade itself as warning={warning}"
+            );
+            assert!(
+                report.message.contains(mode.as_str()),
+                "{outcome:?} must name the saved mode: {}",
+                report.message
+            );
+            assert!(
+                report.message.len() > 40,
+                "status copy is verbose and actionable: {}",
+                report.message
+            );
+        }
+    }
+
+    #[test]
+    fn the_bound_leg_address_travels_as_one_name_and_the_words_are_unchanged() {
+        use std::net::SocketAddr;
+        let leg: SocketAddr = "100.64.0.5:8080".parse().unwrap();
+        let applied = TailscaleModeOutcome::Applied { bound: Some(leg) }.report(TailscaleMode::Yes);
+        assert_eq!(
+            applied.message.message(),
+            "[server] tailscale is saved as \"yes\". yaran is serving your Tailscale address on \
+             http://100.64.0.5:8080 as well as its other address(es)."
+        );
+        assert!(
+            applied
+                .message
+                .segments()
+                .unwrap()
+                .contains(&crate::prose::ProseSegment::Name {
+                    name: "http://100.64.0.5:8080".into(),
+                    quoted: false,
+                })
+        );
+    }
+
+    #[test]
+    fn a_bound_leg_is_named_and_a_saved_only_change_says_it_applies_later() {
+        use std::net::SocketAddr;
+        let leg: SocketAddr = "100.64.0.5:8080".parse().unwrap();
+        let applied = TailscaleModeOutcome::Applied { bound: Some(leg) }.report(TailscaleMode::Yes);
+        assert!(
+            applied.message.contains("100.64.0.5:8080"),
+            "{}",
+            applied.message
+        );
+        let saved = TailscaleModeOutcome::NotServing.report(TailscaleMode::Auto);
+        assert!(
+            saved.message.contains("applies when a listener starts"),
+            "{}",
+            saved.message
+        );
+        let refused = TailscaleModeOutcome::RefusedForcedNo.report(TailscaleMode::Auto);
+        assert!(
+            refused.message.contains("--no-tailscale"),
+            "the refusal must name the flag that caused it: {}",
+            refused.message
+        );
+        let undetected = TailscaleModeOutcome::NothingDetected.report(TailscaleMode::Yes);
+        assert!(
+            undetected.message.contains("auto"),
+            "the undetected warning must point at the mode that would look again: {}",
+            undetected.message
+        );
+    }
+
+    #[test]
+    fn a_change_that_left_the_listeners_alone_says_why_per_mode() {
+        // The same outcome means two different things. On `yes` it is "the
+        // address yaran already serves reaches your tailnet, so there is no second
+        // listener to add"; on `no` it is "there was nothing to drop".
+        let covered = TailscaleModeOutcome::Applied { bound: None }.report(TailscaleMode::Yes);
+        assert!(
+            covered.message.contains("already serves covers it"),
+            "{}",
+            covered.message
+        );
+        let off = TailscaleModeOutcome::Applied { bound: None }.report(TailscaleMode::No);
+        assert!(
+            !off.message.contains("covers it"),
+            "\"no\" must not claim the address yaran serves covers the tailnet: {}",
+            off.message
+        );
+        assert!(
+            off.message.contains("nothing will be"),
+            "\"no\" says nothing was bound and nothing is going to be: {}",
+            off.message
+        );
+        let watching = TailscaleModeOutcome::Applied { bound: None }.report(TailscaleMode::Auto);
+        assert!(
+            watching.message.contains("watching"),
+            "{}",
+            watching.message
+        );
+    }
+
+    #[test]
+    fn no_tailscale_flag_forces_the_no_mode_whatever_the_config_says() {
+        let flagged = ServerCliOverrides {
+            no_tailscale: true,
+            ..ServerCliOverrides::default()
+        };
+        for configured in [TailscaleMode::Auto, TailscaleMode::Yes, TailscaleMode::No] {
+            assert_eq!(
+                effective_tailscale_mode(configured, &flagged),
+                TailscaleMode::No,
+                "--no-tailscale must win over {configured:?}"
+            );
+            assert_eq!(
+                effective_tailscale_mode(configured, &ServerCliOverrides::default()),
+                configured,
+                "without the flag the configured mode stands"
+            );
+        }
+    }
+
+    #[test]
+    fn the_legacy_boolean_form_of_the_tailscale_key_still_parses() {
+        // A user who writes the shape this setting used to have gets the
+        // meaning-preserving mode, not a failed parse. `true` is "bind it" (yes),
+        // `false` is "do not" (no); neither says "keep watching", so neither is
+        // auto.
+        let yes: Config = toml::from_str("[server]\ntailscale = true\n").expect("bool parses");
+        assert_eq!(yes.server.tailscale_mode(), TailscaleMode::Yes);
+        let no: Config = toml::from_str("[server]\ntailscale = false\n").expect("bool parses");
+        assert_eq!(no.server.tailscale_mode(), TailscaleMode::No);
+    }
+
+    #[test]
+    fn server_title_defaults_to_yaran_and_parses_override() {
+        // No [server] section: title defaults to the product name.
+        let default: Config = toml::from_str("").expect("empty config should parse");
+        assert_eq!(default.server.title, "yaran");
+
+        // An explicit title (e.g. to tell multiple instances apart) round-trips.
+        let config: Config = toml::from_str(
+            r#"
+[server]
+title = "yaran #1"
+"#,
+        )
+        .expect("config with [server] title should parse");
+        assert_eq!(config.server.title, "yaran #1");
+    }
+
+    #[test]
+    fn server_favicon_defaults_empty_and_parses_override() {
+        // No [server] section: favicon is empty, meaning "use the bundled logo".
+        let default: Config = toml::from_str("").expect("empty config should parse");
+        assert_eq!(default.server.favicon, "");
+
+        // An explicit favicon (a colour, here) round-trips verbatim; the web
+        // interprets the string (colour vs URL vs default).
+        let config: Config = toml::from_str(
+            r#"
+[server]
+favicon = "violet"
+"#,
+        )
+        .expect("config with [server] favicon should parse");
+        assert_eq!(config.server.favicon, "violet");
+    }
+
+    #[test]
+    fn server_config_parses_full_section() {
+        let config: Config = toml::from_str(
+            r#"
+[server]
+host = "0.0.0.0"
+port = 9000
+tailscale = "no"
+allowed_hosts = ["box.tailnet.ts.net"]
+"#,
+        )
+        .expect("config with full [server] should parse");
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 9000);
+        assert_eq!(config.server.tailscale_mode(), TailscaleMode::No);
+        assert_eq!(
+            config.server.allowed_hosts,
+            vec!["box.tailnet.ts.net".to_string()]
+        );
+    }
+
+    #[test]
+    fn server_config_partial_section_defaults_remaining_fields() {
+        // Only `port` is provided; the rest default.
+        let config: Config = toml::from_str(
+            r"
+[server]
+port = 9000
+",
+        )
+        .expect("config with partial [server] should parse");
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 9000);
+        assert_eq!(config.server.tailscale_mode(), TailscaleMode::Auto);
+        assert_eq!(config.server.allowed_hosts, Vec::<String>::new());
+    }
+
+    /// Deserializing a `[server]` table that omits all three `max_websocket_*` keys
+    /// must yield the expected defaults via the container `#[serde(default)]` plus
+    /// the manual `Default` impl. Pinned so a serde refactor cannot silently zero
+    /// out the caps.
+    #[test]
+    fn server_config_websocket_caps_default_when_keys_absent() {
+        let config: Config = toml::from_str(
+            r"
+[server]
+port = 3890
+",
+        )
+        .expect("config without max_websocket_* keys should parse");
+        assert_eq!(
+            config.server.max_websocket_events_connections,
+            DEFAULT_MAX_WEBSOCKET_EVENTS_CONNECTIONS,
+            "events cap must default to {DEFAULT_MAX_WEBSOCKET_EVENTS_CONNECTIONS}"
+        );
+        assert_eq!(
+            config.server.max_websocket_agent_connections, DEFAULT_MAX_WEBSOCKET_AGENT_CONNECTIONS,
+            "agent cap must default to {DEFAULT_MAX_WEBSOCKET_AGENT_CONNECTIONS}"
+        );
+        assert_eq!(
+            config.server.max_websocket_terminal_connections,
+            DEFAULT_MAX_WEBSOCKET_TERMINAL_CONNECTIONS,
+            "terminal cap must default to {DEFAULT_MAX_WEBSOCKET_TERMINAL_CONNECTIONS}"
+        );
+    }
+
+    #[test]
+    fn load_config_refuses_malformed_toml_instead_of_falling_back_to_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_test_paths(dir.path());
+        std::fs::write(&paths.config_path, "this is not valid toml ][[[")
+            .expect("write bad config");
+
+        // The defaults would read as "no password", which a file whose
+        // [server.auth] cannot be seen may well contradict.
+        let err = load_config(&paths).expect_err("refused");
+        assert!(
+            matches!(err.problem, ConfigLoadProblem::NotToml(_)),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn old_max_websocket_connections_key_still_loads_and_is_ignored() {
+        // Back-compat: the removed `max_websocket_connections` key parses without
+        // error because `ServerConfig` has no `#[serde(deny_unknown_fields)]` (TOML
+        // simply ignores unknown keys; this is not a `serde(default)` effect), and
+        // the three new split fields take their per-field defaults.
+        let toml = r"[server]
+max_websocket_connections = 16
+";
+        let cfg: Config = toml::from_str(toml).expect("old config must still parse");
+        assert_eq!(cfg.server.max_websocket_events_connections, 32);
+        assert_eq!(cfg.server.max_websocket_agent_connections, 32);
+        assert_eq!(cfg.server.max_websocket_terminal_connections, 64);
+    }
+
+    #[test]
+    fn detects_removed_max_websocket_connections_key_for_migration_warning() {
+        assert!(raw_has_removed_max_websocket_connections(
+            "[server]\nmax_websocket_connections = 16\n"
+        ));
+        // A commented-out line must NOT trip the warning.
+        assert!(!raw_has_removed_max_websocket_connections(
+            "[server]\n# max_websocket_connections = 16\n"
+        ));
+        // The new split keys must NOT trip the warning.
+        assert!(!raw_has_removed_max_websocket_connections(
+            "[server]\nmax_websocket_events_connections = 16\n"
+        ));
+        assert!(!raw_has_removed_max_websocket_connections("[server]\n"));
+    }
+
+    /// A password hash in a place yaran does not read fails closed: a
+    /// `password_hash` outside `[server.auth]`, or a table named "auth" (or
+    /// within two edits of it) under `[server]` or at the top level stops the
+    /// start, naming where it is and where it belongs, never the hash.
+    /// The misplaced-setting rule reads any key named like a `[server.auth]`
+    /// setting, anywhere but `[server.auth]` itself, as an auth setting in
+    /// the wrong place. That holds only while no other setting in the schema
+    /// (the whole config, a provider, a macro, a project) shares its name in
+    /// [`auth_key_form`]; this pins it.
+    #[test]
+    fn no_setting_outside_server_auth_shares_a_name_with_an_auth_setting() {
+        fn names(value: &serde_json::Value, path: &mut Vec<String>, clashes: &mut Vec<String>) {
+            let Some(map) = value.as_object() else {
+                return;
+            };
+            for (name, child) in map {
+                path.push(name.clone());
+                if path.as_slice() != ["server", "auth"] {
+                    if is_auth_key(name) {
+                        clashes.push(path.join("."));
+                    }
+                    names(child, path, clashes);
+                }
+                path.pop();
+            }
+        }
+        let trees = schema_trees();
+        let mut clashes = Vec::new();
+        for tree in [
+            &trees.config,
+            &trees.provider,
+            &trees.macro_entry,
+            &trees.project,
+        ] {
+            names(tree, &mut Vec::new(), &mut clashes);
+        }
+        assert!(clashes.is_empty(), "{clashes:?}");
+    }
+
+    /// An auth setting one level too high, any spelling of a password hash,
+    /// and an auth-like table under a longer word all stop the start; a name
+    /// the user chose stays exempt.
+    #[test]
+    fn auth_settings_in_any_spelling_or_one_level_off_stop_the_start() {
+        for body in [
+            "require = \"everywhere\"\n",
+            "[server]\nrequire = \"everywhere\"\n",
+            "[server]\nminimum-password-length = 20\n",
+            "[server]\nCookieSecure = \"always\"\n",
+            "[server]\npassword-hash = \"x\"\n",
+            "[server]\npasswordHash = \"x\"\n",
+            "password-hash = \"x\"\n",
+            "[ui]\nPassword-Hash = \"x\"\n",
+            "[server.authentication]\nrequire = \"everywhere\"\n",
+            "[server.login]\nrequire = \"everywhere\"\n",
+            "[server.Au-th]\nrequire = \"everywhere\"\n",
+            "[authentication]\nrequire = \"everywhere\"\n",
+            "server = [{ require = \"everywhere\" }]\n",
+            "[macros.m]\ntext = \"x\"\nsurface = \"agent\"\npassword-hash = \"x\"\n",
+        ] {
+            let problems = misplaced_auth_problems(body);
+            assert!(!problems.is_empty(), "{body}");
+            assert!(
+                problems.iter().all(|p| p.contains("[server.auth]")),
+                "{body}: {problems:?}"
+            );
+        }
+        for body in [
+            "[env]\npassword-hash = \"x\"\n",
+            "[providers.password-hash]\ncommand = \"x\"\n",
+            "[server.authentication]\nx = 1\n",
+            "[server.login]\nbanner = \"hi\"\n",
+            "[auth]\nusername = \"ada\"\n",
+        ] {
+            assert_eq!(
+                misplaced_auth_problems(body),
+                Vec::<String>::new(),
+                "{body}"
+            );
+        }
+    }
+
+    /// A plaintext password is never read from the file, wherever it is
+    /// written, `[server.auth]` included: the start stops, the sentence names
+    /// the command that sets one, and it never repeats the password. A name
+    /// the user chose stays a name, and the retired `[auth]` holding only its
+    /// `username` still loads.
+    #[test]
+    fn a_plaintext_password_stops_the_start_wherever_it_is_written() {
+        const SECRET: &str = "correct horse battery staple veranda";
+        for body in [
+            format!("password = \"{SECRET}\"\n"),
+            format!("[server]\npassword = \"{SECRET}\"\n"),
+            format!("[server.auth]\npassword = \"{SECRET}\"\n"),
+            format!("[server.Auth]\nPassword = \"{SECRET}\"\n"),
+            format!("[auth]\nusername = \"ada\"\npassword = \"{SECRET}\"\n"),
+            format!("[ui]\nx = [{{ password = \"{SECRET}\" }}]\n"),
+        ] {
+            let problems = misplaced_auth_problems(&body);
+            assert!(
+                problems.iter().any(|p| p.contains(
+                    "a plaintext password is not read from \
+                     config.toml; set one with `yaran config set server.auth.password`"
+                )),
+                "{body}: {problems:?}"
+            );
+            assert!(
+                problems.iter().all(|p| !p.contains("staple")),
+                "{problems:?}"
+            );
+        }
+        for body in [
+            "[auth]\nusername = \"ada\"\n",
+            "[env]\npassword = \"x\"\n",
+            "[[projects]]\nid = \"p\"\npath = \"/tmp/p\"\n[projects.env]\npassword = \"x\"\n",
+        ] {
+            assert_eq!(
+                misplaced_auth_problems(body),
+                Vec::<String>::new(),
+                "{body}"
+            );
+        }
+        // A `[projects]` table is no list of projects: its `env` holds no names.
+        assert_ne!(
+            misplaced_auth_problems("[projects.env]\nrequire = \"everywhere\"\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_password_hash_in_a_misspelled_place_stops_the_start() {
+        let hash = a_password_hash();
+        for (body, named) in [
+            (
+                format!("[server.auht]\npassword_hash = \"{hash}\"\n"),
+                "the entry on line 1 of [server]",
+            ),
+            (
+                format!("[server]\npassword_hash = \"{hash}\"\n"),
+                "server.password_hash",
+            ),
+            (
+                format!("[auth]\npassword_hash = \"{hash}\"\n"),
+                "auth.password_hash",
+            ),
+            (
+                "[auht]\nrequire = \"network\"\n".to_string(),
+                "the entry on line 1",
+            ),
+            (format!("password_hash = \"{hash}\"\n"), "password_hash"),
+            (
+                "[server.Auth]\nrequire = \"network\"\n".to_string(),
+                "the entry on line 1 of [server]",
+            ),
+            // A hash outside [server.auth] is misplaced whatever the table
+            // around it is called, in any case, quoted or dotted.
+            (
+                format!("[ui]\npassword_hash = \"{hash}\"\n"),
+                "ui.password_hash",
+            ),
+            (
+                format!("[Server.auth]\npassword_hash = \"{hash}\"\n"),
+                "the entry on line 1",
+            ),
+            (
+                format!("[SERVER.AUTH]\npassword_hash = \"{hash}\"\n"),
+                "the entry on line 1",
+            ),
+            (
+                format!("[\"server.auth\"]\npassword_hash = \"{hash}\"\n"),
+                "the entry on line 1",
+            ),
+            (
+                format!("[server]\n\"auth.password_hash\" = \"{hash}\"\n"),
+                "the entry on line 2 of [server]",
+            ),
+        ] {
+            let error = recover_config(&body).expect_err(&body);
+            let message = error.reason().to_string();
+            assert!(message.contains(named), "{body}: {message}");
+            assert!(message.contains("[server.auth]"), "{body}: {message}");
+            assert!(!message.contains(&hash), "{message}");
+        }
+        // Not every unknown key is fatal, and the retired basic-auth `[auth]`
+        // section real older configs carry (no password hash in it) still loads.
+        recover_config("[ui]\nsomething_new = 1\n[server.limits]\nx = 1\n").expect("loads");
+        recover_config("[auth]\nusername = \"ada\"\n").expect("the retired section loads");
+        // A field inside a provider, a macro or a project is a field of
+        // yaran's schema, never a name, so a hash there is misplaced.
+        for body in [
+            "[providers.mytool]\ncommand = \"mytool\"\npassword_hash = \"x\"\n",
+            "[macros.greet]\ntext = \"x\"\nsurface = \"agent\"\npassword_hash = \"x\"\n",
+            "[[projects]]\nid = \"p\"\npath = \"/tmp/p\"\npassword_hash = \"x\"\n",
+            // `[keys]` names are yaran's actions, never the user's own.
+            "[keys]\npassword_hash = [\"x\"]\n",
+        ] {
+            let problems = misplaced_auth_problems(body);
+            assert_eq!(problems.len(), 1, "{body}: {problems:?}");
+            assert!(problems[0].contains("[server.auth]"), "{problems:?}");
+        }
+        // A name the user chose is never a misplaced hash.
+        for body in [
+            "[env]\npassword_hash = \"x\"\n",
+            "[providers.password_hash]\ncommand = \"mytool\"\n",
+            "[macros.password_hash]\ntext = \"x\"\n",
+            "[[projects]]\nid = \"p\"\npath = \"/tmp/p\"\n[projects.env]\npassword_hash = \"x\"\n",
+        ] {
+            assert_eq!(
+                misplaced_auth_problems(body),
+                Vec::<String>::new(),
+                "{body}"
+            );
+        }
+    }
+
+    /// A problem about no setting is answerable for any set that makes it
+    /// appear, and never for one that leaves it as it was.
+    #[test]
+    fn a_problem_about_no_setting_counts_against_a_set_whenever_it_is_new() {
+        let keyless = |message: &str| {
+            StartProblem::new(crate::config_auth::Problem::plain(message), Stops::Both)
+        };
+        let check = |problems: Vec<StartProblem>| StartCheck {
+            problems,
+            unjudgeable_rules: Vec::new(),
+        };
+        let before = check(vec![keyless("already there")]);
+        let after = check(vec![keyless("already there"), keyless("new")]);
+        let added = problems_added_by_set(&before, &after, &key_path(&["ui", "left_width_pct"]));
+        let added: Vec<&str> = added.iter().map(|p| p.detail.as_str()).collect();
+        assert_eq!(added, vec!["new"]);
+    }
+
+    /// A wrong-typed field inside a provider is a problem of that field, not
+    /// of the whole provider.
+    #[test]
+    fn a_wrong_typed_field_inside_a_provider_is_named_by_the_field() {
+        let problems = start_problems_of("[providers.mytool]\ncommand = \"m\"\nargs = \"oops\"\n");
+        let keys: Vec<&Vec<Vec<String>>> = problems.iter().map(|p| &p.keys).collect();
+        assert_eq!(
+            keys,
+            vec![&vec![key_path(&["providers", "mytool", "args"])]],
+            "{problems:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod recovery_flags_and_names_tests {
+    use super::*;
+
+    /// A wrong value is said to cost what `yaran server`'s recovery actually
+    /// drops: itself, the entry around it, or its whole section.
+    #[test]
+    fn a_wrong_value_says_what_yaran_server_drops_with_it() {
+        let said = |raw: &str| -> Vec<String> {
+            start_problems_of(raw)
+                .into_iter()
+                .map(|problem| problem.detail)
+                .collect()
+        };
+        assert_eq!(
+            said("[ui]\nleft_width_pct = \"wide\"\n"),
+            vec![
+                "[ui] left_width_pct: invalid type, expected u16 (yaran server reads it as its default)"
+            ]
+        );
+        let provider = said("[providers.mytool]\ncommand = \"m\"\nargs = 5\n");
+        assert!(
+            provider[0].contains("yaran server drops all of [providers] mytool over it"),
+            "{provider:?}"
+        );
+        let stock = said("[providers.claude]\ncommand = \"m\"\nargs = 5\n");
+        assert!(
+            stock[0].contains("runs yaran's own claude provider"),
+            "{stock:?}"
+        );
+        let section = said("[ui]\nright_width_pct = \"a\"\nstatus_clear_seconds = \"b\"\n");
+        assert_eq!(section.len(), 2, "{section:?}");
+        assert!(
+            section
+                .iter()
+                .all(|detail| detail.contains("yaran server resets all of [ui] to its defaults")),
+            "{section:?}"
+        );
+        // The recovery the load runs is the plan the wording reads.
+        let doc: toml::Table =
+            toml::from_str("[ui]\nright_width_pct = \"a\"\nstatus_clear_seconds = \"b\"\n")
+                .unwrap();
+        assert_eq!(
+            recovery_plan(&doc),
+            vec![Recovery::ResetSection {
+                section: "ui".to_string()
+            }]
+        );
+    }
+
+    /// The reason `get` gives for a value its section's reset took names the
+    /// siblings that caused it.
+    #[test]
+    fn a_reset_section_names_the_fields_that_caused_it() {
+        let raw =
+            "[ui]\nleft_width_pct = 40\nright_width_pct = \"a\"\nstatus_clear_seconds = \"b\"\n";
+        let corrections = load_corrections_of(raw);
+        let (_, reason) = corrections
+            .iter()
+            .find(|(key, _)| *key == ["ui"])
+            .expect("the reset is recorded");
+        assert!(reason.contains("yaran server resets all of [ui]"), "{reason}");
+        assert!(reason.contains("[ui] right_width_pct"), "{reason}");
+        assert!(reason.contains("[ui] status_clear_seconds"), "{reason}");
+    }
+
+    /// Each `[server]` setting names exactly the flags `resolve_server_plan`
+    /// lets take its place: a bad host only `--bind`, port 0 `--port` too.
+    #[test]
+    fn the_overriding_flags_are_the_ones_the_plan_honours() {
+        let server = |raw: &str| load_config_from_text(raw).server;
+        let plan = |raw: &str, bind: Option<&str>, port: Option<u16>| {
+            resolve_server_plan(
+                &server(raw),
+                &ServerCliOverrides {
+                    bind: bind.map(str::to_string),
+                    port,
+                    no_tailscale: true,
+                },
+                None,
+            )
+            .is_ok()
+        };
+        // For each overridable problem the start checks raise, every flag
+        // gets `yaran server` past it exactly when the problem names it, and
+        // without a flag it does not start.
+        for raw in ["[server]\nhost = \"localhost\"\n", "[server]\nport = 0\n"] {
+            let problems = start_problems_of(raw);
+            let [problem] = problems.as_slice() else {
+                panic!("{raw}: {problems:?}");
+            };
+            let setting = problem.yaran_server_override.expect("overridable");
+            assert!(!plan(raw, None, None), "{raw}");
+            for flag in [ServerFlag::Bind, ServerFlag::Port] {
+                let starts = match flag {
+                    ServerFlag::Bind => plan(raw, Some("127.0.0.1:4000"), None),
+                    ServerFlag::Port => plan(raw, None, Some(4000)),
+                };
+                assert_eq!(
+                    starts,
+                    setting.flags().contains(&flag),
+                    "{raw}: {} says {}",
+                    flag.name(),
+                    setting.overriding_flags()
+                );
+            }
+        }
+        assert_eq!(ServerFileSetting::Host.overriding_flags(), "--bind");
+        assert_eq!(
+            ServerFileSetting::Port.overriding_flags(),
+            "--port or --bind"
+        );
+    }
+
+    fn load_config_from_text(raw: &str) -> Config {
+        recover_config(raw).expect("loads")
+    }
+
+    /// A key name that is itself the problem is placed by its line, never
+    /// repeated: a global or project env name, and an unknown `[server.auth]`
+    /// setting (a password typed as a key, say).
+    #[test]
+    fn a_name_that_is_the_problem_is_placed_by_its_line() {
+        let token = "sk-proj-AbCdEf0123456789";
+        let cases = [
+            (format!("[env]\n{token} = \"1\"\n"), "line 2"),
+            (
+                format!(
+                    "[[projects]]\nid = \"p\"\npath = \"/tmp/p\"\n[projects.env]\n{token} = \"1\"\n"
+                ),
+                "line 5",
+            ),
+            (format!("[server.auth]\n{token} = \"1\"\n"), "line 2"),
+            (format!("[env]\n{token} = 5\n"), "line 2"),
+        ];
+        for (raw, line) in cases {
+            let messages: Vec<String> = start_problems_of(&raw)
+                .into_iter()
+                .map(|problem| problem.message)
+                .collect();
+            assert!(!messages.is_empty(), "{raw}");
+            assert!(
+                messages.iter().all(|message| !message.contains(token)),
+                "{messages:?}"
+            );
+            assert!(
+                messages.iter().any(|message| message.contains(line)),
+                "{raw}: {messages:?}"
+            );
+        }
+        // A valid name that only says which variable still names it.
+        let messages: Vec<String> = start_problems_of("[env]\nFOO = \"${\"\n")
+            .into_iter()
+            .map(|problem| problem.message)
+            .collect();
+        assert!(
+            messages[0].contains("global env variable FOO"),
+            "{messages:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod printed_paths_and_carried_values_tests {
+    use super::*;
+
+    /// The one formatter prints a valid path as it is and places an entry
+    /// whose name breaks its map's rule by its line, in every map with a rule.
+    #[test]
+    fn the_formatter_never_prints_a_name_that_breaks_its_rule() {
+        let raw = "[env]\n\"sk-live-SECRET\" = 5\nGOOD = \"1\"\n\n\
+                   [providers.\"bad name!\"]\ncommand = \"x\"\nargs = 5\n";
+        assert_eq!(
+            shown_path(raw, &key_path(&["ui", "left_width_pct"])),
+            "ui.left_width_pct"
+        );
+        assert_eq!(shown_path(raw, &key_path(&["env", "GOOD"])), "env.GOOD");
+        assert_eq!(
+            shown_path(raw, &["env".to_string(), "sk-live-SECRET".to_string()]),
+            "the entry on line 2 of [env]"
+        );
+        assert_eq!(
+            shown_path(
+                raw,
+                &[
+                    "providers".to_string(),
+                    "bad name!".to_string(),
+                    "command".to_string()
+                ]
+            ),
+            "command of the entry on line 5 of [providers]"
+        );
+        // Problem sentences and the load's reasons go through it too: the
+        // wrong-typed field inside the badly named provider is placed by the
+        // provider's line, never by its name.
+        let problems = start_problems_of(raw);
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.message.contains("args of the entry on line 5")),
+            "{problems:?}"
+        );
+        for problem in problems {
+            assert!(!problem.message.contains("SECRET"), "{problem:?}");
+            assert!(!problem.message.contains("bad name!"), "{problem:?}");
+        }
+        for (_, reason) in load_corrections_of(raw) {
+            assert!(
+                !reason.contains("SECRET") && !reason.contains("bad name!"),
+                "{reason}"
+            );
+        }
+    }
+
+    /// Every deprecated-key migration that writes a value is a correction
+    /// that says where the value came from, on which line, and what to
+    /// write instead.
+    #[test]
+    fn every_value_a_migration_writes_says_where_it_came_from() {
+        for (raw, key, said) in [
+            (
+                "[server]\nbind = \"0.0.0.0:4000\"\n",
+                &["server", "host"][..],
+                "carried over from the deprecated [server] bind = \"0.0.0.0:4000\" (line 2); \
+                 replace it with server.host and server.port",
+            ),
+            (
+                "[server]\nbind = \"0.0.0.0:4000\"\n",
+                &["server", "port"][..],
+                "carried over from the deprecated [server] bind",
+            ),
+            (
+                "[defaults]\nprompt_for_name = true\n",
+                &["defaults", "enable_randomized_pet_name_by_default"][..],
+                "carried over from the deprecated [defaults] prompt_for_name = true (line 2)",
+            ),
+            (
+                "[server]\ntailscale_enabled = false\n",
+                &["server", "tailscale"][..],
+                "carried over from the deprecated [server] tailscale_enabled = false (line 2); \
+                 replace it with server.tailscale",
+            ),
+        ] {
+            let corrections = load_corrections_of(raw);
+            let reason = corrections
+                .iter()
+                .find(|(corrected, _)| *corrected == key_path(key))
+                .map_or_else(
+                    || panic!("{key:?}: {corrections:?}"),
+                    |(_, reason)| reason.as_str(),
+                );
+            assert!(reason.contains(said), "{key:?}: {reason}");
+        }
+        // A loopback bind writes nothing (the default already covers it),
+        // and a new key the file sets beside the old one wins, so nothing
+        // is carried over into it.
+        assert_eq!(
+            load_corrections_of("[server]\nbind = \"127.0.0.1:3890\"\n"),
+            Vec::<(Vec<String>, String)>::new()
+        );
+        assert!(
+            load_corrections_of("[server]\nbind = \"0.0.0.0:4000\"\nhost = \"1.2.3.4\"\n")
+                .iter()
+                .all(|(key, _)| *key != ["server", "host"])
+        );
+    }
+}
+
+#[cfg(test)]
+mod names_with_dots_quotes_and_spaces_tests {
+    use super::*;
+
+    /// A name that breaks its map's rule and holds a dot, a quote or a
+    /// space is carried as one segment from the file to every sentence:
+    /// the formatter places it by its line, and no problem or correction
+    /// ever prints it, in each map with a naming rule.
+    #[test]
+    fn a_name_with_a_dot_quote_or_space_is_one_segment_everywhere() {
+        for name in ["ghp.SECRET one", "ghp\"SECRET\"", "ghp SECRET.x.y"] {
+            let quoted = toml::Value::String(name.to_string()).to_string();
+            for (body, section) in [
+                (format!("[env]\n{quoted} = 5\n"), "env"),
+                (format!("[providers.{quoted}]\nargs = 5\n"), "providers"),
+                (format!("[macros]\n{quoted} = 5\n"), "macros"),
+            ] {
+                let segments = vec![section.to_string(), name.to_string()];
+                let shown = shown_path(&body, &segments);
+                assert!(!shown.contains("SECRET"), "{body}: {shown}");
+                assert!(
+                    shown.contains("line 2") || shown.contains("line 1"),
+                    "{body}: {shown}"
+                );
+                for problem in start_problems_of(&body) {
+                    assert!(!problem.message.contains("SECRET"), "{body}: {problem:?}");
+                }
+                for (path, reason) in load_corrections_of(&body) {
+                    assert!(!reason.contains("SECRET"), "{body}: {reason}");
+                    assert!(
+                        path.iter()
+                            .all(|segment| !segment.contains('.') || segment == name),
+                        "{body}: a path was split on a dot: {path:?}"
+                    );
+                }
+                // `get` of the table, its corrections printed as the CLI
+                // prints them.
+                let key = crate::config_keys::lookup(section).expect("a table");
+                let report = crate::config_keys::get_report(&body, &key).expect("get");
+                for correction in &report.corrections {
+                    let at = shown_path(&body, &correction.path);
+                    assert!(!at.contains("SECRET"), "{body}: {at}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod near_auth_tables_tests {
+    use super::*;
+
+    /// A table named close to "auth" stops a start only when it holds a
+    /// setting `[server.auth]` has; otherwise it is the user's own.
+    #[test]
+    fn a_near_auth_table_counts_only_with_an_auth_setting_in_it() {
+        for (body, stops) in [
+            ("[path]\nx = 1\n", false),
+            ("[math]\nx = 1\n", false),
+            ("[auto]\nenabled = true\n", false),
+            ("[oauth]\nclient_id = \"x\"\n", false),
+            ("[server.oauth]\nclient_id = \"x\"\n", false),
+            ("[auth]\nusername = \"ada\"\n", false),
+            ("[server.auht]\npassword_hash = \"x\"\n", true),
+            ("[server.auht]\nrequire = \"network\"\n", true),
+            ("[oauth]\npassword_hash = \"x\"\n", true),
+            ("[auht]\nsession_idle_seconds = 60\n", true),
+        ] {
+            assert_eq!(
+                !misplaced_auth_problems(body).is_empty(),
+                stops,
+                "{body:?}: {:?}",
+                misplaced_auth_problems(body)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_tabs_cap_tests {
+    use super::*;
+
+    #[test]
+    fn normalized_agent_tabs_max_substitutes_default_for_zero() {
+        assert_eq!(effective_agent_tabs_max(0), DEFAULT_AGENT_TABS_MAX);
+    }
+
+    /// `0` is a real answer for `keep` (rotate and discard) rather than "use the
+    /// default", which is what tells it apart from the settings above.
+    #[test]
+    fn normalized_log_keep_passes_zero_and_sane_values_through() {
+        assert_eq!(effective_log_keep(0), 0);
+        assert_eq!(effective_log_keep(5), 5);
+        assert_eq!(effective_log_keep(MAX_LOG_KEEP), MAX_LOG_KEEP);
+    }
+
+    #[test]
+    fn normalized_log_keep_clamps_an_absurd_value() {
+        assert_eq!(effective_log_keep(100_000), MAX_LOG_KEEP);
+        assert_eq!(effective_log_keep(u32::MAX), MAX_LOG_KEEP);
+    }
+
+    #[test]
+    fn normalized_agent_tabs_max_clamps_oversized_values() {
+        assert_eq!(effective_agent_tabs_max(10_000), MAX_AGENT_TABS_MAX);
+    }
+
+    #[test]
+    fn normalized_agent_tabs_max_passes_through_sane_values() {
+        assert_eq!(effective_agent_tabs_max(8), 8);
+    }
+
+    #[test]
+    fn pr_poll_interval_default_is_180() {
+        assert_eq!(DEFAULT_PR_POLL_INTERVAL_SECONDS, 180);
+        assert_eq!(
+            UiConfig::default().pr_poll_interval_seconds,
+            DEFAULT_PR_POLL_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn github_probe_interval_default_is_300() {
+        assert_eq!(DEFAULT_GITHUB_PROBE_INTERVAL_SECONDS, 300);
+        assert_eq!(
+            UiConfig::default().github_probe_interval_secs,
+            DEFAULT_GITHUB_PROBE_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn normalized_github_probe_interval_preserves_zero_as_disabled() {
+        assert_eq!(normalized_github_probe_interval(0), 0);
+    }
+
+    #[test]
+    fn normalized_github_probe_interval_clamps_both_ends() {
+        assert_eq!(
+            normalized_github_probe_interval(u16::MAX),
+            MAX_GITHUB_PROBE_INTERVAL_SECONDS
+        );
+        assert_eq!(
+            normalized_github_probe_interval(1),
+            MIN_GITHUB_PROBE_INTERVAL_SECONDS
+        );
+        assert_eq!(normalized_github_probe_interval(300), 300);
+    }
+
+    #[test]
+    fn the_inactive_pr_poll_default_is_twelve_hours() {
+        assert_eq!(DEFAULT_PR_POLL_INACTIVE_INTERVAL_SECONDS, 43_200);
+        assert_eq!(
+            UiConfig::default().pr_poll_inactive_interval_seconds,
+            DEFAULT_PR_POLL_INACTIVE_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn normalized_pr_poll_inactive_interval_keeps_zero_and_clamps_the_rest() {
+        // 0 is the user turning the slow clock off, not a mistake.
+        assert_eq!(effective_pr_poll_inactive_interval_seconds(0), 0);
+        assert_eq!(
+            effective_pr_poll_inactive_interval_seconds(43_200),
+            43_200,
+            "a sane value passes through"
+        );
+        assert_eq!(
+            effective_pr_poll_inactive_interval_seconds(1),
+            u32::from(MIN_PR_POLL_INTERVAL_SECONDS),
+            "the active poll's floor is shared, because it is the same API"
+        );
+        assert_eq!(
+            effective_pr_poll_inactive_interval_seconds(u32::MAX),
+            MAX_PR_POLL_INACTIVE_INTERVAL_SECONDS
+        );
+        assert_eq!(
+            effective_pr_poll_inactive_interval_seconds(MAX_PR_POLL_INACTIVE_INTERVAL_SECONDS),
+            MAX_PR_POLL_INACTIVE_INTERVAL_SECONDS,
+            "the ceiling itself is allowed"
+        );
+    }
+
+    #[test]
+    fn the_pull_request_history_settings_default_to_eight_branches_and_twelve_hours() {
+        let ui = UiConfig::default();
+        assert_eq!(ui.pr_history_branches_per_cycle, 8);
+        assert_eq!(ui.pr_settled_recheck_seconds, 43_200);
+        assert_eq!(Config::default().ui.pr_history_branches_per_cycle, 8);
+        assert_eq!(Config::default().ui.pr_settled_recheck_seconds, 43_200);
+    }
+
+    #[test]
+    fn the_pull_request_history_settings_are_clamped_to_their_ranges() {
+        assert_eq!(
+            effective_pr_history_branches_per_cycle(0),
+            0,
+            "0 asks about the current branch alone"
+        );
+        assert_eq!(effective_pr_history_branches_per_cycle(8), 8);
+        assert_eq!(effective_pr_history_branches_per_cycle(50), 50);
+        assert_eq!(effective_pr_history_branches_per_cycle(u16::MAX), 50);
+        assert_eq!(effective_pr_settled_recheck_seconds(0), 30);
+        assert_eq!(effective_pr_settled_recheck_seconds(43_200), 43_200);
+        assert_eq!(effective_pr_settled_recheck_seconds(604_800), 604_800);
+        assert_eq!(effective_pr_settled_recheck_seconds(u32::MAX), 604_800);
+    }
+
+    #[test]
+    fn normalized_pr_poll_interval_preserves_zero_as_disabled() {
+        // 0 is a valid "disable the blind poll" value, NOT substituted with a default.
+        assert_eq!(effective_pr_poll_interval_seconds(0), 0);
+    }
+
+    #[test]
+    fn normalized_pr_poll_interval_clamps_oversized_values() {
+        assert_eq!(
+            effective_pr_poll_interval_seconds(u16::MAX),
+            MAX_PR_POLL_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn normalized_pr_poll_interval_passes_through_sane_values() {
+        assert_eq!(effective_pr_poll_interval_seconds(180), 180);
+    }
+
+    #[test]
+    fn normalized_pr_poll_interval_clamps_small_nonzero_up_to_floor() {
+        assert_eq!(
+            effective_pr_poll_interval_seconds(1),
+            MIN_PR_POLL_INTERVAL_SECONDS
+        );
+        // The floor itself passes through unchanged.
+        assert_eq!(
+            effective_pr_poll_interval_seconds(MIN_PR_POLL_INTERVAL_SECONDS),
+            MIN_PR_POLL_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn normalized_pr_poll_interval_allows_exact_ceiling() {
+        assert_eq!(
+            effective_pr_poll_interval_seconds(MAX_PR_POLL_INTERVAL_SECONDS),
+            MAX_PR_POLL_INTERVAL_SECONDS
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // providers.<name>.web_dragdrop_paste
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shipped_providers_get_their_documented_web_dragdrop_paste() {
+        let providers = ProvidersConfig::default();
+        for (name, expected) in [
+            ("claude", WebDragDropPaste::Bare),
+            ("opencode", WebDragDropPaste::Bare),
+            ("codex", WebDragDropPaste::SingleQuoted),
+            ("copilot", WebDragDropPaste::Bare),
+            ("grok", WebDragDropPaste::Bare),
+        ] {
+            assert_eq!(
+                providers
+                    .get(name)
+                    .expect("shipped provider present")
+                    .resolved_web_dragdrop_paste(),
+                expected,
+                "{name} must ship with the measured paste form"
+            );
+        }
+    }
+
+    #[test]
+    fn a_user_defined_provider_pastes_bare() {
+        let config: Config =
+            toml::from_str("[providers.myagent]\ncommand = \"myagent\"\n").expect("parse config");
+        assert_eq!(
+            config.providers.commands["myagent"].resolved_web_dragdrop_paste(),
+            WebDragDropPaste::Bare,
+            "a provider yaran knows nothing about gets the do-nothing form"
+        );
+    }
+
+    #[test]
+    fn ensure_defaults_fills_a_missing_web_dragdrop_paste_for_a_shipped_provider() {
+        let mut config: Config =
+            toml::from_str("[providers.codex]\ncommand = \"codex\"\n").expect("parse config");
+        assert_eq!(config.providers.commands["codex"].web_dragdrop_paste, None);
+        config.providers.ensure_defaults();
+        assert_eq!(
+            config.providers.commands["codex"].resolved_web_dragdrop_paste(),
+            WebDragDropPaste::SingleQuoted,
+            "a config predating the setting must still get codex's measured form"
+        );
+    }
+
+    #[test]
+    fn an_explicit_web_dragdrop_paste_wins_over_the_shipped_default() {
+        let mut config: Config = toml::from_str(
+            "[providers.codex]\ncommand = \"codex\"\nweb_dragdrop_paste = \"bare\"\n",
+        )
+        .expect("parse config");
+        config.providers.ensure_defaults();
+        assert_eq!(
+            config.providers.commands["codex"].resolved_web_dragdrop_paste(),
+            WebDragDropPaste::Bare,
+            "config wins for an explicit preference"
+        );
+    }
+
+    #[test]
+    fn a_provider_is_identified_by_its_command_file_name_not_its_block_name() {
+        // The two are independent, and the per-CLI paste-length table used to be
+        // keyed by the BLOCK NAME, which is free text. Both directions were
+        // wrong: a real Codex under any other name escaped its limit and was
+        // handed oversized paths it silently ignores, and an unrelated CLI
+        // merely NAMED codex had valid long paths withheld from it.
+        let config: Config = toml::from_str(
+            "[providers.myagent]\ncommand = \"codex\"\n\
+             [providers.codex]\ncommand = \"something-else\"\n",
+        )
+        .expect("parse config");
+        assert_eq!(
+            config.providers.commands["myagent"].command_file_name(),
+            "codex",
+            "an aliased block still runs codex, and must be identified as codex"
+        );
+        assert_eq!(
+            config.providers.commands["codex"].command_file_name(),
+            "something-else",
+            "a block merely NAMED codex runs whatever its command says"
+        );
+    }
+
+    #[test]
+    fn a_full_path_command_is_identified_by_its_file_name() {
+        // `command` may be an absolute path, and it names the same CLI as the
+        // bare name does, so the comparison is on the file name.
+        for command in ["/usr/local/bin/codex", "./codex", "codex"] {
+            let config: Config =
+                toml::from_str(&format!("[providers.p]\ncommand = \"{command}\"\n"))
+                    .expect("parse config");
+            assert_eq!(
+                config.providers.commands["p"].command_file_name(),
+                "codex",
+                "{command} names codex"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_with_no_file_name_falls_back_to_itself() {
+        // Degenerate, but it must never resolve to an empty string, which would
+        // key into a table as a real value.
+        for command in ["", "/", ".."] {
+            let config: Config =
+                toml::from_str(&format!("[providers.p]\ncommand = \"{command}\"\n"))
+                    .expect("parse config");
+            let resolved = config.providers.commands["p"].command_file_name();
+            assert_eq!(
+                resolved, command,
+                "a command with no file name answers with itself"
+            );
+        }
+    }
+
+    #[test]
+    fn web_dragdrop_paste_parses_case_and_whitespace_insensitively() {
+        assert_eq!(
+            WebDragDropPaste::parse("  BARE "),
+            Some(WebDragDropPaste::Bare)
+        );
+        assert_eq!(
+            WebDragDropPaste::parse("Single_Quoted"),
+            Some(WebDragDropPaste::SingleQuoted)
+        );
+        assert_eq!(
+            WebDragDropPaste::parse("Double_Quoted"),
+            Some(WebDragDropPaste::DoubleQuoted)
+        );
+        assert_eq!(
+            WebDragDropPaste::parse(" backslash_escaped\n"),
+            Some(WebDragDropPaste::BackslashEscaped)
+        );
+        assert_eq!(WebDragDropPaste::parse("shell"), None);
+        assert_eq!(WebDragDropPaste::parse("file_url"), None);
+    }
+
+    #[test]
+    fn a_misspelled_web_dragdrop_paste_falls_back_to_bare() {
+        // Same shape as `capabilities.clipboard_passthrough`: an unrecognized
+        // value degrades to the safe default rather than failing the load.
+        let config: Config = toml::from_str(
+            "[providers.codex]\ncommand = \"codex\"\nweb_dragdrop_paste = \"single-quoted\"\n",
+        )
+        .expect("a typo must not fail the whole config load");
+        assert_eq!(
+            config.providers.commands["codex"].resolved_web_dragdrop_paste(),
+            WebDragDropPaste::Bare
+        );
+        assert_eq!(
+            WebDragDropPaste::from_config_str("codex", "single-quoted"),
+            WebDragDropPaste::Bare
+        );
+    }
+
+    #[test]
+    fn compose_bar_mode_parses_the_three_modes_case_and_space_insensitively() {
+        assert_eq!(ComposeBarMode::parse("auto"), Some(ComposeBarMode::Auto));
+        assert_eq!(
+            ComposeBarMode::parse("  ALWAYS "),
+            Some(ComposeBarMode::Always)
+        );
+        assert_eq!(
+            ComposeBarMode::parse("Never\n"),
+            Some(ComposeBarMode::Never)
+        );
+        // Not modes: the old boolean's spellings reach `parse` only if a
+        // deserializer failed to migrate them, and a typo must not resolve.
+        assert_eq!(ComposeBarMode::parse("true"), None);
+        assert_eq!(ComposeBarMode::parse("false"), None);
+        assert_eq!(ComposeBarMode::parse("sometimes"), None);
+        assert_eq!(ComposeBarMode::parse(""), None);
+    }
+
+    #[test]
+    fn compose_bar_mode_round_trips_through_as_str() {
+        for mode in [
+            ComposeBarMode::Auto,
+            ComposeBarMode::Always,
+            ComposeBarMode::Never,
+        ] {
+            assert_eq!(ComposeBarMode::parse(mode.as_str()), Some(mode));
+        }
+        // The default is what an absent or unparseable value lands on.
+        assert_eq!(ComposeBarMode::default(), ComposeBarMode::Auto);
+    }
+
+    #[test]
+    fn compose_bar_mode_warns_only_for_an_unknown_value() {
+        assert_eq!(ComposeBarMode::unknown_value_warning("always"), None);
+        let warning = ComposeBarMode::unknown_value_warning("sometimes").expect("warning expected");
+        // The message must name the offending value AND the valid set, or the
+        // user has to go and read the source to fix their config.
+        assert!(warning.contains("sometimes"), "{warning}");
+        assert!(warning.contains("auto"), "{warning}");
+        assert!(warning.contains("always"), "{warning}");
+        assert!(warning.contains("never"), "{warning}");
+    }
+
+    /// The BOOLEAN this setting used to be still deserializes, meaning
+    /// preserved, so an upgrade never fails to parse a config already on disk.
+    /// (`tests/upgrade_config.rs` covers the same thing through `load_config`;
+    /// this pins the deserializer itself.)
+    #[test]
+    fn a_legacy_boolean_compose_bar_deserializes_to_a_mode() {
+        let on: Config = toml::from_str("[ui]\ncompose_bar = true\n").expect("true parses");
+        assert_eq!(on.ui.compose_bar, "auto");
+
+        let off: Config = toml::from_str("[ui]\ncompose_bar = false\n").expect("false parses");
+        assert_eq!(off.ui.compose_bar, "never");
+    }
+
+    /// An unrecognized STRING is passed through by the deserializer rather than
+    /// rejected: one typo must not take the whole config file down with it. The
+    /// degrade happens at load and at use instead.
+    #[test]
+    fn an_unknown_compose_bar_string_parses_and_degrades_later() {
+        let parsed: Config =
+            toml::from_str("[ui]\ncompose_bar = \"sometimes\"\n").expect("still parses");
+        assert_eq!(parsed.ui.compose_bar, "sometimes");
+        assert!(compose_bar_load_warning(&parsed).is_some());
+        assert_eq!(
+            ComposeBarMode::from_config_str(&parsed.ui.compose_bar),
+            ComposeBarMode::Auto
+        );
+    }
+
+    #[test]
+    fn extended_keys_mode_parses_the_three_modes_case_and_space_insensitively() {
+        assert_eq!(
+            ExtendedKeysMode::parse("auto"),
+            Some(ExtendedKeysMode::Auto)
+        );
+        assert_eq!(ExtendedKeysMode::parse("  ON "), Some(ExtendedKeysMode::On));
+        assert_eq!(
+            ExtendedKeysMode::parse("Off\n"),
+            Some(ExtendedKeysMode::Off)
+        );
+        assert_eq!(ExtendedKeysMode::parse("true"), None);
+        assert_eq!(ExtendedKeysMode::parse("kitty"), None);
+        assert_eq!(ExtendedKeysMode::parse(""), None);
+        for mode in [
+            ExtendedKeysMode::Auto,
+            ExtendedKeysMode::On,
+            ExtendedKeysMode::Off,
+        ] {
+            assert_eq!(ExtendedKeysMode::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(ExtendedKeysMode::default(), ExtendedKeysMode::Auto);
+        assert_eq!(UiConfig::default().extended_keys, "auto");
+    }
+
+    #[test]
+    fn extended_keys_mode_warns_only_for_an_unknown_value_and_degrades_to_auto() {
+        assert_eq!(ExtendedKeysMode::unknown_value_warning("off"), None);
+        let warning = ExtendedKeysMode::unknown_value_warning("kitty").expect("warning expected");
+        assert_eq!(
+            warning,
+            "unknown ui.extended_keys value \"kitty\"; falling back to \"auto\" \
+             (valid: auto, on, off)"
+        );
+        let parsed: Config =
+            toml::from_str("[ui]\nextended_keys = \"kitty\"\n").expect("still parses");
+        assert!(extended_keys_load_warning(&parsed).is_some());
+        assert_eq!(
+            ExtendedKeysMode::from_config_str(&parsed.ui.extended_keys),
+            ExtendedKeysMode::Auto
+        );
+    }
+
+    // `ui.watcher_view` was a real preference for one unreleased arc and is
+    // gone: a watcher always renders at the PTY's true grid now. `UiConfig` has
+    // no `deny_unknown_fields`, so a config file still carrying the line loads
+    // exactly as it did, the key is simply ignored, and `yaran config regenerate`
+    // is the way to tidy it away.
+    #[test]
+    fn a_leftover_watcher_view_line_is_ignored_rather_than_failing_the_load() {
+        let parsed: Config = toml::from_str("[ui]\nwatcher_view = \"fit_window\"\n")
+            .expect("a retired key must not fail the whole config load");
+        assert_eq!(parsed.ui, UiConfig::default());
+    }
+
+    // `ui.mobile_top_bar` hid the web's phone terminal header and tab strip
+    // and is gone: theater mode hides the same chrome and offers a way back,
+    // and two flows for hiding one thing could disagree about what was on
+    // screen. Same treatment as `watcher_view` above: a config file still
+    // carrying the line loads unchanged, and only `yaran config regenerate
+    // --yes` removes the leftover key (it rewrites the whole file;
+    // restore-docs preserves the line verbatim).
+    #[test]
+    fn a_leftover_mobile_top_bar_line_is_ignored_rather_than_failing_the_load() {
+        let parsed: Config = toml::from_str("[ui]\nmobile_top_bar = false\n")
+            .expect("a retired key must not fail the whole config load");
+        assert_eq!(parsed.ui, UiConfig::default());
+    }
+
+    // `ui.terminal_pane_height_pct` capped the left pane's companion terminals
+    // list, which is gone: an agent's terminals dock under it in the center
+    // pane, sized by `terminal_dock_pct`. Same treatment as the keys above.
+    #[test]
+    fn a_leftover_terminal_pane_height_pct_line_is_ignored_rather_than_failing_the_load() {
+        let parsed: Config = toml::from_str("[ui]\nterminal_pane_height_pct = -1\n")
+            .expect("a retired key must not fail the whole config load");
+        assert_eq!(parsed.ui, UiConfig::default());
+    }
+
+    #[test]
+    fn a_misspelled_web_dragdrop_paste_warns_once_per_load_and_says_what_is_valid() {
+        // The test above asserts only the FALLBACK, and the fallback is the
+        // silent half. Nothing looked at the warning at all, so a degradation
+        // that told the user nothing would have passed just as happily, which is
+        // the failure mode the warning exists to prevent: a typed
+        // `single-quoted` stops quoting paths and nothing anywhere says why.
+        //
+        // The message is asserted directly rather than read back out of the log
+        // file: `logger::init` sets a process-wide `OnceLock`, so whichever test
+        // runs first owns it, and a test that read the file would pass or fail on
+        // ordering. `web_dragdrop_paste_warnings` returns the exact strings
+        // `load_config` hands to the logger, so this pins the text AND the count.
+        let config: Config = toml::from_str(
+            "[providers.claude]\ncommand = \"claude\"\nweb_dragdrop_paste = \"bare\"\n\
+             [providers.codex]\ncommand = \"codex\"\nweb_dragdrop_paste = \"single-quoted\"\n\
+             [providers.opencode]\ncommand = \"opencode\"\nweb_dragdrop_paste = \"file_url\"\n",
+        )
+        .expect("a typo must not fail the whole config load");
+
+        let warnings = web_dragdrop_paste_warnings(&config.providers, "");
+        // ONE per misspelled provider. Not one per provider, and not one per
+        // dropped file.
+        assert_eq!(
+            warnings.len(),
+            2,
+            "expected exactly one warning per misspelled provider, got {warnings:?}"
+        );
+        let joined = warnings.join("\n");
+        assert!(joined.contains("providers.codex.web_dragdrop_paste"));
+        assert!(joined.contains("\"single-quoted\""));
+        assert!(joined.contains("providers.opencode.web_dragdrop_paste"));
+        assert!(joined.contains("\"file_url\""));
+        // The correctly spelled provider is not mentioned at all.
+        assert!(!joined.contains("providers.claude"));
+        // And each warning says what happens instead and what would have worked,
+        // because a warning that only says "unknown" leaves the user guessing.
+        for warning in &warnings {
+            assert!(warning.contains("falling back to \"bare\""), "{warning}");
+            assert!(warning.contains("single_quoted"), "{warning}");
+            assert!(warning.contains("double_quoted"), "{warning}");
+            assert!(warning.contains("backslash_escaped"), "{warning}");
+        }
+
+        // The per-paste path resolves the same value as often as it likes and
+        // produces no warning, which is what "once per load" means: the count is
+        // a function of the config, not of how often the value has been read.
+        for _ in 0..5 {
+            assert_eq!(
+                config.providers.commands["codex"].resolved_web_dragdrop_paste(),
+                WebDragDropPaste::Bare
+            );
+        }
+        assert_eq!(web_dragdrop_paste_warnings(&config.providers, "").len(), 2);
+
+        // A clean config says nothing at all.
+        assert_eq!(
+            web_dragdrop_paste_warnings(&ProvidersConfig::default(), ""),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn web_dragdrop_paste_as_str_round_trips() {
+        for mode in [
+            WebDragDropPaste::Bare,
+            WebDragDropPaste::SingleQuoted,
+            WebDragDropPaste::DoubleQuoted,
+            WebDragDropPaste::BackslashEscaped,
+        ] {
+            assert_eq!(WebDragDropPaste::parse(mode.as_str()), Some(mode));
+        }
+    }
+}
+
+#[cfg(test)]
+mod server_restart_split_tests {
+    use super::*;
+
+    fn server() -> ServerConfig {
+        Config::default().server
+    }
+
+    /// `color` only reaches the `yaran server` console, which the flip and the
+    /// background server never build, so the bind set must leave it out.
+    #[test]
+    fn the_bind_set_ignores_the_console_color_setting() {
+        let prev = server();
+        let mut next = prev.clone();
+        next.color = "never".to_string();
+        // A restart warning for a setting the running serve already reads live
+        // would be false. `access_log` and `search_index_max_files` sit in shared
+        // cells a reload writes; `allowed_hosts` feeds the Host guard live; the
+        // `tailscale` mode is handed to the running serve; the browser reconnect
+        // settings ride the bootstrap document every tab refetches on a reload;
+        // `pty_send_timeout_seconds` is read as each terminal connection opens, the
+        // operation timings as each change starts, and `presence_grace_seconds` as
+        // each terminal connection is lost. The WebSocket caps, by contrast, are
+        // built into the router once, and the deprecated `bind` arrives through
+        // `host` and `port`.
+        next.access_log = !next.access_log;
+        next.search_index_max_files += 1;
+        next.allowed_hosts.push("yaran.example".to_string());
+        next.tailscale = "no".to_string();
+        next.replay_wait_seconds += 1;
+        next.reconnect_backoff_cap_seconds += 1;
+        next.reconnect_attempts += 1;
+        next.reconnect_attempt_timeout_seconds += 1;
+        next.changes_request_timeout_seconds += 1;
+        next.heartbeat_seconds += 1;
+        next.heartbeat_deadline_seconds += 1;
+        next.pty_send_timeout_seconds += 1;
+        next.operation_unknown_after_seconds += 1;
+        next.operation_retention_seconds += 1;
+        next.presence_grace_seconds += 1;
+
+        assert!(!server_bind_settings_changed(&prev, &next));
+        assert!(server_console_settings_changed(&prev, &next));
+        assert!(server_restart_settings_changed(&prev, &next));
+    }
+
+    #[test]
+    fn the_console_set_ignores_every_bind_setting() {
+        let prev = server();
+        let mut next = prev.clone();
+        next.port += 1;
+        next.host = "0.0.0.0".to_string();
+        next.max_websocket_tabs_per_agent += 1;
+        next.tree_list_max_concurrency += 1;
+
+        assert!(server_bind_settings_changed(&prev, &next));
+        assert!(!server_console_settings_changed(&prev, &next));
+        assert!(server_restart_settings_changed(&prev, &next));
+    }
+
+    /// The QR codes are drawn by the `yaran server` console and the flip's status
+    /// screen, both read once as the serve starts, so a change is a console
+    /// change: a restart applies it and no listener needs rebinding.
+    #[test]
+    fn a_qr_codes_change_is_a_console_setting_change() {
+        let prev = server();
+        assert!(prev.qr_codes, "on by default");
+        let mut next = prev.clone();
+        next.qr_codes = false;
+
+        assert!(!server_bind_settings_changed(&prev, &next));
+        assert!(server_console_settings_changed(&prev, &next));
+        assert!(server_restart_settings_changed(&prev, &next));
+    }
+
+    #[test]
+    fn an_untouched_server_section_changes_neither_set() {
+        let prev = server();
+        assert!(!server_bind_settings_changed(&prev, &prev.clone()));
+        assert!(!server_console_settings_changed(&prev, &prev.clone()));
+        assert!(!server_restart_settings_changed(&prev, &prev.clone()));
+    }
+}

@@ -1,0 +1,12798 @@
+use crate::app::background_server::ReloadListenerChanges;
+use crate::numeric::u128_to_usize_wrapping;
+use crate::numeric::usize_to_i64;
+use std::cell::Cell;
+use std::collections::BTreeSet;
+use std::collections::{HashMap, HashSet};
+use std::io::{Write as _, stdout};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
+};
+use crossterm::execute;
+use ratatui::layout::Rect;
+use ratatui::prelude::{Modifier, Style};
+use ratatui::text::{Line, Span};
+
+use crate::clipboard::Clipboard;
+use crate::config::{
+    Config, YaranPaths, MacroSurface, ensure_config, provider_config, validate_keys,
+};
+use crate::diff::SyntaxCache;
+use crate::editor::DetectedEditor;
+use crate::git;
+use crate::keybindings::{
+    Action, BindingScope, InteractiveBytePatterns, RuntimeBindings, text_field_owns_key,
+};
+use crate::lockfile::SingleInstanceLock;
+use crate::logger;
+use crate::model::{
+    AgentSession, ChangedFile, CompanionTerminalStatus, Project, ProviderKind, SessionSurface,
+};
+use components::FocusStep;
+// `Utc` and `SessionStatus` are now referenced only by the `#[cfg(test)]`
+// submodules (via their `use super::*`): the non-test call sites that used them
+// (the rename optimistic-title write and the exit-loop detach marking) moved
+// into yaran-core with the branch-rename and prune convergences. Gating the
+// imports on `test` keeps them available to the tests without tripping the
+// unused-import lint in the production build.
+#[cfg(test)]
+use crate::model::SessionStatus;
+#[cfg(test)]
+use chrono::Utc;
+
+use crate::pty::PtyClient;
+use crate::pty::TerminalSnapshot;
+use crate::statusline::{BUSY_TIMEOUT, KeyedStatusController, StatusTone};
+use crate::storage::SessionStore;
+use crate::theme::Theme;
+use yaran_core::attachments::Attachments;
+use yaran_core::changes_status::ChangedFilesFailures;
+use yaran_core::clone_project::Clones;
+use yaran_core::engine::{
+    BranchSyncWait, GhProbeState, PrSyncControl, ReloadOrigin, RemovalCoordination,
+};
+use yaran_core::engine::{Command, Engine};
+use yaran_core::ids::{SessionIdRef, TabId, TabIdRef};
+pub(crate) use yaran_core::model::CompanionTerminal;
+pub(crate) use yaran_core::model::{TerminalOwner, TerminalOwnerRef};
+use yaran_core::operations::Operations;
+use yaran_core::process_sessions::AgentProcessRegistry;
+
+use text_input::TextInput;
+
+pub(crate) use yaran_core::worker::{
+    AgentLaunchKind, BranchWarningKind, BrowserEntry, CreateAgentRequest, NonDefaultBranchAction,
+    ProjectWorktreeEntry, PullTarget, ResourceStats, WorkerEvent,
+};
+#[cfg(test)]
+pub(crate) use yaran_core::worker::{
+    AgentLaunchReadyData, CreateAgentBranchInspection, ProcessInfo, ResourceKind,
+};
+
+/// Status key shared by every hint that describes what the interface is doing
+/// right now (a chrome toggle's new state, the palette opening, a redraw). One
+/// key, because there is only one current state to describe: see
+/// [`App::set_ui_hint`].
+pub(crate) const UI_HINT_KEY: &str = "tui-ui-hint";
+
+/// Status key for the instruction an open modal puts on the line. See
+/// [`App::set_prompt_hint`].
+pub(crate) const PROMPT_HINT_KEY: &str = "tui-prompt-hint";
+
+/// Maximum agent-passthrough bytes written to the host terminal per tick. A
+/// larger burst is split, with the remainder carried to the next tick, so one
+/// oversized forward can never stall the single-threaded run loop on a blocking
+/// `write_all`.
+const HOST_FORWARD_MAX_PER_TICK: usize = 32 * 1024;
+
+/// Minimum interval between logged host-forward write failures, so a persistently
+/// broken stdout logs at most once per interval instead of every tick.
+const HOST_FORWARD_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How yaran hands one address to the user's browser.
+///
+/// A seam rather than a direct call, for one reason: every surface that opens a
+/// URL (the pull-request key, the release-notes screen, a click on a linked cell
+/// in an agent's grid) must be testable without a browser window opening on the
+/// developer's desktop. Production always holds [`default_url_opener`].
+pub(crate) type UrlOpener = Arc<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>;
+
+/// The production opener: the platform's URL launcher, spawned detached.
+pub(crate) fn default_url_opener() -> UrlOpener {
+    Arc::new(|url: &str| yaran_core::browser::open_url(url))
+}
+
+/// What a startup-command rerun runs: the project, its command, and the
+/// environment it runs with.
+pub(crate) struct StartupRerunInputs {
+    /// The project the command belongs to.
+    pub(crate) project: Project,
+    /// The command, trimmed and non-empty.
+    pub(crate) command: String,
+    /// The environment the command runs with.
+    pub(crate) env: Vec<(String, String)>,
+}
+
+/// A left press yaran took an interest in because it landed on an OSC 8 link.
+///
+/// One lifecycle shared by the windowed mouse path and the fullscreen raw-input
+/// path: the press DECIDES (what to withhold, and whether an open is still on
+/// the table) and the release ACTS. It carries the surface it was armed on, so
+/// a release that arrives after the pane changed under it is not mistaken for
+/// this one's; a new press, a lost focus, a resize and a surface switch retire
+/// it. Nothing ever waits forever for an Up that is not coming.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingLinkClick {
+    pub(crate) button: MouseButton,
+    /// The terminal surface that was selected when the press landed.
+    pub(crate) surface: Option<String>,
+    /// The center part the press landed in.
+    pub(crate) part: CenterPart,
+    /// The address under the pressed cell.
+    pub(crate) uri: String,
+    /// Withhold this gesture's press, drag and release from the child.
+    pub(crate) suppress: bool,
+    /// The release may still open the address (see `link_release_opens`).
+    pub(crate) open: bool,
+    /// Where the press landed, in screen coordinates, for the travel test.
+    pub(crate) column: u16,
+    pub(crate) row: u16,
+}
+
+/// Whether an intercepted scroll key in raw input scrolls yaran's own
+/// scrollback or always reaches the child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RawScroll {
+    /// It scrolls only while the pane is already scrolled back; otherwise the
+    /// child gets the key.
+    WhenScrolledBack,
+    /// It never scrolls yaran's scrollback here.
+    Never,
+}
+
+enum RawSeqAction {
+    /// A yaran binding matched. The key, when the sequence was decoded, is what
+    /// reaches the child if the action falls through to it.
+    Intercept(
+        Action,
+        RawScroll,
+        Vec<u8>,
+        Option<crossterm::event::KeyEvent>,
+    ),
+    Mouse(MouseEvent, Vec<u8>),
+    /// The host's bytes, for the child as they are.
+    Forward(Vec<u8>),
+    /// A decoded key, for the child as its classic bytes.
+    ForwardKey(crossterm::event::KeyEvent, Vec<u8>),
+}
+
+#[derive(Default)]
+struct DemotedInputPatterns {
+    /// Whether the take-over card covers the pane, which is when these apply.
+    card_covers: bool,
+    palette: Vec<Vec<u8>>,
+    takeover: Vec<Vec<u8>>,
+}
+
+/// Whether a batch of raw input forwarded a bracketed paste whose line endings
+/// were normalized on the way, which counts as typing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NormalizedPaste {
+    /// It did.
+    Forwarded,
+    /// It did not.
+    None,
+}
+
+struct RawInputPlan {
+    actions: Vec<RawSeqAction>,
+    normalized_paste_forwarded: bool,
+}
+
+struct RawInputDispatch {
+    forward_batch: Vec<u8>,
+    is_scrolled_back: bool,
+    may_write_pty: bool,
+    needs_selection_clear: bool,
+    forwarded: input::ForwardedInput,
+}
+
+enum RawInputFlow {
+    Continue,
+    Return(bool),
+}
+
+enum KeyRoute {
+    Continue,
+    Return(bool),
+}
+
+struct BrowseProjectsFooterKeys {
+    close: String,
+    search: String,
+    open: String,
+    goto: String,
+    exit_path: String,
+}
+
+struct AgentTerminalContext {
+    active_surface: SessionSurface,
+    terminal_status: CompanionTerminalStatus,
+    is_input: bool,
+    receives_keys: bool,
+    /// Whether the part this context describes is the focused one.
+    part_focus: crate::theme::FocusState,
+    session_id: Option<String>,
+    focused_tab: Option<String>,
+    provider_name: Option<String>,
+    session_active: bool,
+}
+
+struct TerminalSidebarRow {
+    id: String,
+    display_title: Option<String>,
+    owner_name: String,
+    standalone: bool,
+}
+
+struct SidebarListGeometry {
+    search_area: Option<Rect>,
+    content: Rect,
+    body: Rect,
+    top_pad_y: Option<u16>,
+}
+
+#[derive(Clone, Copy)]
+struct AgentRowCues {
+    /// What the state word is decided from; its `needs_attention` is not gated
+    /// on the agent being active.
+    facts: yaran_core::row_state::AgentRowFacts,
+    /// Animation is Active-only; the static state word still uses the ungated flag.
+    attention_cue: bool,
+    deleting: bool,
+}
+
+struct PrReferenceResolutionAnswer {
+    raw_input: String,
+    repository: String,
+    result: Result<yaran_core::pr_reference::ReferenceResolution, String>,
+    offer: Option<yaran_core::pr_reference::PullRequestCloneFacts>,
+    clone_unavailable: Option<String>,
+    status_op_id: Option<String>,
+}
+
+struct ChangedFilesAnswer {
+    worktree: PathBuf,
+    error: Option<String>,
+}
+
+struct DrainedEventMetadata {
+    pr_lookup_completion: Option<(String, bool)>,
+    /// A clone's worker answered: its op id, and whether it refused or failed.
+    clone_completion: Option<(String, bool)>,
+    checkout_inspect_completion: Option<String>,
+    reference_resolution: Option<PrReferenceResolutionAnswer>,
+    changed_files_answer: Option<ChangedFilesAnswer>,
+}
+
+struct PruneViewContext {
+    selected_session: Option<String>,
+    focused_tab: Option<String>,
+    /// The selected agent's slot tab as it was BEFORE the sweep, which a clean
+    /// exit of that tab moves.
+    selected_slot_tab: Option<String>,
+    tab_providers: HashMap<String, String>,
+    /// The selected agent's strip as it stood BEFORE the sweep, which a tab that
+    /// exited cleanly leaves: the view lands beside where that tab was.
+    strip_before: Vec<String>,
+}
+
+/// Whether an agent's working copy is on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkingCopy {
+    /// Its directory is gone.
+    Missing,
+    /// It is there.
+    Present,
+}
+
+/// Whether a multiline field is engaged for typing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FieldEngagement {
+    /// Every key goes to the text.
+    Engaged,
+    /// The modal owns the keys.
+    Unengaged,
+}
+
+/// Whether the changes pane lists any staged files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StagedFiles {
+    /// It does, so the staged list and the commit box are reachable.
+    Present,
+    /// It does not.
+    Absent,
+}
+
+/// Whether a worker-fed list has its answer yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Listing {
+    /// The worker has not answered.
+    Loading,
+    /// It has.
+    Loaded,
+}
+
+/// Whether a changes-tree folder listing puts a busy status on the line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListingStatus {
+    /// It does, keyed to the folder.
+    Announced,
+    /// It does not (a background refresh).
+    Silent,
+}
+
+/// Whether a click on a list row was the second of a double-click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClickCount {
+    /// It was, so the row is also picked.
+    Double,
+    /// It only places the cursor.
+    Single,
+}
+
+/// Whether the agent list folds its inactive agents behind the Inactive toggle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InactiveTail {
+    /// They are hidden behind the toggle.
+    Collapsed,
+    /// They are listed.
+    Expanded,
+}
+/// What the status line showed when the command palette last opened.
+#[derive(Default)]
+pub(crate) enum PaletteOpenedOver {
+    /// The palette has not opened since the line was last cleared from it.
+    #[default]
+    NotRecorded,
+    /// The line was empty when the palette opened.
+    EmptyLine,
+    /// The line was showing this status when the palette opened.
+    Status(yaran_core::statusline::ShownStatus),
+}
+
+impl PaletteOpenedOver {
+    /// Record what the line is showing as the palette opens.
+    fn from_line(shown: Option<yaran_core::statusline::ShownStatus>) -> Self {
+        shown.map_or(Self::EmptyLine, Self::Status)
+    }
+}
+
+/// Which side panes are collapsed or hidden.
+#[derive(Default)]
+pub(crate) struct PaneFlags {
+    pub(crate) left_collapsed: bool,
+    pub(crate) right_collapsed: bool,
+    pub(crate) right_hidden: bool,
+}
+
+/// How the agent list's Inactive tail is folded.
+#[derive(Default)]
+pub(crate) struct InactiveTailState {
+    /// Whether the flat list's "Inactive" tail (detached/exited agents) is
+    /// collapsed. Starts collapsed, matching the web. Replaces the old
+    /// per-project collapse now that there are no project headers.
+    pub(crate) collapsed: bool,
+    /// Once the user toggles the Inactive section by hand, stop auto-managing its
+    /// collapsed state. Until then it auto-expands when every agent is inactive
+    /// (so a wholly-dormant workspace is not hidden) and collapses when any agent
+    /// is active. See `rebuild_left_items`.
+    pub(crate) overridden: bool,
+}
+
+/// The bracketed paste being read from raw input, if any.
+#[derive(Default)]
+pub(crate) struct RawPaste {
+    /// True while processing bytes between bracket-paste markers
+    /// (`ESC[200~` … `ESC[201~`). Inside a paste, intercept matching is
+    /// skipped so pasted text doesn't trigger keybindings.
+    pub(crate) in_bracket: bool,
+    /// True while the current raw-path bracketed paste is being UNWRAPPED
+    /// for a child that never enabled DECSET 2004: yaran enables host
+    /// bracketed paste globally, so every host paste arrives wrapped, and a
+    /// non-2004 child would otherwise get the literal `ESC[200~`/`ESC[201~`
+    /// markers typed at it plus LF line endings. While set, the markers are
+    /// stripped and the paste body's newlines are normalized to carriage
+    /// returns, mirroring `paste_to_center_pty`'s non-2004 arm. Decided
+    /// once, at the opening marker, from the focused surface's
+    /// `has_bracketed_paste()`.
+    pub(crate) normalize: bool,
+    /// The open paste's newline normalizer, which carries a trailing CR
+    /// across read chunks so a CR-LF pair split over two reads still
+    /// collapses to one CR instead of doubling.
+    pub(crate) newlines: crate::raw_input::PasteNewlines,
+}
+
+/// The tips screen's logo, as last drawn.
+#[derive(Default)]
+pub(crate) struct WelcomeLogo {
+    /// Whether the ASCII logo was rendered in the previous frame.
+    pub(crate) visible: bool,
+    /// When true, show the alternate (duck) logo instead of the text logo.
+    pub(crate) alt: bool,
+}
+
+/// Display settings read from config at startup and on reload.
+#[derive(Default)]
+pub(crate) struct ViewPrefs {
+    pub(crate) show_diff_line_numbers: bool,
+    pub(crate) pr_banner_at_bottom: bool,
+}
+
+/// In-flight guards and intent for the web server this surface starts.
+#[derive(Default)]
+pub(crate) struct ServingFlags {
+    /// In-flight guard for the server-flip pre-flight. `start_web_server` spawns a
+    /// worker that races to `bind` the LOCAL MODE ports; two quick invocations
+    /// would both spawn workers and the second would hit a confusing EADDRINUSE.
+    /// Set true when a worker is dispatched, cleared when its
+    /// `ServerFlipPreflightReady` event lands (BOTH the Ok and Err arms). While
+    /// set, or while `pending_server_flip` is already stashed, a repeat
+    /// invocation is refused with an actionable status instead of spawning a
+    /// second worker.
+    pub(crate) flip_preflight_pending: bool,
+    /// In-flight guard for the background server's bind pre-flight, the same
+    /// shape and for the same reason as `flip_preflight_pending`: the
+    /// pre-flight races to bind the LOCAL MODE ports, so two quick invocations
+    /// would have the second report a confusing EADDRINUSE.
+    pub(crate) background_preflight_pending: bool,
+    /// Whether a background listener is currently WANTED.
+    ///
+    /// Distinct from `background_server_is_serving`, which cannot answer for the
+    /// window while the bind pre-flight is still on its worker thread. In that
+    /// window a stop command, or a reload that turns the setting off, would
+    /// otherwise be a no-op; the pre-flight would then land, start serving anyway,
+    /// and persist `serve_while_tui = true` over the value the user just chose.
+    /// The stop paths clear this and the pre-flight's apply consults it.
+    pub(crate) background_wanted: bool,
+}
+
+/// Where the agent list's cursor stands relative to its rows.
+#[derive(Default)]
+pub(crate) struct LeftRowsState {
+    /// Whether the list has been built at least once: before that, the cursor
+    /// takes the first row as it always has, and after it an empty list is a
+    /// cursor on nothing.
+    pub(crate) built: bool,
+    /// The cursor is on no row: the row it was on was deleted or went away, or
+    /// the list was empty, and only this surface moves it onto a row. Held as
+    /// an index one past the end; this surface's next move puts it on a row.
+    pub(crate) cursor_parked: bool,
+}
+
+/// One-shot facts this surface records for itself and spends later.
+#[derive(Default)]
+pub(crate) struct OneShotNotes {
+    pub(crate) force_redraw: bool,
+    /// Set when a reaction drained this iteration was the COMPANION's to follow up
+    /// on, so this surface skipped its own arm for it.
+    ///
+    /// A web-owned follow-up mutates shared state this surface renders (the
+    /// inline project add writes `engine.projects` during the fanout), and the
+    /// change did not arrive through this surface's own event stream, so nothing
+    /// here would otherwise rebuild. Folded into the per-iteration mutated answer
+    /// and cleared there.
+    pub(crate) companion_followup_ran: bool,
+    /// Whether the agent create currently in flight was started HERE.
+    ///
+    /// A create mints its session id in a worker, so unlike every other launch
+    /// there is no id to record at dispatch. A boolean is enough because the
+    /// engine allows exactly one create at a time (`InFlightKey::CreateAgent`),
+    /// and it is spent by the create's own outcome, success or failure.
+    pub(crate) create_agent_started_here: bool,
+}
+
+pub(crate) struct App {
+    pub(crate) engine: Engine,
+    pub(crate) bindings: RuntimeBindings,
+    /// Whether this run reads extended keys: `CSI … u` keys are decoded and
+    /// matched by meaning, each key reaches a child as its classic bytes, and
+    /// Shift-Enter as the soft newline. Set when the run starts; with it off,
+    /// keys are read and sent exactly as a classic terminal sends them.
+    pub(crate) extended_keys: crate::keybindings::ExtendedKeys,
+    /// The `[ui] extended_keys` value this run started with, its tmux probes
+    /// and the keys typed while yaran asked the host terminal about Kitty keys.
+    pub(crate) host_keys: crate::host_keys::HostKeysState,
+    pub(crate) selected_left: usize,
+    /// The terminal ids `LeftItem::Terminal` indexes into, built with the list.
+    pub(crate) left_terminals: Vec<String>,
+    /// Each agent's center layout, by agent id: the agent alone, the split, or
+    /// its terminal dock alone. RUNTIME ONLY, so a restart opens every agent in
+    /// the split again.
+    pub(crate) dock_layouts: HashMap<String, DockLayout>,
+    /// The terminal each agent's dock showed last, by agent id.
+    pub(crate) dock_active: HashMap<String, String>,
+    /// The dock strip as it was last drawn, in order, so a terminal that ends
+    /// on screen hands the dock to its neighbour in the strip the user saw.
+    pub(crate) last_dock_strip: Option<Vec<String>>,
+    /// The layout of a stopped agent that is on screen, while it stays
+    /// stopped. Such an agent opens on its terminal whatever was remembered;
+    /// changing the layout from there changes this, and starting the agent
+    /// drops it, returning to the remembered one.
+    pub(crate) stopped_layout: Option<(String, DockLayout)>,
+    pub(crate) right_section: RightSection,
+    pub(crate) files_index: usize,
+    pub(crate) files_search: TextInput,
+    pub(crate) files_search_active: bool,
+    pub(crate) commit_input: TextInput,
+    /// A commit running on a worker: its status key, and the message it
+    /// committed. Its success final clears `commit_input` only while the box
+    /// still holds exactly that message, so a message typed for the next
+    /// commit meanwhile is never wiped.
+    pub(crate) pending_commit: Option<(String, String)>,
+    pub(crate) left_width_pct: u16,
+    pub(crate) right_width_pct: u16,
+    pub(crate) terminal_dock_pct: u16,
+    pub(crate) staged_pane_height_pct: u16,
+    pub(crate) commit_pane_height_pct: u16,
+    pub(crate) focus: FocusPane,
+    pub(crate) center_mode: CenterMode,
+    pub(crate) resize_mode: bool,
+    pub(crate) help_scroll: Option<u16>,
+    pub(crate) last_help_height: u16,
+    pub(crate) last_help_lines: u16,
+    /// Visible height and total line count of the first-load modal's content
+    /// pane, recorded at render so the scroll keys can clamp (the same shape as
+    /// `last_help_height`/`last_help_lines`, for the same reason: the extent
+    /// depends on the wrap width, which only the renderer knows).
+    pub(crate) last_first_load_height: u16,
+    pub(crate) last_first_load_lines: u16,
+    /// Visible height and total wrapped-row count of the error dialogs'
+    /// (`ConfigReloadFailed`, `AddProjectFailed`) message pane, recorded at
+    /// render so the scroll keys can clamp. Same shape and same reason as
+    /// `last_help_height`/`last_help_lines`: the extent depends on the wrap
+    /// width, which only the renderer knows. Only one such dialog can be open at
+    /// a time, so the pair is shared.
+    pub(crate) last_error_dialog_height: u16,
+    pub(crate) last_error_dialog_lines: u16,
+    /// The startup gate's plan, held from the moment the release-notes fetch is
+    /// dispatched until the worker returns and
+    /// [`yaran_core::first_load::after_fetch`] folds the outcome in. `None` once
+    /// consumed; a `Welcome` or `Nothing` plan never lands here because neither
+    /// needs the network.
+    pub(crate) pending_first_load: Option<yaran_core::first_load::FirstLoadPlan>,
+    /// The delete-agent dialog's pending unpushed-commit count. One-shot: set
+    /// when the dialog opens on branches its warning would say something about,
+    /// cleared by `drain_unpushed_count` when the answer lands.
+    pub(crate) unpushed_count_rx: Option<mpsc::Receiver<BranchOfferAnswer>>,
+    /// The Delete Project dialog's uncommitted-file counter, one answer per
+    /// agent worktree as each lands. Set when the dialog opens, dropped (which
+    /// stops it) once that dialog is no longer on screen.
+    pub(crate) project_worktree_files: Option<ProjectWorktreeFilesJob>,
+    /// The rename dialog's pending "was this branch pushed?" answer, tagged
+    /// with the agent it was asked for. One-shot, like the count above.
+    pub(crate) rename_pushed_rx: Option<mpsc::Receiver<(String, bool)>>,
+    /// The pull-request clone form's pending folder check. One-shot: set when
+    /// a check starts, cleared when its answer lands or the form is gone.
+    pub(crate) pr_clone_check_rx: Option<mpsc::Receiver<PrCloneFolderAnswer>>,
+    /// Blocking work a key asked for, running on workers.
+    pub(crate) ui_jobs: ui_jobs::UiJobs,
+    /// The folder browser's path-completion lookup still out.
+    pub(crate) path_completion: PathCompletion,
+    /// Which folder browser is open, and the add-project check it has out.
+    pub(crate) browser_add: BrowserAdd,
+    /// The themes the open theme picker previews, read when it opened.
+    pub(crate) theme_previews: Option<ThemePreviews>,
+    /// The diff wrap a worker is doing, for the diff, width and gutter it was
+    /// asked for (see `DIFF_WRAP_INLINE_LINES`).
+    pub(crate) diff_wrap_ask: Option<DiffWrapAsk>,
+    /// The pull request clone this surface last started, until a question
+    /// about it arrives or a bound passes.
+    pub(crate) pr_clone_awaiting: Option<PrCloneAwaiting>,
+    /// Payload channel for the in-flight release-notes worker. The keyed
+    /// busy→final status rides the engine's own worker channel; only the notes
+    /// themselves come back here. `Some` means a fetch is in flight, which is
+    /// what stops the palette command from starting a second one.
+    pub(crate) notes_fetch_rx: Option<mpsc::Receiver<NotesFetched>>,
+    /// Notes that arrived while the user had a DIFFERENT modal open.
+    /// `PromptState` is a single slot, so showing the what's-new screen the
+    /// instant the fetch lands would discard whatever the user was typing. The
+    /// notes are parked here (with `pending_first_load` left un-consumed and the
+    /// version deliberately UNSTAMPED, per the stamp-on-dismissal contract) and
+    /// re-offered on a later tick once the prompt slot is free.
+    pub(crate) deferred_first_load_notes: Option<Box<yaran_core::release_notes::ReleaseNotes>>,
+    /// "Someone is now explicitly waiting on the in-flight release-notes fetch."
+    ///
+    /// Shared with the worker thread, because the fetch's `NotesFetchPurpose` is
+    /// baked into its status closures by `move` at spawn time and cannot be
+    /// changed from here afterwards. `show-release-notes` sets it when it finds a
+    /// fetch already running, and both the failure closure and
+    /// `apply_notes_fetch` read it so the user's explicit request fails loudly
+    /// instead of being swallowed by the automatic path's silence. A fresh `Arc`
+    /// is minted per fetch, so the flag can never be stale.
+    pub(crate) notes_fetch_explicit_request: Arc<AtomicBool>,
+    pub(crate) fullscreen_overlay: FullscreenOverlay,
+    pub(crate) startup_log_viewer: Option<StartupLogViewer>,
+    /// The server log, full-screen while `Some`: neither a modal nor a fullscreen
+    /// pane, it takes every key and the whole frame until it closes.
+    pub(crate) server_log_viewer: Option<crate::server_screen::ServerLogViewer>,
+    pub(crate) status: KeyedStatusController,
+    /// The generation of the missing-project warning this App last wrote to the
+    /// anonymous status slot, so it can retire its own message when the
+    /// selection moves off the row and leave every other producer's alone.
+    ///
+    /// The check has to be by generation: `update_missing_project_warning` runs
+    /// on every selection move, the slot is shared, and several producers write
+    /// warnings to it, so "the line holds a warning" is true of the pinned
+    /// restart and theme warnings too.
+    pub(crate) missing_project_warning_gen: Option<yaran_core::statusline::Generation>,
+    /// The "Command palette opened." hint the palette last wrote, so clearing
+    /// the status line from the palette clears what was on screen before it
+    /// opened rather than the palette's own hint about itself.
+    pub(crate) palette_hint_gen: Option<yaran_core::statusline::Generation>,
+    /// What was on the status line when the palette last opened, which is what
+    /// clearing the line from it clears.
+    pub(crate) palette_opened_over: PaletteOpenedOver,
+    pub(crate) prompt: PromptState,
+    pub(crate) input_target: InputTarget,
+    pub(crate) session_surface: SessionSurface,
+    pub(crate) clipboard: Clipboard,
+    pub(crate) active_terminal_id: Option<String>,
+    /// Which tab is focused in the center pane, per session (`session_id` →
+    /// `tab_id`). A missing or unusable entry resolves to the session's slot tab
+    /// (`AgentSession::resolved_focused_tab`). Only the center pane resolves the
+    /// focused tab; sidebar and session labels stay agent-scoped. Pruned when a
+    /// session is torn down.
+    pub(crate) focused_tabs: HashMap<String, String>,
+    /// Passthrough bytes captured but not yet written to the host terminal because
+    /// a single tick's forward exceeded [`HOST_FORWARD_MAX_PER_TICK`]. Carried to
+    /// the next tick so a burst is bounded without dropping data. The host stdout
+    /// is one continuous byte stream, so splitting a sequence across ticks is safe.
+    pub(crate) host_forward_carry: Vec<u8>,
+    /// When the last host-forward write error was logged, so a persistently failing
+    /// stdout logs at most once per [`HOST_FORWARD_ERROR_LOG_INTERVAL`] rather than
+    /// every tick. `None` until the first failure.
+    pub(crate) host_forward_error_logged_at: Option<Instant>,
+    /// Click hit-boxes for the agent tab strip, rebuilt each frame while the
+    /// strip is drawn: (`tab_id`, cell rect) for each tab, plus the `+` add rect.
+    /// Kept out of `MouseLayoutState` (which is `Copy`); reset by the strip
+    /// renderer, empty when the strip is hidden (< 2 tabs) or in fullscreen.
+    pub(crate) agent_tab_regions: Vec<(String, Rect)>,
+    /// The geometry last sent to each pty, keyed by pty id, so a frame that
+    /// draws two parts resizes each child once and then leaves both alone.
+    pub(crate) pty_sizes: HashMap<String, (u16, u16)>,
+    /// Which pty each center part drew last frame, so the resize dedupe is also
+    /// keyed by target and not by geometry alone.
+    ///
+    /// Keying on the size alone filters workspace-wide: select another agent
+    /// whose pane measures what this one measures now, the send is deduped away,
+    /// and that child keeps its pre-resize geometry for as long as it lives.
+    /// Comparing the target too makes every switch send once, which also covers
+    /// a target resized by some other surface (the web pane drives the same
+    /// PTYs) and cannot be defeated by a new switch site forgetting to reset
+    /// anything.
+    pub(crate) part_targets: PartTargets,
+    /// A row this surface has been told to TAKE OVER, armed by the take-over
+    /// action and consumed by the next resize of any pty in that row.
+    ///
+    /// Armed rather than acted on directly, so there is exactly one place that
+    /// claims for sizing: the render site that measures a pane. That also gives
+    /// the take-over the surface's real geometry rather than a remembered one.
+    /// The action forgets the row's sent geometry alongside setting this, so a
+    /// take-over at a geometry that happens to match the last one still sends a
+    /// resize, which is what carries the claim.
+    ///
+    /// Only meaningful while a background server is serving; a row left here
+    /// when serving stops is cleared with the rest of the participation state.
+    pub(crate) pending_pty_takeover: Option<yaran_core::pty_owners::RowKey>,
+    /// The last resize this surface was REFUSED, as (pty id, rows, cols), so the
+    /// refusal is logged when it is news rather than on every frame.
+    ///
+    /// A refused resize deliberately does not record the sent geometry: it
+    /// never reached the child, and recording it made a stale geometry permanent.
+    /// The cost is that the render pass asks again every tick for as long as the
+    /// demoted pane is on screen, which without this would be tens of identical
+    /// debug lines a second in the log.
+    pub(crate) last_refused_pty_resize: Option<(String, u16, u16)>,
+    /// PTYs this surface launched and has not yet claimed, keyed by pty id.
+    ///
+    /// Drawing a pane is not a claim, so the launch is what claims the child:
+    /// the id is recorded at dispatch and spent (or dropped, on a failed launch)
+    /// at the launch's outcome, because no child answers to it until then and a
+    /// claim against such an id is a phantom driver.
+    ///
+    /// Populated only by this surface's own launch paths, which is what leaves a
+    /// pty a browser asked for free for that browser's own attach.
+    pub(crate) tui_launched_ptys: std::collections::HashSet<String>,
+    /// The pull-request create this surface dispatched, until it succeeds or
+    /// fails for a reason other than a question. A refusal that asks for the
+    /// user's agreement to a review copy reopens the name prompt on this
+    /// request, so the typed name and the pull request stay filled in.
+    ///
+    /// Held with the key of the busy status the engine gave the create, which
+    /// is what its refusal comes back under, so a question that belongs to
+    /// another create (a browser's, the command line's) is not taken for it.
+    pub(crate) pull_request_create: Option<(String, CreateAgentRequest)>,
+    /// What the clone form held when it last started a clone, until that
+    /// clone succeeds or another submit replaces it.
+    pub(crate) clone_draft: Option<CloneDraft>,
+    /// The macro list's version as the editor last saw it, on open and after each
+    /// of its own writes; a save is refused once the list has moved on since.
+    pub(crate) macro_editor_version: Option<String>,
+    /// Which terminal surfaces (focused tab ids, companion terminal ids) the
+    /// user has put into scroll mode. Empty means nobody is scrolled back.
+    ///
+    /// A set rather than one slot: the offset it mirrors lives in each PTY
+    /// client, so two surfaces can sit parked in their scrollback at once, and
+    /// every write here is scoped to the one surface it concerns.
+    ///
+    /// The mode is explicit, entered and left by the user, the way tmux's copy
+    /// mode is a property of the pane rather than of where the grid sits.
+    /// Nothing enters the mode from a sample of the grid, and everything that
+    /// gates on it (keystroke suppression, the cue, the badge) reads this state
+    /// rather than the offset. The offset is read only as a transition:
+    /// `note_user_scroll` decides whether the user's own gesture entered or left
+    /// the mode, and `reconcile_scroll_mode` notices the child yanking the view
+    /// back and ends the mode out loud.
+    ///
+    /// The mode cannot be derived as `offset > 0`: in the terminal library yaran
+    /// pins, `ESC [ ? 1049 h` (alternate screen), `ESC [ 3 J` (erase scrollback)
+    /// and `ESC c` (full reset) each drop `scrollback_offset()` to 0 from a
+    /// scrolled-back grid, which would hand keystrokes back to the child while
+    /// the user believed they were still reading history.
+    pub(crate) scroll_mode: std::collections::HashSet<String>,
+    pub(crate) last_diff_height: u16,
+    pub(crate) last_diff_visual_lines: usize,
+    /// The diff's wrapped rows, kept so a frame draws its viewport instead of
+    /// re-wrapping the whole file. See [`DiffRowCache`].
+    pub(crate) diff_rows: Option<DiffRowCache>,
+    pub(crate) theme: Theme,
+    pub(crate) tick_count: u64,
+    /// Wall-clock reference for time-based animations (spinners). Using
+    /// elapsed time instead of `tick_count` keeps animation speed constant
+    /// regardless of how fast the event loop is running.
+    pub(crate) start_time: Instant,
+    /// The one-shot "this modal is refusing to close" cue, armed by an outside
+    /// click on a modal whose outside-click policy is
+    /// [`overlay_dismiss::OutsideClickPolicy::Blink`]. `None` means no cue is
+    /// running; see [`RefusalBlink`] for why it also remembers which modal
+    /// armed it.
+    pub(crate) refusal_blink: Option<RefusalBlink>,
+    /// The normalized filter query under which the user explicitly collapsed a
+    /// search-expanded Inactive tail. While the agent filter has a hit inside
+    /// the tail, the tail renders open as DERIVED state (the collapse
+    /// preference is untouched); collapsing it during that query is an explicit
+    /// act recorded here, winning until the query changes (a changed or cleared
+    /// query expires it in `rebuild_left_items`). Mirrors the web `QuietTail`'s
+    /// `dismissedQuery`.
+    pub(crate) inactive_search_dismissed: Option<String>,
+    pub(crate) left_items_cache: Vec<LeftItem>,
+    pub(crate) mouse_layout: MouseLayoutState,
+    pub(crate) overlay_layout: OverlayMouseLayoutState,
+    pub(crate) mouse_drag: Option<DraggedDivider>,
+    /// The live drag-to-reorder gesture over a sidebar row (an agent's or a
+    /// terminal's), or `None` when no row is being dragged. Armed by a left press
+    /// on a reorderable row and retired on release, on a host resize, on focus
+    /// loss, on any keystroke, and by the next press. See [`RowDragState`] for
+    /// the click/drag threshold.
+    pub(crate) row_drag: Option<RowDragState>,
+    /// The live drag-to-reorder gesture over a pill of the agent tab strip, or
+    /// `None`. Armed by a left press on a pill and retired on release, on a host
+    /// resize, on focus loss, on any keystroke, and by the next press.
+    pub(crate) tab_drag: Option<TabDragState>,
+    /// The selected agent's strip as it was last drawn. A tab another screen closes is already gone from the engine by the
+    /// time this surface notices, so the strip the user was looking at is the only
+    /// place the tab's neighbours are still written down.
+    pub(crate) last_tab_strip: Option<DrawnTabStrip>,
+    /// A mouse button pressed inside the WINDOWED center pane that is being
+    /// forwarded to a mouse-aware child: holds the SGR button
+    /// code of the pressed button (0 left, 1 middle, 2 right) from press to
+    /// release, so the drag's motion reports and the final release reach the
+    /// child even when the pointer leaves the pane. `None` when no forwarded
+    /// button is held.
+    pub(crate) center_mouse_forward: Option<u16>,
+    pub(crate) last_mouse_click: Option<RecentMouseClick>,
+    /// Tracks an in-flight modal-button press: which button received
+    /// mouse-down and whether the cursor is still inside it. Set on
+    /// `MouseEventKind::Down(Left)` over a button, updated on `Drag`,
+    /// cleared on `Up` (firing the button's action only when the cursor
+    /// is still inside) and on any keystroke or modal-close event.
+    pub(crate) pressed_button: Option<components::PressedButton>,
+    /// The take-over card's own in-flight press, separate from
+    /// `pressed_button` because the card is not a modal: the modal press is
+    /// wiped on every non-prompt mouse event (a watchdog for a dialog closed by
+    /// some other path), and the card's button lives on exactly such events.
+    pub(crate) takeover_press: Option<components::PressedButton>,
+    /// The dormant-tab card's own in-flight press, kept apart from
+    /// `pressed_button` for the same reason as `takeover_press`: the card is a
+    /// state of the pane rather than a modal, so its button lives on exactly the
+    /// mouse events the modal press machinery wipes.
+    pub(crate) dormant_tab_press: Option<components::PressedButton>,
+    pub(crate) interactive_patterns: InteractiveBytePatterns,
+    pub(crate) raw_input_parser: crate::raw_input::RawInputParser,
+    /// The input debugger's own raw reader, apart from the forwarding path's.
+    pub(crate) debug_raw_input: debug_input::DebugRawInput,
+    pub(crate) raw_input_buf: Vec<u8>,
+    /// Separate buffer for scanning `ToggleFullscreen` during the loading phase.
+    /// Kept independent of `raw_input_buf` so that suppressed keystrokes
+    /// cannot leak into the first post-loading `process_raw_input_bytes` call.
+    pub(crate) loading_input_buf: Vec<u8>,
+    /// Host terminal-window focus, tracked via DEC mode 1004 focus reports.
+    /// Gates the per-tick "viewed" stamp so an unfocused window stops
+    /// suppressing the focused agent's attention flag. Fails open until the
+    /// first focus event of the run is observed.
+    pub(crate) terminal_focus: crate::focus::TerminalFocus,
+    pub(crate) macro_bar: Option<MacroBarState>,
+    pub(crate) sigwinch_flag: Arc<AtomicBool>,
+    /// Registration id for the SIGWINCH handler, unregistered when the App is
+    /// consumed by the TUI→server flip so repeated flip cycles don't accumulate
+    /// orphaned signal-hook registrations. `None` only in tests that build the
+    /// App directly without registering a real handler.
+    pub(crate) sigwinch_sig_id: Option<signal_hook::SigId>,
+    /// Set by the SIGTERM/SIGINT/SIGHUP handlers so the run loop can break with
+    /// [`RunExit::Quit`] and wind the agents down gracefully (SIGTERM + grace)
+    /// instead of letting the process die straight to the hard SIGKILL in
+    /// `PtyClient::drop`. Mirrors the server's signal-triggered `shutdown_ptys`.
+    pub(crate) shutdown_flag: Arc<AtomicBool>,
+    /// Registration ids for the shutdown-signal handlers, unregistered in
+    /// `into_engine` so the TUI→server flip doesn't leave the TUI's handlers
+    /// firing alongside the server's own. Empty only in tests that build the App
+    /// directly without registering real handlers.
+    pub(crate) shutdown_sig_ids: Vec<signal_hook::SigId>,
+    /// The run loop's draw gate: poll cadence and draw cadence are separate
+    /// questions (see [`redraw`]).
+    pub(crate) redraw: RedrawGate,
+    pub(crate) welcome_tip_index: usize,
+    /// The left-pane selection index when the logo last rendered a tip.
+    pub(crate) welcome_tip_selection: usize,
+    /// Cached syntax highlighting resources shared across diff computations.
+    /// Shared by `Arc` because every computation runs on a worker thread.
+    pub(crate) syntax_cache: Arc<SyntaxCache>,
+    /// The in-flight diff computation, if any. One slot: the center pane shows
+    /// one diff, so a new request supersedes the old one rather than queueing
+    /// behind it.
+    pub(crate) pending_diff: Option<PendingDiff>,
+    /// Expanded folders in the changes pane and the work in flight for them.
+    pub(crate) changes_tree: ChangesTreeState,
+    /// Monotonic request counter, stamped into every [`crate::diff::DiffRequestKey`]
+    /// so two requests that agree on file and settings are still told apart.
+    pub(crate) diff_request_seq: u64,
+    /// Each center part's grid as last snapshotted, one per part so drawing two
+    /// terminals in one frame neither rebuilds one buffer twice nor wipes a
+    /// selection stamped against the other part.
+    pub(crate) part_snapshots: PartSnapshots,
+    /// Active text selection in the terminal viewport, if any.
+    pub(crate) terminal_selection: Option<TerminalSelection>,
+    /// A press yaran took an interest in, awaiting the release that acts on it.
+    pub(crate) pending_link_click: Option<PendingLinkClick>,
+    /// A left press on the pull-request banner's band, waiting for its release.
+    ///
+    /// The band the press claimed, so a release only opens while that same band
+    /// is still the one on screen: the lane can move (the position setting), go
+    /// away (the pane starts taking input, a surface is maximized) or belong to
+    /// another agent by the time the button comes up.
+    ///
+    /// Deliberately NOT a second lifecycle: this rides the link lane's
+    /// retirement triggers through [`App::retire_pending_link_click`], so a
+    /// resize, a lost focus or a surface change drops it exactly where it drops
+    /// a withheld link press.
+    pub(crate) pending_pr_banner_press: Option<Rect>,
+    /// Which of each agent's pull requests the band shows, by key, once the
+    /// user stepped with the next-pull-request key. Display-only: it writes
+    /// nothing, the row badge and every other surface keep showing the first
+    /// in the agent's order, and a key that left the list falls back to it.
+    pub(crate) pr_cursors: HashMap<String, crate::model::PrKey>,
+    /// When and where the last link was opened, so the second click of a
+    /// double click (the select-a-word gesture over a URL) does not open the
+    /// same address a second time. The terminal UI's twin of the web's
+    /// `detail > 1` refusal.
+    pub(crate) last_link_open: Option<(Instant, u16, u16)>,
+    /// How this surface opens an address in the user's browser. Injected in
+    /// tests; [`default_url_opener`] everywhere else.
+    pub(crate) url_opener: UrlOpener,
+    /// Active text selection in the startup command log output pane, if any.
+    pub(crate) startup_log_selection: Option<TerminalSelection>,
+    /// When set, the run loop exits with [`RunExit::FlipToServer`], handing the
+    /// pre-bound listeners and their display URLs to the binary so the web server
+    /// can take over the same process (PTYs keep running). Populated by the
+    /// `StartWebServer` palette action only after its (worker) pre-flight
+    /// succeeds. LOCAL MODE may bind more than one address (loopback + Tailscale).
+    pub(crate) pending_server_flip: Option<PendingServerFlip>,
+    /// The terminals the frame being drawn shows, in the attachment registry's
+    /// terms. Filled while a frame renders; see `attachment_presence`.
+    pub(crate) drawn_ptys: Vec<yaran_core::attachments::Target>,
+    /// What this surface last published to the attachment registry, with its
+    /// ownership seat then, so an unchanged frame publishes nothing.
+    pub(crate) published_ptys: Option<(Vec<yaran_core::attachments::Target>, Option<u64>)>,
+    /// The web server serving in this TUI's background, when one is installed.
+    ///
+    /// A trait object, and deliberately opaque: this crate depends only on
+    /// `yaran-core`, so it never learns that a web layer exists. The `yaran` binary
+    /// installs an implementation over `yaran-web`'s serving machinery, and is the
+    /// only place the two surfaces meet. `None` means nobody installed one (a
+    /// yaran-tui-only build, or a test), and every call site short-circuits.
+    ///
+    /// Whether a listener is actually up is the companion's own question
+    /// ([`yaran_core::background_serve::BackgroundServeCompanion::is_serving`]):
+    /// installed and serving are different states, because the mode is toggled at
+    /// runtime.
+    pub(crate) companion: Option<Box<dyn yaran_core::background_serve::BackgroundServeCompanion>>,
+    /// What each row of `left_items_cache` is, by identity, built with it. The
+    /// cursor is an index into the list as this surface last built it, so the
+    /// row it names here is what this surface is on, whatever a browser, the
+    /// command line or a reloaded config has since done to the sessions the
+    /// cached indexes point into. Every rebuild finds that row again by id.
+    pub(crate) left_rows: Vec<LeftRow>,
+    /// Tabs whose last launch this surface started and that may still fall
+    /// back to a fresh start: the engine re-launches such a tab itself, so the
+    /// fallback carries this surface's claim to it only through this set.
+    pub(crate) tui_fallback_tabs: std::collections::HashSet<String>,
+    /// The background-server start in flight, held from the moment the pre-flight
+    /// is dispatched until its result lands. `Option` rather than a map because
+    /// the pre-flight is in-flight-guarded, so there is only ever one.
+    pub(crate) pending_background_server_start: Option<PendingBackgroundServerStart>,
+    /// The keyed status op for a live `[server] tailscale` change, held from the
+    /// moment the background server is asked until its outcome lands on the
+    /// worker lane. `Option` rather than a map: the serve loop answers every
+    /// request, and a superseded one resolves as such, so at most one is open.
+    pub(crate) pending_tailscale_mode_op:
+        Option<yaran_core::engine::HandlerStatusOp<yaran_core::config::TailscaleModeOutcome>>,
+    /// Where the answer to the open Tailscale mode request can still come from.
+    pub(crate) tailscale_answer_from: TailscaleAnswerFrom,
+    /// Which listener changes a config reload set off are still running, so the
+    /// reload is not reported over until they have ended.
+    pub(crate) reload_listener_changes: background_server::ReloadListenerChanges,
+    /// In-flight project-persistence status ops whose final is decided in the
+    /// completion handler. Each non-`Add` persistence dispatch mints a
+    /// [`yaran_core::engine::HandlerStatusOp`] (its own opaque id), shows its
+    /// pending busy, and stashes it here keyed by that id. The matching
+    /// `ProjectPersistenceOutcome` carries the id back; the handler removes the
+    /// op, builds a [`PersistFinalOutcome`] (Saved / `DbFailed` / `ConfigWriteFailed`)
+    /// and resolves it into the keyed final. The op encapsulates the per-action
+    /// success and db-failure message text declared at dispatch, so the handler
+    /// only supplies which branch fired and any error string.
+    pub(crate) pending_persist_ops:
+        HashMap<String, yaran_core::engine::HandlerStatusOp<PersistFinalOutcome>>,
+    /// In-flight worktree-picker load ops whose final is decided in the
+    /// completion handler. The picker dispatch mints a
+    /// [`yaran_core::engine::HandlerStatusOp`] (its own opaque id), shows its
+    /// pending busy, and stashes it here keyed by that id. The matching
+    /// [`yaran_core::engine::EventReaction::ProjectWorktreesArrived`] carries the
+    /// id back; the handler pops the op and resolves it against the
+    /// handler-computed [`WorktreesFinalOutcome`] (the final depends on whether
+    /// the picker is still open and matching, which the worker can't see).
+    pub(crate) pending_worktree_ops:
+        HashMap<String, yaran_core::engine::HandlerStatusOp<WorktreesFinalOutcome>>,
+    /// In-flight PR-lookup status ops (the "Resolving PR for project…" busy).
+    /// The lookup dispatch mints a [`yaran_core::engine::HandlerStatusOp`] (its own
+    /// opaque id), shows its pending busy, stashes it here keyed by that id, and
+    /// threads the id through the lookup worker. Both terminal outcomes resolve
+    /// the op to a [`yaran_core::engine::Final::Clear`] in `drain_events` when the
+    /// `PullRequestResolved` event returns (keyed off the id it carries back):
+    /// the SUCCESS path then opens the name prompt and shows its own `set_info`,
+    /// and the FAILURE path lets the engine's error `Status` show, so the op
+    /// only needs to DISMISS its keyed busy, never author a message. The opaque
+    /// correlation guarantees the spinner is replaced instead of stranding to the
+    /// busy timeout, even though the visible final comes from elsewhere.
+    pub(crate) pending_pr_lookup_ops:
+        HashMap<String, yaran_core::engine::HandlerStatusOp<PrLookupFinalOutcome>>,
+    /// The pull-request reference the user typed, held across a trip through the
+    /// project chooser so the chosen project can be handed straight to the
+    /// lookup. Set by the resolution completion when the answer was "several"
+    /// or "none", taken by [`ProjectChooserIntent::FromPrReference`], and
+    /// cleared whenever the chooser is abandoned so a later, unrelated pick
+    /// cannot inherit it.
+    pub(crate) pending_pr_reference: Option<String>,
+    /// The id of the ONE reference resolution whose answer this screen is still
+    /// waiting for, or `None` when it is waiting for none.
+    ///
+    /// The generation guard: a resolution is a git call per project and cannot
+    /// be recalled, so a reply acts on state only while its id is still the
+    /// current one and is discarded otherwise. Checking that some pull-request
+    /// modal is open is not enough, since the open one may be asking about a
+    /// different reference.
+    ///
+    /// Stamped by [`App::dispatch_pull_request_reference`], dropped by
+    /// [`App::invalidate_pull_request_resolution`] on every close, retarget and
+    /// resubmit.
+    pub(crate) pending_pr_reference_op: Option<String>,
+    /// Every `(project id, reference)` this screen has handed to the pull
+    /// request lookup, in order.
+    ///
+    /// A test seam, and it exists because the interesting assertions were
+    /// otherwise unwritable: `dispatch_pull_request_lookup` clears the prompt
+    /// and spawns a worker, so a test could only observe that the prompt went
+    /// away, which a cancel does too. What matters is WHICH project and WHICH
+    /// reference were dispatched, and this is the only place that is visible
+    /// without a live `gh`.
+    #[cfg(test)]
+    pub(crate) dispatched_pr_lookups: Vec<(String, String)>,
+    /// In-flight async worktree-deletion status ops (the "Removing worktree for
+    /// agent …" busy). When `begin_delete_session` takes the async path the TUI
+    /// mints a [`yaran_core::engine::HandlerStatusOp`] (its own opaque id), shows
+    /// its pending busy, and stashes it here keyed by the **session id** (not the
+    /// op id: the completion event carries `session_id`, so that is the natural
+    /// correlation handle). The matching
+    /// [`yaran_core::engine::EventReaction::WorktreeRemoveSucceeded`] /
+    /// [`WorktreeRemoveFailed`] pops the op and resolves it against the
+    /// handler-computed [`TuiDeleteOutcome`]. The resolver, declared at dispatch,
+    /// captures the provider / project name / branch name / display name then in
+    /// scope (the session is still present at dispatch, because cleanup is deferred
+    /// until git succeeds) and reproduces the surface's exact wording.
+    pub(crate) pending_delete_ops:
+        HashMap<String, yaran_core::engine::HandlerStatusOp<TuiDeleteOutcome>>,
+    /// In-flight reconnect / fresh-restart status ops, keyed by session id: the
+    /// correlation handle the `AgentLaunchReadyView` and
+    /// `AgentLaunchFailedOutcome` reactions that produce the final all carry.
+    ///
+    /// The matching ready or failed view pops the op and resolves it against the
+    /// handler-computed [`yaran_core::engine::LaunchOutcome`], reproducing the
+    /// exact final wording. Create-kind launches are not routed here: their busy
+    /// and final ride the engine-side create op (`Engine::pending_create_ops`),
+    /// resolved to a keyed `Status` that both surfaces apply.
+    pub(crate) pending_reconnect_ops:
+        HashMap<String, yaran_core::engine::HandlerStatusOp<yaran_core::engine::LaunchOutcome>>,
+    /// In-flight checkout / branch-inspection status ops, keyed by their op's own
+    /// opaque id.
+    ///
+    /// Every dispatch that feeds this map resolves to a
+    /// [`yaran_core::engine::Final::Clear`], so the op only dismisses its keyed
+    /// busy and never strands to the busy timeout; the visible final comes from
+    /// the engine's unkeyed `Status` or from the view handler. Each id is
+    /// threaded through its worker and resolved when that worker's completion
+    /// reaction returns carrying it. `checkout_selected_project_default_branch`
+    /// is the one that can span two workers: on the Known case its id is
+    /// re-emitted as a progress busy and forwarded into the switch worker, so
+    /// one op (one spinner, changing text) covers inspect and switch alike.
+    pub(crate) pending_checkout_inspect_ops:
+        HashMap<String, yaran_core::engine::HandlerStatusOp<TuiCheckoutInspectOutcome>>,
+    /// The one in-flight `refresh-changes` command, if any. The command hands
+    /// the git read to [`yaran_core::engine::Engine::spawn_changed_files_refresh`]
+    /// (git must never run on the interface thread) and its keyed busy is
+    /// resolved when that worker's `ChangedFilesReady` drains. A second
+    /// invocation replaces this: the older answer then finds no pending record
+    /// and resolves nothing, which is right, its status entry was already
+    /// overwritten by the newer busy on the same key.
+    pub(crate) pending_changed_files_refresh: Option<PendingChangedFilesRefresh>,
+    /// In-flight server-flip status op (the "Starting the web server …" busy). A
+    /// flip is terminal, guarded so only one can be in flight, so a single
+    /// `Option` is the natural home rather than a map. `start_web_server` mints a
+    /// [`yaran_core::engine::HandlerStatusOp`], shows its keyed busy, and stashes it
+    /// here. When `ServerFlipPreflightReady` lands: the plain-success arm re-emits
+    /// the busy text (now carrying the serve URLs) via [`progress`] on the SAME id
+    /// and LEAVES the op stashed. There is no success final, the spinner simply
+    /// shows until the run loop tears the TUI down for the flip; the
+    /// success-with-warning arm resolves the op to a warning final; the error arm
+    /// resolves it to an error final.
+    ///
+    /// [`progress`]: yaran_core::engine::HandlerStatusOp::progress
+    pub(crate) pending_server_flip_op:
+        Option<yaran_core::engine::HandlerStatusOp<TuiServerFlipOutcome>>,
+    /// In-flight config-reload status op (the "Reloading config.toml." busy).
+    /// `reload_config_from_disk` mints a [`yaran_core::engine::HandlerStatusOp`]
+    /// only when a reload worker actually spawned, shows its keyed busy, and
+    /// stashes it here (a reload is terminal, so an `Option` suffices). The
+    /// matching `ApplyReloadedConfig` (applied, or adopted with a failed step),
+    /// `ConfigAdopted` (adopted with a failed step) or
+    /// `OpenConfigReloadFailedModal` (refused) handler pops the op and resolves
+    /// it against the handler-computed [`TuiConfigReloadOutcome`].
+    /// The shared engine `ConfigReloadReady`/`ApplyReloadedConfig` logic (which
+    /// also drives the web and replays deferred commands) is untouched: only the
+    /// TUI's view-handler final is routed through the op.
+    pub(crate) pending_config_reload_op:
+        Option<yaran_core::engine::HandlerStatusOp<TuiConfigReloadOutcome>>,
+    /// The Change base branch picker's in-flight branch listing: the channel
+    /// its worker answers on and the keyed busy spinning until then. `None`
+    /// when no listing is running.
+    pub(crate) pending_branch_listing: Option<PendingBranchListing>,
+    /// The live agent-list filter, mirroring the web sidebar/hub search box.
+    /// `Some` means filter mode is active: a one-line search input renders at the
+    /// top of the left pane and printable keys type into this query, live-filtering
+    /// the flat list via `yaran_core::agent_search::matches_session`. `None` means the
+    /// full, unfiltered list is shown. This is a DISPLAY filter only: it never
+    /// mutates `engine.sessions`, never persists, and composes with the sort mode.
+    pub(crate) agent_filter: Option<TextInput>,
+    /// Test builds only: the scratch directories this app's paths point into
+    /// (its config root, and any repository a test hands it). Holding the
+    /// guards here removes them when the app drops, so a test run leaves
+    /// nothing behind in the temp directory; each guard retries while a worker
+    /// thread the test never joined is still writing inside it. Declared last
+    /// so it drops after every field that may still hold a file inside it open.
+    #[cfg(test)]
+    pub(crate) test_scratch_dirs: yaran_core::test_scratch::ScratchDirs,
+    /// Which side panes are collapsed or hidden.
+    pub(crate) panes: PaneFlags,
+    /// How the agent list's Inactive tail is folded.
+    pub(crate) inactive_tail: InactiveTailState,
+    /// The bracketed paste being read from raw input, if any.
+    pub(crate) raw_paste: RawPaste,
+    /// The tips screen's logo, as last drawn.
+    pub(crate) welcome_logo: WelcomeLogo,
+    /// Display settings read from config at startup and on reload.
+    pub(crate) view_prefs: ViewPrefs,
+    /// In-flight guards and intent for the web server this surface starts.
+    pub(crate) serving: ServingFlags,
+    /// Where the agent list's cursor stands relative to its rows.
+    pub(crate) left_list: LeftRowsState,
+    /// One-shot facts this surface records for itself and spends later.
+    pub(crate) notes: OneShotNotes,
+}
+
+/// Handler-resolved outcome for the server-flip op (see
+/// [`App::pending_server_flip_op`]). The plain-success case never resolves the op
+/// (it re-emits `progress` and lets the spinner ride until the flip), so only the
+/// two terminal-with-message cases are represented here.
+pub(crate) enum TuiServerFlipOutcome {
+    /// Pre-flight succeeded but carried a non-fatal warning (e.g. Tailscale not
+    /// detected, serving loopback-only). Resolves to a warning final whose text is
+    /// byte-identical to the legacy `set_warning`.
+    Warned(String),
+    /// Pre-flight failed; resolves to an error final whose text is byte-identical
+    /// to the legacy `set_error`.
+    Failed(String),
+}
+
+/// A background-server start whose bind pre-flight is still on its worker
+/// thread (see [`App::pending_background_server_start`]).
+///
+/// The trigger travels with the status op rather than beside it, because the
+/// place the pre-flight lands is where it decides what the start does beyond
+/// serving: a start somebody at this keyboard asked for claims every running
+/// pty, and the startup autostart claims none. Held together, the two cannot
+/// disagree about which start they belong to.
+pub(crate) struct PendingBackgroundServerStart {
+    pub(crate) op: yaran_core::engine::HandlerStatusOp<BackgroundServerOutcome>,
+    pub(crate) trigger: BackgroundServerStart,
+    /// The settings the bind in flight was made with, so a landing bind the
+    /// config has since moved past is made again rather than served.
+    pub(crate) bound_with: BackgroundBindSettings,
+}
+
+/// Where the answer to an open Tailscale mode request can still come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TailscaleAnswerFrom {
+    /// The serve it was asked of, which is still up.
+    Serve,
+    /// Only the worker lane: the serve retired on its own with the request
+    /// queued and its runtime is gone, so any answer it gave is already on
+    /// the lane. The next service, after the lane has drained, answers the
+    /// request for it if no answer came.
+    RetiredServesLane,
+}
+
+/// The settings a background-server bind pre-flight reads when it is spawned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BackgroundBindSettings {
+    pub(crate) port: u16,
+    pub(crate) tailscale: yaran_core::config::TailscaleMode,
+}
+
+/// Handler-resolved outcome for a background-server start (see
+/// [`App::pending_background_server_start`]).
+///
+/// Every arm is terminal, unlike the flip's: the flip's busy rides on until the
+/// process changes surface, while this one has an answer either way and the TUI
+/// stays exactly where it was.
+pub(crate) enum BackgroundServerOutcome {
+    /// Serving, on these addresses.
+    Serving {
+        urls: Vec<String>,
+        /// A non-fatal degradation from the pre-flight (Tailscale not detected, or
+        /// its port already taken), appended so the user learns that serving is
+        /// loopback-only rather than discovering it from a phone that cannot
+        /// connect.
+        warning: Option<String>,
+    },
+    /// Nothing is serving and the TUI is untouched.
+    Failed(String),
+    /// The start was abandoned while its bind pre-flight was still running: a stop
+    /// command, or a config reload that turned the setting off. The bound
+    /// addresses are released and nothing was written to config.
+    Cancelled,
+}
+
+/// Handler-resolved outcome for the config-reload op (see
+/// [`App::pending_config_reload_op`]). The two apply outcomes are answered on
+/// the worker lane so both surfaces read one sentence; a validation failure is
+/// this surface's alone and carries its own line.
+pub(crate) enum TuiConfigReloadOutcome {
+    /// The reloaded config applied cleanly. Dismisses the spinner; the sentence
+    /// comes from [`yaran_core::config_reload_status::applied`].
+    Applied,
+    /// Validation passed but applying the config failed. Dismisses the spinner;
+    /// the sentence comes from [`yaran_core::config_reload_status::adopted_but_apply_failed`].
+    ApplyFailed(String),
+    /// Validation failed; the reload-failed modal is opened. Resolves to the
+    /// review-the-modal error line.
+    ValidationFailed,
+}
+
+/// Handler-resolved outcome for a checkout / branch-inspection op (see
+/// [`App::pending_checkout_inspect_ops`]). The single `Done` variant resolves to a
+/// clear: every visible final message is authored elsewhere (the engine's unkeyed
+/// `Status`, or a TUI `set_info`/`set_error` in the view handler), so the op's only
+/// job is to dismiss its keyed busy once that final is in place.
+pub(crate) enum TuiCheckoutInspectOutcome {
+    Done,
+}
+
+/// The one in-flight `refresh-changes` command (see
+/// [`App::pending_changed_files_refresh`]). It carries what the final status
+/// needs, and the `worktree` the read was asked for, which is both what tells
+/// this refresh's answer apart from any other `ChangedFilesReady` and what has
+/// to still be watched for the answer to have been applied at all.
+pub(crate) struct PendingChangedFilesRefresh {
+    pub key: String,
+    pub label: String,
+    pub worktree: PathBuf,
+    pub voice: ChangedFilesReadVoice,
+    /// When the busy is still owed to the status line, and from when. `None`
+    /// once it has been shown (or for a read that never shows one).
+    pub announce_at: Option<Instant>,
+}
+
+/// How a changed-files read announces itself on the TUI's one status line.
+pub(crate) enum ChangedFilesReadVoice {
+    /// The `refresh-changes` command. It was asked for in words, so it answers
+    /// in words: a busy straight away and the counts when the read lands.
+    Spoken,
+    /// A selection move. Its answer is the file list filling in, and a status
+    /// line naming counts on every move would write over whatever the line was
+    /// already saying, pinned warnings included. So it says nothing at all
+    /// unless the read outlasts [`SLOW_CHANGED_FILES_READ`], and even then only
+    /// a spinner, retired with no message once the pane has the answer.
+    QuietUnlessSlow,
+}
+
+/// The one busy wording for a changed-files read, shared by the command's
+/// immediate spinner and the selection's late one.
+fn changed_files_read_busy(label: &str) -> String {
+    format!("Reading changed files for \"{label}\"\u{2026}")
+}
+
+/// How long a selection-driven changed-files read may take before the status
+/// line explains the empty pane. Below this the read is not a wait anyone needs
+/// narrated; above it the user is looking at an empty Changes pane and deserves
+/// to know why.
+pub(crate) const SLOW_CHANGED_FILES_READ: Duration = Duration::from_millis(300);
+
+/// The in-flight diff computation: the request it is for, the channel its
+/// answer arrives on, and whether the status line still owes the user a
+/// spinner.
+pub(crate) struct PendingDiff {
+    pub key: crate::diff::DiffRequestKey,
+    pub rx: mpsc::Receiver<crate::diff::DiffAnswer>,
+    /// The file the diff is for, for the status messages.
+    pub label: String,
+    /// Where the pane was scrolled to when the request went out, restored when
+    /// the answer lands so a re-render (a line-numbers toggle, a config reload)
+    /// does not throw the user back to the top of the file.
+    pub scroll: usize,
+    /// When the busy is still owed to the status line, and from when. `None`
+    /// once it has been shown.
+    pub announce_at: Option<Instant>,
+}
+
+/// The status key every diff computation shares. One slot in the app means one
+/// key: a new request retires the previous one's spinner rather than leaving
+/// two open at once.
+pub(crate) const DIFF_STATUS_KEY: &str = "diff-file";
+
+/// Which folded folders the changes pane has expanded, and the work in flight
+/// for them. See `changes_tree` for the behavior.
+#[derive(Default)]
+pub(crate) struct ChangesTreeState {
+    /// Expanded folders per agent, keyed by session id. Kept in memory only:
+    /// it is a view preference for this run, not state worth persisting.
+    pub(crate) by_session: HashMap<String, AgentChangesTree>,
+    /// Folder listings on their way back from a worker.
+    pub(crate) pending_listings: Vec<PendingFolderListing>,
+    /// Stage, unstage and delete operations on whole folders, in flight.
+    pub(crate) pending_ops: Vec<PendingFolderOp>,
+    /// Stamped into every listing request so a superseded answer is dropped.
+    pub(crate) listing_seq: u64,
+    /// Which listing (by its `listing_seq`) raised the busy now on each
+    /// listing status key. Two listings of one folder share a key, so only
+    /// the owner may finish or clear it.
+    pub(crate) listing_status_owner: HashMap<String, u64>,
+    /// Bumped by every change to an expanded folder's entry, so the cached row
+    /// layout below knows to rebuild.
+    pub(crate) generation: u64,
+    /// The row layout of each half of the pane while folders are expanded,
+    /// rebuilt only when the lists, the expansions or the agent change: every
+    /// frame and keystroke asks for rows, and building all of them each time
+    /// is what made a long list slower to draw.
+    pub(crate) rows_cache: std::cell::RefCell<HashMap<git::ChangesSide, changes_tree::RowsLayout>>,
+    /// The agent whose changed-files lists the engine holds right now, or
+    /// `None` while an agent switch has emptied them and the new read has not
+    /// landed. Expanded folders are only reconciled against lists that are
+    /// really that agent's: empty lists mid-switch would read as "every folder
+    /// is gone" and forget what the user had expanded.
+    pub(crate) lists_for: Option<String>,
+}
+
+/// One agent's expanded folders, per half of the changes pane, keyed by the
+/// folder's worktree-relative path.
+#[derive(Default)]
+pub(crate) struct AgentChangesTree {
+    pub(crate) expanded: HashMap<git::ChangesSide, HashMap<String, FolderListing>>,
+}
+
+/// What the pane knows about one expanded folder's contents.
+pub(crate) struct FolderListing {
+    /// The last listing that arrived, kept on screen while a newer one loads.
+    pub(crate) children: Option<Vec<ChangedFile>>,
+    /// The request whose answer this entry is waiting for, if any.
+    pub(crate) pending_seq: Option<u64>,
+    /// Why the last listing failed, shown in place of the contents.
+    pub(crate) error: Option<String>,
+    /// What the folder's row said it held (count, nested repositories and
+    /// fingerprint) when the listing was asked for, so a later read of the pane
+    /// can tell the folder changed and list it again. The fingerprint is what
+    /// catches an edit to a file already inside; a folder too large to carry
+    /// one is followed by its counts alone.
+    pub(crate) seen: yaran_core::model::FolderContents,
+}
+
+/// A folder listing a worker is producing.
+pub(crate) struct PendingFolderListing {
+    pub(crate) session_id: String,
+    pub(crate) side: git::ChangesSide,
+    pub(crate) dir: String,
+    pub(crate) seq: u64,
+    /// The keyed busy this listing owes a final to, or `None` for a quiet
+    /// refresh of a folder that is already on screen.
+    pub(crate) status_key: Option<String>,
+    pub(crate) rx: mpsc::Receiver<Result<Vec<ChangedFile>, String>>,
+}
+
+/// A whole-folder git operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FolderOp {
+    Stage,
+    Unstage,
+    Delete,
+}
+
+/// A whole-folder operation a worker is running.
+pub(crate) struct PendingFolderOp {
+    pub(crate) session_id: String,
+    pub(crate) op: FolderOp,
+    /// The folder as the status line names it, trailing slash included.
+    pub(crate) label: String,
+    /// How many files it stands for, in words, for the status line.
+    pub(crate) count_words: String,
+    /// The folder is a repository of its own, deleted whole with its history.
+    pub(crate) repository: bool,
+    pub(crate) status_key: String,
+    /// What the operation did, or why it could not.
+    pub(crate) rx: mpsc::Receiver<Result<FolderOpDone, String>>,
+}
+
+/// What a finished folder operation did: a stage says what it left out, and
+/// a delete how many files actually went, which the final line reports
+/// rather than the count the dialog showed.
+#[derive(Debug, Default)]
+pub(crate) struct FolderOpDone {
+    pub(crate) report: git::StageReport,
+    pub(crate) deleted_files: usize,
+}
+
+/// How long a diff may take before the status line explains the empty pane.
+/// The same judgement as [`SLOW_CHANGED_FILES_READ`], and deliberately the same
+/// number: both are "the pane is blank and the user is looking at it".
+pub(crate) const SLOW_DIFF_READ: Duration = Duration::from_millis(300);
+
+/// The one busy wording for a diff computation.
+fn diff_read_busy(label: &str) -> String {
+    format!("Computing the diff for \"{label}\"\u{2026}")
+}
+
+// The reconnect / fresh-restart status-op outcome is the CORE-owned
+// `yaran_core::engine::LaunchOutcome`, and its message mapping is the core-owned
+// `yaran_core::engine::launch_outcome_final`, shared byte-for-byte with the web
+// (the TUI's own reconnect-outcome enum and `reconnect_final` mapper were
+// deleted in favor of that single source).
+
+/// Handler-computed outcome for an async worktree-deletion op (see
+/// [`App::pending_delete_ops`]). The completion event only knows whether the git
+/// removal succeeded and (on success) whether the branch was already gone; the
+/// handler additionally observes whether the session record is still present.
+/// The resolver (declared at dispatch, where the session was in scope) maps this
+/// to the final user message.
+pub(crate) enum TuiDeleteOutcome {
+    /// Git removal succeeded and the session record is still present (the normal
+    /// case, where cleanup runs now). `branches` selects the message, and carries
+    /// the birth branch's fate as well when the agent had drifted.
+    SucceededPresent {
+        branches: yaran_core::engine::RemovedBranches,
+    },
+    /// Git removal succeeded but the session was already removed by another path
+    /// (e.g. its project was deleted) before the worker reported back. Resolve to
+    /// the legacy "Worktree removal finished." line when our busy was still
+    /// showing, else a clear (no message) to preserve the old suppression.
+    SucceededGone { our_busy_still_showing: bool },
+    /// Git removal failed and the session record is still present at completion,
+    /// so the message can name the agent.
+    FailedNamed { message: String },
+    /// Git removal failed and the session was already gone at completion, so the
+    /// message cannot name the agent.
+    FailedBare { message: String },
+}
+
+/// Handler-resolved outcome for a PR-lookup op (see [`App::pending_pr_lookup_ops`]).
+/// Both variants resolve to a clear: the user-visible message is produced by the
+/// downstream path (the name prompt's `set_info` on success, the engine's error
+/// `Status` on failure), so the op's only job is to dismiss its keyed busy.
+pub(crate) enum PrLookupFinalOutcome {
+    /// The lookup resolved; the TUI opens the name prompt (whose `set_info` is the
+    /// visible final), so this op's busy is dismissed with no replacement message.
+    HandedOff,
+    /// The lookup failed; the engine already emitted the error `Status`, so this
+    /// op's busy is dismissed with no replacement message.
+    Failed,
+}
+
+/// Handler-computed outcome for a worktree-picker load op (see
+/// [`App::pending_worktree_ops`]). Which final fires depends on whether the
+/// picker is still open and matching when the worktrees arrive, a fact the
+/// worker never sees. The op's resolver (declared at dispatch) maps this to the
+/// final user message.
+pub(crate) enum WorktreesFinalOutcome {
+    /// The picker is still open and the worktrees loaded successfully.
+    Loaded,
+    /// The picker is still open but the load failed; carries the error.
+    Failed(String),
+    /// The picker was dismissed or switched before its worktrees loaded, so
+    /// nothing consumed the result. Dismiss the busy with no message.
+    Dismissed,
+}
+
+/// Handler-computed outcome for a project-persistence op (see
+/// [`App::pending_persist_ops`]). The worker writes only SQLite; the TUI handler
+/// then runs the fallible config write, producing one of three results the
+/// worker never sees. The op's resolver (declared at dispatch) maps this to the
+/// final user message.
+pub(crate) enum PersistFinalOutcome {
+    /// SQLite write succeeded and the post-worker config.toml write succeeded.
+    Saved,
+    /// The SQLite write itself failed; carries the formatted error.
+    DbFailed(String),
+    /// SQLite succeeded but the post-worker config.toml write failed; carries
+    /// the formatted error.
+    ConfigWriteFailed(String),
+}
+
+/// A flip whose pre-flight succeeded, waiting for the run loop to hand it over.
+pub(crate) struct PendingServerFlip {
+    pub(crate) listeners: Vec<std::net::TcpListener>,
+    pub(crate) urls: Vec<String>,
+    /// What the pre-flight learned, so the flip's log opens with the same lines
+    /// `yaran server` prints.
+    pub(crate) startup: yaran_core::serve_log::StartupNotes,
+}
+
+/// How [`App::run`] returned: a plain quit, or a request to flip the current
+/// process into the web server while keeping the live agents running.
+pub(crate) enum RunExit {
+    Quit,
+    FlipToServer {
+        listeners: Vec<std::net::TcpListener>,
+        urls: Vec<String>,
+        startup: yaran_core::serve_log::StartupNotes,
+    },
+}
+
+/// Whether the shared App constructor should relaunch prior sessions. First
+/// boot restores them from the database; a resume after the web server stops
+/// skips restoration because the providers are already live.
+enum SessionRestore {
+    Restore,
+    Skip,
+}
+
+/// Signal wiring handed to `App::assemble`: the flags the run loop polls plus
+/// the signal-hook registration ids, all unregistered in `into_engine` so flip
+/// cycles don't accumulate handlers. `sigwinch_sig_id` is `None` (and
+/// `shutdown_sig_ids` empty) only in tests that build the App directly without
+/// registering real handlers.
+struct SignalHandles {
+    sigwinch_flag: Arc<AtomicBool>,
+    sigwinch_sig_id: Option<signal_hook::SigId>,
+    shutdown_flag: Arc<AtomicBool>,
+    shutdown_sig_ids: Vec<signal_hook::SigId>,
+}
+
+/// Register the SIGWINCH handler (terminal resize) plus the shutdown handlers
+/// (SIGTERM/SIGINT/SIGHUP) that let the TUI wind agents down gracefully before
+/// exit. SIGINT is included for an external `kill -INT`; an interactive Ctrl-c
+/// is delivered as a key event in raw mode, not as SIGINT. Each handler only
+/// sets its atomic flag (async-signal-safe); the run loop polls both flags.
+///
+/// Also called from `App::resume` after a flip back from the server. The TUI and
+/// the server's `tokio::signal` register through the same process-global
+/// `signal-hook-registry`, so re-registering re-arms graceful shutdown provided
+/// the server does not reset the disposition to `SIG_DFL` on hand-back, which it
+/// does not (see the `ReturnToTui` branch of `serve_with_engine`).
+fn register_signal_handles() -> Result<SignalHandles> {
+    let sigwinch_flag = Arc::new(AtomicBool::new(false));
+    let sigwinch_sig_id =
+        signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&sigwinch_flag))?;
+
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let mut shutdown_sig_ids = Vec::new();
+    for signal in [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGHUP,
+    ] {
+        shutdown_sig_ids.push(signal_hook::flag::register(
+            signal,
+            Arc::clone(&shutdown_flag),
+        )?);
+    }
+
+    Ok(SignalHandles {
+        sigwinch_flag,
+        sigwinch_sig_id: Some(sigwinch_sig_id),
+        shutdown_flag,
+        shutdown_sig_ids,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FocusPane {
+    Left,
+    Center,
+    Files,
+}
+
+impl FocusPane {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Left => Self::Center,
+            Self::Center => Self::Files,
+            Self::Files => Self::Left,
+        }
+    }
+
+    pub(crate) fn previous(self) -> Self {
+        match self {
+            Self::Left => Self::Files,
+            Self::Center => Self::Left,
+            Self::Files => Self::Center,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RightSection {
+    Unstaged,
+    Staged,
+    CommitInput,
+}
+
+impl RightSection {
+    /// Returns the next section, or `None` to exit the pane.
+    /// Order: Unstaged → Staged → `CommitInput`.
+    pub(crate) fn next(self, staged: StagedFiles) -> Option<Self> {
+        match self {
+            Self::Unstaged if (staged == StagedFiles::Present) => Some(Self::Staged),
+            Self::Unstaged | Self::CommitInput => None,
+            Self::Staged => Some(Self::CommitInput),
+        }
+    }
+
+    /// Returns the previous section, or `None` to exit the pane.
+    pub(crate) fn previous(self) -> Option<Self> {
+        match self {
+            Self::CommitInput => Some(Self::Staged),
+            Self::Staged => Some(Self::Unstaged),
+            Self::Unstaged => None,
+        }
+    }
+
+    /// First section when entering the pane (always Changes/Unstaged on top).
+    pub(crate) fn first() -> Self {
+        Self::Unstaged
+    }
+
+    pub(crate) fn last(staged: StagedFiles) -> Self {
+        if staged == StagedFiles::Present {
+            Self::CommitInput
+        } else {
+            Self::Unstaged
+        }
+    }
+}
+
+/// Whether finishing an agent delete puts its outcome on the status line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteReport {
+    /// Say what the delete did.
+    Announce,
+    /// Say nothing; whoever asked reports the outcome itself.
+    Quiet,
+}
+
+/// How a launched agent's pane should land once its child is up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LaunchView {
+    /// Fullscreen, with keys going to the agent.
+    Fullscreen,
+    /// The windowed (minimized) typeable pane.
+    Minimized,
+}
+
+/// What activating an agent does when the tab it lands on is not running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OnDormant {
+    /// Start the tab.
+    Launch,
+    /// Leave it stopped and only leave interactive mode.
+    Leave,
+}
+
+/// One of the two terminals the center pane can draw at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum CenterPart {
+    /// The agent: its focused tab.
+    Main,
+    /// A terminal: the agent's dock terminal below it, or the terminal of a
+    /// project or standalone terminal row, which is drawn alone.
+    Dock,
+}
+
+/// How the center pane shares itself between an agent and its terminal dock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DockLayout {
+    /// The agent alone; the dock is not drawn.
+    Agent,
+    /// The agent on top and the dock below, at `[ui] terminal_dock_pct`.
+    Split,
+    /// The dock alone, filling the center.
+    Term,
+}
+
+impl DockLayout {
+    /// The next layout in the cycle: agent, split, terminal, agent.
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Agent => Self::Split,
+            Self::Split => Self::Term,
+            Self::Term => Self::Agent,
+        }
+    }
+
+    /// The word the layout control shows for it.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Split => "split",
+            Self::Term => "term",
+        }
+    }
+}
+
+/// One center part's grid as last snapshotted, and what everything stamped
+/// against it needs to know about that grid.
+pub(crate) struct PartSnapshot {
+    /// Reusable buffer, to avoid allocating terminal cells every frame.
+    pub(crate) buf: TerminalSnapshot,
+    /// The pty that last filled `buf`, so a switch to another pty rebuilds it
+    /// and retires what was stamped against the old one.
+    pub(crate) last_id: Option<String>,
+    /// How many times this part's grid has been REBUILT. Not a clock and not
+    /// a line count: it only answers "has the grid moved since I looked?",
+    /// which is the one question `drop_drifted_selection` needs and the one the
+    /// scroll numbers cannot answer once the history ring is full.
+    pub(crate) generation: u64,
+}
+
+impl Default for PartSnapshot {
+    fn default() -> Self {
+        Self {
+            buf: TerminalSnapshot::empty(),
+            last_id: None,
+            generation: 0,
+        }
+    }
+}
+
+/// The two parts' snapshots.
+#[derive(Default)]
+pub(crate) struct PartSnapshots {
+    pub(crate) main: PartSnapshot,
+    pub(crate) dock: PartSnapshot,
+}
+
+impl PartSnapshots {
+    pub(crate) fn get(&self, part: CenterPart) -> &PartSnapshot {
+        match part {
+            CenterPart::Main => &self.main,
+            CenterPart::Dock => &self.dock,
+        }
+    }
+
+    pub(crate) fn get_mut(&mut self, part: CenterPart) -> &mut PartSnapshot {
+        match part {
+            CenterPart::Main => &mut self.main,
+            CenterPart::Dock => &mut self.dock,
+        }
+    }
+}
+
+/// Which pty each part last sent a geometry for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PartTargets {
+    pub(crate) main: Option<String>,
+    pub(crate) dock: Option<String>,
+}
+
+impl PartTargets {
+    pub(crate) fn get(&self, part: CenterPart) -> Option<&str> {
+        match part {
+            CenterPart::Main => self.main.as_deref(),
+            CenterPart::Dock => self.dock.as_deref(),
+        }
+    }
+
+    pub(crate) fn set(&mut self, part: CenterPart, pty_id: Option<String>) {
+        match part {
+            CenterPart::Main => self.main = pty_id,
+            CenterPart::Dock => self.dock = pty_id,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FullscreenOverlay {
+    None,
+    Agent,
+    Terminal,
+    StartupLog,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CenterMode {
+    Agent,
+    Diff {
+        lines: Arc<Vec<Line<'static>>>,
+        scroll: usize,
+        /// Display-column width of the gutter (0 when line numbers are off).
+        gutter_width: usize,
+        /// Source paths for re-generating the diff on setting changes.
+        worktree_path: String,
+        rel_path: String,
+    },
+}
+
+/// One diff's lines wrapped for one pane width, kept between frames.
+///
+/// Wrapping is per line of the whole file, so doing it every frame made a large
+/// diff cost tens of milliseconds a frame to draw forty rows. The three things
+/// that can change the rows are the diff itself (compared by `Arc` identity, so
+/// a re-computed diff of the same file is a different one), the pane width, and
+/// whether the gutter is on.
+///
+/// The trade is memory for time, and it is a real one: a wrapped 200,000-line
+/// diff is a second copy of the whole thing, styled spans and all. It is held
+/// only while a diff is actually on screen, and the center pane's render
+/// releases it the first frame one is not.
+#[derive(Clone, Debug)]
+pub(crate) struct DiffWrapAsk {
+    pub(crate) lines: Arc<Vec<Line<'static>>>,
+    pub(crate) width: usize,
+    pub(crate) gutter_width: usize,
+}
+
+/// The diff's display rows, wrapped once per diff, width and gutter setting.
+pub(crate) struct DiffRowCache {
+    pub(crate) lines: Arc<Vec<Line<'static>>>,
+    pub(crate) width: usize,
+    pub(crate) gutter_width: usize,
+    pub(crate) rows: Vec<Line<'static>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum KillableRuntimeKind {
+    Agent,
+    Terminal,
+}
+
+impl KillableRuntimeKind {
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Terminal => "terminal",
+        }
+    }
+
+    pub(crate) fn badge(self) -> &'static str {
+        match self {
+            Self::Agent => "AGENT",
+            Self::Terminal => "TERM",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum RuntimeTargetId {
+    Agent(String),
+    /// An extra tab's provider process (keyed by tab id). Killing it stops the
+    /// process but keeps the tab row, so the tab becomes dormant (unlike
+    /// `Agent`, which detaches the whole session).
+    Tab(String),
+    Terminal(String),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct KillableRuntime {
+    pub(crate) id: RuntimeTargetId,
+    pub(crate) kind: KillableRuntimeKind,
+    pub(crate) label: String,
+    pub(crate) context: String,
+    pub(crate) search_text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KillRunningAction {
+    Hovered,
+    Selected,
+    Visible,
+}
+
+impl KillRunningAction {
+    pub(crate) fn button_label(self) -> &'static str {
+        match self {
+            Self::Hovered => "Kill Hovered",
+            Self::Selected => "Kill Selected",
+            Self::Visible => "Kill Visible",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KillRunningFooterAction {
+    Cancel,
+    Hovered,
+    Selected,
+    Visible,
+}
+
+impl KillRunningFooterAction {
+    pub(crate) fn button_label(self) -> &'static str {
+        match self {
+            Self::Cancel => "Cancel",
+            Self::Hovered => KillRunningAction::Hovered.button_label(),
+            Self::Selected => KillRunningAction::Selected.button_label(),
+            Self::Visible => KillRunningAction::Visible.button_label(),
+        }
+    }
+
+    pub(crate) fn action(self) -> Option<KillRunningAction> {
+        match self {
+            Self::Cancel => None,
+            Self::Hovered => Some(KillRunningAction::Hovered),
+            Self::Selected => Some(KillRunningAction::Selected),
+            Self::Visible => Some(KillRunningAction::Visible),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KillRunningFocus {
+    List,
+    Footer(KillRunningFooterAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChangeAgentProviderMode {
+    /// The ctrl+p retarget of an existing focused tab (`change_tab_provider`).
+    Retarget,
+    /// The new-agent-tab picker: create a fresh tab with the chosen provider
+    /// (`create_tab`). There is no existing tab to retarget yet, so `tab_id` on
+    /// the prompt is unused in this mode.
+    NewTab,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct KillRunningPrompt {
+    pub(crate) runtimes: Vec<KillableRuntime>,
+    /// Search + hovered-row state. `list.selected` is the hovered visible index;
+    /// multi-select (`selected_ids`) and `focus` stay separate.
+    pub(crate) list: SearchableList,
+    pub(crate) selected_ids: HashSet<RuntimeTargetId>,
+    pub(crate) focus: KillRunningFocus,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeAgentProviderOption {
+    pub(crate) provider: ProviderKind,
+    /// True when this provider's config has `resume_args`. Providers
+    /// without resume support (e.g. Copilot CLI) always start fresh.
+    pub(crate) supports_resume: bool,
+    /// True when `supports_resume` AND this provider has been launched on
+    /// this worktree before, so the next launch will actually resume.
+    pub(crate) resume_available: bool,
+    pub(crate) is_current: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeAgentProviderPrompt {
+    pub(crate) session_id: String,
+    /// The tab being retargeted. Equals `session_id` for the session-slot tab (which
+    /// delegates to the session-level provider change); an extra tab id
+    /// otherwise. Lets `ctrl+p` retarget the focused tab, not just the agent.
+    /// Unused (set equal to `session_id` as a harmless placeholder) when
+    /// `mode == ChangeAgentProviderMode::NewTab`, since there is no tab yet.
+    pub(crate) tab_id: String,
+    pub(crate) session_label: String,
+    pub(crate) worktree_path: String,
+    pub(crate) options: Vec<ChangeAgentProviderOption>,
+    pub(crate) selected: usize,
+    pub(crate) mode: ChangeAgentProviderMode,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeDefaultProviderOption {
+    pub(crate) provider: ProviderKind,
+    pub(crate) is_current: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeDefaultProviderPrompt {
+    pub(crate) current: ProviderKind,
+    pub(crate) options: Vec<ChangeDefaultProviderOption>,
+    pub(crate) selected: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeProjectDefaultProviderOption {
+    pub(crate) provider: Option<ProviderKind>,
+    pub(crate) is_current: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeProjectDefaultProviderPrompt {
+    pub(crate) project_id: String,
+    pub(crate) project_name: String,
+    pub(crate) current: ProviderKind,
+    pub(crate) global_default: ProviderKind,
+    pub(crate) inherits_global_default: bool,
+    pub(crate) options: Vec<ChangeProjectDefaultProviderOption>,
+    pub(crate) selected: usize,
+    /// The project action list this was opened from, which closing it (by
+    /// any way out, a save included) steps back to. `None` when nothing is
+    /// behind it.
+    pub(crate) return_to: Option<Box<ProjectActionsPrompt>>,
+}
+
+/// Semantic tone of an Agent Info body line, computed once at build time so the
+/// renderer styles by the tag rather than re-parsing the prose. Only the drift
+/// note carries [`AgentInfoTone::Warning`]; everything else is neutral.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentInfoTone {
+    Neutral,
+    Warning,
+}
+
+/// Read-only Agent Info modal state: a display label plus the prebuilt body
+/// lines (name, provider, branch lineage, worktree, created, status), each
+/// tagged with its [`AgentInfoTone`]. Built once on open by [`agent_info_lines`];
+/// the renderer only styles (by tag) and frames them.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentInfoPrompt {
+    pub(crate) session_label: String,
+    pub(crate) lines: Vec<(String, AgentInfoTone)>,
+}
+
+// The branch-drift predicate is the core-owned `yaran_core::agent_tabs::branch_drifted`
+// (cross-language twin of the web's `branchDrift`, pinned by shared vectors).
+pub(crate) use yaran_core::agent_tabs::branch_drifted;
+
+/// The attention glyph's blink rhythm as a pure function of elapsed wall-clock
+/// milliseconds: exactly two quick blinks (two hides), then steady until the
+/// cycle restarts. Deliberately NO separator hide at the end of the cycle: a
+/// hold bounded by hides on both sides reads as a third blink. Mirrors the web
+/// dot's double-pulse-then-hold animation (`--animate-attention-pulse` in the
+/// web `index.css`). Every window is a multiple of 200ms, two full event-loop
+/// ticks at the 100ms poll cadence, so no phase can fall between redraws and
+/// get swallowed.
+pub(crate) fn attention_blink_phase(elapsed_ms: u128) -> bool {
+    match elapsed_ms % 2000 {
+        200..=399 | 600..=799 => false, // blinks 1 and 2: hide
+        _ => true,                      // leading show, the gap between blinks, and the hold
+    }
+}
+
+/// A running "this modal is refusing to close" cue.
+///
+/// Wall-clock only: the phase is a function of `started.elapsed()`, never of
+/// `tick_count`, so the cue runs at the same speed whatever the frame cadence
+/// is (the animations tenet). It expires by itself once the elapsed time passes
+/// [`overlay_dismiss::REFUSAL_BLINK_MS`], which is what guarantees it ends at
+/// rest instead of freezing mid-cycle.
+///
+/// `prompt` records which modal armed the cue, so a blink armed on one modal
+/// cannot flash a different modal opened within the cue's lifetime. The two
+/// `EditMacros` arms share a discriminant, so a blink on the macro editor can
+/// bleed onto the delete-confirm raised out of it; that is deliberate, since the
+/// user only gets there by opening the confirm themselves.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RefusalBlink {
+    pub(crate) started: Instant,
+    pub(crate) prompt: std::mem::Discriminant<PromptState>,
+}
+
+/// The lowercase state word for a PR, matching the web's `prStateLabel` casing
+/// (`open`/`merged`/`closed`) so both surfaces read the same.
+pub(crate) fn pr_state_word(state: &crate::model::PrState) -> &'static str {
+    state.word()
+}
+
+/// The LOCATION field an agent row shows and its search matches: the project's
+/// name for a managed agent, the home-collapsed folder for a standalone one.
+///
+/// One helper for the filter and the highlight, so a query can never match a
+/// field the row does not display, or highlight one it does not match on.
+pub(crate) fn agent_search_location(
+    engine: &yaran_core::engine::Engine,
+    session: &AgentSession,
+) -> Option<String> {
+    match &session.workspace {
+        yaran_core::model::AgentWorkspace::Managed(managed) => engine
+            .projects
+            .iter()
+            .find(|p| p.id == managed.project_id)
+            .map(|p| p.name.clone()),
+        yaran_core::model::AgentWorkspace::Folder(folder) => Some(yaran_core::home_path::shorten_home(
+            std::path::Path::new(&folder.folder_path),
+        )),
+    }
+}
+
+/// Build the body lines of the Agent Info modal from a session: name, provider,
+/// the current/original/forked-from branches, a drift note when the current
+/// branch differs from the branch the agent was created on, then the worktree,
+/// creation time, status, and one line per pull request in `prs` (each with
+/// the label it goes by), naming the attached ones. Each line carries its semantic tone so the renderer
+/// never has to substring-match prose. Pure and unit-tested.
+pub(crate) fn agent_info_lines(
+    session: &AgentSession,
+    project_default: Option<ProviderKind>,
+    prs: &[(String, &crate::model::AgentPr)],
+    working_copy: WorkingCopy,
+) -> Vec<(String, AgentInfoTone)> {
+    let name = session.display_label();
+    // Mirror the header's "current provider" note: when the agent runs a provider
+    // other than its project's default, spell out the divergence here too.
+    let provider_line = match project_default {
+        Some(default) if default != session.provider => format!(
+            "Provider:     {} (project default: {})",
+            session.provider.as_str(),
+            default.as_str()
+        ),
+        _ => format!("Provider:     {}", session.provider.as_str()),
+    };
+    let mut lines = vec![
+        (format!("Name:         {name}"), AgentInfoTone::Neutral),
+        (provider_line, AgentInfoTone::Neutral),
+    ];
+    // The branch rows exist only for a managed agent. A standalone agent gets
+    // the one thing that is true of it instead: what it is and where it runs.
+    // Rendering "Current:" with an empty value would be worse than no row.
+    match &session.workspace {
+        yaran_core::model::AgentWorkspace::Managed(managed) => {
+            lines.push((
+                format!("Current:      {}", managed.branch_name),
+                AgentInfoTone::Neutral,
+            ));
+            lines.push((
+                format!("Original:     {}", managed.initial_branch),
+                AgentInfoTone::Neutral,
+            ));
+            lines.push((
+                format!("Forked from:  {}", managed.source_branch),
+                AgentInfoTone::Neutral,
+            ));
+            if branch_drifted(&managed.branch_name, &managed.initial_branch) {
+                lines.push((
+                    format!(
+                        "Branch changed since creation (orig: {})",
+                        managed.initial_branch
+                    ),
+                    AgentInfoTone::Warning,
+                ));
+            }
+            lines.push((
+                format!("Worktree:     {}", managed.worktree_path),
+                AgentInfoTone::Neutral,
+            ));
+            if working_copy == WorkingCopy::Missing {
+                lines.push((
+                    yaran_core::working_copy::MISSING_WORKING_COPY_INFO_LINE.to_string(),
+                    AgentInfoTone::Warning,
+                ));
+            }
+        }
+        yaran_core::model::AgentWorkspace::Folder(folder) => {
+            lines.push((
+                "Kind:         Standalone agent".to_string(),
+                AgentInfoTone::Neutral,
+            ));
+            lines.push((
+                format!(
+                    "Folder:       {}",
+                    yaran_core::home_path::shorten_home(std::path::Path::new(&folder.folder_path))
+                ),
+                AgentInfoTone::Neutral,
+            ));
+            if working_copy == WorkingCopy::Missing {
+                lines.push((
+                    yaran_core::working_copy::MISSING_FOLDER_INFO_LINE.to_string(),
+                    AgentInfoTone::Warning,
+                ));
+            }
+        }
+    }
+    lines.push((
+        format!(
+            "Created:      {}",
+            session.created_at.format("%Y-%m-%d %H:%M")
+        ),
+        AgentInfoTone::Neutral,
+    ));
+    lines.push((
+        format!("Status:       {}", session.status.as_str()),
+        AgentInfoTone::Neutral,
+    ));
+    // These lines are the ONLY terminal UI cue in Agent Info that a pull
+    // request was attached, so every one renders and an attachment says so.
+    // Several pull requests get a heading line of their own, so each one
+    // starts in the same column as every other label's value.
+    let value_column = "Pull request: ".len();
+    if prs.len() > 1 {
+        lines.push(("Pull requests:".to_string(), AgentInfoTone::Neutral));
+    }
+    for (name, pr) in prs {
+        let lead = if prs.len() == 1 {
+            "Pull request: ".to_string()
+        } else {
+            " ".repeat(value_column)
+        };
+        let mut line = format!("{lead}{name} ({}) {}", pr_state_word(&pr.state), pr.title);
+        if pr.attached {
+            line.push_str(" (manually attached)");
+        }
+        lines.push((line, AgentInfoTone::Neutral));
+    }
+    lines
+}
+
+/// One row of the Tailscale-mode picker.
+#[derive(Clone, Debug)]
+pub(crate) struct SetTailscaleModeOption {
+    pub(crate) mode: yaran_core::config::TailscaleMode,
+    pub(crate) is_current: bool,
+}
+
+/// The `[server] tailscale` picker: three rows, the saved one marked.
+#[derive(Clone, Debug)]
+pub(crate) struct SetTailscaleModePrompt {
+    pub(crate) current: yaran_core::config::TailscaleMode,
+    pub(crate) options: Vec<SetTailscaleModeOption>,
+    pub(crate) selected: usize,
+    /// Whether a listener is up right now, which decides whether picking a mode
+    /// moves anything or only saves it. Captured when the picker opens so the
+    /// footer and the eventual status agree about what the gesture did.
+    pub(crate) serving: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeThemePrompt {
+    pub(crate) options: Vec<crate::theme::ThemeListing>,
+    pub(crate) selected: usize,
+    pub(crate) current: String,
+}
+
+/// The startup-log picker's focus ring.
+///
+/// A two-stop ring over the list and the footer button, following
+/// [`KillRunningFocus`] rather than inventing a second pattern: search is a mode
+/// layered over the list rather than a stop of its own (see
+/// `set_kill_running_search_cursor_from_mouse`).
+///
+/// The filter and the Output pane are deliberately not stops. This is a Picker,
+/// so the vertical keys always move the selection and the paging keys always
+/// scroll the Output whichever stop holds focus; a stop that changes nothing
+/// would only cost a press on the way to the control that needs focus to be
+/// operable at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartupCommandLogFocus {
+    List,
+    Close,
+}
+
+impl StartupCommandLogFocus {
+    /// The declared ring, in visual order, for `components::focus_ring`. Both
+    /// stops are always present: the Runs list is drawn even when it is empty
+    /// (it says so), and the Close button is never conditional.
+    pub(crate) const RING: [(Self, bool); 2] = [(Self::List, true), (Self::Close, true)];
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupCommandLogPrompt {
+    pub(crate) scope_label: String,
+    pub(crate) entries: Vec<crate::startup::StartupCommandLogEntry>,
+    pub(crate) selected: usize,
+    pub(crate) filter: TextInput,
+    pub(crate) searching: bool,
+    pub(crate) content: String,
+    pub(crate) scroll_offset: u16,
+    /// The body width `scroll_offset` (and any live selection) was computed at.
+    /// Zero until the overlay has been laid out once. See
+    /// [`App::reconcile_startup_log_wrap_width`]: every index this surface keeps
+    /// is an index into text WRAPPED at one width, so a width change invalidates
+    /// them all.
+    pub(crate) wrap_width: u16,
+    pub(crate) focus: StartupCommandLogFocus,
+    /// The project action list this was opened from, which closing it (by
+    /// any way out, a save included) steps back to. `None` when nothing is
+    /// behind it.
+    pub(crate) return_to: Option<Box<ProjectActionsPrompt>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StartupLogViewer {
+    pub(crate) scope_label: String,
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) display_name: String,
+    pub(crate) content: String,
+    pub(crate) scroll_offset: u16,
+    /// The pane width `scroll_offset` (and any live selection) was computed at.
+    /// Zero until the viewer has been laid out once. See
+    /// [`App::reconcile_startup_log_wrap_width`].
+    pub(crate) wrap_width: u16,
+    pub(crate) search: TextInput,
+    pub(crate) searching: bool,
+    /// The picker this viewer was PROMOTED from, to be restored when the
+    /// viewer closes, so finishing one run lands back on the run list with the
+    /// selection, filter and scroll the user left there.
+    ///
+    /// A return ticket the promotion issues, not an inference about the
+    /// caller: `None` means nobody promoted this viewer and closing it closes
+    /// outright. Today `promote_startup_command_log_to_fullscreen` is the only
+    /// production path that opens the viewer at all, but encoding that as an
+    /// assumption would silently conjure a picker for the next caller that
+    /// opens the viewer directly.
+    pub(crate) return_to: Option<Box<StartupCommandLogPrompt>>,
+}
+
+/// One rendered row of the worktree MANAGER's list. Same shape as the adopt
+/// picker's rows and deliberately a separate type: the two lists group by
+/// different questions (adoptable vs removable) and share no entries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ManageWorktreeVisualRow {
+    Header(&'static str),
+    Empty(String),
+    Entry(usize),
+    /// A left-over folder, by index into the manager's `leftovers`.
+    Leftover(usize),
+}
+
+impl ManageWorktreeVisualRow {
+    /// Whether this is the row `selection` names.
+    pub(crate) fn shows(&self, selection: ManagerSelection) -> bool {
+        match (self, selection) {
+            (Self::Entry(index), ManagerSelection::Worktree(chosen))
+            | (Self::Leftover(index), ManagerSelection::Leftover(chosen)) => *index == chosen,
+            _ => false,
+        }
+    }
+}
+
+/// A row of the worktree manager the cursor can rest on: a removable worktree
+/// or a left-over folder. Rows an agent holds and rows being removed are never
+/// one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ManagerSelection {
+    /// A removable worktree, by index into the manager's `entries`.
+    Worktree(usize),
+    /// A left-over folder, by index into the manager's `leftovers`.
+    Leftover(usize),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ProjectWorktreeVisualRow {
+    Header(&'static str),
+    Empty(String),
+    Entry(usize),
+}
+
+/// Why the project chooser modal is open. A flat agent list has no project
+/// header to select, so every project-scoped creation entry point, the
+/// palette's `manage-projects`, and every project command run with no agent
+/// selected route through the chooser, which lists ALL projects (agent-less
+/// included). The intent decides what confirming a project does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectChooserIntent {
+    /// Create a new agent in the chosen project.
+    NewAgent,
+    /// Create a new agent from a GitHub PR in the chosen project.
+    FromPr,
+    /// Look up a pull request reference the user has ALREADY typed against the
+    /// chosen project. Reached two ways: the reference matched several projects
+    /// (one repository checked out twice), or it matched none and the picker is
+    /// being offered so the user can point at a checkout they already have. The
+    /// reference itself rides on [`App::pending_pr_reference`] rather than in
+    /// this enum, which stays `Copy`.
+    FromPrReference,
+    /// Create a new agent from an existing worktree of the chosen project.
+    FromWorktree,
+    /// `manage-projects`: open the chosen project's action list. The only
+    /// intent that lists orphaned groups too, besides removing a project.
+    Manage,
+    /// A project palette command run with no agent selected: the pick is the
+    /// project it acts on.
+    Action(ProjectAction),
+    /// Open the worktree manager for the chosen project.
+    ManageWorktrees,
+    /// Spawn a project-owned terminal at the chosen project's repo root.
+    ProjectTerminal,
+}
+
+impl ProjectChooserIntent {
+    /// Modal title reflecting the pending action.
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            ProjectChooserIntent::NewAgent => "New agent in project",
+            ProjectChooserIntent::FromPr => "New agent from PR",
+            ProjectChooserIntent::FromPrReference => "Which project is this PR in?",
+            ProjectChooserIntent::FromWorktree => "New agent from worktree",
+            ProjectChooserIntent::Manage => "Manage project",
+            ProjectChooserIntent::ManageWorktrees => "Manage worktrees in project",
+            ProjectChooserIntent::ProjectTerminal => "New terminal at the project root",
+            ProjectChooserIntent::Action(action) => action.chooser_title(),
+        }
+    }
+
+    /// Whether the list carries orphaned groups (agents whose project record
+    /// is gone). Only where a pick can do something with one: manage it, whose
+    /// action list offers Remove project…, or remove it outright.
+    pub(crate) fn lists_orphans(self) -> bool {
+        matches!(
+            self,
+            ProjectChooserIntent::Manage | ProjectChooserIntent::Action(ProjectAction::Remove)
+        )
+    }
+}
+
+/// One row in the project chooser: a project plus derived, display-only facts
+/// (its agent count and whether its path is missing). Built from the live
+/// `engine.projects` + `engine.sessions`; never persisted.
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectChooserEntry {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) agent_count: usize,
+    pub(crate) path_missing: bool,
+    /// The branch new agents start from, `None` when the project has no base
+    /// recorded yet. Always `None` for an orphaned group, which has no record.
+    pub(crate) base_branch: Option<String>,
+    /// The row is an orphaned group (agents whose project record is gone), not
+    /// a project: `name` is the short id both surfaces show for one, and the
+    /// only thing it offers is Remove project….
+    pub(crate) orphaned: bool,
+}
+
+/// One action a project's action list offers, and what a pick from the project
+/// list runs when a project palette command was started with no agent selected.
+///
+/// The rows follow the browser's project `⋯` menu in the same order and words,
+/// with two differences where the terminal UI has no such screen: "Project
+/// settings…" is the four settings commands as rows of their own, and "Project
+/// info…" is the read-only [`PromptState::ProjectInfo`] screen. The two lists
+/// are kept in step by hand; each surface's tests pin its own order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectAction {
+    NewAgent,
+    NewAgentFromPr,
+    Worktrees,
+    NewTerminal,
+    Pull,
+    CheckoutDefaultBranch,
+    ChangeBaseBranch,
+    Info,
+    DefaultProvider,
+    AutoReopen,
+    StartupCommand,
+    Environment,
+    StartupLogs,
+    Delete,
+    Remove,
+    /// Never a row: `copy-path` run with no agent selected copies the path of
+    /// the project picked from the list.
+    CopyPath,
+}
+
+impl ProjectAction {
+    /// Every row of a real project's action list, in order. "New agent from
+    /// PR…" is dropped where GitHub is unavailable (see
+    /// [`App::project_action_rows`]).
+    pub(crate) const ROWS: [ProjectAction; 15] = [
+        ProjectAction::NewAgent,
+        ProjectAction::NewAgentFromPr,
+        ProjectAction::Worktrees,
+        ProjectAction::NewTerminal,
+        ProjectAction::Pull,
+        ProjectAction::CheckoutDefaultBranch,
+        ProjectAction::ChangeBaseBranch,
+        ProjectAction::Info,
+        ProjectAction::DefaultProvider,
+        ProjectAction::AutoReopen,
+        ProjectAction::StartupCommand,
+        ProjectAction::Environment,
+        ProjectAction::StartupLogs,
+        ProjectAction::Delete,
+        ProjectAction::Remove,
+    ];
+
+    /// The row's words. A trailing `…` marks a row that opens a dialog or asks
+    /// first, the browser menu's rule. The auto-reopen row is the one whose
+    /// words depend on the project, so its label comes from
+    /// [`App::project_action_rows`] instead.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ProjectAction::NewAgent => "New agent…",
+            ProjectAction::NewAgentFromPr => "New agent from PR…",
+            ProjectAction::Worktrees => "Worktrees…",
+            ProjectAction::NewTerminal => "New terminal at the project root",
+            ProjectAction::Pull => "Pull project",
+            ProjectAction::CheckoutDefaultBranch => "Check out default branch…",
+            ProjectAction::ChangeBaseBranch => "Change base branch…",
+            ProjectAction::Info => "Project info…",
+            ProjectAction::DefaultProvider => "Default provider…",
+            ProjectAction::AutoReopen => "Auto-reopen agents",
+            ProjectAction::StartupCommand => "Startup command…",
+            ProjectAction::Environment => "Environment…",
+            ProjectAction::StartupLogs => "Startup command logs for all agents…",
+            ProjectAction::Delete => "Delete project…",
+            ProjectAction::Remove => "Remove project…",
+            ProjectAction::CopyPath => "Copy project path",
+        }
+    }
+
+    /// The title of the project list when this action was started from the
+    /// palette with no agent selected, so the list says what a pick will do.
+    pub(crate) fn chooser_title(self) -> &'static str {
+        match self {
+            ProjectAction::NewAgent => "New agent in project",
+            ProjectAction::NewAgentFromPr => "New agent from PR",
+            ProjectAction::Worktrees => "Manage worktrees in project",
+            ProjectAction::NewTerminal => "New terminal at the project root",
+            ProjectAction::Pull => "Pull project",
+            ProjectAction::CheckoutDefaultBranch => "Check out default branch",
+            ProjectAction::ChangeBaseBranch => "Change base branch",
+            ProjectAction::Info => "Project info",
+            ProjectAction::DefaultProvider => "Change project default provider",
+            ProjectAction::AutoReopen => "Toggle auto-reopen agents",
+            ProjectAction::StartupCommand => "Configure startup command",
+            ProjectAction::Environment => "Configure project environment",
+            ProjectAction::StartupLogs => "Read startup command logs",
+            ProjectAction::Delete => "Delete project",
+            ProjectAction::Remove => "Remove project",
+            ProjectAction::CopyPath => "Copy project path",
+        }
+    }
+
+    /// Whether the action is shown unavailable while the project's folder is
+    /// missing: there is no folder to branch a new agent from, no root to open
+    /// a shell at, and no folder to list or switch branches in.
+    /// The other rows stay available and answer for themselves when run.
+    pub(crate) fn needs_folder(self) -> bool {
+        match self {
+            ProjectAction::NewAgent
+            | ProjectAction::NewTerminal
+            | ProjectAction::ChangeBaseBranch => true,
+            ProjectAction::NewAgentFromPr
+            | ProjectAction::Worktrees
+            | ProjectAction::Pull
+            | ProjectAction::CheckoutDefaultBranch
+            | ProjectAction::Info
+            | ProjectAction::DefaultProvider
+            | ProjectAction::AutoReopen
+            | ProjectAction::StartupCommand
+            | ProjectAction::Environment
+            | ProjectAction::StartupLogs
+            | ProjectAction::Delete
+            | ProjectAction::Remove
+            | ProjectAction::CopyPath => false,
+        }
+    }
+}
+
+/// What a project's action list is about: a project, or an orphaned group
+/// (agents whose project record is gone), which offers only Remove project….
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectActionsTarget {
+    Project { id: String },
+    Orphaned { project_id: String, name: String },
+}
+
+/// One row of a project's action list, as painted: the action, its words, and
+/// why it cannot run right now, when it cannot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectActionRow {
+    pub(crate) action: ProjectAction,
+    pub(crate) label: String,
+    pub(crate) unavailable: Option<String>,
+}
+
+/// `manage-projects`' second step: one project's actions. The rows are derived
+/// from the live project on every paint and key (see
+/// [`App::project_action_rows`]), so only the target and the cursor are kept.
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectActionsPrompt {
+    pub(crate) target: ProjectActionsTarget,
+    /// Index into the rows [`App::project_action_rows`] returns, as last
+    /// placed. The rows can change under it (GitHub integration going away
+    /// drops a row), so the cursor is resolved through `action` first; see
+    /// [`App::project_actions_cursor`].
+    pub(crate) selected: usize,
+    /// The action the cursor is on, so a row set that changes keeps the cursor
+    /// on the same action and Enter runs what is highlighted.
+    pub(crate) action: Option<ProjectAction>,
+    /// The project list this was opened from, as the user left it, so Escape
+    /// steps back to it. `None` when nothing is behind it.
+    pub(crate) return_to: Option<SearchableList>,
+}
+
+/// The read-only Project info screen: the facts the browser's Project info
+/// dialog shows, built once on open, and the action list to go back to.
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectInfoPrompt {
+    pub(crate) project_name: String,
+    /// (label, value) pairs. A value that is a name renders as a chip.
+    pub(crate) rows: Vec<ProjectInfoRow>,
+    pub(crate) return_to: Option<Box<ProjectActionsPrompt>>,
+}
+
+/// One fact on the Project info screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectInfoRow {
+    pub(crate) label: &'static str,
+    pub(crate) value: String,
+    /// The value is a name (a path, a branch, a command, a provider) and
+    /// renders as the name chip; otherwise it is plain words.
+    pub(crate) is_name: bool,
+}
+
+/// The Change base branch picker: every branch the project folder can be
+/// switched to, loaded in a worker after one bounded fetch of origin.
+#[derive(Clone, Debug)]
+pub(crate) struct ChangeBaseBranchPrompt {
+    pub(crate) project_id: String,
+    pub(crate) project_name: String,
+    /// The base recorded when the picker opened; `None` when there is none yet.
+    pub(crate) current_base: Option<String>,
+    /// The listing worker has not answered yet.
+    pub(crate) loading: bool,
+    pub(crate) branches: Vec<yaran_core::git::BranchChoice>,
+    /// Who holds each held branch, by branch name, resolved by the listing
+    /// worker so no paint touches the filesystem.
+    pub(crate) holders: HashMap<String, BranchHolder>,
+    /// Why origin's branches are shown as last fetched, when they are.
+    pub(crate) fetch_note: Option<String>,
+    /// Why there is no listing at all, when the listing itself failed.
+    pub(crate) error: Option<String>,
+    /// `/`-search over branch names; `selected` indexes the visible rows.
+    pub(crate) list: SearchableList,
+    pub(crate) return_to: Option<Box<ProjectActionsPrompt>>,
+}
+
+/// "Change base branch?" over the picker it was raised from, which a cancel
+/// steps back to (the kill-running idiom).
+#[derive(Clone, Debug)]
+pub(crate) struct ConfirmChangeBaseBranchPrompt {
+    pub(crate) previous: ChangeBaseBranchPrompt,
+    pub(crate) branch: String,
+    pub(crate) focus: ConfirmFocus,
+}
+
+/// The branch listing worker's answer, tagged with the project it is about so
+/// an answer for a picker the user already closed is dropped.
+pub(crate) struct BranchListingAnswer {
+    pub(crate) project_id: String,
+    pub(crate) result: Result<yaran_core::base_branch::BranchListing, String>,
+    /// Who holds each held branch, by branch name.
+    pub(crate) holders: HashMap<String, BranchHolder>,
+}
+
+/// The worktree holding a branch: its folder, and the agent working there when
+/// yaran knows one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BranchHolder {
+    pub(crate) agent: Option<String>,
+    pub(crate) path: String,
+}
+
+/// How the branch listing's keyed busy ends, decided when the answer lands.
+#[derive(Clone, Debug)]
+pub(crate) enum BranchListingOutcome {
+    /// The picker shows the branches; the list on screen is the confirmation.
+    Loaded,
+    Failed(String),
+    /// The picker was closed before the answer arrived.
+    Dismissed,
+}
+
+/// The in-flight branch listing: the one-shot channel its worker answers on and
+/// the keyed status op whose busy spins until then.
+pub(crate) struct PendingBranchListing {
+    pub(crate) rx: mpsc::Receiver<BranchListingAnswer>,
+    pub(crate) op: yaran_core::engine::HandlerStatusOp<BranchListingOutcome>,
+}
+
+/// Leave a search row, discarding whatever was typed into it.
+///
+/// The one Escape semantics every filterable modal in yaran shares: the close key
+/// leaves search mode and clears the query in the same press, so the list comes
+/// back whole and the next close key shuts the modal.
+///
+/// Returns `true` when there was something to leave, which is exactly the
+/// caller's "stay open" signal; `false` means the search row was already empty
+/// and idle, so the press belongs to the modal and should close it.
+///
+/// Callers holding a [`SearchableList`] reach this through
+/// [`SearchableList::exit_search_clearing_filter`]; callers that keep their
+/// `searching` flag and their query in separate fields call it directly.
+pub(crate) fn exit_search_clearing_filter(searching: &mut bool, filter: &mut TextInput) -> bool {
+    let had_something = *searching || !filter.is_empty();
+    *searching = false;
+    filter.clear();
+    had_something
+}
+
+/// Shared search + selection state for filterable list modals (the project
+/// chooser, the kill-running dialog, …). Owns the `/` query, whether search mode
+/// is active, and the selection index INTO THE VISIBLE (filtered) list. Each
+/// modal supplies its own per-item match predicate, so field semantics stay
+/// modal-specific while the fiddly filter/clamp/toggle mechanics live in one
+/// place. `selected` always indexes the visible list, never the full item list.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SearchableList {
+    pub(crate) filter: TextInput,
+    pub(crate) searching: bool,
+    pub(crate) selected: usize,
+}
+
+impl SearchableList {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// True when a search row should be shown: search mode is active, or a query
+    /// has been committed (so the filtered result stays visible).
+    pub(crate) fn is_filtering(&self) -> bool {
+        self.searching || !self.filter.is_empty()
+    }
+
+    /// Indices of `items` matching the current query. `matches(item, needle)` is
+    /// the modal's predicate; `needle` is trimmed and lowercased. An empty query
+    /// matches everything and preserves order.
+    pub(crate) fn visible_indices<T>(
+        &self,
+        items: &[T],
+        matches: impl Fn(&T, &str) -> bool,
+    ) -> Vec<usize> {
+        let needle = self.filter.text.trim().to_lowercase();
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| needle.is_empty() || matches(it, &needle))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Enter search mode, cursor at the end of any existing query.
+    pub(crate) fn begin_search(&mut self) {
+        self.filter.move_end();
+        self.searching = true;
+    }
+
+    /// Leave search mode AND drop the query, resetting the selection to the top
+    /// of the restored list (`selected` indexes the VISIBLE list, so the index
+    /// it held meant something different a moment ago).
+    ///
+    /// See [`exit_search_clearing_filter`] for why this is one press.
+    pub(crate) fn exit_search_clearing_filter(&mut self) -> bool {
+        let left = exit_search_clearing_filter(&mut self.searching, &mut self.filter);
+        if left {
+            self.selected = 0;
+        }
+        left
+    }
+
+    pub(crate) fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    pub(crate) fn move_down(&mut self, visible_len: usize) {
+        if self.selected + 1 < visible_len {
+            self.selected += 1;
+        }
+    }
+
+    /// Apply `edit` to the query (a key, a paste) and return what it returned.
+    /// When the query's text changed, the highlight goes back to the first
+    /// match, so Enter right after typing picks the top row rather than
+    /// whichever row the old index now happens to land on. A caret move leaves
+    /// the highlight where it is.
+    pub(crate) fn edit_filter(&mut self, edit: impl FnOnce(&mut TextInput) -> bool) -> bool {
+        let before = self.filter.text.clone();
+        let handled = edit(&mut self.filter);
+        if self.filter.text != before {
+            self.selected = 0;
+        }
+        handled
+    }
+
+    /// Keep `selected` within `[0, visible_len)`, for a list whose rows
+    /// changed under an unchanged query.
+    pub(crate) fn clamp_selected(&mut self, visible_len: usize) {
+        if self.selected >= visible_len {
+            self.selected = visible_len.saturating_sub(1);
+        }
+    }
+}
+
+/// The project chooser's match predicate: case-insensitive substring over the
+/// project name or its path. `needle` is expected pre-lowercased.
+pub(crate) fn pick_project_matches(entry: &ProjectChooserEntry, needle: &str) -> bool {
+    entry.name.to_lowercase().contains(needle) || entry.path.to_lowercase().contains(needle)
+}
+
+/// The kill-running dialog's match predicate: case-insensitive substring over a
+/// runtime's precomputed `search_text` (agent name + project + provider + noun).
+/// `needle` is expected pre-lowercased.
+pub(crate) fn kill_running_matches(runtime: &KillableRuntime, needle: &str) -> bool {
+    runtime.search_text.to_lowercase().contains(needle)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PickProjectWorktreePrompt {
+    pub(crate) project: Project,
+    pub(crate) entries: Vec<ProjectWorktreeEntry>,
+    pub(crate) loading: bool,
+    pub(crate) selected: Option<usize>,
+    pub(crate) error: Option<String>,
+}
+
+/// The worktree manager's list state.
+#[derive(Clone, Debug)]
+pub(crate) struct ManageWorktreesPrompt {
+    pub(crate) project: Project,
+    pub(crate) entries: Vec<yaran_core::worktree_manager::ManagedWorktree>,
+    /// The folders a delete left behind, listed after the worktrees.
+    pub(crate) leftovers: Vec<yaran_core::leftover_folders::LeftoverFolder>,
+    pub(crate) loading: bool,
+    /// The row under the cursor, one of [`manager_selectable_rows`]. `None`
+    /// while loading, on failure, or when there is no such row.
+    pub(crate) selected: Option<ManagerSelection>,
+    pub(crate) error: Option<String>,
+    /// The project action list this was opened from, which closing it (by
+    /// any way out, a save included) steps back to. `None` when nothing is
+    /// behind it.
+    pub(crate) return_to: Option<Box<ProjectActionsPrompt>>,
+}
+
+/// The manager's removal confirmation.
+///
+/// Carries the list it came from so Cancel and Esc put it back: abandoning a
+/// removal should not cost the user the listing they just waited for (the
+/// kill-running confirmation's idiom).
+#[derive(Clone, Debug)]
+pub(crate) struct ConfirmDeleteWorktreePrompt {
+    pub(crate) previous: ManageWorktreesPrompt,
+    pub(crate) project: Project,
+    pub(crate) path: PathBuf,
+    /// The row LABEL: the branch when there is one, a "detached <sha>"
+    /// stand-in when there is not. What the question names, so the sentence
+    /// reads for a detached worktree too. Good for display and useless for
+    /// deciding anything; see `branch` for the decision.
+    pub(crate) label: String,
+    /// The branch the worktree is on, `None` when detached. Decides whether the
+    /// checkbox exists at all: there is no branch to keep or delete.
+    pub(crate) branch: Option<String>,
+    pub(crate) dirty: bool,
+    pub(crate) delete_branch: bool,
+    pub(crate) focus: DeleteWorktreeFocus,
+}
+
+impl ConfirmDeleteWorktreePrompt {
+    /// Whether the branch checkbox is rendered, which is also whether the focus
+    /// ring has three stops or two.
+    pub(crate) fn has_branch_checkbox(&self) -> bool {
+        self.branch.is_some()
+    }
+}
+
+/// What a left-over folder's action list offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeftoverFolderAction {
+    CopyPath,
+    DeleteFolder,
+}
+
+impl LeftoverFolderAction {
+    /// The row's label for `folder`; a trailing `…` marks the one that opens
+    /// a confirmation. A folder already gone is deleted as its kept branches.
+    pub(crate) fn label(self, folder: &yaran_core::leftover_folders::LeftoverFolder) -> &'static str {
+        match self {
+            Self::CopyPath => "Copy path",
+            Self::DeleteFolder if folder.folder_present => "Delete folder…",
+            Self::DeleteFolder if folder.branches.len() == 1 => "Delete branch…",
+            Self::DeleteFolder => "Delete branches…",
+        }
+    }
+}
+
+/// One left-over folder's actions in the worktree manager, a Picker. Carries
+/// the manager it came from so closing it puts the listing back.
+#[derive(Clone, Debug)]
+pub(crate) struct LeftoverFolderActionsPrompt {
+    pub(crate) previous: ManageWorktreesPrompt,
+    pub(crate) folder: yaran_core::leftover_folders::LeftoverFolder,
+    /// The rows, in order, decided when the list opens.
+    pub(crate) actions: Vec<LeftoverFolderAction>,
+    /// Index into `actions`.
+    pub(crate) selected: usize,
+}
+
+impl LeftoverFolderActionsPrompt {
+    /// The list for `folder`. Delete is absent while something uses the
+    /// folder (the header says what, and there is nothing to confirm until it
+    /// stops), and when there is nothing a delete could remove: the folder is
+    /// gone and every branch it kept is one a delete would keep (the header
+    /// says why each is kept).
+    pub(crate) fn new(
+        previous: ManageWorktreesPrompt,
+        folder: yaran_core::leftover_folders::LeftoverFolder,
+    ) -> Self {
+        let mut actions = vec![LeftoverFolderAction::CopyPath];
+        if folder.busy.is_none() && folder.offers_delete() {
+            actions.push(LeftoverFolderAction::DeleteFolder);
+        }
+        Self {
+            previous,
+            folder,
+            actions,
+            selected: 0,
+        }
+    }
+}
+
+/// The confirmation of a left-over folder's delete. Carries the action list it
+/// came from so Cancel and Escape put it back.
+#[derive(Clone, Debug)]
+pub(crate) struct ConfirmDeleteLeftoverFolderPrompt {
+    pub(crate) previous: LeftoverFolderActionsPrompt,
+    /// Whether the kept branches a delete can remove (the folder's
+    /// `branches`) are deleted too; always true for a folder already gone.
+    pub(crate) delete_branches: bool,
+    pub(crate) focus: DeleteWorktreeFocus,
+}
+
+impl ConfirmDeleteLeftoverFolderPrompt {
+    pub(crate) fn folder(&self) -> &yaran_core::leftover_folders::LeftoverFolder {
+        &self.previous.folder
+    }
+
+    /// Whether the branch checkbox is rendered, which is also whether the focus
+    /// ring has three stops or two. A folder already gone has none: deleting
+    /// its kept branches is the whole action.
+    pub(crate) fn has_branch_checkbox(&self) -> bool {
+        self.folder().folder_present && !self.folder().branches.is_empty()
+    }
+}
+
+/// Which control has focus in the recreate-working-copy confirmation. The
+/// checkbox stop exists only while the dialog offers to restart tabs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RecreateWorkingCopyFocus {
+    #[default]
+    Cancel,
+    Recreate,
+    RestartCheckbox,
+}
+
+/// Which control has focus in the worktree-removal confirmation. Mirrors
+/// [`DeleteAgentFocus`], including the conditional checkbox stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteWorktreeFocus {
+    Cancel,
+    Delete,
+    Checkbox,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConfirmKillRunningPrompt {
+    pub(crate) previous: KillRunningPrompt,
+    pub(crate) action: KillRunningAction,
+    pub(crate) target_ids: Vec<RuntimeTargetId>,
+    pub(crate) focus: ConfirmFocus,
+    /// Who confirming would cut off, named once the guard refuses it.
+    pub(crate) attached: Vec<yaran_core::attachments::Blocker>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfigReloadFailedFocus {
+    Close,
+    Apply,
+    Checkbox,
+}
+
+/// What deleting this agent is actually about, and therefore whether the modal
+/// has a removal to offer at all.
+///
+/// A STANDALONE agent takes [`DeleteAgentTarget::Folder`], which carries no
+/// branch identity and no worktree, so the "also remove the worktree" checkbox
+/// is not merely hidden for it, there is nothing for the checkbox to be about.
+/// That is the modal half of "yaran never deletes the user's folder": the offer
+/// cannot be rendered, so it cannot be ticked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteAgentTarget {
+    /// A managed working copy yaran owns.
+    Managed {
+        /// The branch the worktree is on, which the first branch box names
+        /// before git has answered about it.
+        branch_name: String,
+        /// True when one or more other sessions share this worktree. In that
+        /// case the worktree is always preserved regardless of the user's
+        /// choice, so the checkbox is hidden and a note is shown instead.
+        worktree_shared: bool,
+    },
+    /// A folder the user already had. Deleting the agent removes yaran's record
+    /// of it and nothing else. The label is home-collapsed for display.
+    Folder { folder_label: String },
+}
+
+impl DeleteAgentTarget {
+    /// Whether this dialog offers the "also remove the worktree" checkbox.
+    ///
+    /// THE ONE ANSWER, so the renderer, the focus ring and the click handler
+    /// cannot disagree about whether the control is there. A standalone agent
+    /// has no worktree to remove, and a shared worktree is preserved whatever
+    /// the user ticks, so neither offers it.
+    pub(crate) fn offers_worktree_checkbox(&self) -> bool {
+        match self {
+            Self::Managed {
+                worktree_shared, ..
+            } => !worktree_shared,
+            Self::Folder { .. } => false,
+        }
+    }
+
+    /// Whether this dialog offers the "also delete the branch" checkbox, given
+    /// the worktree box's current state.
+    ///
+    /// THE ONE ANSWER again, for the same reason: the renderer, the focus ring
+    /// and the click handler must agree about whether the control is there.
+    /// git will not delete a branch that is still checked out in a worktree, so
+    /// with the worktree staying there is genuinely nothing on offer, and a
+    /// permanently disabled box that happens to look ticked would promise
+    /// exactly the deletion it cannot do.
+    pub(crate) fn offers_branch_checkbox(
+        &self,
+        worktree: yaran_core::engine::WorktreeOnDelete,
+    ) -> bool {
+        worktree == yaran_core::engine::WorktreeOnDelete::Remove && self.offers_worktree_checkbox()
+    }
+
+    /// Both branch boxes' answers as this dialog sends them, given the
+    /// worktree box and what git answered.
+    ///
+    /// `None` means nobody was asked: the boxes were not on screen (the
+    /// worktree stays, it is shared, or there is no branch at all), and that
+    /// is not the same as unticked. While git has not answered, or could not,
+    /// both boxes say so and pin nothing, so nothing is deleted on a guess.
+    pub(crate) fn branch_answers(
+        &self,
+        worktree: yaran_core::engine::WorktreeOnDelete,
+        offer: &DeleteBranchOffer,
+        delete_branch: Option<bool>,
+        delete_other_branches: Option<bool>,
+    ) -> Option<yaran_core::branch_history::BranchAnswersWire> {
+        use yaran_core::branch_history::{BoxWire, BranchAnswersWire, PinnedBranch, Unchecked};
+        if !self.offers_branch_checkbox(worktree) {
+            return None;
+        }
+        let unchecked = |why| BoxWire {
+            unchecked: Some(why),
+            ..BoxWire::default()
+        };
+        let offer = match offer {
+            DeleteBranchOffer::Pending | DeleteBranchOffer::Failed(_) => {
+                let why = if matches!(offer, DeleteBranchOffer::Pending) {
+                    Unchecked::Pending
+                } else {
+                    Unchecked::Failed
+                };
+                return Some(BranchAnswersWire {
+                    current: Some(unchecked(why)),
+                    others: Some(unchecked(why)),
+                });
+            }
+            DeleteBranchOffer::Ready(offer) => offer,
+        };
+        let pinned =
+            |ticked: bool, branches: &[&yaran_core::branch_history::OfferedBranch]| BoxWire {
+                delete: ticked,
+                branches: if ticked {
+                    branches
+                        .iter()
+                        .map(|branch| PinnedBranch {
+                            name: branch.name.clone(),
+                            oid: branch.oid.clone(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                unchecked: None,
+                offered: branches.iter().map(|branch| branch.name.clone()).collect(),
+            };
+        // A box whose loss git could not count cannot be answered, so it is
+        // a failed check and keeps its branches whatever the default says.
+        let [current_uncounted, others_uncounted] = offer.count_failures();
+        let current = match &offer.current {
+            Some(_) if current_uncounted.is_some() => unchecked(Unchecked::Failed),
+            Some(current) => pinned(
+                delete_branch.unwrap_or_else(|| offer.current_default()),
+                &[current],
+            ),
+            // The project's own branch is offered in no box; any other branch
+            // git could not read is a failed check.
+            // Decided from the name the offer was read for.
+            None if offer.protected.contains(&offer.current_name) => {
+                unchecked(Unchecked::NotOffered)
+            }
+            None => unchecked(Unchecked::Failed),
+        };
+        let others = if offer.others.is_empty() {
+            unchecked(Unchecked::NotOffered)
+        } else if others_uncounted.is_some() {
+            unchecked(Unchecked::Failed)
+        } else {
+            let others: Vec<&yaran_core::branch_history::OfferedBranch> =
+                offer.others.iter().collect();
+            pinned(
+                delete_other_branches.unwrap_or_else(|| offer.others_default()),
+                &others,
+            )
+        };
+        Some(BranchAnswersWire {
+            current: Some(current),
+            others: Some(others),
+        })
+    }
+}
+
+/// What the delete dialog knows about the agent's branches: still asking git,
+/// git's answer, or why git could not be asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteBranchOffer {
+    /// The worker has not answered yet.
+    Pending,
+    /// The branches, each pinned to the commit a tick would delete, and the
+    /// worktree's uncommitted files. Boxed: the answer is far larger than the
+    /// other states.
+    Ready(Box<yaran_core::branch_history::BranchOffer>),
+    /// Why git could not be asked.
+    Failed(String),
+}
+
+impl DeleteBranchOffer {
+    /// The state once git's answer has landed.
+    pub(crate) fn answered(offer: yaran_core::branch_history::BranchOffer) -> Self {
+        Self::Ready(Box::new(offer))
+    }
+
+    /// git's answer, when it has landed.
+    pub(crate) fn ready(&self) -> Option<&yaran_core::branch_history::BranchOffer> {
+        match self {
+            Self::Ready(offer) => Some(offer.as_ref()),
+            Self::Pending | Self::Failed(_) => None,
+        }
+    }
+
+    /// Whether the first box can be answered: it is offered and git counted
+    /// what it would lose. One git could not count is drawn dimmed and
+    /// unticked, is no focus stop, and keeps its branch.
+    pub(crate) fn current_answerable(&self) -> bool {
+        self.ready()
+            .is_some_and(|offer| offer.current.is_some() && offer.count_failures()[0].is_none())
+    }
+
+    /// Whether the second box can be answered, as for the first.
+    pub(crate) fn others_answerable(&self) -> bool {
+        self.ready()
+            .is_some_and(|offer| !offer.others.is_empty() && offer.count_failures()[1].is_none())
+    }
+
+    /// Whether the first box shows ticked: the answer, else its default, and
+    /// never while it cannot be answered.
+    pub(crate) fn current_ticked(&self, answer: Option<bool>) -> bool {
+        self.current_answerable()
+            && answer.unwrap_or_else(|| {
+                self.ready()
+                    .is_some_and(yaran_core::branch_history::BranchOffer::current_default)
+            })
+    }
+
+    /// Whether the second box shows ticked: the answer, else its default, and
+    /// never while it cannot be answered.
+    pub(crate) fn others_ticked(&self, answer: Option<bool>) -> bool {
+        self.others_answerable()
+            && answer.unwrap_or_else(|| {
+                self.ready()
+                    .is_some_and(yaran_core::branch_history::BranchOffer::others_default)
+            })
+    }
+}
+
+/// One agent worktree the Delete Project dialog warns about: the agent it
+/// belongs to and how many of its files are not committed, `None` while git is
+/// still being asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectWorktreeFiles {
+    pub(crate) session_id: String,
+    pub(crate) agent_label: String,
+    pub(crate) answer: Option<yaran_core::delete_agent_prose::UncommittedAnswer>,
+}
+
+/// One worktree's uncommitted-file count, tagged with the project whose
+/// dialog asked and the agent it was read for, so a count from a dialog since
+/// closed cannot land in another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectWorktreeFilesAnswer {
+    pub(crate) project_id: String,
+    pub(crate) session_id: String,
+    pub(crate) answer: yaran_core::delete_agent_prose::UncommittedAnswer,
+}
+
+/// The worker counting the Delete Project dialog's worktrees, one at a time,
+/// in the order they are queued: every agent worktree when the dialog opens,
+/// then each agent that joins the project while it is open.
+///
+/// Dropping it is how the count stops: `cancelled` is set, so the worker starts
+/// no further `git status`, and the queue closes, so the worker exits. A
+/// `git status` already running finishes on its own cap.
+#[derive(Debug)]
+pub(crate) struct ProjectWorktreeFilesJob {
+    /// The project whose dialog asked.
+    pub(crate) project_id: String,
+    /// Worktrees still to count: the agent's session id and the path.
+    pub(crate) queue: mpsc::Sender<(String, String)>,
+    pub(crate) answers: mpsc::Receiver<ProjectWorktreeFilesAnswer>,
+    pub(crate) cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for ProjectWorktreeFilesJob {
+    fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// A landed branch offer, tagged with the agent it was read for so a stale one
+/// cannot be rendered against a different agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BranchOfferAnswer {
+    pub(crate) session_id: String,
+    /// What git answered.
+    pub(crate) offer: yaran_core::branch_history::BranchOffer,
+}
+
+/// Which selectable element has focus in the Delete Agent confirmation modal.
+/// Focus cycles through the available stops via the movement bindings; which
+/// stops exist is answered once by [`DeleteAgentTarget::offers_worktree_checkbox`]
+/// and by whether the worktree is actually going.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteAgentFocus {
+    Cancel,
+    Delete,
+    WorktreeCheckbox,
+    /// The "also delete the branch" box, which exists only while the worktree
+    /// box is ticked.
+    BranchCheckbox,
+    /// The "also delete the other branches" box, which exists only while the
+    /// worktree box is ticked and the agent was on another branch.
+    OtherBranchesCheckbox,
+}
+
+/// The folder browser's path-completion lookup still out, if any. The lookup
+/// reads the directory on a worker; an answer for anything but the newest ask,
+/// or for a path since edited, is dropped.
+#[derive(Debug, Default)]
+pub(crate) struct PathCompletion {
+    /// The id the next ask gets.
+    pub(crate) next: u64,
+    /// The newest ask still out.
+    pub(crate) ask: Option<PathCompletionAsk>,
+}
+
+/// The themes the theme picker offers, read off the UI thread when it opens,
+/// so moving the cursor previews one without reading a file.
+pub(crate) struct ThemePreviews {
+    /// Each listed theme by id, or why it would not load.
+    pub(crate) loaded: HashMap<String, Result<crate::theme::Theme, String>>,
+    /// The theme in force when the picker opened, which Esc restores.
+    pub(crate) original: crate::theme::Theme,
+}
+
+/// The folder browser that is open and the add-project check it has out, so
+/// a check's answer reaches only the browser that asked for it: one the user
+/// has since closed (Esc abandons) or replaced is not touched.
+#[derive(Debug, Default)]
+pub(crate) struct BrowserAdd {
+    /// Which browser is open: a new one is counted each time one opens.
+    pub(crate) instance: u64,
+    /// The check that browser has out, if any.
+    pub(crate) checking: Option<u64>,
+    /// The id the next check gets.
+    pub(crate) next: u64,
+}
+
+/// One path-completion lookup the folder browser is waiting on.
+#[derive(Debug)]
+pub(crate) struct PathCompletionAsk {
+    /// Which ask this is.
+    pub(crate) id: u64,
+    /// The path as typed when it was asked.
+    pub(crate) input: String,
+    /// What the answer does when it lands.
+    pub(crate) on_answer: CompletionAnswer,
+}
+
+/// What a path-completion answer does when it lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompletionAnswer {
+    /// Show the candidates.
+    List,
+    /// Show them and apply the first: a Tab arrived before they did.
+    ApplyFirst,
+}
+
+/// The project the non-default-branch dialog will add once answered. Its base
+/// is not stored here: confirming decides it from the checkbox's final state.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingProjectAdd {
+    pub(crate) path: String,
+    pub(crate) name: String,
+}
+
+/// Which selectable element has focus in the Non-Default Branch confirmation
+/// modal. `Checkbox` is only reachable when `BranchWarningKind::Known`: the
+/// heuristic path has no checkbox to focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfirmNonDefaultBranchFocus {
+    Cancel,
+    Add,
+    Checkbox,
+}
+
+/// Which selectable element has focus in the Rename Agent modal.
+///
+/// Mirrors [`NameNewAgentFocus`]: the modal pairs a single-line name field with
+/// a checkbox, so movement keys need somewhere to move focus TO. Without this,
+/// the movement action had to be wired straight to the checkbox value, which
+/// made Tab flip the box instead of highlighting it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RenameSessionFocus {
+    Input,
+    RenameBranchCheckbox,
+}
+
+/// Which control has focus in the Create-Agent-From-PR modal.
+///
+/// Opened from the palette it has two controls: the reference field, and the
+/// secondary "or choose an existing project" action that drops it into
+/// project-first mode. Two controls means an explicit focus enum and a focus
+/// that RENDERS, per the movement-keys tenet. Opened from a project's own menu
+/// the project is already chosen, the secondary action is not offered, and the
+/// ring has a single enabled stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PullRequestInputFocus {
+    Input,
+    /// Only reachable when no project has been chosen yet.
+    ChooseProject,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NameNewAgentFocus {
+    Input,
+    RandomizedNameCheckbox,
+    /// Only reachable for `CreateAgentRequest::NewProject`: forks always
+    /// copy and the other flows never do, so only fresh agents show the box.
+    CopyChangesCheckbox,
+    /// Only reachable while the prompt carries a [`ReviewCopyQuestion`].
+    ReviewCopyCheckbox,
+}
+
+/// The question a refused pull-request create puts to the user: the server
+/// would have to make a separate review copy of the pull request, and pushes
+/// from the agent would land on the copy. The name prompt reopens with the
+/// warning and an unticked box, and creating stays blocked until it is ticked.
+#[derive(Clone, Debug)]
+pub(crate) struct ReviewCopyQuestion {
+    /// Identifies the warning shown, sent back with the agreement so a copy
+    /// made necessary for a different reason or under a different name since
+    /// is asked about again.
+    pub(crate) warned: String,
+    pub(crate) warning: yaran_core::prose::Prose,
+    pub(crate) agreed: bool,
+}
+
+/// Which control has focus in the Clone modal, in Tab order: the three
+/// single-line fields, then the random-name checkbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CloneProjectFocus {
+    Address,
+    Destination,
+    AgentName,
+    RandomizedNameCheckbox,
+    /// Pull-request mode only, and only while the form shows the question.
+    ReviewCopyCheckbox,
+    /// Pull-request mode only, and only when projects exist.
+    ChooseExisting,
+}
+
+/// The clone form's fields as they were submitted, kept for the clone they
+/// started. When the worker refuses that clone or it fails, the form has long
+/// closed on its busy, so the next open of the form restores these instead of
+/// asking for everything again.
+#[derive(Clone, Debug)]
+pub(crate) struct CloneDraft {
+    /// The clone's status operation, which its worker's answer names.
+    pub(crate) op_id: String,
+    /// The clone was refused or failed, so the next open restores the draft.
+    pub(crate) restorable: bool,
+    pub(crate) address: String,
+    pub(crate) destination: String,
+    pub(crate) destination_edited: bool,
+    pub(crate) start_folder: PathBuf,
+    pub(crate) agent_name: String,
+    pub(crate) randomize_name: bool,
+    pub(crate) randomized_name: Option<String>,
+    /// The pull request a pull-request form was for. A plain clone's draft
+    /// has none, and the two kinds are never restored into each other.
+    pub(crate) pull_request: Option<yaran_core::pr_reference::PullRequestCloneFacts>,
+}
+
+/// What the folder browser is picking a directory for.
+///
+/// One prompt with a purpose rather than two prompts, because the browsing
+/// itself (navigation, filtering, path entry, tab completion) is identical and
+/// a second copy of it would drift. The purpose is consulted at exactly one
+/// place, the moment a directory is chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BrowsePurpose {
+    /// Add the folder as a project. Runs the add-project validator, which
+    /// rejects anything that is not a repository root (offering to `git init`
+    /// a plain folder instead).
+    AddProject,
+    /// Run a standalone agent in the folder. ACCEPTS ANYTHING: a plain folder
+    /// is the ordinary case here, so the add-project validator is deliberately
+    /// not consulted, and nothing is initialized in the user's directory.
+    StandaloneAgent,
+}
+
+/// Which half of the Pull requests modal is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PullRequestsView {
+    /// The agent's pull requests, in its order.
+    PullRequests,
+    /// Every branch the agent's worktree has been on, with its pull requests.
+    Branches,
+}
+
+/// The Pull requests modal's own state. The rows are read from engine memory
+/// on every frame, so a sync answer or a change made elsewhere shows at once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PullRequestsPrompt {
+    pub(crate) session_id: String,
+    pub(crate) view: PullRequestsView,
+    /// The selected row among the ones the view can select.
+    pub(crate) cursor: usize,
+    /// Whether the hidden pull requests are listed.
+    pub(crate) show_hidden: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PromptState {
+    None,
+    Command {
+        input: TextInput,
+        selected: usize,
+    },
+    BrowseProjects {
+        /// What this browse is FOR. The folder listing is the same either way
+        /// (`browser_entries` already lists plain directories); what differs is
+        /// what happens when the user picks one, and the add-project validator
+        /// is exactly what a standalone pick must not go through, since it
+        /// rejects a folder that is not a repository.
+        purpose: BrowsePurpose,
+        current_dir: PathBuf,
+        entries: Vec<BrowserEntry>,
+        loading: bool,
+        selected: usize,
+        filter: TextInput,
+        searching: bool,
+        editing_path: bool,
+        path_input: TextInput,
+        tab_completions: Vec<String>,
+        tab_index: usize,
+    },
+    AddProjectFailed {
+        message: String,
+        return_prompt: Box<PromptState>,
+        /// First visible row of the message. The failure text can run long (a
+        /// path plus a git error, several lines of it), and every line matters
+        /// when it is how the user learns why the project was rejected, so the
+        /// body scrolls instead of being truncated. Clamped at render against
+        /// [`App::last_error_dialog_lines`]/[`App::last_error_dialog_height`].
+        scroll: u16,
+    },
+    /// Shown when adding a plain folder that is not a git repository (the
+    /// adopt-a-folder flow). Confirming runs `git init`, seeds a starter
+    /// `.gitignore` for the named candidate directories, creates an empty
+    /// initial commit, then registers the project.
+    ConfirmInitRepo {
+        /// Absolute, canonical path of the folder being adopted.
+        path: String,
+        /// Display name entered by the user (empty derives it from the path).
+        name: String,
+        /// Starter-.gitignore candidate directory names found in the folder
+        /// (display only; the worker re-derives the real list when seeding).
+        candidates: Vec<String>,
+        focus: ConfirmFocus, // Cancel (default) or Initialize & Add
+        /// The prompt to restore on cancel (the project browser with the
+        /// user's location and typed path intact), the `AddProjectFailed`
+        /// pattern.
+        return_prompt: Box<PromptState>,
+    },
+    ChangeAgentProvider(ChangeAgentProviderPrompt),
+    AgentInfo(AgentInfoPrompt),
+    /// One of the two first-load screens (first-run welcome, or what's-new after
+    /// a version change). They share one modal frame; see
+    /// [`crate::app::first_load`]. Routed through `PromptState` so `Esc` and the
+    /// generic overlay dismissal keep working uniformly. The one addition is
+    /// that dismissal stamps the running version as seen when the plan says to.
+    FirstLoad(FirstLoadPrompt),
+    ChangeDefaultProvider(ChangeDefaultProviderPrompt),
+    ChangeProjectDefaultProvider(ChangeProjectDefaultProviderPrompt),
+    SetTailscaleMode(SetTailscaleModePrompt),
+    ChangeTheme(ChangeThemePrompt),
+    ConfigureStartupCommand {
+        project_id: String,
+        project_name: String,
+        input: TextInput,
+        focus: ConfigureFieldFocus,
+        /// The project action list this was opened from; closing or saving
+        /// steps back to it.
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    },
+    ConfigureProjectEnv {
+        project_id: String,
+        project_name: String,
+        input: TextInput,
+        focus: ConfigureFieldFocus,
+        /// The project action list this was opened from; closing or saving
+        /// steps back to it.
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    },
+    ConfigureGlobalEnv {
+        project_name: String,
+        input: TextInput,
+        focus: ConfigureFieldFocus,
+    },
+    /// The windowed startup-log browser, and where the "read startup command
+    /// logs" journey lands.
+    ///
+    /// `EventReaction::StartupLogsArrived` opens it on the newest run with that
+    /// run's output already loaded, so "see the last log" needs no interaction;
+    /// the rows beside it are how an older run is chosen. The fullscreen viewer
+    /// (`FullscreenOverlay::StartupLog` plus [`App::startup_log_viewer`]) is this
+    /// modal's promotion, reached with the confirm key. A scope with no runs at
+    /// all opens nothing and reports through the keyed status API instead.
+    ///
+    /// Its focus model is [`StartupCommandLogFocus`], a two-stop ring over the
+    /// Runs list and the Close button. Read that type's doc before adding a
+    /// stop: the filter and the Output body are unfocusable on purpose. Each run
+    /// draws two screen rows, and the OS-open actions resolve their path from
+    /// this picker's own selection rather than from the fullscreen viewer.
+    StartupCommandLogs(StartupCommandLogPrompt),
+    /// The project chooser: lists every project (agent-less included) so a
+    /// project-scoped action can target one when the flat agent list has no
+    /// project header to select. `selected` indexes the VISIBLE (filtered) list,
+    /// not `entries`; resolve it through [`visible_pick_project_indices`].
+    PickProject {
+        intent: ProjectChooserIntent,
+        entries: Vec<ProjectChooserEntry>,
+        /// Search + selection state; `selected` indexes the visible (filtered)
+        /// list. `/`-search over project name + path (parity with the web).
+        list: SearchableList,
+    },
+    /// `manage-projects`' second step: one project's (or orphaned group's)
+    /// actions, a Picker. See [`ProjectActionsPrompt`].
+    ProjectActions(ProjectActionsPrompt),
+    /// The read-only Project info screen, a Report.
+    ProjectInfo(ProjectInfoPrompt),
+    /// The Change base branch picker. Boxed: it carries the branch listing.
+    ChangeBaseBranch(Box<ChangeBaseBranchPrompt>),
+    /// The Change base branch confirmation, over the picker it came from.
+    ConfirmChangeBaseBranch(Box<ConfirmChangeBaseBranchPrompt>),
+    PickProjectWorktree(PickProjectWorktreePrompt),
+    /// The worktree manager: the manual override for removing a worktree, and
+    /// the branch with it. See [`super::worktree_manager`].
+    ManageWorktrees(ManageWorktreesPrompt),
+    /// The manager's removal confirmation. Boxed because it carries the list it
+    /// came from, and a big variant would inflate every `PromptState`.
+    ConfirmDeleteWorktree(Box<ConfirmDeleteWorktreePrompt>),
+    /// A left-over folder's actions, opened from the manager. Boxed for the
+    /// same reason.
+    LeftoverFolderActions(Box<LeftoverFolderActionsPrompt>),
+    /// The confirmation of a left-over folder's delete, over its action list.
+    ConfirmDeleteLeftoverFolder(Box<ConfirmDeleteLeftoverFolderPrompt>),
+    KillRunning(KillRunningPrompt),
+    ConfirmKillRunning(ConfirmKillRunningPrompt),
+    ConfigReloadFailed {
+        error: String,
+        recover_old_config: bool,
+        focus: ConfigReloadFailedFocus,
+        /// First visible row of the validation error. A TOML validation failure
+        /// is normally many lines and the tail is usually the part naming the
+        /// actual problem, so the body scrolls rather than dropping it. Clamped
+        /// at render against
+        /// [`App::last_error_dialog_lines`]/[`App::last_error_dialog_height`].
+        scroll: u16,
+    },
+    ConfirmDeleteAgent {
+        session_id: String,
+        /// The agent's display name, for the heading. Not a branch: a
+        /// standalone agent has none.
+        agent_label: String,
+        /// What this delete is actually about, which decides whether there is a
+        /// removal to offer at all. See [`DeleteAgentTarget`].
+        target: DeleteAgentTarget,
+        focus: DeleteAgentFocus,
+        delete_worktree: bool,
+        /// The first branch box's answer, `None` while untouched, when it shows
+        /// its default: ticked only for a branch yaran can prove is its own, or
+        /// one the agent switched onto that git proves was made after it.
+        /// Overridable in both directions. Only meaningful while
+        /// `delete_worktree` is set: git will not delete a branch that is still
+        /// checked out in a worktree, so the box is not offered otherwise.
+        delete_branch: Option<bool>,
+        /// The second branch box's answer, `None` while untouched: its default
+        /// is ticked only when yaran can prove every other branch is its own.
+        delete_other_branches: Option<bool>,
+        /// What git answered about the agent's branches, which both boxes
+        /// wait for: until it lands they are disabled and pin nothing.
+        offer: DeleteBranchOffer,
+        /// Who confirming would cut off, named once the guard refuses it.
+        attached: Vec<yaran_core::attachments::Blocker>,
+    },
+    ConfirmDeleteTerminal {
+        terminal_id: String,
+        terminal_label: String,
+        /// The foreground app running in the terminal, captured when the prompt
+        /// opens, or `None` when only the shell is running. The "process will be
+        /// killed" warning is shown only when an app is present, since closing
+        /// an idle terminal merely ends the shell.
+        foreground_cmd: Option<String>,
+        focus: ConfirmFocus, // Cancel (default) or Delete
+        /// Who confirming would cut off, named once the guard refuses it.
+        attached: Vec<yaran_core::attachments::Blocker>,
+    },
+    /// Close one agent tab. Closing it ends that tab's session for good
+    /// (destructive), so it defaults to Cancel. The tab in the session slot
+    /// reaches this prompt like any other: closing it hands the slot to the
+    /// next tab in strip order.
+    ConfirmCloseTab {
+        session_id: String,
+        tab_id: String,
+        provider_label: String,
+        /// The provider label of the tab that will take the session slot, set
+        /// only when the tab being closed is the one holding it. The dialog
+        /// names it, because "this tab goes" and "that tab becomes the agent's
+        /// first" are two different promises and the user is owed both.
+        promoted_label: Option<String>,
+        focus: ConfirmFocus, // Cancel (default) or Close
+        /// Who confirming would cut off, named once the guard refuses it.
+        attached: Vec<yaran_core::attachments::Blocker>,
+    },
+    /// Stop one running agent tab, leaving it dormant in the strip. Whether it is
+    /// the last running tab is captured on open, because the dialog promises it.
+    ConfirmStopTab {
+        session_id: String,
+        tab_id: String,
+        provider_label: String,
+        /// Stopping it detaches the agent, because no other tab of it runs.
+        last_running: bool,
+        focus: ConfirmFocus, // Cancel (default) or Stop
+        /// Who confirming would cut off, named once the guard refuses it.
+        attached: Vec<yaran_core::attachments::Blocker>,
+    },
+    /// Ask the selected agent to shut down and leave it Detached. Destructive
+    /// (whatever the agent is doing is interrupted), so it defaults to Cancel.
+    ///
+    /// The label and the grace are captured when the dialog opens rather than
+    /// re-read while it renders: the sentence promises a specific wait for a
+    /// specific agent, and a reload behind an open dialog must not silently
+    /// change what the user is agreeing to.
+    ConfirmDetachAgent {
+        session_id: String,
+        label: String,
+        grace_seconds: u64,
+        /// How many of the agent's tabs are running, so the shared body can say
+        /// that several conversations end at once. Captured with the label and
+        /// the grace, for the same reason.
+        live_tabs: usize,
+        focus: ConfirmFocus, // Cancel (default) or Detach
+        /// Who confirming would cut off, named once the guard refuses it.
+        attached: Vec<yaran_core::attachments::Blocker>,
+    },
+    /// The way out of a working copy the agent deleted from under itself.
+    ///
+    /// The path, the branch and the source branch are captured when the dialog
+    /// opens, like the detach dialog's wait: the sentence promises a specific
+    /// checkout at a specific path, and a reload behind an open dialog must not
+    /// change what the user is agreeing to.
+    ConfirmRecreateWorkingCopy {
+        session_id: String,
+        worktree_path: std::path::PathBuf,
+        branch_name: String,
+        source_branch: String,
+        /// Whether this agent's provider picks its conversation back up in the
+        /// same directory. Captured when the dialog opens, like everything else
+        /// it promises.
+        conversation_resumes: bool,
+        /// The tabs running in the directory that is gone, or the slot tab
+        /// alone when none is: what the body says about them differs per CLI.
+        running_tabs: yaran_core::working_copy::RunningTabs,
+        /// The providers of the running tabs the restart checkbox would
+        /// restart, one per tab. Empty means the dialog has no checkbox.
+        restart_offer: Vec<String>,
+        /// The restart checkbox, ticked by default whenever it is offered.
+        restart_tabs: bool,
+        focus: RecreateWorkingCopyFocus,
+        /// Who confirming would cut off, named once the guard refuses it. Only
+        /// a ticked restart stops anything, so only it can be refused.
+        attached: Vec<yaran_core::attachments::Blocker>,
+    },
+    /// Asked before "check out the default branch" runs anything, the same
+    /// question the browser's dialog asks: the checkout moves HEAD in the user's
+    /// folder and makes the default the branch new worktrees start from.
+    ///
+    /// The name and the base are captured when the dialog opens: the sentence
+    /// promises to move a specific base, and a reload behind an open dialog
+    /// must not change what the user is agreeing to.
+    ConfirmCheckoutDefaultBranch {
+        project_id: String,
+        project_name: String,
+        stored_base: Option<String>,
+        focus: ConfirmFocus, // Cancel (default) or Check out
+        /// The project action list this was opened from; a cancel steps back
+        /// to it.
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    },
+    /// Asked before `delete-project` runs anything, the same question the
+    /// browser's Delete project dialog asks: the cascade deletes every agent in
+    /// the project and removes their worktrees from disk.
+    ///
+    /// The name is captured when the dialog opens. The agent count is the
+    /// project's LIVE count, rewritten on every paint, so `agent_count` holds
+    /// the number the user last saw; the confirm compares it with a fresh count
+    /// and asks again rather than deleting agents that were never on screen.
+    /// The confirm also reads the project again, because it may have gone.
+    ConfirmDeleteProject {
+        project_id: String,
+        project_name: String,
+        /// The count the dialog last painted.
+        agent_count: usize,
+        focus: ConfirmFocus, // Cancel (default) or Delete
+        /// The project action list this was opened from; a cancel steps back
+        /// to it.
+        return_to: Option<Box<ProjectActionsPrompt>>,
+        /// Who confirming would cut off, named once the guard refuses it.
+        attached: Vec<yaran_core::attachments::Blocker>,
+        /// Every agent worktree the cascade removes, each with its
+        /// uncommitted-file count once a worker has read it.
+        worktree_files: Vec<ProjectWorktreeFiles>,
+    },
+    /// Asked before `remove-project` runs anything, the same question the
+    /// browser's Remove project dialog asks: the project leaves yaran and every
+    /// worktree stays on disk.
+    ConfirmRemoveProject {
+        project_id: String,
+        project_name: String,
+        agent_count: usize,
+        /// The target is an orphaned group (agents whose project record is
+        /// gone) rather than a real project: confirming clears those agents'
+        /// records through the core cascade instead of removing a project.
+        orphaned: bool,
+        focus: ConfirmFocus, // Cancel (default) or Remove
+        /// The project action list this was opened from; a cancel steps back
+        /// to it.
+        return_to: Option<Box<ProjectActionsPrompt>>,
+        /// Who confirming would cut off, named once the guard refuses it.
+        attached: Vec<yaran_core::attachments::Blocker>,
+    },
+    ConfirmQuit {
+        agent_count: usize,
+        terminal_count: usize,
+        /// Everybody else attached to a terminal quitting would end, named in
+        /// the dialog.
+        attached: Vec<yaran_core::attachments::Blocker>,
+        focus: ConfirmFocus, // Cancel (default) or Quit
+    },
+    ConfirmDiscardFile {
+        file_path: String,
+        /// A folded folder is deleted whole, so the dialog names it as a
+        /// folder with its file count instead of as one file. This is the
+        /// row's shape when the prompt opened, which decides only the wording:
+        /// whether anything is deleted is still decided from live status.
+        kind: yaran_core::model::ChangedFileKind,
+        // Deliberately NO tracked/untracked flag here: discard is destructive
+        // (delete an untracked file vs restore a tracked one from HEAD), and the
+        // file's state can change between when this prompt opens and when the user
+        // confirms (an agent may be mutating the worktree). The classification is
+        // therefore re-derived from LIVE git status at confirm time via
+        // `git::discard_classify`, never snapshotted here.
+        focus: ConfirmFocus, // Cancel (default) or Discard
+    },
+    /// Shown when adding a project whose repo has no commits yet (a fresh
+    /// `git init` with an unborn HEAD). Confirming creates an empty initial
+    /// commit so the repo can back worktrees, then registers the project.
+    ConfirmCreateInitialCommit {
+        /// Absolute, validated path of the repo being added.
+        path: String,
+        /// Display name entered by the user (empty → derived from the path).
+        name: String,
+        focus: ConfirmFocus, // Cancel (default) or Create & Add
+    },
+    RenameSession {
+        session_id: String,
+        input: TextInput,
+        rename_branch: bool,
+        focus: RenameSessionFocus,
+        /// Whether this agent's name is also a git branch name.
+        ///
+        /// False for a standalone agent, and it changes two things at once:
+        /// the branch checkbox is ABSENT (there is no branch to rename), and
+        /// the modal is therefore single-control. The field's agent-name rules
+        /// are the same either way.
+        branch_named: bool,
+        /// The open pull request yaran knows for the branch, which a branch
+        /// rename leaves on the old name.
+        open_pr: Option<u64>,
+        /// Whether the branch has a pushed copy, which a branch rename also
+        /// leaves on the old name. False until the background probe answers.
+        pushed: bool,
+    },
+    PullRequestInput {
+        /// `None` when the modal was opened from the global command: the
+        /// reference leads and yaran resolves the project from it. `Some` when it
+        /// was opened from a project's own menu, which stays project-first.
+        project: Option<Project>,
+        input: TextInput,
+        focus: PullRequestInputFocus,
+    },
+    /// Attach (pin) a GitHub pull request to an existing agent session.
+    ///
+    /// Modeled on `PullRequestInput`, with ONE DELIBERATE difference: NO focus
+    /// enum. `PullRequestInput` carries `PullRequestInputFocus` because it has
+    /// two controls (the reference field and the project-chooser action); this
+    /// modal has exactly ONE control, since the session already fixes the
+    /// project, and per the movement-keys tenet a one-control modal needs no
+    /// focus concept: there is nowhere for focus to move.
+    AttachPullRequestInput {
+        session_id: String,
+        /// The Pull requests modal it was opened from, which the close key
+        /// returns to as it was.
+        back: PullRequestsPrompt,
+        input: TextInput,
+    },
+    /// Show, order, attach and hide an agent's pull requests. A Picker: rows
+    /// with a selection cursor, Enter opens the selected one, and every other
+    /// key comes from the `PullRequestList` bindings.
+    PullRequests(PullRequestsPrompt),
+    /// Name the standalone agent about to run in the folder the user just
+    /// picked in the browser.
+    ///
+    /// One single-line control and therefore no focus enum, like
+    /// [`PromptState::AttachPullRequestInput`]: there is nowhere for focus to
+    /// move, so Enter submits and the modal needs no confirm button.
+    ///
+    /// An empty field is the ordinary case (the agent takes the folder's own
+    /// name); a typed one is used verbatim, since no branch is created here and
+    /// the ref-name rules deliberately do not apply. Closing the prompt abandons
+    /// the creation: no agent, and nothing written into the user's folder.
+    NameStandaloneAgent {
+        /// Absolute path of the folder the browser committed to.
+        folder: String,
+        input: TextInput,
+    },
+    /// Clone a repository as a new project and start an agent on it: the remote's
+    /// address, where the clone goes, and the first agent's name. Three
+    /// single-line fields and one checkbox, so Enter submits from any control.
+    CloneProject {
+        address: TextInput,
+        /// Filled from `start_folder` and the address's repository name until
+        /// the user edits it, after which it is theirs.
+        destination: TextInput,
+        destination_edited: bool,
+        /// The folder the default destination is built in: the add-project
+        /// browser's start directory.
+        start_folder: PathBuf,
+        agent_name: TextInput,
+        randomize_name: bool,
+        randomized_name: Option<String>,
+        focus: CloneProjectFocus,
+        /// Set when the form was opened for a pull request no project has the
+        /// repository of; see [`PullRequestClone`].
+        pull_request: Option<Box<PullRequestClone>>,
+    },
+    NameNewAgent {
+        request: CreateAgentRequest,
+        input: TextInput,
+        randomize_name: bool,
+        randomized_name: Option<String>,
+        /// Whether the new worktree copies the project checkout's uncommitted
+        /// changes. Only surfaced (and only written into the request) for
+        /// `CreateAgentRequest::NewProject`.
+        copy_changes: bool,
+        /// Set when a pull-request create was refused for want of agreement to
+        /// a review copy; see [`ReviewCopyQuestion`].
+        review_copy: Option<ReviewCopyQuestion>,
+        focus: NameNewAgentFocus,
+    },
+    PickEditor {
+        session_label: String,
+        worktree_path: String,
+        editors: Vec<DetectedEditor>,
+        selected: usize,
+    },
+    EditMacros {
+        entries: Vec<(String, String, MacroSurface)>,
+        selected: usize,
+        editing: Option<MacroEditState>,
+        pending_delete: Option<PendingMacroDelete>,
+    },
+    /// The add-project pre-flight for a repository on a non-default branch.
+    /// Adding is the only thing it does: checking out an existing project's
+    /// default branch asks through `ConfirmCheckoutDefaultBranch` instead.
+    ConfirmNonDefaultBranch {
+        add: PendingProjectAdd,
+        current_branch: String,
+        kind: BranchWarningKind,
+        focus: ConfirmNonDefaultBranchFocus,
+        /// When true and `kind == Known`, yaran runs `git switch
+        /// <default_branch>` in the source repo before registering the project.
+        /// Ignored for `BranchWarningKind::Heuristic` because we can't
+        /// confidently identify the target.
+        checkout_default: bool,
+    },
+    ConfirmUseExistingBranch {
+        request: CreateAgentRequest,
+        branch_name: String,
+        location: crate::git::BranchLocation,
+        focus: ConfirmFocus, // Cancel (default) or Use Existing
+    },
+    DebugInput {
+        lines: Vec<Line<'static>>,
+        scroll_offset: u16,
+    },
+    ResourceMonitor {
+        rows: Vec<ResourceStats>,
+        scroll_offset: u16,
+        selected_row: usize,
+        expanded: HashSet<u32>,
+        last_refresh: Instant,
+        /// Whether the MOST RECENT delivered sample had to re-establish its
+        /// CPU baseline (`ResourceCollector::sample`'s `was_baseline`), and so
+        /// is a real reading measured over the short baseline window rather
+        /// than the normal ~2s poll interval. Drives the `~` marker in
+        /// `render_resource_monitor`. This is a per-sample fact, not a
+        /// "first sample since the overlay opened" guess: reopening the
+        /// overlay within `STALE_BASELINE` of the collector's last refresh
+        /// does not re-baseline, so it must not show `~` either. Starts
+        /// `Short` on open, since the very first sample of the app's lifetime
+        /// (or after any real gap) always re-baselines.
+        cpu_window: CpuWindow,
+    },
+}
+
+/// How long the window behind a resource sample's CPU figures was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CpuWindow {
+    /// The collector re-baselined, so the figures cover a short window.
+    Short,
+    /// The figures cover the normal poll interval.
+    Full,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum VisualRow {
+    /// Index into the `ResourceStats` rows vec.
+    Parent(usize),
+    /// (parent row index, child index within that parent's `children`).
+    Child(usize, usize),
+}
+
+pub(crate) fn build_visual_rows(rows: &[ResourceStats], expanded: &HashSet<u32>) -> Vec<VisualRow> {
+    let mut visual = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        visual.push(VisualRow::Parent(i));
+        if let Some(pid) = row.pid
+            && expanded.contains(&pid)
+        {
+            for (j, _) in row.children.iter().enumerate() {
+                visual.push(VisualRow::Child(i, j));
+            }
+        }
+    }
+    visual
+}
+
+pub(crate) fn project_worktree_visual_rows(
+    entries: &[ProjectWorktreeEntry],
+    listing: Listing,
+    error: Option<&str>,
+) -> Vec<ProjectWorktreeVisualRow> {
+    if listing == Listing::Loading {
+        return vec![ProjectWorktreeVisualRow::Empty(
+            "Loading project worktrees...".to_string(),
+        )];
+    }
+    if let Some(error) = error {
+        return vec![ProjectWorktreeVisualRow::Empty(format!(
+            "Could not load worktrees: {error}"
+        ))];
+    }
+
+    let available = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.is_selectable())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let project_checkout = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.is_project_checkout)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let disabled = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !entry.is_selectable() && !entry.is_project_checkout)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    let mut rows = Vec::new();
+    rows.push(ProjectWorktreeVisualRow::Header("Available Worktrees"));
+    if available.is_empty() {
+        rows.push(ProjectWorktreeVisualRow::Empty(
+            "No available worktrees. Worktrees that already have agents are shown below."
+                .to_string(),
+        ));
+    } else {
+        rows.extend(available.into_iter().map(ProjectWorktreeVisualRow::Entry));
+    }
+    if !disabled.is_empty() {
+        rows.push(ProjectWorktreeVisualRow::Header("Already Has Agent"));
+        rows.extend(disabled.into_iter().map(ProjectWorktreeVisualRow::Entry));
+    }
+    if !project_checkout.is_empty() {
+        rows.push(ProjectWorktreeVisualRow::Header("Project Checkout"));
+        rows.extend(
+            project_checkout
+                .into_iter()
+                .map(ProjectWorktreeVisualRow::Entry),
+        );
+    }
+    rows
+}
+
+/// The manager's rows: removable worktrees first, then the ones an agent
+/// holds, the ones being removed, and the folders a delete left behind.
+/// Attached rows are LISTED rather than hidden, because a user looking for a
+/// directory they can see on disk must be told why it is not offered; they are
+/// not selectable, so the cursor cannot land on one.
+pub(crate) fn manage_worktree_visual_rows(
+    entries: &[yaran_core::worktree_manager::ManagedWorktree],
+    leftovers: &[yaran_core::leftover_folders::LeftoverFolder],
+    listing: Listing,
+    error: Option<&str>,
+) -> Vec<ManageWorktreeVisualRow> {
+    if listing == Listing::Loading {
+        return vec![ManageWorktreeVisualRow::Empty(
+            "Listing the worktrees yaran manages...".to_string(),
+        )];
+    }
+    if let Some(error) = error {
+        return vec![ManageWorktreeVisualRow::Empty(format!(
+            "Could not list worktrees: {error}"
+        ))];
+    }
+    let removable = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.is_removable())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let held = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !entry.is_removable() && !entry.being_removed)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    // A worktree whose agent was just deleted: its removal is already under
+    // way, so it is neither free nor held, and it cannot be removed twice.
+    let being_removed = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.being_removed)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    let mut rows = vec![ManageWorktreeVisualRow::Header("Removable Worktrees")];
+    if removable.is_empty() {
+        rows.push(ManageWorktreeVisualRow::Empty(
+            "No removable worktrees. yaran manages nothing here that an agent is not holding."
+                .to_string(),
+        ));
+    } else {
+        rows.extend(removable.into_iter().map(ManageWorktreeVisualRow::Entry));
+    }
+    if !held.is_empty() {
+        // A busy row (an agent being created in it, a deleted agent's CLI
+        // still stopping) sits here too: something is using the folder, and
+        // the row's own suffix says what.
+        rows.push(ManageWorktreeVisualRow::Header("Held By An Agent"));
+        rows.extend(held.into_iter().map(ManageWorktreeVisualRow::Entry));
+    }
+    if !being_removed.is_empty() {
+        rows.push(ManageWorktreeVisualRow::Header("Being Removed"));
+        rows.extend(
+            being_removed
+                .into_iter()
+                .map(ManageWorktreeVisualRow::Entry),
+        );
+    }
+    if !leftovers.is_empty() {
+        rows.push(ManageWorktreeVisualRow::Header("Left Over After A Delete"));
+        rows.extend((0..leftovers.len()).map(ManageWorktreeVisualRow::Leftover));
+    }
+    rows
+}
+
+/// The rows the manager's cursor can rest on, in screen order: the removable
+/// worktrees, then every left-over folder (a busy one too, whose actions still
+/// copy its path).
+pub(crate) fn manager_selectable_rows(
+    entries: &[yaran_core::worktree_manager::ManagedWorktree],
+    leftovers: &[yaran_core::leftover_folders::LeftoverFolder],
+) -> Vec<ManagerSelection> {
+    removable_worktree_indices(entries)
+        .into_iter()
+        .map(ManagerSelection::Worktree)
+        .chain((0..leftovers.len()).map(ManagerSelection::Leftover))
+        .collect()
+}
+
+pub(crate) fn removable_worktree_indices(
+    entries: &[yaran_core::worktree_manager::ManagedWorktree],
+) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.is_removable().then_some(index))
+        .collect()
+}
+
+pub(crate) fn selectable_project_worktree_indices(entries: &[ProjectWorktreeEntry]) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.is_selectable().then_some(index))
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MacroBarState {
+    pub(crate) input: TextInput,
+    pub(crate) selected: usize,
+    pub(crate) previous_input_target: InputTarget,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MacroEditState {
+    pub(crate) id: Option<String>,
+    pub(crate) name_input: TextInput,
+    pub(crate) text_input: TextInput,
+    pub(crate) surface: MacroSurface,
+    pub(crate) focus: MacroEditFocus,
+}
+
+/// Which control has focus in the macro editor.
+///
+/// An ordinary modal: every control is a focus stop, movement keys move between
+/// them and change nothing, Space acts on whichever one has focus, and Escape
+/// cancels.
+///
+/// Declared in visual order, which is also the forward focus order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MacroEditFocus {
+    /// The single-line name field. Typing is immediate: there is no mode,
+    /// because nothing a single-line field consumes collides with a modal key.
+    Name,
+    /// The multiline body. Needs the engage step (see
+    /// [`App::macro_text_engaged`]) because Enter is CONTENT here and is also
+    /// every modal's confirm key, so the two cannot share an unmoded field.
+    Text,
+    /// The Agent/Terminal/Both selector. Space advances it; movement keys move
+    /// past it without touching its value.
+    Surface,
+    Cancel,
+    Save,
+}
+
+impl MacroEditFocus {
+    /// Visual order, which is also the forward focus order.
+    pub(crate) const ORDER: [MacroEditFocus; 5] = [
+        MacroEditFocus::Name,
+        MacroEditFocus::Text,
+        MacroEditFocus::Surface,
+        MacroEditFocus::Cancel,
+        MacroEditFocus::Save,
+    ];
+
+    /// The next focus stop in `direction`, wrapping at both ends.
+    pub(crate) fn step(self, direction: FocusStep) -> Self {
+        let order = Self::ORDER;
+        let index = order
+            .iter()
+            .position(|f| *f == self)
+            .expect("every variant is in ORDER");
+        let next = if direction == FocusStep::Forward {
+            (index + 1) % order.len()
+        } else {
+            (index + order.len() - 1) % order.len()
+        };
+        order[next]
+    }
+
+    /// Whether this stop is actually TAKING keystrokes right now.
+    ///
+    /// The single-line name field always is: typing there is immediate. The
+    /// multiline body only is once it has been engaged, and an unengaged body
+    /// owns nothing, so the movement keys keep working while focus is parked on
+    /// it. That distinction is what [`MacroEditFocus::is_text_field`] cannot
+    /// make on its own.
+    pub(crate) fn owns_keys(self, body: FieldEngagement) -> bool {
+        match self {
+            MacroEditFocus::Name => true,
+            MacroEditFocus::Text => body == FieldEngagement::Engaged,
+            MacroEditFocus::Surface | MacroEditFocus::Cancel | MacroEditFocus::Save => false,
+        }
+    }
+}
+
+/// Which control has focus in the three `Configure*` modals (startup command,
+/// project environment, global environment).
+///
+/// All three hold one full-text field, so Enter cannot mean "submit": it is
+/// content the moment the field is engaged. The field therefore keeps the
+/// engage step, and the modal carries the Cancel/Save pair that gives Enter its
+/// third, unambiguous meaning. That is the dual-mode rule.
+///
+/// Declared in visual order, which is also the forward focus order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ConfigureFieldFocus {
+    /// The full-text body. Unengaged it takes no keystrokes at all; engaging it
+    /// is an explicit act (the confirm key, the engage binding, or a double
+    /// click on the field).
+    #[default]
+    Input,
+    Cancel,
+    Save,
+}
+
+impl ConfigureFieldFocus {
+    /// The next focus stop in `direction`, wrapping at both ends.
+    /// Every stop is unconditional here, but the shared ring is used anyway so
+    /// this modal's focus order is declared as data like everyone else's.
+    pub(crate) fn step(self, direction: FocusStep) -> Self {
+        let ring: [(ConfigureFieldFocus, bool); 3] = [
+            (ConfigureFieldFocus::Input, true),
+            (ConfigureFieldFocus::Cancel, true),
+            (ConfigureFieldFocus::Save, true),
+        ];
+        components::focus_ring::next_focus(&ring, self, direction)
+    }
+}
+
+/// Which control has focus in a two-button confirmation.
+///
+/// A `bool` cannot say which control has focus: `confirm_selected: false` at a
+/// construction site reads as a checkbox that is off rather than as focus
+/// resting on Cancel. Every modal in yaran names its focus with an enum, and this
+/// shared type is what stops a near-identical `…Focus` enum per confirmation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ConfirmFocus {
+    /// The safe default: a confirmation opens with Cancel focused.
+    #[default]
+    Cancel,
+    /// The committing button (Delete, Quit, Discard, Use Existing, …).
+    Confirm,
+}
+
+impl ConfirmFocus {
+    /// Move focus to the other button. A two-control focus ring is its own
+    /// inverse, so forwards and backwards are the same step.
+    pub(crate) fn toggled(self) -> Self {
+        match self {
+            Self::Cancel => Self::Confirm,
+            Self::Confirm => Self::Cancel,
+        }
+    }
+
+    /// Whether the committing button is the one focus is on.
+    pub(crate) fn is_confirm(self) -> bool {
+        matches!(self, Self::Confirm)
+    }
+
+    /// The answer activating the focused button gives.
+    pub(crate) fn answer(self) -> ConfirmAnswer {
+        match self {
+            Self::Cancel => ConfirmAnswer::Cancel,
+            Self::Confirm => ConfirmAnswer::Confirm,
+        }
+    }
+}
+
+/// How the user answered a confirmation: with its committing button, or by
+/// cancelling it (its Cancel button, Escape, or a click outside).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfirmAnswer {
+    /// The committing button (Delete, Quit, Discard, Apply, …).
+    Confirm,
+    /// Anything that abandons the confirmation.
+    Cancel,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingMacroDelete {
+    pub(crate) name: String,
+    pub(crate) focus: ConfirmFocus,
+}
+
+/// Which reader takes the run loop's input on one iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunInputReader {
+    /// The input debugger's own raw reader.
+    Debugger,
+    /// The raw path that forwards typing to a program.
+    Forwarding,
+    /// crossterm's decoded events.
+    Structured,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InputTarget {
+    None,
+    Agent,
+    Terminal,
+    CommitMessage,
+    StartupCommand,
+    /// The macro editor's multiline body is engaged for typing. Its own variant
+    /// rather than a reuse of `StartupCommand` so a future reader cannot mistake
+    /// one modal's engage state for the other's.
+    MacroText,
+}
+
+pub(crate) use yaran_core::pty::ScrollDirection;
+
+/// A position within the terminal grid (0-based row and column).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TermGridPos {
+    pub row: u16,
+    pub col: u16,
+}
+
+/// The scroll state of a PTY grid at one instant, as reported by
+/// [`yaran_core::pty::TerminalSnapshot`]. Stamped onto a [`TerminalSelection`] at
+/// drag start so viewport rows recorded then can be re-found later; see
+/// [`TerminalSelection::to_origin_row`] for the arithmetic and its limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SelectionOrigin {
+    /// `TerminalSnapshot::scrollback_offset` (alacritty's `display_offset`):
+    /// how many lines above the live edge the viewport top sits.
+    pub scrollback_offset: usize,
+    /// `TerminalSnapshot::scrollback_total` (alacritty's `history_size`): how
+    /// many lines of scrollback exist behind the viewport.
+    pub scrollback_total: usize,
+    /// Whether `scrollback_total` had already reached capacity in this frame.
+    /// [`TerminalSelection::to_origin_row`] cannot correct a selection stamped
+    /// here, so `App::drop_drifted_selection` retires it instead. Read from the
+    /// PTY's spawn-time `PtyClient::scrollback_capacity`, never live config:
+    /// capacity is fixed when the emulator is built, so a reload that raises the
+    /// setting leaves every running PTY on the old number.
+    pub history_saturated: bool,
+    /// The value of `App::grid_generation` in this frame: how many times the
+    /// grid had been rebuilt when the origin was stamped. Only meaningful
+    /// alongside `history_saturated`; see `App::drop_drifted_selection`.
+    pub grid_generation: u64,
+    /// The viewport dimensions (rows, cols) the selection was recorded against.
+    ///
+    /// A width change reflows the grid, so the recorded row no longer names the
+    /// text it named and [`TerminalSelection::to_origin_row`] translates it to
+    /// an arbitrary row; `App::drop_drifted_selection` retires the selection on
+    /// a column change. A height-only change moves whole, unrewrapped lines
+    /// between history and the viewport, which the arithmetic translates
+    /// exactly, so only the width is compared.
+    pub grid_size: (u16, u16),
+}
+
+/// Active text selection in the terminal viewport.
+#[derive(Clone, Debug)]
+pub(crate) struct TerminalSelection {
+    /// Where the drag started (anchor). Fixed during drag.
+    pub anchor: TermGridPos,
+    /// Current end of selection. Moves during drag.
+    pub end: TermGridPos,
+    /// True while the mouse button is held (still dragging).
+    pub dragging: bool,
+    /// Grid scroll state when the drag started. `anchor`/`end` are viewport
+    /// rows, which only name a fixed piece of text while this stays true, so
+    /// the PTY paths translate live rows back into this frame before testing
+    /// them. Unused by the startup-log viewers, which share this type but store
+    /// WRAPPED VISUAL LINE indices, valid only at the width they were computed
+    /// at (see `screen_to_startup_log_grid` and
+    /// `App::reconcile_startup_log_wrap_width`).
+    pub origin: SelectionOrigin,
+    /// The center part the selection was made in. Only that part's own switch
+    /// to another pty retires it.
+    pub part: CenterPart,
+}
+
+impl TerminalSelection {
+    /// Returns (start, end) in reading order (top-left to bottom-right).
+    pub(crate) fn ordered(&self) -> (TermGridPos, TermGridPos) {
+        if self.anchor.row < self.end.row
+            || (self.anchor.row == self.end.row && self.anchor.col <= self.end.col)
+        {
+            (self.anchor, self.end)
+        } else {
+            (self.end, self.anchor)
+        }
+    }
+
+    /// Returns true if the given (row, col) is within the selection.
+    /// Uses line-based (not rectangular) selection semantics.
+    pub(crate) fn contains(&self, row: u16, col: u16) -> bool {
+        let (start, end) = self.ordered();
+        if row < start.row || row > end.row {
+            return false;
+        }
+        if start.row == end.row {
+            return col >= start.col && col <= end.col;
+        }
+        if row == start.row {
+            return col >= start.col;
+        }
+        if row == end.row {
+            return col <= end.col;
+        }
+        true // middle rows are fully selected
+    }
+
+    /// Translate a row of the LIVE viewport back into the frame this selection
+    /// was recorded in, or `None` when that row predates the recorded viewport
+    /// (a negative row comes back as `None` rather than wrapping).
+    ///
+    /// A viewport row names a fixed line only while the grid holds still, so the
+    /// row is corrected by `(offset_now - offset_then) - (total_now -
+    /// total_then)`. `scrollback_total` stands in for the grid's advancing
+    /// bottom, which is not exposed, because the scroll that grows history is
+    /// the scroll that advances it.
+    ///
+    /// Two regimes break that substitution, and the correction drifts in both.
+    /// A saturated scrollback ring stops growing while the bottom keeps moving:
+    /// `SelectionOrigin::history_saturated` records it and
+    /// `App::drop_drifted_selection` retires the selection rather than let it
+    /// name other text. A scrolling region with a top margin advances the
+    /// display offset without pushing into history, at any history depth, and is
+    /// not detected at all, because the child's scrolling region is not exposed;
+    /// a selection held across one can still drift.
+    ///
+    /// Text that has scrolled out of the viewport needs no guard: it stops
+    /// appearing among the snapshot's cells, so it leaves the highlight and the
+    /// copy on its own. Copying it back is out of scope; the snapshot carries no
+    /// scrollback.
+    pub(crate) fn to_origin_row(&self, live_row: u16, now: SelectionOrigin) -> Option<u16> {
+        let offset_delta =
+            usize_to_i64(now.scrollback_offset) - usize_to_i64(self.origin.scrollback_offset);
+        let total_delta =
+            usize_to_i64(now.scrollback_total) - usize_to_i64(self.origin.scrollback_total);
+        let origin_row = i64::from(live_row) - offset_delta + total_delta;
+        u16::try_from(origin_row).ok()
+    }
+
+    /// [`Self::contains`] for a cell read from the LIVE grid: translates the
+    /// cell's row into the selection's own frame first. Every PTY-grid caller
+    /// must use this rather than `contains`, or the highlight and the copied
+    /// text stay pinned to screen coordinates while the text underneath moves.
+    pub(crate) fn contains_live(&self, live_row: u16, col: u16, now: SelectionOrigin) -> bool {
+        match self.to_origin_row(live_row, now) {
+            Some(row) => self.contains(row, col),
+            None => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MouseLayoutState {
+    pub(crate) body: Rect,
+    pub(crate) left: Rect,
+    pub(crate) center: Rect,
+    pub(crate) right: Rect,
+    pub(crate) left_list: Rect,
+    /// Screen-row (relative to `left_list.y`) -> left-item index, rebuilt each
+    /// render. The flat list's agent rows are two lines tall, so a click row no
+    /// longer maps 1:1 to an item; this is the reverse map (see
+    /// `render::left_row_to_item`).
+    pub(crate) left_row_to_item: Vec<usize>,
+    /// The grid of the center part that has focus (the one drawn alone when a
+    /// surface is maximized), which is what a press, a drag and a link test
+    /// translate against.
+    pub(crate) focused_term: Option<Rect>,
+    /// The grid of the other center part, when the center pane draws two. A
+    /// press there moves focus to it first (see `App::focus_part_under`).
+    pub(crate) other_term: Option<Rect>,
+    /// The divider row between an agent and its terminal dock, while the split
+    /// is drawn: dragged, it resizes the dock, and dragged to an edge, it shows
+    /// one part alone.
+    pub(crate) dock_divider: Option<Rect>,
+    /// The center pane between the header and the footer, as the dock divider
+    /// measures its share against.
+    pub(crate) center_stack: Option<Rect>,
+    /// What the take-over card over an agent's stack covers, while it is up.
+    pub(crate) card_cover: Option<Rect>,
+    /// The `agent | split | term` control's three words, where it is drawn.
+    pub(crate) layout_control: Vec<(DockLayout, Rect)>,
+    /// The dock strip's pills, where they are drawn: (terminal id, cell rect).
+    pub(crate) dock_pills: Vec<(String, Rect)>,
+    /// The take-over card's button, when the card is on screen. Published by the
+    /// render pass and cleared with the rest of this state every frame, so a
+    /// click can only land on a button that is drawn right now: the card comes
+    /// and goes with the live ownership verdict, without anything on this
+    /// surface happening at all.
+    pub(crate) takeover_button: Option<Rect>,
+    /// The dormant-tab card's "Start session" button, when that card is on
+    /// screen. Published and cleared per frame exactly as the take-over
+    /// button's rect is, so a click can only land on a button being drawn.
+    pub(crate) dormant_tab_button: Option<Rect>,
+    /// The pull-request banner's painted band, when one is on screen. The
+    /// banner fills its whole lane cap to cap, so the published rect IS what
+    /// the user sees, and a press anywhere inside it opens the pull request.
+    ///
+    /// Published by the render pass and cleared with the rest of this state
+    /// every frame, which is what makes the maximized case safe on its own: a
+    /// fullscreen surface covers the lane, the banner is not drawn behind it,
+    /// and a press at that row therefore finds nothing to open.
+    pub(crate) pr_banner: Option<Rect>,
+    pub(crate) unstaged_list: Option<Rect>,
+    pub(crate) staged_list: Option<Rect>,
+    pub(crate) commit_area: Option<Rect>,
+    pub(crate) commit_text_area: Option<Rect>,
+}
+
+impl MouseLayoutState {
+    pub(crate) fn reset(&mut self, body: Rect, left: Rect, center: Rect, right: Rect) {
+        self.body = body;
+        self.left = left;
+        self.center = center;
+        self.right = right;
+        self.left_list = Rect::default();
+        self.left_row_to_item.clear();
+        self.focused_term = None;
+        self.other_term = None;
+        self.dock_divider = None;
+        self.center_stack = None;
+        self.card_cover = None;
+        self.layout_control.clear();
+        self.dock_pills.clear();
+        self.takeover_button = None;
+        self.dormant_tab_button = None;
+        self.pr_banner = None;
+        self.unstaged_list = None;
+        self.staged_list = None;
+        self.commit_area = None;
+        self.commit_text_area = None;
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OverlayMouseLayoutState {
+    pub(crate) active: OverlayMouseLayout,
+    /// Outer rect of the topmost modal painted this frame, or `None` when no
+    /// modal was painted. Recorded by the one chokepoint every modal passes
+    /// through, [`App::clear_overlay_area`], and read on a later event by the
+    /// click-outside dismissal engine (see [`super::overlay_dismiss`]).
+    ///
+    /// It fails closed: `None` means "no dismissal", never "dismiss on any
+    /// click", since a prompt can be open while a fullscreen overlay is up, in
+    /// which case no rect is recorded yet the mouse still routes to prompt
+    /// handling. A zero-sized `Rect` sentinel would be a silent trap here, so
+    /// the `Option` is deliberate.
+    ///
+    /// Last write wins, which is what makes nested modals work: the [`Cell`]
+    /// permits that recording through the renderer's shared reference, and the
+    /// rect left behind is the modal actually on top.
+    pub(crate) frame: Cell<Option<Rect>>,
+    /// The open Confirm dialog's body scroll. Not cleared by [`Self::reset`]:
+    /// it outlives a frame while the same dialog stays on screen, and forgets
+    /// itself once a frame paints no Confirm body (see
+    /// [`confirm_dialog::ConfirmBodyScroll`]).
+    pub(crate) confirm_scroll: Cell<confirm_dialog::ConfirmBodyScroll>,
+}
+
+impl OverlayMouseLayoutState {
+    pub(crate) fn reset(&mut self) {
+        self.active = OverlayMouseLayout::None;
+        self.frame.set(None);
+        confirm_dialog::ConfirmBodyScroll::new_frame(&self.confirm_scroll);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OverlayCheckboxId {
+    DeleteAgentWorktree,
+    /// The delete-agent dialog's "also delete the branch" box. Distinct from
+    /// [`Self::DeleteWorktreeBranch`], which is the worktree manager's.
+    DeleteAgentBranch,
+    /// The delete-agent dialog's "also delete the other branches" box.
+    DeleteAgentOtherBranches,
+    DeleteWorktreeBranch,
+    /// The left-over folder delete's "also delete the branch" box.
+    DeleteLeftoverFolderBranches,
+    RenameSessionBranch,
+    NonDefaultBranchCheckoutDefault,
+    NameNewAgentRandomizedPetName,
+    NameNewAgentCopyChanges,
+    NameNewAgentReviewCopy,
+    CloneProjectRandomizedPetName,
+    CloneProjectReviewCopy,
+    ConfigReloadRecoverOldConfig,
+    /// The recreate-working-copy dialog's "restart the tabs" box.
+    RecreateRestartTabs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OverlayCheckbox {
+    pub(crate) id: OverlayCheckboxId,
+    pub(crate) rect: Rect,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum OverlayMouseLayout {
+    #[default]
+    None,
+    Help,
+    Command {
+        input: Rect,
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    BrowseProjects {
+        input: Option<Rect>,
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    AddProjectFailed {
+        ok_button: Rect,
+    },
+    AgentInfo {
+        close_button: Rect,
+    },
+    /// The first-load modal's two one-row pill buttons.
+    FirstLoad {
+        primary_button: Rect,
+        secondary_button: Rect,
+    },
+    ChangeAgentProvider {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ChangeDefaultProvider {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    SetTailscaleMode {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ChangeProjectDefaultProvider {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    PickEditor {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    PickProjectWorktree {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ManageWorktrees {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ConfirmDeleteWorktree {
+        cancel_button: Rect,
+        delete_button: Rect,
+        checkbox: Option<OverlayCheckbox>,
+    },
+    LeftoverFolderActions {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ConfirmDeleteLeftoverFolder {
+        cancel_button: Rect,
+        delete_button: Rect,
+        checkbox: Option<OverlayCheckbox>,
+    },
+    PickProject {
+        /// The `/`-search field, published only while it is drawn, so a click
+        /// can land the caret in it.
+        input: Option<Rect>,
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ChangeTheme {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ResourceMonitor {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    StartupCommandLogs {
+        // No outer `area` here: the modal's outer rect is recorded once, for
+        // every modal, in `OverlayMouseLayoutState::frame` (the click-outside
+        // dismissal engine's store), so a per-variant copy would be a second
+        // source of truth for the same rect.
+        /// The filter field, published only while it is drawn.
+        input: Option<Rect>,
+        list: Rect,
+        body: Rect,
+        items: usize,
+        offset: usize,
+        close_button: Rect,
+    },
+    /// Shared by all three `Configure*` modals: one full-text field plus the
+    /// Cancel/Save pair the dual-mode rule requires of it.
+    ConfigureStartupCommand {
+        input: Rect,
+        cancel_button: Rect,
+        save_button: Rect,
+    },
+    KillRunning {
+        input: Option<Rect>,
+        list: Rect,
+        items: usize,
+        offset: usize,
+        cancel_button: Rect,
+        hovered_button: Rect,
+        selected_button: Rect,
+        visible_button: Rect,
+    },
+    ConfirmKillRunning {
+        cancel_button: Rect,
+        kill_button: Rect,
+    },
+    ConfirmDeleteAgent {
+        cancel_button: Rect,
+        delete_button: Rect,
+        checkbox: Option<OverlayCheckbox>,
+        /// The branch box, published only where it is actually painted and
+        /// enabled, which is only while the worktree box is ticked and git has
+        /// answered.
+        branch_checkbox: Option<OverlayCheckbox>,
+        /// The other-branches box, published on the same terms.
+        other_branches_checkbox: Option<OverlayCheckbox>,
+    },
+    ConfirmDeleteTerminal {
+        cancel_button: Rect,
+        delete_button: Rect,
+    },
+    ConfirmCloseTab {
+        cancel_button: Rect,
+        confirm_button: Rect,
+    },
+    ConfirmStopTab {
+        cancel_button: Rect,
+        confirm_button: Rect,
+    },
+    ConfirmDetachAgent {
+        cancel_button: Rect,
+        confirm_button: Rect,
+    },
+    ConfirmRecreateWorkingCopy {
+        cancel_button: Rect,
+        confirm_button: Rect,
+        checkbox: Option<OverlayCheckbox>,
+    },
+    ConfirmCheckoutDefaultBranch {
+        cancel_button: Rect,
+        confirm_button: Rect,
+    },
+    ConfirmDeleteProject {
+        cancel_button: Rect,
+        confirm_button: Rect,
+    },
+    ConfirmChangeBaseBranch {
+        cancel_button: Rect,
+        confirm_button: Rect,
+    },
+    ProjectActions {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ChangeBaseBranch {
+        input: Option<Rect>,
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    ProjectInfo {
+        close_button: Rect,
+    },
+    ConfirmRemoveProject {
+        cancel_button: Rect,
+        confirm_button: Rect,
+    },
+    ConfirmDeleteMacro {
+        cancel_button: Rect,
+        delete_button: Rect,
+    },
+    ConfirmQuit {
+        cancel_button: Rect,
+        quit_button: Rect,
+    },
+    ConfirmDiscardFile {
+        cancel_button: Rect,
+        discard_button: Rect,
+    },
+    ConfirmCreateInitialCommit {
+        cancel_button: Rect,
+        create_button: Rect,
+    },
+    ConfirmInitRepo {
+        cancel_button: Rect,
+        init_button: Rect,
+    },
+    ConfirmNonDefaultBranch {
+        cancel_button: Rect,
+        add_button: Rect,
+        checkbox: Option<OverlayCheckbox>,
+    },
+    ConfirmUseExistingBranch {
+        cancel_button: Rect,
+        use_button: Rect,
+    },
+    ConfigReloadFailed {
+        close_button: Rect,
+        apply_button: Rect,
+        checkbox: OverlayCheckbox,
+    },
+    RenameSession {
+        input: Rect,
+        checkbox: Option<OverlayCheckbox>,
+    },
+    /// The create-agent-from-PR modal's single text field.
+    PullRequestInput {
+        input: Rect,
+        /// The secondary "choose a project" action, published only when it is
+        /// drawn (no project chosen yet). A control that is not on screen must
+        /// not be clickable.
+        choose_project: Option<Rect>,
+    },
+    /// The attach-pull-request modal's single text field (its only control).
+    AttachPullRequestInput {
+        input: Rect,
+    },
+    /// The standalone-agent name modal's single text field (its only control).
+    NameStandaloneAgent {
+        input: Rect,
+    },
+    /// The clone form's three single-line fields and its random-name checkbox.
+    CloneProject {
+        /// Absent in pull-request mode, where the address is read-only.
+        address: Option<Rect>,
+        destination: Rect,
+        agent_name: Rect,
+        /// The random-name box; absent in pull-request mode.
+        checkbox: Option<OverlayCheckbox>,
+        /// The "create a review copy" box; present only while the pull-request
+        /// form is asking for that agreement.
+        review_copy_checkbox: Option<OverlayCheckbox>,
+        /// The "choose an existing project" button; pull-request mode only.
+        choose_existing: Option<Rect>,
+    },
+    NameNewAgent {
+        input: Rect,
+        checkbox: Option<OverlayCheckbox>,
+        /// The "copy uncommitted changes" checkbox; present only for
+        /// `CreateAgentRequest::NewProject` prompts.
+        copy_checkbox: Option<OverlayCheckbox>,
+        /// The "create a review copy" checkbox; present only while the prompt
+        /// is asking for that agreement.
+        review_copy_checkbox: Option<OverlayCheckbox>,
+    },
+    /// The macro list: a Picker, so it publishes its rows and nothing else. The
+    /// editor that opens on top of it publishes
+    /// [`OverlayMouseLayout::EditMacros`] instead.
+    EditMacroList {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    /// The Pull requests modal: a Picker, so it publishes its rows (headings
+    /// included, which a click passes over) and nothing else.
+    PullRequests {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
+    /// The macro editor, not the nested delete-confirm, which publishes
+    /// `ConfirmDeleteMacro` over the top of this.
+    ///
+    /// The two input rects are the fields' inner areas, so a click maps straight
+    /// onto a text position. `surface_options` is one rect per [`MacroSurface`]
+    /// variant in `Agent, Terminal, Both` order, so clicking one selects exactly
+    /// that option rather than advancing the cycle.
+    EditMacros {
+        name_input: Rect,
+        text_input: Rect,
+        surface_options: [Rect; 3],
+        cancel_button: Rect,
+        save_button: Rect,
+    },
+}
+
+/// The pane divider a mouse drag is resizing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DraggedDivider {
+    Left,
+    Right,
+    /// Between an agent and its terminal dock in the split.
+    Dock,
+    Staged,
+    Commit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MouseClickTarget {
+    LeftPane,
+    CenterPane,
+    UnstagedPane,
+    StagedPane,
+    CommandPalette,
+    StartupCommandInput,
+    MacroTextInput,
+}
+
+/// A drag-to-reorder gesture over a sidebar row, the TUI's twin of the web
+/// sidebar's drag ordering.
+///
+/// The gesture is armed by a left press on a reorderable row and stays a plain
+/// CLICK until the pointer reaches a DIFFERENT reorderable row: an agent row is
+/// three screen rows tall, so a one-to-three-cell wobble inside the pressed row
+/// stays a click, and a double click there still pairs. The first move onto
+/// another row promotes the gesture (`promoted`), and from then on the pointer's
+/// row is tracked in `hover`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RowDragState {
+    /// The item index the press landed on: the row being moved.
+    pub(crate) source: usize,
+    /// WHAT the press landed on: the id of the agent or terminal in the source
+    /// row, captured while the user was looking at it. Row indices are positions
+    /// in a list that is rebuilt whenever an agent attaches, exits or arrives, so
+    /// the index alone is not an identity. The drop moves this id, and refuses
+    /// outright when the source row no longer holds it.
+    pub(crate) source_id: LeftRow,
+    /// The reorderable row the pointer is over now, or `None` when it is over
+    /// something that is not a drop target (the Inactive tail and its toggle, a
+    /// pane's empty space, another pane) or back over the source row itself. A
+    /// release with no hover drops nothing.
+    pub(crate) hover: Option<usize>,
+    /// The id in the hovered row, resolved as the pointer passes over it and kept
+    /// beside the index for the same reason `source_id` is.
+    pub(crate) hover_id: Option<LeftRow>,
+    /// Whether the pointer has left the source row, promoting the press from a
+    /// click into a drag. An unpromoted gesture paints no marker and reorders
+    /// nothing.
+    pub(crate) promoted: bool,
+}
+
+/// A strip as it was last drawn: whose it was, its tab ids in order, and the tab
+/// on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DrawnTabStrip {
+    pub(crate) session_id: String,
+    pub(crate) tabs: Vec<String>,
+    pub(crate) focused: String,
+}
+
+/// Which of an agent's two strips: its provider tabs, or its terminal dock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PillStrip {
+    Tabs,
+    Dock,
+}
+
+/// A drag-to-reorder gesture over a pill of a tab strip. It stays a plain click
+/// until the pointer reaches a different pill, so the press that focuses a tab
+/// is the same one that can pick it up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TabDragState {
+    /// Which of the agent's strips the press landed in.
+    pub(crate) strip: PillStrip,
+    /// The agent whose strip the press landed in.
+    pub(crate) session_id: String,
+    /// The pill the press picked up.
+    pub(crate) source_id: String,
+    /// The pill the pointer is over now, when a drop there would mean something.
+    pub(crate) hover_id: Option<String>,
+    /// Whether the pointer has left the pressed pill, making the press a drag.
+    pub(crate) promoted: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RecentMouseClick {
+    pub(crate) target: MouseClickTarget,
+    pub(crate) item_index: Option<usize>,
+    pub(crate) at: Instant,
+}
+
+/// What a row of the agents list is, by identity rather than by position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LeftRow {
+    Agent(String),
+    Terminal(String),
+    InactiveToggle,
+}
+
+/// What the agent cursor was on before a rebuild.
+enum LeftCursorOn {
+    Row(LeftRow),
+    /// No row: parked, or an empty list.
+    Nothing,
+    /// Not known: the list was never built, or the index is past a list that
+    /// has rows, which the clamp repairs.
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeftItem {
+    /// An agent row (index into `engine.sessions`). The flat model shows the
+    /// project inline on the row rather than under a header.
+    Session(usize),
+    /// A project or standalone terminal's row (index into `App::left_terminals`).
+    /// An agent's own terminals are not rows: they live in its dock.
+    Terminal(usize),
+    /// The collapsible "Inactive · N" toggle separating active agents (above) from
+    /// detached/exited ones (below). Selectable; Enter/Space toggles the tail.
+    InactiveToggle,
+}
+
+impl LeftItem {
+    pub(crate) fn is_selectable(self) -> bool {
+        match self {
+            LeftItem::Session(_) | LeftItem::Terminal(_) | LeftItem::InactiveToggle => true,
+        }
+    }
+}
+
+/// The agent-list display sort mode, driven by the shared `config.ui.agent_sort`
+/// preference. This is a pure DISPLAY ordering computed at render time: the sort
+/// mode never rewrites `engine.sessions`. The stored order IS the `Manual`
+/// display order, and every hand-placement writes it: the TUI's move commands,
+/// a mouse drag on either surface.
+///
+/// The TUI's own picker offers the non-manual modes (see `TUI_CYCLE`) and
+/// displays `Manual` whenever a hand-placement selected it. The web mirror offers
+/// active/updated/created/name/manual and displays a TUI-set `NameDesc`. Both
+/// surfaces render every mode in this enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentSortMode {
+    /// Working / needs-attention agents float to the top (a stable float, not a
+    /// re-sort), each group keeping incoming order. The default.
+    Active,
+    /// Most recently updated first (`Reverse(updated_at)`).
+    Updated,
+    /// Most recently created first (`Reverse(created_at)`).
+    Created,
+    /// By name (title-or-branch, case-insensitive), A to Z.
+    NameAsc,
+    /// By name (title-or-branch, case-insensitive), Z to A.
+    NameDesc,
+    /// The stored global order verbatim: the hand-placed order. The TUI's picker
+    /// does not offer it, but the TUI reaches it by hand-placing a row.
+    Manual,
+}
+
+impl AgentSortMode {
+    /// The five modes the TUI's `sort-agents` picker cycles through. `Manual` is
+    /// deliberately excluded: it is not a sort to pick but the result of placing
+    /// a row by hand, which selects it on its own.
+    pub(crate) const TUI_CYCLE: [AgentSortMode; 5] = [
+        AgentSortMode::Active,
+        AgentSortMode::Updated,
+        AgentSortMode::Created,
+        AgentSortMode::NameAsc,
+        AgentSortMode::NameDesc,
+    ];
+
+    /// The shared `config.ui.agent_sort` string, read by
+    /// [`yaran_core::config_effective::effective_agent_sort`], the one rule both
+    /// surfaces and `yaran config get` share: an unknown value is `Active`, the
+    /// default.
+    pub(crate) fn from_config_str(s: &str) -> AgentSortMode {
+        use yaran_core::flat_list::FlatSortMode;
+        match yaran_core::config_effective::effective_agent_sort(s) {
+            FlatSortMode::Active => AgentSortMode::Active,
+            FlatSortMode::Updated => AgentSortMode::Updated,
+            FlatSortMode::Created => AgentSortMode::Created,
+            FlatSortMode::NameAsc => AgentSortMode::NameAsc,
+            FlatSortMode::NameDesc => AgentSortMode::NameDesc,
+            FlatSortMode::Manual => AgentSortMode::Manual,
+        }
+    }
+
+    /// Map to the core-owned ordering enum consumed by
+    /// `yaran_core::flat_list::order_sessions`. The TUI keeps `AgentSortMode` for its
+    /// config/UI concerns (labels, cycle); the core enum owns only the ordering.
+    pub(crate) fn to_flat_sort_mode(self) -> yaran_core::flat_list::FlatSortMode {
+        use yaran_core::flat_list::FlatSortMode;
+        match self {
+            AgentSortMode::Active => FlatSortMode::Active,
+            AgentSortMode::Updated => FlatSortMode::Updated,
+            AgentSortMode::Created => FlatSortMode::Created,
+            AgentSortMode::NameAsc => FlatSortMode::NameAsc,
+            AgentSortMode::NameDesc => FlatSortMode::NameDesc,
+            AgentSortMode::Manual => FlatSortMode::Manual,
+        }
+    }
+
+    /// The `config.ui.agent_sort` string for this mode (the shared wire value).
+    pub(crate) fn as_config_str(self) -> &'static str {
+        match self {
+            AgentSortMode::Active => "active",
+            AgentSortMode::Updated => "updated",
+            AgentSortMode::Created => "created",
+            AgentSortMode::NameAsc => "name",
+            AgentSortMode::NameDesc => "name_desc",
+            AgentSortMode::Manual => "manual",
+        }
+    }
+
+    /// The next mode in the TUI cycle. If the current mode is not in the cycle
+    /// (i.e. `Manual`, which the TUI never offers), start the cycle at `Active`.
+    pub(crate) fn next_in_tui_cycle(self) -> AgentSortMode {
+        match Self::TUI_CYCLE.iter().position(|m| *m == self) {
+            Some(i) => Self::TUI_CYCLE[(i + 1) % Self::TUI_CYCLE.len()],
+            None => AgentSortMode::Active,
+        }
+    }
+}
+
+/// The startup and reload warning for a `[ui] tab_reaches_agent` that leaves the
+/// typeable center pane with no keyboard way out. `None` in every healthy case,
+/// which is every case where at least one `focus_next` or `focus_prev` key
+/// survives the pane's typing ownership. Shared by bootstrap, the post-flip
+/// resume and the config reload so the three cannot drift.
+pub(crate) fn tab_reaches_agent_trap_warning(
+    bindings: &RuntimeBindings,
+    config: &Config,
+) -> Option<String> {
+    bindings
+        .typeable_center_traps_focus(if config.ui.tab_reaches_agent {
+            crate::keybindings::TabKey::ReachesAgent
+        } else {
+            crate::keybindings::TabKey::MovesPanes
+        })
+        .then(|| {
+            format!(
+                "Tab reaches the agent in the center pane, but {}",
+                crate::keybindings::NO_PANE_CHORD_ADVICE
+            )
+        })
+}
+
+/// The startup and reload warning about the bindings themselves: the
+/// typeable-pane trap above, and every newer default that starts unbound
+/// because the user's `[keys]` already gives its key to another action. One
+/// line, so neither pushes the other off the status line.
+pub(crate) fn key_bindings_warning(bindings: &RuntimeBindings, config: &Config) -> Option<String> {
+    let mut parts: Vec<String> = tab_reaches_agent_trap_warning(bindings, config)
+        .into_iter()
+        .collect();
+    parts.extend(crate::keybindings::late_default_warnings(&config.keys));
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// Build the flat left-pane list: one globally-ordered list of agents and
+/// project and standalone terminals, with no project grouping. Active agents and
+/// the terminals come first; detached/exited ("inactive") agents with none of
+/// their own terminals running collapse under an `InactiveToggle` tail (default
+/// collapsed). Orphan (removed-project) sessions are plain `Session` rows here;
+/// the renderer marks them inline.
+///
+/// The ordering is the core-owned `yaran_core::flat_list::order_rows` (the
+/// cross-language twin of the web's `flatList.ts`); this function only wraps the
+/// ordered rows into `LeftItem`s and inserts the collapsible toggle. Returned
+/// `LeftItem::Session(index)` values index into `sessions`, which is never
+/// mutated, and `LeftItem::Terminal(index)` values into `terminals`. See
+/// `flat_list.rs` for the per-mode rules.
+pub(crate) fn build_left_items(
+    sessions: &[AgentSession],
+    terminals: &[yaran_core::flat_list::TerminalRowFacts<'_>],
+    tail: InactiveTail,
+    sort_mode: AgentSortMode,
+    facts: &yaran_core::flat_list::AgentRowFacts<'_>,
+    terminal_visible: &dyn Fn(usize) -> bool,
+) -> Vec<LeftItem> {
+    // The ORDERING (partition, bucket sort, the tail rule and the Active-mode
+    // inactive-tail recency rule) is the core-owned `flat_list::order_rows`
+    // (cross-language twin of the web's `flatList.ts`); this surface only wraps
+    // the ordered rows into `LeftItem`s and inserts the collapsible toggle.
+    let order = yaran_core::flat_list::order_rows(
+        sessions,
+        terminals,
+        sort_mode.to_flat_sort_mode(),
+        facts,
+        terminal_visible,
+    );
+
+    let mut items: Vec<LeftItem> = order
+        .main
+        .into_iter()
+        .map(|row| match row {
+            yaran_core::flat_list::FlatRow::Agent(index) => LeftItem::Session(index),
+            yaran_core::flat_list::FlatRow::Terminal(index) => LeftItem::Terminal(index),
+        })
+        .collect();
+    if !order.inactive.is_empty() {
+        items.push(LeftItem::InactiveToggle);
+        if tail == InactiveTail::Expanded {
+            items.extend(order.inactive.into_iter().map(LeftItem::Session));
+        }
+    }
+    items
+}
+
+mod attachment_presence;
+mod background_server;
+pub(crate) use background_server::BackgroundServerStart;
+// `pub(crate)` for its width helpers alone: the diff wrapper has to measure a
+// CJK glyph exactly as the pane's own wrapper does, and two functions that
+// disagree about that produce rows too wide for the box they were measured for.
+mod changes_tree;
+pub(crate) mod components;
+mod confirm_dialog;
+mod debug_input;
+mod dock;
+mod first_load;
+mod input;
+pub(crate) mod modal;
+mod overlay_dismiss;
+mod pr_clone;
+mod pull_requests;
+pub(crate) use pr_clone::{PrCloneAwaiting, PrCloneFolderAnswer, PrEdit, PullRequestClone};
+#[cfg(test)]
+pub(crate) use pr_clone::{PrFolder, PrReviewQuestion};
+mod project_actions;
+mod pty_ownership;
+mod redraw;
+pub(crate) use redraw::RedrawGate;
+#[cfg(test)]
+mod ellipsis_rows;
+#[cfg(test)]
+mod hint_lines;
+#[cfg(test)]
+mod name_chip_dialogs;
+mod no_branch_notice;
+#[cfg(test)]
+mod picker_lists;
+mod render;
+mod reorder;
+mod sessions;
+mod tab_reorder;
+#[cfg(test)]
+mod test_support;
+pub(crate) mod text_input;
+pub(crate) mod ui_jobs;
+mod workers;
+mod worktree_manager;
+
+// Re-export the welcome wordmark so the server status screen
+// (`crate::server_screen`) can reuse it without making `render` public.
+pub(crate) use render::ASCII_LOGO;
+
+pub(crate) use first_load::{FirstLoadButton, FirstLoadPrompt, NotesFetched};
+
+/// Seed a freshly booted status line: the orientation message on the anonymous
+/// slot, pinned, and the theme warning over it when the configured theme would
+/// not load, pinned too.
+///
+/// Both boot paths use this (a cold start and the resume after the web server
+/// hands the terminal back) so the two can never drift, and so what they do is
+/// testable without booting an App. Both messages are PINNED because neither is
+/// an outcome that has finished happening: the hint waits for the user's first
+/// action to write over it, and a theme that will not load is still true
+/// tomorrow.
+fn boot_status(
+    clear_after: Duration,
+    live: yaran_core::statusline::LiveStatusKeys,
+    orientation: impl Into<String>,
+    trap_warning: Option<String>,
+    theme_warning: Option<String>,
+    socket_warning: Option<String>,
+) -> KeyedStatusController {
+    // Sharing the engine's live-key set is what lets the status line tell a slow
+    // operation from an abandoned one; without it every busy is timed out on
+    // twenty seconds of silence.
+    let mut status = KeyedStatusController::with_clear_after(clear_after).with_live_keys(live);
+    status.set(Instant::now(), None, StatusTone::Info, orientation.into());
+    status.pin();
+    // The pane-chord trap is a plain warning: it expires like any other, and
+    // the theme warning below outranks it when both apply.
+    if let Some(message) = trap_warning {
+        status.set(Instant::now(), None, StatusTone::Warning, message);
+    }
+    if let Some(message) = theme_warning {
+        status.set(Instant::now(), None, StatusTone::Warning, message);
+        status.pin();
+    }
+    // True until yaran starts again, so it holds the line like the theme's.
+    if let Some(message) = socket_warning {
+        status.set(Instant::now(), None, StatusTone::Warning, message);
+        status.pin();
+    }
+    status
+}
+
+impl App {
+    /// Bootstrap the TUI. The caller must have already resolved `paths`,
+    /// created its directories, and acquired the single-instance lock.
+    /// This ensures the lock covers every entrypoint (TUI + config
+    /// subcommands) and that a losing process never touches shared state.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the boot steps in the order they must run, then one field initializer per Engine field"
+    )]
+    pub(crate) fn bootstrap_with_lock(
+        paths: YaranPaths,
+        mut single_instance_lock: SingleInstanceLock,
+    ) -> Result<Self> {
+        let mut config = ensure_config(&paths)?;
+
+        logger::init(&config.logging, &paths);
+        logger::info("bootstrapping yaran");
+
+        // Validate and build runtime keybindings from config.
+        if let Err(msg) = validate_keys(&config.keys) {
+            crate::line_to_stderr(format_args!(
+                "Configuration error in {}: {msg}",
+                paths.config_path.display()
+            ));
+            std::process::exit(1);
+        }
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let interactive_patterns = bindings.interactive_byte_patterns();
+
+        // Bound with the lock held and the config accepted, before anything can
+        // ask for it; yaran still starts without it.
+        let paths = paths.with_control_socket(&config.server.control_socket);
+        let socket_warning =
+            yaran_core::control_socket::open(&mut single_instance_lock, &paths.socket_path);
+
+        // Register the SIGWINCH handler (so resizes are seen even when bypassing
+        // crossterm's event reader during interactive mode) and the shutdown
+        // handlers (SIGTERM/SIGINT/SIGHUP) so the run loop can wind agents down
+        // gracefully instead of letting them die to the hard SIGKILL on drop.
+        let signals = register_signal_handles()?;
+
+        let session_store = SessionStore::open(&paths.sessions_db_path)?;
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &session_store)?;
+        let projects = load_projects(
+            &session_store.load_projects()?,
+            &session_store.load_project_created_ats()?,
+            &config,
+        );
+        persist_runtime_projects_to_config_and_store(
+            &projects,
+            &mut config,
+            &paths,
+            &bindings,
+            &session_store,
+        )?;
+        let sessions = session_store.load_sessions()?;
+        let agent_tabs = session_store.load_extra_agent_tabs()?;
+        let slot_tab_positions = session_store.load_slot_tab_positions()?;
+        let slot_tab_created_ms = session_store.load_slot_tab_created_ms()?;
+        let (worker_tx, worker_rx) = mpsc::channel();
+        let watched_worktree: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+        let branch_sync_sessions = Arc::new(Mutex::new(Vec::new()));
+        let pr_sync_sessions = Arc::new(Mutex::new(Vec::new()));
+        let pr_sync: Arc<yaran_core::engine::PrSyncControl> = Arc::new(PrSyncControl::default());
+        let has_active_processes = Arc::new(AtomicBool::new(false));
+        let initial_status = format!(
+            "Press {} to add a project, {} to create an agent, {} for help.",
+            bindings.label_for(Action::OpenProjectBrowser),
+            bindings.label_for(Action::NewAgent),
+            bindings.label_for(Action::ToggleHelp),
+        );
+        let (theme, theme_warning) = crate::theme::load_or_fallback(&config.ui.theme, &paths);
+        let live_status_keys = yaran_core::statusline::LiveStatusKeys::default();
+        let status = boot_status(
+            Duration::from_secs(u64::from(config.ui.status_clear_seconds)),
+            live_status_keys.clone(),
+            initial_status,
+            key_bindings_warning(&bindings, &config),
+            theme_warning,
+            socket_warning,
+        );
+        let gh_integration_val = config.ui.github_integration;
+        let config_writer = yaran_core::config_queue::ConfigWriteQueue::with_status_lane(
+            paths.config_path.clone(),
+            worker_tx.clone(),
+            &config,
+        );
+        let engine = Engine {
+            config,
+            paths,
+            session_store,
+            projects,
+            sessions,
+            staged_files: Vec::new(),
+            unstaged_files: Vec::new(),
+            changed_files_revision: 0,
+            terminal_counter: 0,
+            github_integration_enabled: gh_integration_val,
+            single_instance_lock,
+            surface_kind: yaran_core::term_identity::SurfaceKind::Tui,
+            resource_collector: Arc::default(),
+            host_env: yaran_core::term_identity::HostEnvProbe::from_env(),
+            worker_tx,
+            worker_rx,
+            config_writer,
+            surface: Box::new(crate::TuiConfigSurface),
+            reloading: false,
+            command_applies: 0,
+            deferred_commands: Vec::new(),
+            reload_guard: None,
+            reload_origin: ReloadOrigin::default(),
+            reloaded_projects: None,
+            providers: HashMap::new(),
+            running_provider_pins: HashMap::new(),
+            launched_drop_paste: HashMap::default(),
+            companion_terminals: HashMap::new(),
+            agent_tabs: agent_tabs
+                .into_iter()
+                .map(|t| (TabId::new(t.id.clone()), t))
+                .collect(),
+            slot_tab_positions,
+            slot_tab_created_ms,
+            terminating_ptys: Vec::new(),
+            process_registry: AgentProcessRegistry::default(),
+            removal_workers: Vec::new(),
+            pending_group_removals: Vec::new(),
+            pending_detachments: Vec::new(),
+            pending_tab_restarts: Vec::new(),
+            unsaved_branch_drifts: std::collections::HashMap::new(),
+            gh_status: crate::model::GhStatus::Unknown,
+            gh_probe: GhProbeState::default(),
+            agent_prs: std::collections::HashMap::new(),
+            pr_prefs: std::collections::HashMap::new(),
+            pr_prefs_retry_at: None,
+            pr_unsaved: std::collections::HashSet::new(),
+            branch_histories: std::collections::HashMap::new(),
+            pr_revision: std::collections::HashMap::new(),
+            branch_sync_sessions,
+            pr_sync_sessions,
+            pr_sync,
+            pr_poll_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pr_poll_inactive_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pr_inactive_sessions: HashSet::default(),
+            pr_inactive_sweep_at: Arc::default(),
+            pr_return_checks_owed: HashSet::default(),
+            pr_branch_asks: HashMap::default(),
+            pr_own_repos: HashMap::default(),
+            pr_branch_checks_owed: HashSet::default(),
+            branch_sync_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            branch_sync_wait: Arc::new(BranchSyncWait::default()),
+            pr_backoff: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            resume_fallback_candidates: HashMap::new(),
+            resumed_tab_runs: HashSet::new(),
+            pending_deletions: HashSet::new(),
+            folder_repo_statuses: HashMap::new(),
+            no_branch_checked_out: std::collections::HashSet::new(),
+            changed_files_failures: ChangedFilesFailures::default(),
+            closing_sessions: HashSet::new(),
+            deletion_busy_messages: HashMap::new(),
+            watched_worktree: Arc::clone(&watched_worktree),
+            changed_files_refresh: Arc::default(),
+            watched_session_id: None,
+            has_active_processes,
+            serve_memory: Arc::default(),
+            current_origin: yaran_core::statusline::StatusScope::All,
+            in_flight: HashSet::new(),
+            rename_expected: std::collections::HashMap::new(),
+            pr_last_checked: HashMap::new(),
+            changed_files_poller_started: AtomicBool::new(false),
+            branch_sync_worker_started: AtomicBool::new(false),
+            pty_activity: HashMap::new(),
+            terminal_activity_at: HashMap::new(),
+            pty_input: HashMap::new(),
+            pty_pointer: HashMap::new(),
+            pty_used: HashSet::new(),
+            needs_attention: HashSet::new(),
+            failed_tab_runs: HashMap::new(),
+            pty_progress: HashMap::new(),
+            agent_viewed: HashMap::new(),
+            last_foreground_refresh: None,
+            pending_web_checkout_ops: HashMap::new(),
+            pending_web_project_saves: std::collections::HashSet::new(),
+            pending_change_base_ops: HashMap::new(),
+            pending_web_add_project_ops: HashMap::new(),
+            pending_web_pr_lookup_ops: HashMap::new(),
+            clones: Clones::default(),
+            pending_pr_attach_ops: HashMap::new(),
+            pending_recreate_ops: HashMap::new(),
+            pending_delete_ops_web: HashMap::new(),
+            pending_delete_reports_web: HashMap::new(),
+            pending_create_ops: HashMap::new(),
+            pending_web_launch_ops: HashMap::new(),
+            live_status_keys,
+            last_created_op_id: None,
+            operations: Operations::default(),
+            operation_in_dispatch: None,
+            attachments: Attachments::default(),
+            dispatch_policy: None,
+            deferred_operations: Vec::new(),
+            deferred_policies: Vec::new(),
+            created_session_by_op: HashMap::new(),
+            removal_coordination: RemovalCoordination::default(),
+        };
+        Ok(Self::assemble(
+            engine,
+            bindings,
+            interactive_patterns,
+            signals,
+            status,
+            &theme,
+            &SessionRestore::Restore,
+        ))
+    }
+
+    /// Shared App-struct construction used by both first-boot bootstrap and the
+    /// post-server resume. The caller supplies the already-built `engine` plus
+    /// the values that cannot be re-derived purely from `engine.config`
+    /// (`status` may carry a theme warning; `sigwinch_flag` is a live handler
+    /// registration). Everything else is derived here so bootstrap and resume
+    /// share one body. `restore` gates whether prior sessions are relaunched:
+    /// first boot restores them; resume skips restoration because the providers
+    /// handed back from the web server are already live.
+    #[expect(clippy::too_many_lines, reason = "one field initializer per App field")]
+    fn assemble(
+        engine: Engine,
+        bindings: RuntimeBindings,
+        interactive_patterns: InteractiveBytePatterns,
+        signals: SignalHandles,
+        status: KeyedStatusController,
+        theme: &Theme,
+        restore: &SessionRestore,
+    ) -> App {
+        let pr_banner_at_bottom = yaran_core::config_effective::effective_pr_banner_position(
+            &engine.config.ui.pr_banner_position,
+        ) == yaran_core::config_effective::PrBannerPosition::Bottom;
+        let show_diff_line_numbers = engine.config.ui.show_diff_line_numbers;
+        // Seed the changes (right) pane's hidden state from config; the runtime
+        // RemoveGitPane toggle (Ctrl-]) overrides it for the rest of the session.
+        let right_hidden = !engine.config.ui.show_changes_pane;
+        let left_width_pct = engine.config.ui.left_width_pct;
+        let right_width_pct = engine.config.ui.right_width_pct;
+        let terminal_dock_pct = engine.config.ui.terminal_dock_pct;
+        let staged_pane_height_pct = engine.config.ui.staged_pane_height_pct;
+        let commit_pane_height_pct = engine.config.ui.commit_pane_height_pct;
+        let mut app = Self {
+            left_width_pct,
+            right_width_pct,
+            terminal_dock_pct,
+            staged_pane_height_pct,
+            commit_pane_height_pct,
+            bindings,
+            engine,
+            selected_left: 0,
+            left_terminals: Vec::new(),
+            dock_layouts: HashMap::new(),
+            dock_active: HashMap::new(),
+            stopped_layout: None,
+            last_dock_strip: None,
+            right_section: RightSection::Unstaged,
+            files_index: 0,
+            files_search: TextInput::new(),
+            files_search_active: false,
+            commit_input: TextInput::new()
+                .with_multiline(4)
+                .with_placeholder("Type your commit message\u{2026}"),
+            pending_commit: None,
+            focus: FocusPane::Left,
+            center_mode: CenterMode::Agent,
+            resize_mode: false,
+            help_scroll: None,
+            last_help_height: 0,
+            last_help_lines: 0,
+            last_first_load_height: 0,
+            last_first_load_lines: 0,
+            last_error_dialog_height: 0,
+            last_error_dialog_lines: 0,
+            pending_first_load: None,
+            unpushed_count_rx: None,
+            project_worktree_files: None,
+            rename_pushed_rx: None,
+            pr_clone_check_rx: None,
+            ui_jobs: ui_jobs::UiJobs::default(),
+            path_completion: PathCompletion::default(),
+            browser_add: BrowserAdd::default(),
+            theme_previews: None,
+            diff_wrap_ask: None,
+            pr_clone_awaiting: None,
+            notes_fetch_rx: None,
+            deferred_first_load_notes: None,
+            notes_fetch_explicit_request: Arc::new(AtomicBool::new(false)),
+            fullscreen_overlay: FullscreenOverlay::None,
+            startup_log_viewer: None,
+            server_log_viewer: None,
+            status,
+            missing_project_warning_gen: None,
+            palette_hint_gen: None,
+            palette_opened_over: PaletteOpenedOver::NotRecorded,
+            prompt: PromptState::None,
+            input_target: InputTarget::None,
+            session_surface: SessionSurface::Agent,
+            clipboard: Clipboard::new(),
+            active_terminal_id: None,
+            focused_tabs: HashMap::new(),
+            host_forward_carry: Vec::new(),
+            extended_keys: crate::keybindings::ExtendedKeys::Off,
+            host_keys: crate::host_keys::HostKeysState::default(),
+            host_forward_error_logged_at: None,
+            agent_tab_regions: Vec::new(),
+            pty_sizes: HashMap::new(),
+            part_targets: PartTargets::default(),
+            tui_launched_ptys: HashSet::default(),
+            pull_request_create: None,
+            clone_draft: None,
+            macro_editor_version: None,
+            pending_pty_takeover: None,
+            last_refused_pty_resize: None,
+            scroll_mode: std::collections::HashSet::new(),
+            last_diff_height: 0,
+            last_diff_visual_lines: 0,
+            diff_rows: None,
+            theme: *theme,
+            tick_count: 0,
+            start_time: Instant::now(),
+            refusal_blink: None,
+            inactive_search_dismissed: None,
+            left_items_cache: Vec::new(),
+            mouse_layout: MouseLayoutState::default(),
+            overlay_layout: OverlayMouseLayoutState::default(),
+            mouse_drag: None,
+            row_drag: None,
+            tab_drag: None,
+            last_tab_strip: None,
+            center_mouse_forward: None,
+            last_mouse_click: None,
+            pressed_button: None,
+            takeover_press: None,
+            dormant_tab_press: None,
+            interactive_patterns,
+            raw_input_parser: crate::raw_input::RawInputParser::default(),
+            debug_raw_input: debug_input::DebugRawInput::default(),
+            raw_input_buf: Vec::new(),
+            loading_input_buf: Vec::new(),
+            terminal_focus: crate::focus::TerminalFocus::new(),
+            macro_bar: None,
+            sigwinch_flag: signals.sigwinch_flag,
+            sigwinch_sig_id: signals.sigwinch_sig_id,
+            shutdown_flag: signals.shutdown_flag,
+            shutdown_sig_ids: signals.shutdown_sig_ids,
+            redraw: RedrawGate::default(),
+            welcome_tip_index: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| u128_to_usize_wrapping(d.as_millis())),
+            welcome_tip_selection: usize::MAX,
+            syntax_cache: Arc::new(SyntaxCache::new()),
+            pending_diff: None,
+            changes_tree: ChangesTreeState::default(),
+            diff_request_seq: 0,
+            part_snapshots: PartSnapshots::default(),
+            terminal_selection: None,
+            pending_link_click: None,
+            pending_pr_banner_press: None,
+            pr_cursors: HashMap::new(),
+            last_link_open: None,
+            url_opener: default_url_opener(),
+            startup_log_selection: None,
+            pending_server_flip: None,
+            drawn_ptys: Vec::new(),
+            published_ptys: None,
+            companion: None,
+            left_rows: Vec::new(),
+            tui_fallback_tabs: HashSet::default(),
+            pending_background_server_start: None,
+            pending_tailscale_mode_op: None,
+            tailscale_answer_from: TailscaleAnswerFrom::Serve,
+            reload_listener_changes: ReloadListenerChanges::default(),
+            pending_persist_ops: HashMap::new(),
+            pending_worktree_ops: HashMap::new(),
+            pending_pr_lookup_ops: HashMap::new(),
+            pending_pr_reference: None,
+            pending_pr_reference_op: None,
+            #[cfg(test)]
+            dispatched_pr_lookups: Vec::new(),
+            pending_delete_ops: HashMap::new(),
+            pending_reconnect_ops: HashMap::new(),
+            pending_checkout_inspect_ops: HashMap::new(),
+            pending_changed_files_refresh: None,
+            pending_server_flip_op: None,
+            pending_config_reload_op: None,
+            pending_branch_listing: None,
+            agent_filter: None,
+            #[cfg(test)]
+            test_scratch_dirs: yaran_core::test_scratch::ScratchDirs::new(),
+            panes: PaneFlags {
+                left_collapsed: false,
+                right_collapsed: false,
+                right_hidden,
+            },
+            inactive_tail: InactiveTailState {
+                collapsed: true,
+                overridden: false,
+            },
+            raw_paste: RawPaste {
+                in_bracket: false,
+                normalize: false,
+                newlines: crate::raw_input::PasteNewlines::default(),
+            },
+            welcome_logo: WelcomeLogo {
+                visible: false,
+                alt: false,
+            },
+            view_prefs: ViewPrefs {
+                show_diff_line_numbers,
+                pr_banner_at_bottom,
+            },
+            serving: ServingFlags {
+                flip_preflight_pending: false,
+                background_preflight_pending: false,
+                background_wanted: false,
+            },
+            left_list: LeftRowsState {
+                built: false,
+                cursor_parked: false,
+            },
+            notes: OneShotNotes {
+                force_redraw: false,
+                companion_followup_ran: false,
+                create_agent_started_here: false,
+            },
+        };
+        // First boot relaunches prior sessions; a resume must not, because the
+        // engine handed back from the web server already owns the live providers, and
+        // any session the user closed in the web UI must stay closed.
+        if matches!(restore, SessionRestore::Restore) {
+            app.restore_sessions();
+            // The first-load gate runs on a COLD BOOT only. A web-server→TUI flip
+            // comes through `resume` with `SessionRestore::Skip`, and re-showing
+            // the welcome or what's-new screen on every flip would be noise (the
+            // shared `last_seen_version` row may not even have been stamped yet if
+            // the user is still looking at the screen in another surface).
+            app.begin_first_load();
+        }
+        app.seed_pull_requests_from_db();
+        app.rebuild_left_items();
+        app.reload_changed_files();
+        app.engine.update_branch_sync_sessions();
+        app
+    }
+
+    /// Rebuild an App around an EXISTING engine after the web server hands it
+    /// back. The engine's providers are live (PTYs never stopped across the
+    /// flip), so session restoration is skipped; only view state is rebuilt.
+    /// Keybindings, the interactive byte patterns, and the theme are re-derived
+    /// from `engine.config` exactly as bootstrap does, and a fresh SIGWINCH
+    /// handler is registered; the previous App's registration was removed in
+    /// `into_engine`, so flip cycles don't accumulate handlers.
+    pub(crate) fn resume(engine: Engine) -> Result<Self> {
+        logger::info("resuming yaran TUI after the web server stopped");
+        let bindings = RuntimeBindings::from_keys_config(&engine.config.keys);
+        let interactive_patterns = bindings.interactive_byte_patterns();
+        // A fresh App means fresh handler registrations; the previous App's were
+        // removed in `into_engine`, so flip cycles don't accumulate handlers.
+        let signals = register_signal_handles()?;
+        let (theme, theme_warning) =
+            crate::theme::load_or_fallback(&engine.config.ui.theme, &engine.paths);
+        let status = boot_status(
+            Duration::from_secs(u64::from(engine.config.ui.status_clear_seconds)),
+            engine.live_status_keys.clone(),
+            "Web server stopped. Your agents kept running, so you can reconnect to any session to pick up where it left off.",
+            key_bindings_warning(&bindings, &engine.config),
+            theme_warning,
+            None,
+        );
+        Ok(Self::assemble(
+            engine,
+            bindings,
+            interactive_patterns,
+            signals,
+            status,
+            &theme,
+            &SessionRestore::Skip,
+        ))
+    }
+
+    /// Consume the App and hand back its engine. Used by the TUI→server flip:
+    /// the providers (PTYs) and the single-instance lock live in the engine and
+    /// must survive the flip, so the engine is moved out wholesale. Neither
+    /// `App` nor `Engine` implements `Drop`, so nothing is torn down here.
+    /// PTY-activity tracking lives on the engine (`pty_activity`), so the
+    /// streaming/"working" state carries across the flip with it.
+    pub(crate) fn into_engine(mut self) -> Engine {
+        // Nothing here drains a worker's answer after the hand-over.
+        self.retire_ui_jobs();
+        // Unregister this App's signal handlers so repeated flip cycles don't
+        // pile up orphaned registrations (each resume registers fresh flags;
+        // without this, every signal would fire one stale setter per cycle) and
+        // so the TUI's shutdown handlers don't fire alongside the server's own
+        // once the engine is handed over.
+        if let Some(sig_id) = self.sigwinch_sig_id {
+            signal_hook::low_level::unregister(sig_id);
+        }
+        for sig_id in self.shutdown_sig_ids {
+            signal_hook::low_level::unregister(sig_id);
+        }
+        self.engine
+    }
+
+    pub(crate) fn run(&mut self) -> Result<RunExit> {
+        let mode = self.begin_extended_keys();
+        self.start_run_services();
+        install_terminal_restore_panic_hook();
+        let result = enter_tui_terminal().and_then(|mut terminal| {
+            // On the alternate screen, before the input modes: the push lands
+            // on that screen's own keyboard stack.
+            self.negotiate_host_keys(mode);
+            execute!(
+                stdout(),
+                EnableMouseCapture,
+                EnableFocusChange,
+                EnableBracketedPaste
+            )?;
+            Ok(self.run_loop(&mut terminal))
+        });
+
+        // Nothing is drawn from here on, so nothing here is attached.
+        self.release_drawn_attachments();
+        // Stop PTY forwarders while the engine and terminal screen are still owned here.
+        self.release_serving_on_exit();
+        disable_input_modes();
+        ratatui::restore();
+
+        let result = result?;
+        if matches!(result, RunExit::Quit) {
+            self.shutdown_agents_gracefully();
+            self.engine
+                .flush_focused_tab_writes(yaran_core::engine::FOCUSED_TAB_FLUSH_BOUND);
+        }
+        Ok(result)
+    }
+
+    /// Read `[ui] extended_keys` for this run and set yaran's own key handling
+    /// from it. Read once per start: a reload while yaran runs changes nothing
+    /// until the next start, so the host terminal and yaran always agree.
+    pub(crate) fn begin_extended_keys(&mut self) -> yaran_core::config::ExtendedKeysMode {
+        let mode = yaran_core::config::ExtendedKeysMode::parse(&self.engine.config.ui.extended_keys)
+            .unwrap_or_default();
+        self.host_keys.mode = mode;
+        self.set_extended_keys(match mode {
+            yaran_core::config::ExtendedKeysMode::Off => crate::keybindings::ExtendedKeys::Off,
+            yaran_core::config::ExtendedKeysMode::Auto | yaran_core::config::ExtendedKeysMode::On => {
+                crate::keybindings::ExtendedKeys::On
+            }
+        });
+        mode
+    }
+
+    /// Ask the host terminal for extended keys as `mode` says. Outside tmux in
+    /// `auto` this asks the host whether it speaks Kitty keys, on this thread,
+    /// before the first frame: the answer arrives on the stdin this thread
+    /// reads, so a worker reading it would race the input loop. The question
+    /// is bounded by one deadline and asked once per process. When the
+    /// environment says tmux, this thread first asks tmux whether yaran's own tty
+    /// is the pane the environment names, bounded by one ceiling, because an
+    /// inherited `TMUX` is not a tmux host. Under a verified tmux, tmux's
+    /// settings are read on a quiet job.
+    fn negotiate_host_keys(&mut self, mode: yaran_core::config::ExtendedKeysMode) {
+        use crate::host_keys;
+        self.host_keys.host = host_keys::Host::Terminal;
+        self.host_keys.kitty_answer = None;
+        if mode == yaran_core::config::ExtendedKeysMode::Off {
+            return;
+        }
+        let host = host_keys::verified_host(if self.engine.host_under_tmux() {
+            host_keys::Host::Tmux
+        } else {
+            host_keys::Host::Terminal
+        });
+        self.host_keys.host = host;
+        let under_tmux = host == host_keys::Host::Tmux;
+        let kitty = (mode == yaran_core::config::ExtendedKeysMode::Auto && !under_tmux).then(|| {
+            let started = Instant::now();
+            let query = host_keys::kitty_answer_once(&host_keys::KITTY_ANSWER, || {
+                host_keys::query_kitty(
+                    std::io::stdin(),
+                    &mut stdout(),
+                    host_keys::KITTY_QUERY_DEADLINE,
+                )
+            });
+            logger::debug(&format!(
+                "the Kitty keyboard query answered {:?} in {} ms",
+                query.answer,
+                started.elapsed().as_millis()
+            ));
+            self.host_keys.startup_keys = query.keys;
+            query.answer
+        });
+        self.host_keys.kitty_answer = kitty;
+        let plan = host_keys::plan(mode, host, kitty, None);
+        log_host_keys_plan(&plan);
+        if plan.push_kitty
+            && let Err(err) = host_keys::switch_on_kitty(&mut stdout(), self.host_keys.record)
+        {
+            logger::warn(&format!(
+                "could not switch on the Kitty keyboard protocol, so yaran reads classic keys: {err}"
+            ));
+        }
+        if under_tmux {
+            self.start_tmux_probe(mode);
+        }
+    }
+
+    /// Read tmux's extended-keys settings on a quiet job and apply what they
+    /// say, unless a newer probe has started by the time the answer lands.
+    fn start_tmux_probe(&mut self, mode: yaran_core::config::ExtendedKeysMode) {
+        let probe = self.host_keys.probes.start();
+        self.spawn_quiet_ui_job(crate::host_keys::tmux_keys, move |app, report| {
+            app.apply_tmux_report(probe, mode, report);
+        });
+    }
+
+    /// Apply one tmux probe's answer: switch tmux's extended keys on or off as
+    /// it says, and raise the plan's warning. An answer from an older probe is
+    /// ignored, because it would switch tmux back, and so is one landing in a
+    /// run whose host is not a verified tmux.
+    pub(crate) fn apply_tmux_report(
+        &mut self,
+        probe: u64,
+        mode: yaran_core::config::ExtendedKeysMode,
+        report: Option<crate::host_keys::TmuxReport>,
+    ) {
+        self.apply_tmux_report_to(&mut stdout(), self.host_keys.record, probe, mode, report);
+    }
+
+    /// [`Self::apply_tmux_report`] writing to `out` and recording in `record`.
+    pub(crate) fn apply_tmux_report_to(
+        &mut self,
+        out: &mut impl std::io::Write,
+        record: &crate::host_keys::HostKeysRecord,
+        probe: u64,
+        mode: yaran_core::config::ExtendedKeysMode,
+        report: Option<crate::host_keys::TmuxReport>,
+    ) {
+        use crate::host_keys;
+        if !self.host_keys.probes.is_latest(probe) || self.host_keys.host != host_keys::Host::Tmux {
+            return;
+        }
+        let report = report.unwrap_or_else(|| {
+            host_keys::TmuxReport::CommandFailed("the tmux check stopped".to_string())
+        });
+        let plan = host_keys::plan(mode, host_keys::Host::Tmux, None, Some(&report));
+        log_host_keys_plan(&plan);
+        if let Err(err) = host_keys::apply_tmux_plan(out, record, &plan) {
+            logger::warn(&format!(
+                "could not ask tmux for its extended keys, so yaran reads classic keys: {err}"
+            ));
+        }
+        self.host_keys.last_tmux_report = Some(report);
+        if let Some(warning) = plan.warning {
+            self.set_warning(warning);
+        }
+    }
+
+    /// Decide, for this run, whether yaran reads extended keys, for its own key
+    /// handling and its bindings alike. Read once per start, so the two always
+    /// agree.
+    pub(crate) fn set_extended_keys(&mut self, extended_keys: crate::keybindings::ExtendedKeys) {
+        self.extended_keys = extended_keys;
+        self.bindings.set_extended_keys(extended_keys);
+    }
+
+    fn start_run_services(&mut self) {
+        self.engine.spawn_changed_files_poller();
+        self.engine.spawn_branch_sync_worker();
+        self.engine.spawn_project_branch_status_checks();
+        self.engine.spawn_gh_status_check();
+        // The background server assumes these process-wide workers are already running.
+        self.start_control_socket();
+        self.start_background_server_from_config();
+    }
+
+    fn run_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> RunExit {
+        loop {
+            if self.shutdown_flag.load(Ordering::Relaxed) {
+                return RunExit::Quit;
+            }
+
+            // Keys typed while yaran asked the host about Kitty keys, before the
+            // first frame.
+            for key in std::mem::take(&mut self.host_keys.startup_keys) {
+                if self.handle_terminal_event(Event::Key(key)) {
+                    return RunExit::Quit;
+                }
+            }
+            self.prepare_run_tick();
+            self.refresh_run_terminal(terminal);
+            // The loop keeps polling at its own cadence; only the DRAW is gated.
+            self.draw_and_forward(Instant::now(), |app| app.draw_run_frame(terminal));
+
+            if let Some(flip) = self.pending_server_flip.take() {
+                return RunExit::FlipToServer {
+                    listeners: flip.listeners,
+                    urls: flip.urls,
+                    startup: flip.startup,
+                };
+            }
+            if self.poll_run_input() {
+                return RunExit::Quit;
+            }
+        }
+    }
+
+    fn prepare_run_tick(&mut self) {
+        self.drain_events();
+        // A `yaran config set` (or a hand-run `kill -USR1`) asks for a reload.
+        if self.reload_config_on_signal() {
+            self.mark_frame_dirty();
+        }
+        // Browser requests observe this tick's worker results and render in the same frame.
+        self.service_companion();
+        // The server log's reader runs on a thread of its own, so nothing on this
+        // surface marks the frame when a line arrives: look.
+        self.sync_server_log_viewer();
+        self.note_visible_pty_output();
+        // Mark the visible tab before signals can raise or clear its attention state.
+        self.note_focused_agent_viewed();
+        self.engine.poll_agent_signals();
+        // Re-ask `gh` when the periodic re-check is due, so a rate limit or a
+        // brief outage at boot clears without a restart.
+        self.engine.poll_gh_probe_schedule();
+        self.tick_count = self.tick_count.wrapping_add(1);
+        self.reconcile_scroll_mode();
+        self.announce_slow_changed_files_read(Instant::now());
+        self.announce_slow_diff(Instant::now());
+        // The backstop for the modal instruction: whichever way a prompt closed,
+        // its sentence is about something no longer on screen by now.
+        if matches!(self.prompt, PromptState::None) {
+            self.clear_prompt_hint();
+        }
+        self.status.tick(Instant::now(), BUSY_TIMEOUT);
+        // The sidebar reflects these per-row flags, and nothing else reports them.
+        if self.refresh_row_activity() {
+            self.mark_frame_dirty();
+        }
+        // Who an open dialog names attaches and leaves on other threads.
+        if self.refresh_attached_dialog() {
+            self.mark_frame_dirty();
+        }
+    }
+
+    fn refresh_run_terminal(&mut self, terminal: &mut ratatui::DefaultTerminal) {
+        if self.sigwinch_flag.swap(false, Ordering::Relaxed) {
+            self.mark_frame_dirty();
+            self.retire_pending_link_click();
+            if let Err(err) = crate::io_retry::retry_on_interrupt(|| terminal.autoresize()) {
+                self.report_runtime_error("terminal resize failed", &err);
+            }
+        }
+
+        if !self.notes.force_redraw {
+            return;
+        }
+        self.notes.force_redraw = false;
+        self.mark_frame_dirty();
+        if let Err(err) = terminal.clear() {
+            self.report_runtime_error("force redraw failed", &err);
+        }
+        let _ = execute!(
+            stdout(),
+            EnableMouseCapture,
+            EnableFocusChange,
+            EnableBracketedPaste
+        );
+        // The host terminal does not change mid-session, so Kitty keys are
+        // re-asserted rather than asked about again; tmux's settings may have
+        // been reloaded, so they are read again.
+        crate::host_keys::reassert_kitty(&mut stdout(), self.host_keys.record);
+        if self.host_keys.mode != yaran_core::config::ExtendedKeysMode::Off
+            && self.host_keys.host == crate::host_keys::Host::Tmux
+        {
+            self.start_tmux_probe(self.host_keys.mode);
+        }
+    }
+
+    fn draw_run_frame(&mut self, terminal: &mut ratatui::DefaultTerminal) {
+        match terminal.draw(|frame| self.render(frame)) {
+            Ok(_) => {
+                if self.note_draw_succeeded() {
+                    logger::info("terminal draw works again");
+                }
+            }
+            Err(err) => {
+                if self.note_draw_failed() {
+                    self.report_runtime_error("terminal draw failed", &err);
+                }
+                // A pause before the next attempt, so a terminal that keeps
+                // refusing does not spin the loop.
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    fn focused_host_passthrough_tab(&self) -> Option<String> {
+        if !matches!(self.center_mode, CenterMode::Agent) || !self.agent_part_has_focus() {
+            return None;
+        }
+        self.selected_session()
+            .map(|session| self.focused_tab_id(&session.id))
+    }
+
+    /// Whether the agent's own part is on screen with the keyboard: drawn by
+    /// the layout (or fullscreen), and the part focus is on. An agent's dock
+    /// terminal existing beside it does not take that away.
+    pub(crate) fn agent_part_has_focus(&self) -> bool {
+        self.selected_terminal_row().is_none()
+            && self.focused_part() == CenterPart::Main
+            && (self.fullscreen_overlay == FullscreenOverlay::Agent
+                || self.layout_parts().contains(&CenterPart::Main))
+    }
+
+    fn forward_host_passthrough(&mut self) {
+        let focused_tab = self.focused_host_passthrough_tab();
+        let under_tmux = self.engine.host_under_tmux();
+        let mut bytes = std::mem::take(&mut self.host_forward_carry);
+        bytes.extend_from_slice(&self.engine.take_host_passthrough(
+            focused_tab.as_deref(),
+            if under_tmux {
+                yaran_core::engine::PassthroughWrap::Tmux
+            } else {
+                yaran_core::engine::PassthroughWrap::Plain
+            },
+        ));
+        if bytes.is_empty() {
+            return;
+        }
+        if bytes.len() > HOST_FORWARD_MAX_PER_TICK {
+            // The carry bounds each stdout write without splitting the continuous byte stream.
+            self.host_forward_carry = bytes.split_off(HOST_FORWARD_MAX_PER_TICK);
+        }
+
+        let mut out = stdout();
+        let Err(err) = out.write_all(&bytes).and_then(|()| out.flush()) else {
+            return;
+        };
+        let now = Instant::now();
+        let should_log = self
+            .host_forward_error_logged_at
+            .is_none_or(|at| at.elapsed() >= HOST_FORWARD_ERROR_LOG_INTERVAL);
+        if should_log {
+            self.host_forward_error_logged_at = Some(now);
+            logger::warn(&format!(
+                "failed to forward agent passthrough sequences to the host terminal: {err}"
+            ));
+        }
+    }
+
+    /// Which reader takes this iteration's input: the input debugger's own
+    /// while it is open, or while it still holds input read after it closed (a
+    /// paste still arriving, an unfinished sequence); else the forwarding path
+    /// when it is typing into a program; else crossterm's.
+    fn run_input_reader(&self) -> RunInputReader {
+        if self.input_debugger_open() || self.debug_raw_input.holds_input_for_main_ui() {
+            RunInputReader::Debugger
+        } else if self.should_poll_raw_input() {
+            RunInputReader::Forwarding
+        } else {
+            RunInputReader::Structured
+        }
+    }
+
+    fn poll_run_input(&mut self) -> bool {
+        let reader = self.run_input_reader();
+        if reader != RunInputReader::Debugger {
+            self.end_debug_raw_input();
+        }
+        match reader {
+            RunInputReader::Debugger => match self.poll_debug_raw_input(std::io::stdin()) {
+                Ok(should_exit) => should_exit,
+                Err(err) => {
+                    self.report_runtime_error(
+                        "the input debugger could not read the terminal's input",
+                        err.as_ref(),
+                    );
+                    false
+                }
+            },
+            RunInputReader::Forwarding => self.poll_raw_run_input(),
+            RunInputReader::Structured => self.poll_structured_run_input(),
+        }
+    }
+
+    fn poll_raw_run_input(&mut self) -> bool {
+        match self.poll_and_forward_raw_input() {
+            Ok(should_exit) => should_exit,
+            Err(err) => {
+                self.report_runtime_error(
+                    "interactive input failed; staying in the current session",
+                    err.as_ref(),
+                );
+                false
+            }
+        }
+    }
+
+    fn poll_structured_run_input(&mut self) -> bool {
+        let idle_poll_ms = if self.any_row_animating() { 33 } else { 100 };
+        let poll_ms = idle_poll_ms.min(self.max_poll_ms());
+        let ready = match crate::io_retry::retry_on_interrupt(|| {
+            event::poll(Duration::from_millis(poll_ms))
+        }) {
+            Ok(ready) => ready,
+            Err(err) => {
+                self.report_runtime_error("event polling failed; input handling was skipped", &err);
+                false
+            }
+        };
+        if !ready {
+            return false;
+        }
+        self.drain_terminal_input()
+    }
+
+    fn drain_terminal_input(&mut self) -> bool {
+        loop {
+            let event = match crate::io_retry::retry_on_interrupt(event::read) {
+                Ok(event) => event,
+                Err(err) => {
+                    self.report_runtime_error(
+                        "event read failed; input handling was skipped",
+                        &err,
+                    );
+                    return false;
+                }
+            };
+            if self.handle_terminal_event(event) {
+                return true;
+            }
+            if matches!(
+                self.input_target,
+                InputTarget::Agent | InputTarget::Terminal
+            ) {
+                // Remaining stdin bytes now belong to the raw-input path.
+                return false;
+            }
+            if !matches!(
+                crate::io_retry::retry_on_interrupt(|| event::poll(Duration::ZERO)),
+                Ok(true)
+            ) {
+                return false;
+            }
+        }
+    }
+
+    /// SIGTERM every running agent/terminal PTY and wait up to the configured
+    /// `shutdown_timeout_seconds` for them to exit, the TUI analogue of the
+    /// server's shutdown path. Runs after the terminal is restored, so the user
+    /// is back at their shell while the wind-down happens. Echoes the same start
+    /// and result lines `shutdown_ptys` logs to `yaran.log`, but only when there is
+    /// something to wait for: an agent-less quit stays silent.
+    ///
+    /// A second SIGINT/SIGTERM during the wait cuts it short: the run loop, the
+    /// only thing that polled `shutdown_flag`, has already exited, so the flag is
+    /// cleared and handed to `shutdown_ptys_interruptible` as an abort. Without
+    /// this a child that ignores SIGTERM traps the operator for the full grace
+    /// period with only `kill -9` as an out.
+    fn shutdown_agents_gracefully(&mut self) {
+        // A clone runs in a session of its own; quitting must stop it even
+        // with no agent to wait for.
+        self.engine.stop_clones();
+        let agents = self.engine.providers.len();
+        let terminals = self.engine.companion_terminals.len();
+        if agents + terminals == 0 {
+            return;
+        }
+        let grace = yaran_core::config::shutdown_grace(self.engine.config.shutdown_timeout_seconds);
+        crate::line_to_stderr(format_args!(
+            "{}",
+            yaran_core::engine::format_shutdown_start(agents, terminals, grace)
+        ));
+        // Consume the signal that may have triggered this quit, then watch for a
+        // fresh one during the wait.
+        self.shutdown_flag
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let report = self
+            .engine
+            .shutdown_ptys_interruptible(grace, Some(&self.shutdown_flag));
+        crate::line_to_stderr(format_args!(
+            "{}",
+            yaran_core::engine::format_shutdown_result(&report)
+        ));
+    }
+
+    fn should_poll_raw_input(&self) -> bool {
+        matches!(self.prompt, PromptState::None)
+            && self.server_log_viewer.is_none()
+            && !matches!(self.fullscreen_overlay, FullscreenOverlay::StartupLog)
+            && matches!(
+                self.input_target,
+                InputTarget::Agent | InputTarget::Terminal
+            )
+    }
+
+    fn restore_sessions(&mut self) {
+        logger::info(&format!(
+            "restoring {} persisted sessions",
+            self.engine.sessions.len()
+        ));
+        // The Detached/Exited-by-worktree-existence rule is core-owned
+        // (`Engine::normalize_restored_sessions`, the same normalizer the web
+        // bootstrap calls) so the two surfaces cannot drift; the TUI only adds
+        // its startup auto-reopen dispatch on top.
+        self.engine.normalize_restored_sessions();
+        self.auto_reopen_eligible_sessions();
+    }
+
+    /// Dispatch the startup auto-reopen launches. The ELIGIBILITY rule is
+    /// core-owned (`Engine::auto_reopen_candidates`, shared with the web
+    /// server's startup pass); only the TUI-side launch dispatch lives here.
+    fn auto_reopen_eligible_sessions(&mut self) {
+        for session in self.engine.auto_reopen_candidates() {
+            let request = self.agent_launch_request(
+                session,
+                yaran_core::model::ConversationStart::Resume,
+                AgentLaunchKind::StartupAutoReopen,
+            );
+            self.dispatch_agent_launch(request);
+        }
+    }
+
+    /// Populate the in-memory PR status map from the database so the UI shows
+    /// PR state immediately on startup, before the first background poll.
+    fn seed_pull_requests_from_db(&mut self) {
+        // The seed (including the shared "OPEN"/"MERGED"/"CLOSED" decode) is the
+        // core-owned `Engine::seed_pull_requests_from_store`, shared with the web
+        // server bootstrap so both surfaces show persisted PR badges on startup.
+        self.engine.seed_pull_requests_from_store();
+    }
+
+    /// Close the help overlay if it is open, reporting whether it was.
+    ///
+    /// The one place help is closed, reached by the close-overlay key through
+    /// [`App::close_top_overlay`] and by an outside click from the help branch
+    /// of `handle_mouse`. Help is not a [`PromptState`] variant, so it cannot
+    /// ride the click-outside engine's [`App::cancel_prompt`] ladder (see
+    /// [`super::overlay_dismiss`]) and needs its own shared close instead.
+    ///
+    /// Dropping `help_scroll` is what closes it, and that also discards the
+    /// scroll offset: help always reopens at the top, by either route.
+    ///
+    /// It says nothing on the status line, by either route: a full-screen
+    /// overlay leaving is the big and unmistakable change a confirmation is not
+    /// owed for.
+    pub(crate) fn close_help_overlay(&mut self) -> bool {
+        if self.help_scroll.is_none() {
+            return false;
+        }
+        self.help_scroll = None;
+        true
+    }
+
+    pub(crate) fn close_top_overlay(&mut self) -> bool {
+        // Whatever layer this closes, an instruction describing an open modal is
+        // no longer describing anything on screen.
+        self.clear_prompt_hint();
+        // The agent-list filter is the top-most dismissible layer on the Left pane.
+        // Esc clears the query and restores the full list without activating a row,
+        // routed here so filter dismissal stays uniform with prompt dismissal.
+        if self.agent_filter.is_some() {
+            self.close_agent_filter();
+            self.set_info("Cleared the agent filter. Showing every agent again.");
+            return true;
+        }
+        if matches!(self.fullscreen_overlay, FullscreenOverlay::Terminal) {
+            // Snap to the live edge while the surface still resolves the
+            // terminal client. Scrolling back moves the display offset and
+            // nothing else, and the terminal library holds that view still as
+            // new lines arrive, so an offset left behind would bring the pane
+            // back parked in history while the child prints below it.
+            self.reset_pty_scrollback();
+            // Back to the center pane with focus kept on the terminal, the way
+            // leaving the agent's fullscreen keeps it on the agent.
+            self.fullscreen_overlay = FullscreenOverlay::None;
+            self.input_target = InputTarget::None;
+            let key = self.bindings.label_for(Action::ToggleFullscreen);
+            self.set_info(format!(
+                "Closed fullscreen terminal. Press {key} to reopen."
+            ));
+            return true;
+        }
+        if matches!(self.fullscreen_overlay, FullscreenOverlay::StartupLog) {
+            self.fullscreen_overlay = FullscreenOverlay::None;
+            // A promoted viewer carries a return ticket to the picker it came
+            // from (see `StartupLogViewer::return_to`). Leaving the viewer
+            // hands the run list back exactly as it was left, so reading a
+            // second run is one keypress rather than reopening the browser and
+            // finding your place again. A viewer with no ticket closes
+            // outright, because there is no picker behind it.
+            let returned = self
+                .startup_log_viewer
+                .take()
+                .and_then(|viewer| viewer.return_to);
+            self.terminal_selection = None;
+            self.startup_log_selection = None;
+            if let Some(prompt) = returned {
+                self.prompt = PromptState::StartupCommandLogs(*prompt);
+                self.set_info("Closed the startup command log. Back in the run list.");
+            }
+            // The outright close says nothing: a full view leaving the screen is
+            // the big and unmistakable change. Returning to the run list still
+            // does, because that lands somewhere the viewer did not come from.
+            return true;
+        }
+        // The NON-interactive agent fullscreen (e.g. the dormant-tab relaunch
+        // screen left up after a tab's CLI exited) dismisses like any other
+        // overlay. Interactive mode never reaches this path: its keys go
+        // through the raw-input passthrough, which has its own exit handling.
+        if matches!(self.fullscreen_overlay, FullscreenOverlay::Agent) {
+            // Same live-edge snap as `exit_interactive_mode`: the minimized
+            // pane must never come back parked in history, showing content the
+            // child has already printed past.
+            self.reset_pty_scrollback();
+            self.fullscreen_overlay = FullscreenOverlay::None;
+            self.input_target = InputTarget::None;
+            let key = self.bindings.label_for(Action::ToggleFullscreen);
+            // Say what the minimized pane DOES now: with a live surface it is
+            // typeable (checked after the reset above, which is what makes it
+            // so), while a dormant tab's relaunch screen has nothing to type
+            // into, so promising typing there would be a lie.
+            if self.center_typeable() {
+                self.set_info(format!(
+                    "Minimized the agent pane. Typing still reaches the agent; press {key} for fullscreen."
+                ));
+            } else {
+                self.set_info(format!(
+                    "Minimized the agent pane. Press {key} to go fullscreen again."
+                ));
+            }
+            return true;
+        }
+        // The first-load screens dismiss like any other prompt, EXCEPT that
+        // dismissal is also what records the running version as seen (the core
+        // gate's timing contract), so they cannot take the generic path that just
+        // blanks `prompt`.
+        if matches!(self.prompt, PromptState::FirstLoad(_)) {
+            self.dismiss_first_load_prompt();
+            let palette_key = self.bindings.label_for(Action::OpenPalette);
+            self.set_info(format!(
+                "Dismissed. Press {palette_key} and run show-welcome-screen or show-release-notes \
+                 to see these again."
+            ));
+            return true;
+        }
+        if !matches!(self.prompt, PromptState::None) {
+            // No confirmation: a dialog leaving the screen is the big and
+            // unmistakable change the tenet exempts.
+            self.prompt = PromptState::None;
+            return true;
+        }
+        if self.close_help_overlay() {
+            return true;
+        }
+        if matches!(self.center_mode, CenterMode::Diff { .. }) {
+            // No confirmation: the whole centre pane changes back to the
+            // agent's output.
+            self.center_mode = CenterMode::Agent;
+            self.focus = FocusPane::Files;
+            self.abandon_pending_diff();
+            return true;
+        }
+        false
+    }
+
+    /// Closes the diff overlay if one is open, leaving other state (focus,
+    /// input target, status line) untouched. Called when the left-pane
+    /// selection moves to a different item so the middle pane falls back
+    /// to the newly-selected agent's terminal. Silent by design: the user
+    /// moved a cursor, they did not dismiss a dialog.
+    pub(crate) fn close_diff_view(&mut self) {
+        if matches!(self.center_mode, CenterMode::Diff { .. }) {
+            self.center_mode = CenterMode::Agent;
+            self.abandon_pending_diff();
+        }
+    }
+
+    /// Returns the current arc spinner frame index based on wall-clock time
+    /// (`SPINNER_FRAME_MS` per frame). Unlike `tick_count`, this stays
+    /// constant-speed regardless of event loop frequency.
+    pub(crate) fn spinner_frame_index(&self) -> usize {
+        u128_to_usize_wrapping(
+            self.start_time.elapsed().as_millis() / crate::theme::SPINNER_FRAME_MS,
+        ) % crate::theme::SPINNER_FRAMES.len()
+    }
+
+    /// Whether the sidebar attention glyph is visible at this point of its
+    /// blink cycle. Wall-clock based (like the spinner) so the blink cadence
+    /// stays constant regardless of event-loop frequency, per the "animations
+    /// use wall-clock time" tenet.
+    pub(crate) fn attention_blink_on(&self) -> bool {
+        attention_blink_phase(self.start_time.elapsed().as_millis())
+    }
+
+    /// Whether anything on screen currently has a live animation: a working
+    /// agent or terminal (the spinner and the pulsing state word), an attention blink, or the
+    /// one-shot modal refusal cue. The run loop polls faster while this is true
+    /// so those animations render smoothly, and falls back to the lazy cadence
+    /// when everything is quiet.
+    ///
+    /// The refusal cue is time-bounded, so it stops answering `true` on its own
+    /// and the loop goes lazy again the moment the cue is over.
+    pub(crate) fn any_row_animating(&self) -> bool {
+        if self.refusal_blink_running() {
+            return true;
+        }
+        let attention_on = self.engine.config.ui.attention_indicator;
+        let agents = self.engine.sessions.iter().any(|s| {
+            matches!(s.status, crate::model::SessionStatus::Active)
+                && (self.engine.session_is_streaming(&s.id)
+                    || (attention_on && self.engine.session_needs_attention(&s.id)))
+        });
+        // `terminal_is_working`, not `is_agent_streaming`: a terminal running a
+        // quiet foreground app is "Running" (its spinner and state word
+        // animate) even with no output streaming.
+        let terminals = self
+            .engine
+            .companion_terminals
+            .keys()
+            .any(|id| self.engine.terminal_is_working(id));
+        agents || terminals
+    }
+
+    /// The key `handle_key` sees for a key crossterm decoded, or `None` when it
+    /// is dropped. The input debugger gets every key as it came, kind and all;
+    /// everywhere else gets the key yaran acts on
+    /// ([`crate::key_encode::acted_on_key`]).
+    fn structured_key(
+        &self,
+        key: crossterm::event::KeyEvent,
+    ) -> Option<crossterm::event::KeyEvent> {
+        if matches!(self.prompt, PromptState::DebugInput { .. }) {
+            return Some(key);
+        }
+        crate::key_encode::acted_on_key(key, self.extended_keys)
+    }
+
+    /// Route one crossterm event to its handler. Returns whether the app should
+    /// exit.
+    ///
+    /// The run loop routes every event through here, so the events that are NOT
+    /// keys or mouse presses (a host resize, a focus change) are reachable from
+    /// a test: each of them retires state a test can then assert on, and a
+    /// retirement that only exists inside a loop body is one nobody can prove.
+    pub(crate) fn handle_terminal_event(&mut self, event: Event) -> bool {
+        // Every input event is a redraw source; none of the handlers below has
+        // to remember it.
+        self.mark_frame_dirty();
+        match event {
+            Event::Key(key) => match self.structured_key(key).map(|key| self.handle_key(key)) {
+                None => false,
+                Some(Ok(exit)) => exit,
+                Some(Err(err)) => {
+                    self.report_runtime_error("key handling failed", err.as_ref());
+                    false
+                }
+            },
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::Resize(_, _) => {
+                // The grid the press was aimed at has reflowed, and so has the
+                // cell that carried its link.
+                self.retire_pending_link_click();
+                // The sidebar has reflowed too: the row the drag was aimed at is
+                // no longer under the pointer, so the gesture is retired rather
+                // than dropped somewhere the user did not choose.
+                self.row_drag = None;
+                self.tab_drag = None;
+                false
+            }
+            Event::FocusGained => {
+                self.terminal_focus.on_focus_gained(Instant::now());
+                false
+            }
+            Event::FocusLost => {
+                // The release will land on whatever window took the focus,
+                // never here.
+                self.retire_pending_link_click();
+                self.row_drag = None;
+                self.tab_drag = None;
+                self.end_terminal_selection_drag();
+                self.terminal_focus.on_focus_lost();
+                false
+            }
+            Event::Paste(_) if self.server_log_viewer.is_some() => false,
+            Event::Paste(text) => {
+                self.handle_paste(&text);
+                false
+            }
+        }
+    }
+
+    pub(crate) fn set_info(&mut self, message: impl Into<String>) {
+        self.status
+            .set(Instant::now(), None, StatusTone::Info, message);
+    }
+
+    /// Put a HINT on the status line: a sentence describing the state a toggle
+    /// has just put the interface into, or how to drive what is now on screen.
+    ///
+    /// Deliberately keyed, and all of them under one key. A hint is not news: it
+    /// is an answer to "what is the interface doing right now", and there is only
+    /// ever one current answer. Unkeyed, three chrome toggles in a row would
+    /// queue three descriptions of a state that only the last of them still
+    /// describes, and the user would read two wrong ones first. On one key the
+    /// newer hint replaces the older in place, keeping the position it already
+    /// holds on the line.
+    pub(crate) fn set_ui_hint(&mut self, message: impl Into<String>) {
+        self.status.set(
+            Instant::now(),
+            Some(UI_HINT_KEY.to_string()),
+            StatusTone::Info,
+            message,
+        );
+    }
+
+    /// Take down the message the user was looking at when they opened the
+    /// palette, and the palette's own hint with it, so the next one waiting, if
+    /// any, gets its turn. Nothing that arrived after the palette opened goes:
+    /// nobody has read it yet. A spinner goes from the line while its operation
+    /// keeps running, and the operation's outcome still shows when it lands.
+    pub(crate) fn clear_status_line(&mut self) {
+        let target = match std::mem::take(&mut self.palette_opened_over) {
+            PaletteOpenedOver::Status(shown) => Some(shown),
+            PaletteOpenedOver::EmptyLine => None,
+            PaletteOpenedOver::NotRecorded => self.status.showing(),
+        };
+        if let Some(generation) = self.palette_hint_gen.take() {
+            self.status.clear(UI_HINT_KEY, Some(generation));
+        }
+        match target {
+            // Gone already, or replaced in place by the palette's hint, which
+            // has just been retired: either way that was the clear.
+            Some(shown) => {
+                self.status.clear_shown(&shown, Instant::now());
+            }
+            None => self.set_info("The status line is already clear."),
+        }
+    }
+
+    /// The same slot, for a hint that has to warn: the toggle worked but left
+    /// the user somewhere they need to know about.
+    pub(crate) fn set_ui_hint_warning(&mut self, message: impl Into<String>) {
+        self.status.set(
+            Instant::now(),
+            Some(UI_HINT_KEY.to_string()),
+            StatusTone::Warning,
+            message,
+        );
+    }
+
+    /// Put the instruction for the modal that is now open on the status line.
+    ///
+    /// Keyed for the same reason a chrome hint is, and cleared rather than left
+    /// to expire: this sentence is about the prompt in front of you, so once the
+    /// prompt is gone it is describing something that is not on screen, and a
+    /// line still holding it is a line the prompt's own outcome is queued behind.
+    pub(crate) fn set_prompt_hint(&mut self, message: impl Into<String>) {
+        self.status.set(
+            Instant::now(),
+            Some(PROMPT_HINT_KEY.to_string()),
+            StatusTone::Info,
+            message,
+        );
+    }
+
+    /// Retire the open modal's instruction. Called from every close, confirm and
+    /// cancel alike, and from the run loop's maintenance pass as the backstop for
+    /// any close path that forgets.
+    pub(crate) fn clear_prompt_hint(&mut self) {
+        self.status.clear(PROMPT_HINT_KEY, None);
+    }
+
+    /// Open one address in the user's browser, off the interface thread.
+    ///
+    /// The launcher is another process and may take a moment (or a lock, or a
+    /// D-Bus round trip) to answer, so it never runs on the run loop: this is a
+    /// keyed busy that the worker's outcome replaces with `success` or with a
+    /// failure that names the address, so a user whose launcher is missing can
+    /// still copy it. Every caller in the TUI goes through here, so the seam
+    /// stays the one place a test can watch.
+    pub(crate) fn open_url_in_browser(
+        &mut self,
+        url: impl Into<String>,
+        success: impl Into<String>,
+    ) {
+        let url = url.into();
+        let success = success.into();
+        let opener = Arc::clone(&self.url_opener);
+        let failed_url = url.clone();
+        let op = yaran_core::engine::status_op(format!("Opening {url} in your default browser..."))
+            .on_success(move |(): &()| yaran_core::engine::Final::info(success))
+            .on_failure(move |error: &String| {
+                yaran_core::engine::Final::error(format!(
+                    "Could not open {failed_url} in your default browser: {error}. Copy the \
+                     address and open it by hand."
+                ))
+            });
+        let reaction = self
+            .engine
+            .spawn_status_op(op, move || opener(&url).map_err(|err| format!("{err:#}")));
+        self.apply_reaction(reaction);
+    }
+
+    /// Set an anonymous (unkeyed) `Busy` status. Every production busy now rides a
+    /// keyed [`yaran_core::engine::HandlerStatusOp`] (or the engine's own keyed
+    /// status), so this remains only as a test helper that simulates an unrelated
+    /// busy already on screen.
+    #[cfg(test)]
+    pub(crate) fn set_busy(&mut self, message: impl Into<String>) {
+        self.status
+            .set(Instant::now(), None, StatusTone::Busy, message);
+    }
+
+    pub(crate) fn set_warning(&mut self, message: impl Into<String>) {
+        self.status
+            .set(Instant::now(), None, StatusTone::Warning, message);
+    }
+
+    /// Set a warning that outlives the ordinary warning window because the
+    /// condition it reports is still true: it stays until the user's next
+    /// action writes over the anonymous slot, not until a timer.
+    ///
+    /// Returns the generation it wrote, so a producer that must retire its own
+    /// message later can tell it apart from whatever else has since taken the
+    /// slot.
+    pub(crate) fn set_pinned_warning(
+        &mut self,
+        message: impl Into<String>,
+    ) -> yaran_core::statusline::Generation {
+        let generation = self
+            .status
+            .set(Instant::now(), None, StatusTone::Warning, message);
+        self.status.pin();
+        generation
+    }
+
+    pub(crate) fn set_error(&mut self, message: impl Into<String>) {
+        self.status
+            .set(Instant::now(), None, StatusTone::Error, message);
+    }
+
+    /// Show a status-line warning when a missing project is highlighted, or
+    /// clear the warning when the selection moves away from one.
+    pub(crate) fn update_missing_project_warning(&mut self) {
+        let missing_path = self
+            .left_items()
+            .get(self.selected_left)
+            .copied()
+            .and_then(|item| match item {
+                // No project rows in the flat list; warn when the selected agent's
+                // own project has a missing path.
+                LeftItem::Session(idx) => {
+                    let s = self.engine.sessions.get(idx)?;
+                    // A standalone agent has no project, so no project-path
+                    // warning can apply to it.
+                    let project_id = s.project_id()?;
+                    let p = self.engine.projects.iter().find(|p| p.id == project_id)?;
+                    p.path_missing.then(|| p.path.clone())
+                }
+                LeftItem::Terminal(_) | LeftItem::InactiveToggle => None,
+            });
+        if let Some(path) = missing_path {
+            self.missing_project_warning_gen =
+                Some(self.set_pinned_warning(format!("Project path not found: {path}")));
+            return;
+        }
+        // Clear only the warning this helper wrote. It runs on every selection
+        // move, and a tone check ("the line holds a warning") also matches the
+        // pinned restart and theme warnings. The generation names the exact
+        // message and the controller removes it wherever it sits, where clearing
+        // "the newest unkeyed message" would take another producer's standing
+        // warning with it.
+        if let Some(generation) = self.missing_project_warning_gen.take() {
+            self.status.clear_anonymous_generation(generation);
+        }
+    }
+
+    /// Whether the minimized center pane currently types into the focused
+    /// surface's PTY: focus is on the Center pane, nothing modal or fullscreen
+    /// is in the way, the pane is showing the agent surface (not a diff), and
+    /// that surface has a live PTY behind it.
+    ///
+    /// Derived, deliberately not new state: focus loss, a prompt opening, a tab
+    /// switch and an agent exit all end typeability for free, with nothing to
+    /// desync. Fullscreen interactive mode is a separate regime (raw stdin
+    /// passthrough keyed on `input_target`) and is excluded here by the overlay
+    /// and `input_target` checks. The liveness question goes through
+    /// [`Self::selected_terminal_surface_client`], so a companion terminal is
+    /// answered exactly like the agent surface.
+    ///
+    /// Scroll state is deliberately NOT part of this predicate: callers that
+    /// must suppress typing while scrolled back (the line-scroll gating tenet)
+    /// combine it with [`Self::scroll_mode_active`].
+    pub(crate) fn center_typeable(&self) -> bool {
+        self.focus == FocusPane::Center
+            && matches!(self.fullscreen_overlay, FullscreenOverlay::None)
+            && self.input_target == InputTarget::None
+            && matches!(self.prompt, PromptState::None)
+            && self.help_scroll.is_none()
+            && self.macro_bar.is_none()
+            && !self.resize_mode
+            && matches!(self.center_mode, CenterMode::Agent)
+            && self.selected_terminal_surface_client().is_some()
+    }
+
+    fn report_runtime_error(&mut self, context: &str, err: &dyn std::error::Error) {
+        logger::error(&format!("{context}: {err}"));
+        self.set_error(format!("{context}: {err}"));
+    }
+
+    pub(crate) fn open_resource_monitor(&mut self) {
+        self.prompt = PromptState::ResourceMonitor {
+            rows: Vec::new(),
+            scroll_offset: 0,
+            selected_row: 0,
+            expanded: HashSet::new(),
+            last_refresh: Instant::now(),
+            cpu_window: CpuWindow::Short,
+        };
+        self.engine.spawn_resource_stats_worker();
+    }
+
+    fn is_palette_action_available(&self, action: Action) -> bool {
+        match action {
+            Action::OpenCurrentPullRequest => self.current_pr_info().is_some(),
+            // Gated on the integration being on and NOT on the current status:
+            // this is the way back from an unusable `gh`, so it has to be there
+            // precisely when `gh` is unusable.
+            Action::RecheckGithub => self.engine.github_integration_enabled,
+            // The PR flows require GitHub integration plus an authenticated gh.
+            Action::NewAgentFromPr => self.github_pr_agent_command_available(),
+            // Attach is additionally hidden while one is already resolving for
+            // the selected agent: the engine refuses a second attach, and an
+            // offered command that can only refuse is a worse answer than an
+            // absent one.
+            // Offered for an agent with a branch while the integration is on
+            // (off, memory holds no pull requests and nothing shows them).
+            // Not gated on `gh`: hiding, detaching and ordering touch no
+            // network, and a pull request must never outlive the ability to
+            // remove it; the modal's attach key says what it needs. Hidden
+            // while an attach resolves for the agent, because the engine
+            // refuses every change to its pull requests until it lands.
+            Action::PullRequests => {
+                self.engine.github_integration_enabled
+                    && !self.pr_attach_pending_on_selection()
+                    && self
+                        .selected_session()
+                        .is_some_and(|s| s.workspace.as_managed().is_some())
+            }
+            // Offered only in the one state it exists for, and hidden rather
+            // than disabled: a command that exists only while something is
+            // broken would otherwise sit in the palette promising a repair
+            // nothing needs.
+            Action::RecreateWorkingCopy => self
+                .selected_session()
+                .is_some_and(|s| self.engine.recreate_working_copy_inputs(&s.id).is_some()),
+            // The terminal-move commands are offered only when a terminal exists;
+            // the agent-move commands are always offered (they fall through to
+            // `true` and guard at invoke, like the rest of the palette).
+            Action::MoveTerminalUp
+            | Action::MoveTerminalDown
+            | Action::MoveTerminalTop
+            | Action::MoveTerminalBottom => !self.engine.companion_terminals.is_empty(),
+            _ => true,
+        }
+    }
+
+    /// True while a manual pull-request attach is still resolving for the
+    /// selected agent. The engine refuses attach, detach and resume for that
+    /// agent until the attach lands or fails, and the palette hides them
+    /// rather than offering a command that can only refuse.
+    ///
+    /// Deliberately `PrAttach` only: `InFlightKey::PrCheck` is the background
+    /// and resume-triggered check, which blocks nothing. Do not unify the two
+    /// here; a poll running in the background is not a reason to take the
+    /// user's own pull-request commands away.
+    fn pr_attach_pending_on_selection(&self) -> bool {
+        self.selected_session().is_some_and(|s| {
+            self.engine
+                .is_in_flight(&yaran_core::engine::InFlightKey::PrAttach(s.id.clone()))
+        })
+    }
+
+    pub(crate) fn github_pr_agent_command_available(&self) -> bool {
+        self.engine.pr_agent_command_available()
+    }
+
+    /// Rebuilds `config.projects` from the live project list without writing to
+    /// disk. Runtime reaction sites call this then route the save through
+    /// `engine.config_writer.save_eager` so the write joins the queue instead
+    /// of bypassing it.
+    pub(crate) fn update_config_projects_from_runtime(&mut self) {
+        let existing_projects = self.engine.config.projects.clone();
+        self.engine.config.projects = self
+            .engine
+            .projects
+            .iter()
+            .map(|project| runtime_project_to_config(project, &existing_projects))
+            .collect();
+    }
+
+    /// Rebuild `config.projects` from the runtime projects (stripping
+    /// `leading_branch` for portability) without writing to disk. The caller
+    /// then routes the config save through `engine.config_writer.save_eager`
+    /// so the write joins the queue.
+    pub(crate) fn rebuild_config_projects(&mut self) {
+        let existing_projects = self.engine.config.projects.clone();
+        let config_project_configs = self
+            .engine
+            .projects
+            .iter()
+            .map(|project| {
+                let mut config = runtime_project_to_config(project, &existing_projects);
+                config.leading_branch = None;
+                config
+            })
+            .collect::<Vec<_>>();
+        if self.engine.config.projects != config_project_configs {
+            self.engine.config.projects = config_project_configs;
+        }
+    }
+
+    /// The palette's matches, phrase hits first and the looser ones after
+    /// them, with everything the current state cannot run removed.
+    ///
+    /// One flat list, which is the coordinate space `selected` lives in and
+    /// the order the palette draws: there is no boundary row between the two
+    /// tiers, so nothing else needs to know where one ends.
+    pub(crate) fn filtered_palette_commands(
+        &self,
+        input: &str,
+    ) -> Vec<&crate::keybindings::RuntimeBinding> {
+        self.bindings
+            .filtered_palette(input)
+            .into_iter()
+            .filter(|binding| self.is_palette_action_available(binding.action))
+            .collect()
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one short arm per palette command, each handing the command to the method that carries it out"
+    )]
+    pub(crate) fn execute_command(&mut self, command: &str) -> Result<()> {
+        let command = command.trim();
+        match command {
+            "new-agent" => {
+                self.create_agent_for_selected_project();
+                Ok(())
+            }
+            "new-agent-from-pr" => {
+                self.open_new_agent_from_pr_prompt();
+                Ok(())
+            }
+            "clone-project" => {
+                self.open_clone_project_prompt();
+                Ok(())
+            }
+            "new-agent-from-worktree" => {
+                self.create_agent_from_existing_worktree();
+                Ok(())
+            }
+            "manage-projects" => {
+                self.open_project_chooser(ProjectChooserIntent::Manage);
+                Ok(())
+            }
+            "manage-worktrees" => {
+                self.manage_project_worktrees();
+                Ok(())
+            }
+            "fork-agent" => {
+                self.fork_selected_session();
+                Ok(())
+            }
+            "change-agent-provider" => {
+                self.open_change_agent_provider_prompt();
+                Ok(())
+            }
+            // The tab commands act on the strip with focus: with the dock
+            // focused, its terminals are the tabs.
+            "new-agent-tab" if self.dock_has_focus() => {
+                self.show_companion_terminal();
+                Ok(())
+            }
+            "new-agent-tab" => self.open_new_tab_provider_prompt(),
+            "close-tab" if self.dock_has_focus() => {
+                self.confirm_close_focused_terminal();
+                Ok(())
+            }
+            "close-tab" => {
+                self.close_focused_tab_prompt();
+                Ok(())
+            }
+            "stop-agent-tab" if self.dock_has_focus() => {
+                self.set_error(dock::TERMINAL_STOP_REFUSAL);
+                Ok(())
+            }
+            "stop-agent-tab" => {
+                self.stop_focused_tab_prompt();
+                Ok(())
+            }
+            "move-tab-left" if self.dock_has_focus() => {
+                self.move_dock_terminal(reorder::MoveDir::Up);
+                Ok(())
+            }
+            "move-tab-left" => {
+                self.move_focused_tab(reorder::MoveDir::Up);
+                Ok(())
+            }
+            "move-tab-right" if self.dock_has_focus() => {
+                self.move_dock_terminal(reorder::MoveDir::Down);
+                Ok(())
+            }
+            "move-tab-right" => {
+                self.move_focused_tab(reorder::MoveDir::Down);
+                Ok(())
+            }
+            "change-default-provider" => {
+                self.open_change_default_provider_prompt();
+                Ok(())
+            }
+            "change-project-default-provider" => self.open_change_project_default_provider_prompt(),
+            "change-theme" => {
+                self.open_change_theme_prompt();
+                Ok(())
+            }
+            "reload-config" => self.reload_config_from_disk(),
+            "start-web-server" => {
+                self.start_web_server();
+                Ok(())
+            }
+            "start-background-server" => {
+                self.start_background_server(BackgroundServerStart::UserRequest);
+                Ok(())
+            }
+            "stop-background-server" => {
+                self.stop_background_server();
+                Ok(())
+            }
+            "view-server-log" => {
+                self.open_server_log_viewer();
+                Ok(())
+            }
+            "set-tailscale-mode" => {
+                self.open_set_tailscale_mode_prompt();
+                Ok(())
+            }
+            "toggle-project-auto-reopen-agents" => self.toggle_project_auto_reopen_agents(),
+            "toggle-agent-auto-reopen" => self.toggle_agent_auto_reopen(),
+            "configure-startup-command" => self.open_configure_startup_command(),
+            "configure-global-env" => {
+                self.open_configure_global_env();
+                Ok(())
+            }
+            "configure-project-env" => self.open_configure_project_env(),
+            "rerun-startup-command-on-agent" => {
+                self.rerun_startup_command_on_agent();
+                Ok(())
+            }
+            "read-startup-command-logs" => self.open_startup_command_logs(),
+            "pull-project" => self.refresh_selected_project(),
+            "checkout-project-default-branch" => self.checkout_selected_project_default_branch(),
+            "change-project-base-branch" => self.change_selected_project_base_branch(),
+            "delete-project" => self.delete_selected_project(),
+            "remove-project" => {
+                self.remove_selected_project();
+                Ok(())
+            }
+            "delete-agent" => {
+                self.confirm_delete_selected_session();
+                Ok(())
+            }
+            "rename-agent" => {
+                self.open_rename_session();
+                Ok(())
+            }
+            "agent-info" => {
+                self.open_agent_info();
+                Ok(())
+            }
+            "kill-running" => {
+                self.open_kill_running();
+                Ok(())
+            }
+            "clear-status-line" => {
+                self.clear_status_line();
+                Ok(())
+            }
+            "detach-agent" => {
+                self.confirm_detach_selected_session();
+                Ok(())
+            }
+            "recreate-working-copy" => {
+                self.confirm_recreate_selected_working_copy();
+                Ok(())
+            }
+            "reconnect-agent" => self.reconnect_selected_session(LaunchView::Minimized),
+            "force-reconnect-agent" => self.force_reconnect_agent(),
+            "refresh-changes" => {
+                self.refresh_changed_files_now();
+                Ok(())
+            }
+            "move-agent-up" => {
+                self.move_selected_agent(reorder::MoveDir::Up);
+                Ok(())
+            }
+            "move-agent-down" => {
+                self.move_selected_agent(reorder::MoveDir::Down);
+                Ok(())
+            }
+            "move-agent-top" => {
+                self.move_selected_agent(reorder::MoveDir::Top);
+                Ok(())
+            }
+            "move-agent-bottom" => {
+                self.move_selected_agent(reorder::MoveDir::Bottom);
+                Ok(())
+            }
+            "close-terminal" => {
+                self.close_terminal_from_palette();
+                Ok(())
+            }
+            "cycle-terminal-layout" => {
+                self.cycle_terminal_layout();
+                Ok(())
+            }
+            "filter-agents" => {
+                self.filter_agents_from_palette();
+                Ok(())
+            }
+            "move-terminal-up" => {
+                self.move_selected_terminal(reorder::MoveDir::Up);
+                Ok(())
+            }
+            "move-terminal-down" => {
+                self.move_selected_terminal(reorder::MoveDir::Down);
+                Ok(())
+            }
+            "move-terminal-top" => {
+                self.move_selected_terminal(reorder::MoveDir::Top);
+                Ok(())
+            }
+            "move-terminal-bottom" => {
+                self.move_selected_terminal(reorder::MoveDir::Bottom);
+                Ok(())
+            }
+            "show-agent" => self.activate_center_agent(OnDormant::Launch, LaunchView::Minimized),
+            "show-terminal" => {
+                self.show_or_open_first_terminal();
+                Ok(())
+            }
+            "new-terminal-for-agent" => {
+                self.new_companion_terminal();
+                Ok(())
+            }
+            "new-terminal-for-project" => {
+                self.open_project_chooser(ProjectChooserIntent::ProjectTerminal);
+                Ok(())
+            }
+            "new-standalone-agent" => {
+                self.open_standalone_agent_browser();
+                Ok(())
+            }
+            "new-standalone-terminal" => {
+                self.show_standalone_terminal();
+                Ok(())
+            }
+            "add-project" => {
+                self.open_project_browser();
+                Ok(())
+            }
+            "copy-path" => self.copy_selected_path(),
+            "open-worktree" => {
+                self.open_selected_worktree_in_default_editor();
+                Ok(())
+            }
+            "open-worktree-with" => {
+                self.open_worktree_editor_picker();
+                Ok(())
+            }
+            "open-current-pr" => {
+                self.open_current_pr_in_browser();
+                Ok(())
+            }
+            "pull-requests" => {
+                self.open_pull_requests_modal();
+                Ok(())
+            }
+            "toggle-project" => {
+                self.toggle_collapse_selected_project();
+                Ok(())
+            }
+            "toggle-sidebar" => {
+                self.panes.left_collapsed = !self.panes.left_collapsed;
+                Ok(())
+            }
+            "toggle-git-pane" => {
+                self.panes.right_collapsed = !self.panes.right_collapsed;
+                if self.panes.right_collapsed && self.focus == FocusPane::Files {
+                    self.focus = FocusPane::Center;
+                }
+                Ok(())
+            }
+            "toggle-remove-git-pane" => {
+                self.toggle_git_pane_removed();
+                Ok(())
+            }
+            "toggle-always-show-tabs" => {
+                self.toggle_always_show_tab_strip();
+                Ok(())
+            }
+            "toggle-tab-to-agent" => {
+                self.toggle_tab_reaches_agent();
+                Ok(())
+            }
+            "toggle-nerd-font-icons" => {
+                self.toggle_nerd_font_icons();
+                Ok(())
+            }
+            "help" => {
+                self.help_scroll = Some(0);
+                Ok(())
+            }
+            "sort-agents" => {
+                self.cycle_agent_sort();
+                Ok(())
+            }
+            "edit-macros" => {
+                self.open_edit_macros();
+                Ok(())
+            }
+            "input-debugging" => {
+                self.prompt = PromptState::DebugInput {
+                    lines: Vec::new(),
+                    scroll_offset: 0,
+                };
+                Ok(())
+            }
+            "resource-monitor" => {
+                self.open_resource_monitor();
+                Ok(())
+            }
+            // Both first-load screens can be opened deliberately even when their
+            // `[ui] disable_*` flag is set: the flags suppress only what yaran does
+            // on its own, never what the user asks for.
+            "show-welcome-screen" => {
+                self.show_welcome_screen_command();
+                Ok(())
+            }
+            "show-release-notes" => {
+                self.show_release_notes_command();
+                Ok(())
+            }
+            "toggle-diff-line-numbers" => {
+                self.toggle_diff_line_numbers();
+                Ok(())
+            }
+            "recheck-github" => {
+                let status = self.engine.request_gh_recheck();
+                self.status
+                    .set(Instant::now(), status.key, status.tone, status.message);
+                Ok(())
+            }
+            "toggle-github-integration" => {
+                self.toggle_github_integration();
+                Ok(())
+            }
+            "toggle-randomized-pet-name-default" => {
+                self.toggle_randomized_pet_name_default();
+                Ok(())
+            }
+            "toggle-pr-banner-position" => {
+                self.toggle_pr_banner_position();
+                Ok(())
+            }
+            "force-redraw" => {
+                self.notes.force_redraw = true;
+                self.set_info("Interface redrawn. All screen contents have been repainted.");
+                Ok(())
+            }
+            "" => Ok(()),
+            other => {
+                self.set_error(format!("Unknown command: \"{other}\""));
+                Ok(())
+            }
+        }
+    }
+
+    /// Show or hide the diff line numbers, save it, and redraw the diff.
+    fn toggle_diff_line_numbers(&mut self) {
+        self.view_prefs.show_diff_line_numbers = !self.view_prefs.show_diff_line_numbers;
+        self.engine.config.ui.show_diff_line_numbers = self.view_prefs.show_diff_line_numbers;
+        self.engine
+            .config_writer
+            .save_lazy(self.engine.config.clone());
+        self.refresh_current_diff();
+        let state = if self.view_prefs.show_diff_line_numbers {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let palette_key = self.bindings.label_for(Action::OpenPalette);
+        self.set_info(format!(
+            "Diff line numbers {state}. Press {palette_key} to open the palette and toggle back."
+        ));
+    }
+
+    /// Turn the GitHub integration on or off for this session and in the config.
+    fn toggle_github_integration(&mut self) {
+        self.engine.github_integration_enabled = !self.engine.github_integration_enabled;
+        self.engine.config.ui.github_integration = self.engine.github_integration_enabled;
+        if self.engine.github_integration_enabled {
+            // Off-to-on: re-ask `gh` which hosts it can serve, and do
+            // nothing else. The status held right now is the answer from
+            // boot, which predates the login that enabled the
+            // integration; the probe's completion arms the follow-up
+            // work, exactly once.
+            self.engine.spawn_gh_status_check();
+        } else {
+            self.engine.clear_agent_prs();
+            self.engine.disarm_pr_sync();
+            self.rebuild_left_items();
+        }
+        let state = if self.engine.github_integration_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        if let Err(err) = self
+            .engine
+            .config_writer
+            .save_eager(self.engine.config.clone())
+        {
+            self.set_error(format!(
+                "GitHub integration toggled this session, but saving to config failed: {err}"
+            ));
+        } else {
+            self.set_info(format!("GitHub integration {state}."));
+        }
+        // Browsers on this serve hold the switch, whether GitHub features work
+        // and the clone dialog's GitHub hosts in their bootstrap document, and
+        // turning the integration off starts no probe that would tell them, so
+        // they are told to refetch it here.
+        self.notify_companion(&yaran_core::engine::EventReaction::GithubFactsChanged);
+        self.refresh_clone_destination_suggestion();
+    }
+
+    /// Flip whether a new agent prompt starts with a random pet name, and save it.
+    fn toggle_randomized_pet_name_default(&mut self) {
+        self.engine
+            .config
+            .defaults
+            .enable_randomized_pet_name_by_default = !self
+            .engine
+            .config
+            .defaults
+            .enable_randomized_pet_name_by_default;
+        self.engine
+            .config_writer
+            .save_lazy(self.engine.config.clone());
+        let state = if self
+            .engine
+            .config
+            .defaults
+            .enable_randomized_pet_name_by_default
+        {
+            "enabled: new agent prompts start with a random pet name"
+        } else {
+            "disabled: new agent prompts start empty"
+        };
+        let palette_key = self.bindings.label_for(Action::OpenPalette);
+        self.set_info(format!(
+            "Random pet-name defaults {state}. Press {palette_key} to toggle back."
+        ));
+    }
+
+    /// Move the PR banner between the top and the bottom of the agent pane, and save it.
+    fn toggle_pr_banner_position(&mut self) {
+        self.view_prefs.pr_banner_at_bottom = !self.view_prefs.pr_banner_at_bottom;
+        let pos = if self.view_prefs.pr_banner_at_bottom {
+            "bottom"
+        } else {
+            "top"
+        };
+        self.engine.config.ui.pr_banner_position = pos.to_string();
+        self.engine
+            .config_writer
+            .save_lazy(self.engine.config.clone());
+        self.set_info(format!("PR banner moved to {pos} of agent pane."));
+    }
+
+    /// Run the ordinary config reload when a SIGUSR1 has arrived since the
+    /// last tick (`yaran config set` sends one; see
+    /// [`yaran_core::reload_signal`]). Returns whether one had. The reload
+    /// itself runs on a worker, never on this thread. While the background
+    /// server is up this one reload is its reload too, because the terminal
+    /// UI drives the engine both serve from.
+    pub(crate) fn reload_config_on_signal(&mut self) -> bool {
+        if !yaran_core::reload_signal::take_pending() {
+            return false;
+        }
+        yaran_core::logger::info("SIGUSR1 received: reloading config.toml");
+        if let Err(err) = self.reload_config_from_disk() {
+            self.report_runtime_error("config reload on SIGUSR1 failed", err.as_ref());
+        }
+        true
+    }
+
+    pub(crate) fn reload_config_from_disk(&mut self) -> Result<()> {
+        let reaction = self.engine.apply(Command::ReloadConfig)?;
+        // Only show the "Reloading…" busy when a reload worker was actually
+        // spawned (the engine returns `Nothing` on that path). The early-return
+        // cases, a reentrant reload or a busy config writer, return a `Status`
+        // that already explains the situation; setting the busy here would both
+        // clobber that message and strand a spinner that no worker will clear.
+        let spawned = matches!(reaction, yaran_core::engine::EventReaction::Nothing);
+        self.apply_reaction(reaction);
+        if spawned {
+            // Mint the reload's keyed busy op. The TUI view handler for the shared
+            // `ApplyReloadedConfig` / `ConfigAdopted` (applied or adopted) and
+            // `OpenConfigReloadFailedModal` (refused) reactions resolves it: a
+            // refused file into this surface's own error, an apply outcome into
+            // a clear, because that sentence is owed to both surfaces and
+            // travels the worker lane.
+            let op = yaran_core::engine::status_op("Reloading config.toml.").resolve_in_handler(
+                |o: &TuiConfigReloadOutcome| match o {
+                    // Both apply outcomes are authored in `config_reload_status`
+                    // and posted on the worker lane, so both surfaces read the
+                    // same sentence. The op's only job for them is to dismiss
+                    // its own spinner once that final is on its way.
+                    TuiConfigReloadOutcome::Applied | TuiConfigReloadOutcome::ApplyFailed(_) => {
+                        yaran_core::engine::Final::clear()
+                    }
+                    TuiConfigReloadOutcome::ValidationFailed => yaran_core::engine::Final::error(
+                        "Config reload failed. Review the modal before retrying.",
+                    ),
+                },
+            );
+            let pending = self.engine.begin_status_op(&op);
+            self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
+            self.pending_config_reload_op = Some(op);
+        }
+        Ok(())
+    }
+
+    fn open_config_reload_failed_modal(&mut self, error: String) {
+        self.prompt = PromptState::ConfigReloadFailed {
+            error,
+            recover_old_config: false,
+            focus: ConfigReloadFailedFocus::Close,
+            scroll: 0,
+        };
+    }
+
+    /// Re-seed the view state this surface caches off `engine.config`.
+    ///
+    /// Exactly the fields a browser can write through Preferences, because under
+    /// one engine a web save mutates `engine.config` in place and this surface
+    /// would otherwise render its own stale copy until a manual reload. Theme,
+    /// bindings, pane percentages and diff line numbers are deliberately absent:
+    /// the settings patch cannot carry them, so only a reload changes them and
+    /// only a reload has to re-seed them.
+    pub(crate) fn sync_view_state_from_config(&mut self) {
+        let ui = &self.engine.config.ui;
+        self.view_prefs.pr_banner_at_bottom =
+            yaran_core::config_effective::effective_pr_banner_position(&ui.pr_banner_position)
+                == yaran_core::config_effective::PrBannerPosition::Bottom;
+        let clear_after = Duration::from_secs(ui.status_clear_seconds.into());
+        let hide_right = !ui.show_changes_pane;
+        self.status.set_clear_after(clear_after);
+        // If the changes pane just became hidden while the Files pane was
+        // focused, move focus to the center, matching the toggle.
+        self.panes.right_hidden = hide_right;
+        if self.panes.right_hidden && self.focus == FocusPane::Files {
+            self.focus = FocusPane::Center;
+        }
+    }
+
+    /// Take the view state only a reload changes (bindings, theme, pane
+    /// sizes, diff line numbers) from `config`, returning the theme's own
+    /// warning when it could not be loaded.
+    pub(crate) fn take_reload_view_state(&mut self, config: &Config) -> Option<String> {
+        let mut bindings = RuntimeBindings::from_keys_config(&config.keys);
+        bindings.set_extended_keys(self.extended_keys);
+        self.interactive_patterns = bindings.interactive_byte_patterns();
+        self.bindings = bindings;
+
+        let (theme, theme_warning) =
+            crate::theme::load_or_fallback(&config.ui.theme, &self.engine.paths);
+        self.theme = theme;
+        self.view_prefs.show_diff_line_numbers = config.ui.show_diff_line_numbers;
+        self.left_width_pct = config.ui.left_width_pct;
+        self.right_width_pct = config.ui.right_width_pct;
+        self.terminal_dock_pct = config.ui.terminal_dock_pct;
+        self.staged_pane_height_pct = config.ui.staged_pane_height_pct;
+        self.commit_pane_height_pct = config.ui.commit_pane_height_pct;
+        theme_warning
+    }
+
+    fn apply_reloaded_config(&mut self, mut config: Config) -> Result<()> {
+        let theme_warning = self.take_reload_view_state(&config);
+        let github_was_enabled = if self.engine.github_integration_enabled {
+            yaran_core::engine::GithubIntegration::Enabled
+        } else {
+            yaran_core::engine::GithubIntegration::Disabled
+        };
+        self.engine.github_integration_enabled = config.ui.github_integration;
+        if let Some(projects) = self.engine.take_reloaded_projects() {
+            // The reload worker built and saved these already, so nothing
+            // here touches SQLite, git or the config file again.
+            self.engine.projects = projects;
+        } else {
+            self.engine.projects = load_projects(
+                &self.engine.session_store.load_projects()?,
+                &self.engine.session_store.load_project_created_ats()?,
+                &config,
+            );
+            persist_runtime_projects_to_config_and_store(
+                &self.engine.projects,
+                &mut config,
+                &self.engine.paths,
+                &self.bindings,
+                &self.engine.session_store,
+            )?;
+        }
+        let before = std::mem::replace(&mut self.engine.config, config);
+        self.engine.retune_after_config_swap();
+        self.run_config_swap_effects(&before, github_was_enabled);
+        if let Some(message) = theme_warning {
+            self.set_pinned_warning(message);
+        }
+        Ok(())
+    }
+
+    /// Everything a reload owes once `engine.config` holds the new config,
+    /// compared with `before`, the config it replaced: the view, the project
+    /// list, the GitHub integration, the serve and Tailscale switches.
+    /// `github` is whether the integration was on before; the
+    /// `gh` probe a reload owes is asked for here, by the engine's one rule
+    /// ([`yaran_core::engine::Engine::probe_gh_after_reload`]), and nowhere
+    /// else on this surface. Runs after a successful apply and after one
+    /// that failed but adopted the config anyway, so neither claims a
+    /// setting that is not in force.
+    pub(crate) fn run_config_swap_effects(
+        &mut self,
+        before: &Config,
+        github: yaran_core::engine::GithubIntegration,
+    ) {
+        self.engine.probe_gh_after_reload(github);
+        self.sync_view_state_from_config();
+
+        self.engine.refresh_project_defaults();
+        // No project-count clamp here: the flat list indexes agent rows, not
+        // projects, so clamping `selected_left` against `projects.len()` was
+        // meaningless and reset the cursor to the top. `rebuild_left_items`
+        // (below) keeps the cursor on its row, which a reloaded sort mode or
+        // filter may have moved.
+        self.rebuild_left_items();
+        self.engine.update_branch_sync_sessions();
+        self.engine.retune_pr_sync_after_reload(github);
+        self.reload_changed_files();
+        self.refresh_current_diff();
+        // `[server] serve_while_tui` is both the startup default and a live
+        // switch, so a reload that flipped it acts now rather than at the next
+        // start: a user who edited the file to turn the listener off has asked for
+        // the listener to go away. Done last, after `engine.config` holds the
+        // reloaded values, so the start path reads the new port and Tailscale mode.
+        let serving_before = self.background_server_is_serving();
+        let wanted = if self.engine.config.server.serve_while_tui {
+            crate::app::background_server::ServeWanted::On
+        } else {
+            crate::app::background_server::ServeWanted::Off
+        };
+        self.apply_serve_while_tui_setting(wanted);
+        // `[server] tailscale` is live too, and in this mode the terminal UI owns
+        // the reload: the serve is the companion's, and the actor arm that owns it
+        // for `yaran server` and the flip has no control handle here. Skipped when
+        // the same reload just STARTED the serve, because that serve read the new
+        // mode from config on its way up, and when it just stopped one. Compared
+        // with the config before the reload, because the comparison is against
+        // what the running serve was told, not against what the file now says.
+        if serving_before
+            && self.background_server_is_serving()
+            && before.server.tailscale_mode() != self.engine.config.server.tailscale_mode()
+        {
+            let mode = self.engine.config.server.tailscale_mode();
+            self.ask_companion_for_tailscale_mode_for_reload(mode);
+        }
+        // A config file can hand Tab to the agent while every `focus_next` and
+        // `focus_prev` key is one the typeable pane types, and nobody toggled
+        // anything, so the load is the only place that can say the pane has no
+        // keyboard way out. Said before the theme warning, which is the more
+        // urgent of the two when both land in the same reload.
+        if let Some(message) = key_bindings_warning(&self.bindings, &self.engine.config) {
+            self.set_warning(message);
+        }
+    }
+
+    pub(crate) fn open_edit_macros(&mut self) {
+        let entries: Vec<(String, String, MacroSurface)> = self
+            .engine
+            .config
+            .macros
+            .entries
+            .iter()
+            .map(|(k, v)| (k.clone(), v.text.clone(), v.surface))
+            .collect();
+        self.macro_editor_version =
+            Some(yaran_core::wire::macros_version(&self.engine.config.macros));
+        // Preserve declaration order from config file (IndexMap iteration order).
+        self.prompt = PromptState::EditMacros {
+            entries,
+            selected: 0,
+            editing: None,
+            pending_delete: None,
+        };
+    }
+
+    /// Return macros matching `query` and the current session surface,
+    /// searching name first then text content.
+    /// If `query` is empty, returns all surface-matching macros in config order.
+    pub(crate) fn filtered_macros(&self, query: &str) -> Vec<(&str, &str)> {
+        let surface = self.focused_surface();
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return self
+                .engine
+                .config
+                .macros
+                .entries
+                .iter()
+                .filter(|(_, entry)| {
+                    yaran_core::macros::macro_matches_surface(entry.surface, surface)
+                })
+                .map(|(name, entry)| (name.as_str(), entry.text.as_str()))
+                .collect();
+        }
+        let mut name_matches = Vec::new();
+        let mut text_matches = Vec::new();
+        for (name, entry) in &self.engine.config.macros.entries {
+            if !yaran_core::macros::macro_matches_surface(entry.surface, surface) {
+                continue;
+            }
+            if name.to_lowercase().contains(&needle) {
+                name_matches.push((name.as_str(), entry.text.as_str()));
+            } else if entry.text.to_lowercase().contains(&needle) {
+                text_matches.push((name.as_str(), entry.text.as_str()));
+            }
+        }
+        name_matches.extend(text_matches);
+        name_matches
+    }
+
+    pub(crate) fn left_items(&self) -> &[LeftItem] {
+        &self.left_items_cache
+    }
+
+    pub(crate) fn rebuild_left_items(&mut self) {
+        // Until the user toggles the Inactive section by hand, auto-manage it:
+        // expand when every agent is inactive (don't hide a wholly-dormant
+        // workspace behind a collapsed toggle), collapse once any agent is active.
+        if !self.inactive_tail.overridden {
+            let has_active = self
+                .engine
+                .sessions
+                .iter()
+                .any(|s| matches!(s.status, crate::model::SessionStatus::Active));
+            self.inactive_tail.collapsed = has_active;
+        }
+        // Expire a stale query-scoped dismissal: it applies only to the exact
+        // query it was made under, so a changed or cleared query drops it and
+        // the derivation below re-applies.
+        let current_query = self.active_filter_query();
+        if self
+            .inactive_search_dismissed
+            .as_deref()
+            .is_some_and(|dismissed| current_query.as_deref() != Some(dismissed))
+        {
+            self.inactive_search_dismissed = None;
+        }
+        // Derived search expansion: while the filter query hits something in
+        // the Inactive tail (and the user has not dismissed it for this exact
+        // query), the tail renders OPEN without mutating `inactive_tail.collapsed`,
+        // so clearing the query restores the user's collapse preference.
+        let effective_collapsed =
+            if self.inactive_tail.collapsed && !self.inactive_tail_forced_open() {
+                InactiveTail::Collapsed
+            } else {
+                InactiveTail::Expanded
+            };
+        let mode = AgentSortMode::from_config_str(&self.engine.config.ui.agent_sort);
+        // Precompute the "hot" bit (working || needs-attention) per session so the
+        // predicate can borrow this Vec while `build_left_items` borrows
+        // `self.engine.sessions` (avoids borrowing `self.engine` twice).
+        let hot: Vec<bool> = self
+            .engine
+            .sessions
+            .iter()
+            .map(|s| {
+                self.engine.session_is_streaming(&s.id)
+                    || self.engine.session_needs_attention(&s.id)
+            })
+            .collect();
+        // Precompute the display-filter visibility mask so its closure can borrow a
+        // plain `Vec<bool>` while `build_left_items` borrows `self.engine.sessions`
+        // (mirroring the hot mask above, and avoiding a second `self.engine` borrow).
+        // An absent or whitespace-only query makes everything visible.
+        let visible: Vec<bool> = self.agent_visibility_mask();
+        let has_terminal: Vec<bool> = self
+            .engine
+            .sessions
+            .iter()
+            .map(|s| self.session_terminal_count(&s.id) > 0)
+            .collect();
+        let terminal_ids = self.list_terminal_ids();
+        let terminal_facts = self.list_terminal_facts(&terminal_ids);
+        let query = self.active_filter_query();
+        let terminal_visible: Vec<bool> = terminal_ids
+            .iter()
+            .map(|id| {
+                query.as_deref().is_none_or(|query| {
+                    self.engine
+                        .companion_terminals
+                        .get(id)
+                        .is_some_and(|terminal| self.terminal_matches_filter(terminal, query))
+                })
+            })
+            .collect();
+        let was_on = self.left_cursor_row();
+        self.left_items_cache = build_left_items(
+            &self.engine.sessions,
+            &terminal_facts,
+            effective_collapsed,
+            mode,
+            &yaran_core::flat_list::AgentRowFacts {
+                is_hot: &|i| hot[i],
+                is_visible: &|i| visible[i],
+                has_running_terminal: &|i| has_terminal[i],
+            },
+            &|t| terminal_visible[t],
+        );
+        self.left_terminals = terminal_ids;
+        self.left_rows = self
+            .left_items_cache
+            .iter()
+            .map(|item| match item {
+                LeftItem::Session(index) => LeftRow::Agent(
+                    self.engine
+                        .sessions
+                        .get(*index)
+                        .map_or_default(|session| session.id.clone()),
+                ),
+                LeftItem::Terminal(index) => {
+                    LeftRow::Terminal(self.left_terminals.get(*index).cloned().unwrap_or_default())
+                }
+                LeftItem::InactiveToggle => LeftRow::InactiveToggle,
+            })
+            .collect();
+        self.put_left_cursor_back(was_on);
+        self.left_list.built = true;
+        self.ensure_selectable_left_item();
+    }
+
+    /// What the list sorts each of `terminal_ids` by, in the same order.
+    pub(crate) fn list_terminal_facts<'a>(
+        &'a self,
+        terminal_ids: &[String],
+    ) -> Vec<yaran_core::flat_list::TerminalRowFacts<'a>> {
+        terminal_ids
+            .iter()
+            .filter_map(|id| {
+                let (id, terminal) = self.engine.companion_terminals.get_key_value(id)?;
+                // Last output mapped onto wall clock, or when it was opened before
+                // any: the same instant the viewmodel reports as updated.
+                let updated_at =
+                    self.engine
+                        .pty_activity
+                        .get(id)
+                        .map_or(terminal.created_at, |last| {
+                            let ago =
+                                chrono::Duration::from_std(last.elapsed()).unwrap_or_default();
+                            chrono::Utc::now() - ago
+                        });
+                Some(yaran_core::flat_list::TerminalRowFacts {
+                    name: &terminal.label,
+                    created_at: terminal.created_at,
+                    updated_at,
+                    busy: self.engine.terminal_is_working(id) || self.engine.is_typing(id),
+                    after_agent: terminal.list_after.as_deref(),
+                })
+            })
+            .collect()
+    }
+
+    /// Build the per-session visibility mask for the current agent-list filter.
+    /// Each entry is `true` when the session at that index passes the live query
+    /// (via the shared core matcher `yaran_core::agent_search::matches_session`), so a
+    /// filtered row is excluded from both the active and inactive buckets. When
+    /// filter mode is off, or the query is empty/whitespace, every session is
+    /// visible. Fields mirror the web sidebar search exactly: display name,
+    /// project name, branch (provider names are deliberately not searched).
+    fn agent_visibility_mask(&self) -> Vec<bool> {
+        let query = match &self.agent_filter {
+            Some(input) => input.text.as_str(),
+            None => return vec![true; self.engine.sessions.len()],
+        };
+        if yaran_core::agent_search::normalize_query(query).is_empty() {
+            return vec![true; self.engine.sessions.len()];
+        }
+        self.engine
+            .sessions
+            .iter()
+            .map(|session| {
+                // The row's second line shows a project for a managed agent
+                // and a FOLDER for a standalone one, so the search matches
+                // whichever the row actually shows. Typing part of a path finds
+                // a standalone agent, exactly as terminal searching works.
+                let location = agent_search_location(&self.engine, session);
+                yaran_core::agent_search::matches_session(
+                    session.title.as_deref(),
+                    session.branch_name(),
+                    location.as_deref(),
+                    query,
+                )
+            })
+            .collect()
+    }
+
+    /// Count the inactive (Detached/Exited) agents that are currently VISIBLE
+    /// under the active search filter. This is what the "Inactive (N)" toggle
+    /// must show: the number of rows actually revealed when the tail is expanded
+    /// under the current filter, not the raw count of every inactive session.
+    /// It intersects the inactive-status predicate with `agent_visibility_mask`,
+    /// consistent with how the pane title's filtered "Agents (M/N)" count works.
+    pub(crate) fn visible_inactive_count(&self) -> usize {
+        let mask = self.agent_visibility_mask();
+        self.engine
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(index, session)| {
+                mask.get(*index).copied().unwrap_or(false)
+                    && yaran_core::flat_list::in_inactive_tail(
+                        session,
+                        yaran_core::flat_list::OwnTerminals::from(
+                            self.session_terminal_count(&session.id) > 0,
+                        ),
+                    )
+            })
+            .count()
+    }
+
+    /// The live agent-filter query, normalized, or `None` when filter mode is
+    /// off or the query is empty/whitespace (which filters nothing).
+    fn active_filter_query(&self) -> Option<String> {
+        let raw = self.agent_filter.as_ref()?.text.as_str();
+        let query = yaran_core::agent_search::normalize_query(raw);
+        (!query.is_empty()).then_some(query)
+    }
+
+    /// Whether the Inactive tail is currently held open by the search: a live
+    /// query with at least one visible inactive hit, not dismissed for this
+    /// exact query. Pure derivation; `inactive_tail.collapsed` is never consulted or
+    /// mutated here.
+    fn inactive_tail_forced_open(&self) -> bool {
+        // The decision is the core-owned `quiet_tail::quiet_tail_forced_open`
+        // (cross-language twin of the web's `quietTailForcedOpen`), keyed on the
+        // NORMALIZED query so a whitespace/case variant of a dismissed query does
+        // not resurrect the tail. `active_filter_query` already normalizes.
+        yaran_core::quiet_tail::quiet_tail_forced_open(
+            self.active_filter_query().as_deref(),
+            self.inactive_search_dismissed.as_deref(),
+            if self.visible_inactive_count() > 0 {
+                yaran_core::quiet_tail::QuietHit::Found
+            } else {
+                yaran_core::quiet_tail::QuietHit::NotFound
+            },
+        )
+    }
+
+    /// Enter agent-list filter mode: seed an empty query and rebuild the list.
+    /// While active, printable keys type into the query and the arrows navigate
+    /// the filtered rows (mirroring the project browser's type-to-filter).
+    /// The palette's way into the agent filter. The key binding only fires
+    /// from the agents pane, where typing already reaches the filter; the
+    /// palette can run from anywhere, so it brings the pane into view and gives
+    /// it focus, or the query would be typed into nothing.
+    pub(crate) fn filter_agents_from_palette(&mut self) {
+        self.panes.left_collapsed = false;
+        self.focus = FocusPane::Left;
+        self.open_agent_filter();
+    }
+
+    /// The palette's way to close a terminal: the active terminal of the dock
+    /// when the dock has focus, or the terminal whose row is selected in the
+    /// agents list. Anywhere else there is no terminal the command could mean,
+    /// and closing one the user is not looking at is not what they asked for.
+    pub(crate) fn close_terminal_from_palette(&mut self) {
+        if self.focused_terminal_to_close().is_none() {
+            self.set_error(
+                "Focus an agent's terminal dock, or select a project or standalone terminal in \
+                 the agents list, then run close-terminal again to close it.",
+            );
+            return;
+        }
+        self.confirm_close_focused_terminal();
+    }
+
+    /// The terminal the close binding and `close-terminal` act on: the selected
+    /// terminal row's, or the dock's active one while the dock has focus.
+    pub(crate) fn focused_terminal_to_close(&self) -> Option<String> {
+        if let Some(row) = self.selected_terminal_row() {
+            return Some(row);
+        }
+        (self.focus == FocusPane::Center && self.focused_surface() == SessionSurface::Terminal)
+            .then(|| self.selected_terminal_surface_id())
+            .flatten()
+    }
+
+    pub(crate) fn open_agent_filter(&mut self) {
+        self.agent_filter = Some(TextInput::new());
+        self.rebuild_left_items_for_filter();
+    }
+
+    /// Leave agent-list filter mode: clear the query and restore the full list,
+    /// keeping a sensible (selectable) selection via `rebuild_left_items`.
+    pub(crate) fn close_agent_filter(&mut self) {
+        self.agent_filter = None;
+        self.rebuild_left_items_for_filter();
+    }
+
+    pub(crate) fn is_selectable_left_item(&self, index: usize) -> bool {
+        self.left_items()
+            .get(index)
+            .is_some_and(|item| item.is_selectable())
+    }
+
+    /// Whether the list item at `index` may be dragged, and dropped onto, by a
+    /// mouse reorder: an agent or terminal row in the ACTIVE list.
+    ///
+    /// The Inactive tail and its toggle are deliberately not drop targets, as on
+    /// the web: the tail is a derived bucket (a detached agent falls into it and
+    /// an attached one leaves it), so a slot inside it is not a place a user can
+    /// put something. A drag that wanders over one shows no marker and drops
+    /// nothing.
+    pub(crate) fn is_reorderable_left_item(&self, index: usize) -> bool {
+        let items = self.left_items();
+        if !matches!(
+            items.get(index),
+            Some(LeftItem::Session(_) | LeftItem::Terminal(_))
+        ) {
+            return false;
+        }
+        match items
+            .iter()
+            .position(|item| matches!(item, LeftItem::InactiveToggle))
+        {
+            Some(tail) => index < tail,
+            None => true,
+        }
+    }
+
+    pub(crate) fn next_selectable_left_item_after(&self, index: usize) -> Option<usize> {
+        self.left_items()
+            .iter()
+            .enumerate()
+            .skip(index.saturating_add(1))
+            .find_map(|(idx, item)| item.is_selectable().then_some(idx))
+    }
+
+    pub(crate) fn previous_selectable_left_item_before(&self, index: usize) -> Option<usize> {
+        self.left_items()
+            .iter()
+            .enumerate()
+            .take(index)
+            .rev()
+            .find_map(|(idx, item)| item.is_selectable().then_some(idx))
+    }
+
+    pub(crate) fn first_selectable_left_item(&self) -> Option<usize> {
+        self.left_items()
+            .iter()
+            .position(|item| item.is_selectable())
+    }
+
+    pub(crate) fn last_selectable_left_item(&self) -> Option<usize> {
+        self.left_items()
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, item)| item.is_selectable().then_some(idx))
+    }
+
+    /// What the agent cursor is on, read from the list as this surface last
+    /// built it.
+    fn left_cursor_row(&self) -> LeftCursorOn {
+        if !self.left_list.built {
+            return LeftCursorOn::Unknown;
+        }
+        if self.left_list.cursor_parked && self.selected_left >= self.left_rows.len() {
+            return LeftCursorOn::Nothing;
+        }
+        match self.left_rows.get(self.selected_left) {
+            Some(row) => LeftCursorOn::Row(row.clone()),
+            None if self.left_rows.is_empty() => LeftCursorOn::Nothing,
+            None => LeftCursorOn::Unknown,
+        }
+    }
+
+    /// Put the agent cursor back on `was_on` in the list just rebuilt.
+    ///
+    /// Only this surface moves the cursor onto a row, so a row that is gone
+    /// does not hand it to whatever took its place: an agent deleted, or one
+    /// gone dormant into the collapsed Inactive tail, or a non-agent row that
+    /// went away, leaves the cursor on no row, and so does an empty list that
+    /// agents then appear in, whoever made the change: the centre then shows
+    /// the tips screen until the user picks a row. Only a filter, which is
+    /// the user choosing what the list shows, goes through
+    /// [`Self::rebuild_left_items_for_filter`] and lands on a row.
+    fn put_left_cursor_back(&mut self, was_on: LeftCursorOn) {
+        match was_on {
+            LeftCursorOn::Row(row) => {
+                if let Some(pos) = self
+                    .left_rows
+                    .iter()
+                    .position(|candidate| *candidate == row)
+                {
+                    self.selected_left = pos;
+                    self.left_list.cursor_parked = false;
+                } else {
+                    self.park_left_cursor();
+                }
+            }
+            LeftCursorOn::Nothing => self.park_left_cursor(),
+            LeftCursorOn::Unknown => {}
+        }
+    }
+
+    /// The agent cursor's row, or `None` when it rests on no row.
+    pub(crate) fn left_cursor_on_a_row(&self) -> Option<usize> {
+        (self.selected_left < self.left_items_cache.len()).then_some(self.selected_left)
+    }
+
+    fn park_left_cursor(&mut self) {
+        self.selected_left = self.left_rows.len();
+        self.left_list.cursor_parked = true;
+    }
+
+    /// Rebuild the agent list after the filter changed: the user is choosing
+    /// what the list shows, so a row the query hid hands the cursor to the row
+    /// that took its place, and a cursor on no row lands on one.
+    pub(crate) fn rebuild_left_items_for_filter(&mut self) {
+        let row = self.selected_left;
+        self.rebuild_left_items();
+        if self.left_list.cursor_parked && self.selected_left >= self.left_rows.len() {
+            self.left_list.cursor_parked = false;
+            self.selected_left = row;
+            self.ensure_selectable_left_item();
+        }
+    }
+
+    pub(crate) fn ensure_selectable_left_item(&mut self) {
+        if self.left_items_cache.is_empty() {
+            self.selected_left = 0;
+            return;
+        }
+        if self.left_list.cursor_parked && self.selected_left >= self.left_items_cache.len() {
+            return;
+        }
+        if self.selected_left >= self.left_items_cache.len() {
+            self.selected_left = self.left_items_cache.len().saturating_sub(1);
+        }
+        if self.left_items_cache[self.selected_left].is_selectable() {
+            return;
+        }
+        if let Some(next) = self.next_selectable_left_item_after(self.selected_left) {
+            self.selected_left = next;
+        } else if let Some(prev) = self.previous_selectable_left_item_before(self.selected_left) {
+            self.selected_left = prev;
+        }
+    }
+
+    /// Advance the shared `config.ui.agent_sort` to the next TUI display mode
+    /// (active -> updated -> created -> name A to Z -> name Z to A -> active),
+    /// persist it via the engine, and rebuild the display order. This is purely a
+    /// DISPLAY sort: `engine.sessions` is never reordered and no `sort_order` is
+    /// persisted. If the current stored mode is the web-only `manual`, the cycle
+    /// restarts at `active`.
+    pub(crate) fn cycle_agent_sort(&mut self) {
+        let current = AgentSortMode::from_config_str(&self.engine.config.ui.agent_sort);
+        let next = current.next_in_tui_cycle();
+        self.engine.set_agent_sort(next.as_config_str());
+        // No confirmation: the whole list reorders under the cursor, which is
+        // the big and unmistakable change the tenet exempts.
+        self.rebuild_left_items();
+    }
+
+    /// Toggle the flat list's "Inactive" tail open/closed. Bound to the same key
+    /// as the old per-project collapse (Space / `ToggleProject`) and to Enter on
+    /// the `InactiveToggle` row. Keeps the cursor on the toggle row afterward.
+    pub(crate) fn toggle_collapse_selected_project(&mut self) {
+        // A manual toggle takes over from the auto-manage in `rebuild_left_items`.
+        self.inactive_tail.overridden = true;
+        if self.inactive_tail_forced_open() {
+            // Collapsing a tail the search is holding open is an explicit act:
+            // record the dismissal for THIS query (it expires when the query
+            // changes) and collapse the base state too, so clearing the query
+            // lands on the state the user last chose. Mirrors the web QuietTail.
+            self.inactive_search_dismissed = self.active_filter_query();
+            self.inactive_tail.collapsed = true;
+        } else if self.active_filter_query().is_some() && self.inactive_search_dismissed.is_some() {
+            // Reopening under the query that was dismissed: drop the dismissal
+            // so the derivation applies again.
+            self.inactive_search_dismissed = None;
+            self.inactive_tail.collapsed = false;
+        } else {
+            self.inactive_tail.collapsed = !self.inactive_tail.collapsed;
+        }
+        self.rebuild_left_items();
+        if let Some(new_index) = self
+            .left_items()
+            .iter()
+            .position(|item| matches!(item, LeftItem::InactiveToggle))
+        {
+            self.selected_left = new_index;
+        }
+    }
+
+    /// The project of the currently-selected agent row (the flat list has no
+    /// project rows to select). `None` when the selection is not an agent (e.g. the
+    /// Inactive toggle) or the agent's project record is gone (orphan). Reaching an
+    /// agent-less project's actions goes through the project chooser, not selection.
+    pub(crate) fn selected_project(&self) -> Option<&Project> {
+        match self.left_items().get(self.selected_left) {
+            Some(LeftItem::Session(index)) => {
+                self.engine.sessions.get(*index).and_then(|session| {
+                    let project_id = session.project_id()?;
+                    self.engine
+                        .projects
+                        .iter()
+                        .find(|project| project.id == project_id)
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The agent under the cursor. Found by the id its row was built with, since
+    /// the cached index points into a session list a change made elsewhere may
+    /// have reordered since.
+    pub(crate) fn selected_session(&self) -> Option<&AgentSession> {
+        let Some(LeftItem::Session(index)) = self.left_items().get(self.selected_left) else {
+            return None;
+        };
+        match self.left_rows.get(self.selected_left) {
+            Some(LeftRow::Agent(id)) if self.left_rows.len() == self.left_items_cache.len() => self
+                .engine
+                .sessions
+                .iter()
+                .find(|session| session.id == *id),
+            _ => self.engine.sessions.get(*index),
+        }
+    }
+
+    /// Point the changed-files panel at the selected agent and ask for a read.
+    ///
+    /// The git read goes to a worker: an inline `git status` sweep costs the
+    /// whole interface on every selection move, and a worktree with thousands of
+    /// changed files makes that a freeze rather than a pause. The cost is a
+    /// flicker while the lists refill, paid only on a focus change.
+    pub(crate) fn reload_changed_files(&mut self) {
+        let session_id = self.selected_session().map(|s| s.id.clone());
+        // Capture the previously-watched session BEFORE set_watched_session
+        // overwrites it, so we can tell a genuine focus change from an incidental
+        // reload of the already-selected session (commit, stage/discard, a
+        // file-watcher refresh, etc. all call this helper).
+        let previously_watched = self.engine.watched_session_id.clone();
+        let focus_change = previously_watched.as_deref() != session_id.as_deref();
+        // An incidental reload of the SAME session carries the lists across the
+        // read: `set_watched_session` always empties them, and blanking a list
+        // the user is looking at (right after staging a file, say) for the width
+        // of a git read is a flicker the inline read never had. A focus change
+        // keeps the clear, because the previous agent's files rendered against
+        // the new selection would be a lie rather than a stale truth.
+        let carried = (!focus_change && session_id.is_some()).then(|| {
+            (
+                std::mem::take(&mut self.engine.staged_files),
+                std::mem::take(&mut self.engine.unstaged_files),
+            )
+        });
+        // The engine sets the watch (cheap, no git) and returns the worktree to
+        // compute changed files for.
+        let worktree = self.engine.set_watched_session(session_id.as_deref());
+        if let Some((staged, unstaged)) = carried {
+            self.engine.set_changed_files(staged, unstaged);
+        }
+        if focus_change {
+            // The lists are empty until the new agent's read lands.
+            self.changes_tree.lists_for = None;
+        }
+        if let Some(path) = worktree {
+            if focus_change {
+                // The pane is empty until the answer lands, so say what it is
+                // waiting for. `apply_changed_files_refresh_outcome` retires
+                // this busy when the read comes back.
+                let label = session_id
+                    .as_deref()
+                    .and_then(|id| self.engine.sessions.iter().find(|s| s.id == id))
+                    .map_or_else(|| "this agent".to_string(), AgentSession::display_label);
+                let key = format!("refresh-changes:{}", session_id.as_deref().unwrap_or(""));
+                self.begin_changed_files_refresh(
+                    key,
+                    label,
+                    path,
+                    ChangedFilesReadVoice::QuietUnlessSlow,
+                );
+            } else {
+                self.engine.spawn_changed_files_refresh(path);
+            }
+        }
+        self.clamp_files_cursor();
+        if let Some(sid) = session_id {
+            if previously_watched.as_deref() == Some(sid.as_str()) {
+                // Incidental reload of the already-focused session → keep the
+                // normal background spacing so file ops don't over-poll `gh`.
+                self.engine
+                    .spawn_pr_check_for_session(&sid, yaran_core::engine::PR_CHECK_MIN_INTERVAL);
+            } else {
+                // Genuine focus change → tight foreground refresh.
+                self.engine.spawn_foreground_pr_check(&sid);
+            }
+        }
+    }
+
+    /// The `refresh-changes` palette command: recompute the selected agent's
+    /// changed files immediately.
+    ///
+    /// yaran has no file watcher: it refreshes when one of its own actions changes
+    /// a file, and anything else (a file the user changed from a terminal, an
+    /// agent writing in its worktree) shows up only on the next poll. This is
+    /// how the user says "look again" instead of waiting.
+    ///
+    /// The git read goes to a worker, never to this thread. This command is the
+    /// worst possible place to break that rule: it exists for "I just did
+    /// something in a shell", which is exactly when another process may still
+    /// hold `.git/index.lock`, and an inline read would freeze the whole
+    /// interface with no spinner to show for it.
+    /// [`Self::apply_changed_files_refresh_outcome`] resolves the keyed busy
+    /// when the worker's `ChangedFilesReady` drains, in both the success and the
+    /// failure branch, so the busy always reaches a final.
+    pub(crate) fn refresh_changed_files_now(&mut self) {
+        let Some(session) = self.selected_session() else {
+            self.set_warning(
+                "Select an agent first: refreshing changed files needs a worktree to read.",
+            );
+            return;
+        };
+        let session_id = session.id.clone();
+        let key = format!("refresh-changes:{session_id}");
+        let name = session.display_label();
+        // The cheap half: point the watch at the session and empty the lists. No
+        // git runs here.
+        self.changes_tree.lists_for = None;
+        let Some(worktree) = self.engine.set_watched_session(Some(&session_id)) else {
+            // Reachable only for a standalone agent whose folder is not a
+            // working repository, so the reason is the FOLDER's, read from the
+            // one engine verdict every other refusal reads. Describing the
+            // agent's shape here instead ("no worktree to read") was both less
+            // useful and the only refusal on either surface that disagreed with
+            // the panel sitting next to it.
+            let reason = self.engine.folder_repo_status(&session_id).quiet_reason();
+            self.set_warning(format!(
+                "Could not refresh the changed files for \"{name}\": {reason}"
+            ));
+            return;
+        };
+        self.clamp_files_cursor();
+        self.begin_changed_files_refresh(key, name, worktree, ChangedFilesReadVoice::Spoken);
+        // The pull-request state is refreshed on its normal background spacing,
+        // exactly as an incidental `reload_changed_files` would, so asking for
+        // changed files does not over-poll `gh`.
+        self.engine
+            .spawn_pr_check_for_session(&session_id, yaran_core::engine::PR_CHECK_MIN_INTERVAL);
+    }
+
+    /// Show a keyed busy for a changed-files read and hand the read to a
+    /// worker. The one pending slot is what
+    /// [`Self::apply_changed_files_refresh_outcome`] resolves against, so a new
+    /// read that displaces an older one for a DIFFERENT key retires that key
+    /// here: nothing else will, and an abandoned busy expires to a warning
+    /// about work that was superseded rather than lost.
+    ///
+    /// [`ChangedFilesReadVoice`] separates the two callers.
+    fn begin_changed_files_refresh(
+        &mut self,
+        key: String,
+        label: String,
+        worktree: PathBuf,
+        voice: ChangedFilesReadVoice,
+    ) {
+        if let Some(previous) = self.pending_changed_files_refresh.take()
+            && previous.key != key
+        {
+            self.status.clear(&previous.key, None);
+        }
+        let now = Instant::now();
+        let announce_at = match voice {
+            ChangedFilesReadVoice::Spoken => None,
+            ChangedFilesReadVoice::QuietUnlessSlow => Some(now + SLOW_CHANGED_FILES_READ),
+        };
+        if announce_at.is_none() {
+            self.engine.register_status_key(&key);
+            self.status.set(
+                now,
+                Some(key.clone()),
+                StatusTone::Busy,
+                changed_files_read_busy(&label),
+            );
+        }
+        self.pending_changed_files_refresh = Some(PendingChangedFilesRefresh {
+            key,
+            label,
+            worktree: worktree.clone(),
+            voice,
+            announce_at,
+        });
+        self.engine.spawn_changed_files_refresh(worktree);
+    }
+
+    /// Explain an empty Changes pane once a selection-driven read has gone on
+    /// long enough to be a wait. Called once per run-loop tick; a read that
+    /// lands first takes its pending record with it and never gets here.
+    pub(crate) fn announce_slow_changed_files_read(&mut self, now: Instant) {
+        let Some(pending) = self.pending_changed_files_refresh.as_mut() else {
+            return;
+        };
+        let Some(announce_at) = pending.announce_at else {
+            return;
+        };
+        if now < announce_at {
+            return;
+        }
+        pending.announce_at = None;
+        let key = pending.key.clone();
+        let message = changed_files_read_busy(&pending.label);
+        self.engine.register_status_key(&key);
+        self.status.set(now, Some(key), StatusTone::Busy, message);
+    }
+
+    /// Resolve the `refresh-changes` command's keyed busy from the worker's
+    /// answer. Called from the drain for every `ChangedFilesReady`, so it has to
+    /// recognise its own: an event for a different worktree belongs to the
+    /// poller or to a selection change and resolves nothing.
+    ///
+    /// The lists themselves were already applied (or, on failure, deliberately
+    /// left alone) by the engine before this runs, so the counts reported here
+    /// are the ones the pane is showing. That is only true while the watch is
+    /// still on the worktree this refresh asked about, which is the same
+    /// condition the engine applies the lists under, so it is checked with the
+    /// same rule rather than an approximation of it: reporting counts from lists
+    /// the engine had just dropped as stale would be a made-up number.
+    pub(crate) fn apply_changed_files_refresh_outcome(
+        &mut self,
+        worktree: &Path,
+        error: Option<String>,
+    ) {
+        let Some(pending) = self.pending_changed_files_refresh.as_ref() else {
+            return;
+        };
+        if pending.worktree != worktree {
+            return;
+        }
+        let pending = self
+            .pending_changed_files_refresh
+            .take()
+            .expect("checked just above");
+        let name = pending.label;
+        // The user moved on while git was reading. The engine dropped this
+        // answer as stale, so there is nothing to report and claiming anything
+        // would describe another agent. Retire the busy with no replacement.
+        let still_watched = self
+            .engine
+            .watched_worktree_path()
+            .is_some_and(|current| current == pending.worktree);
+        if !still_watched {
+            self.status.clear(&pending.key, None);
+            return;
+        }
+        match error {
+            Some(err) => {
+                self.status.set(
+                Instant::now(),
+                Some(pending.key),
+                StatusTone::Error,
+                format!(
+                    "Could not read the changed files for \"{}\": {}. The list stays empty until a read succeeds; yaran retries every few seconds.",
+                    name,
+                    err.trim().trim_end_matches('.')
+                    ),
+                );
+            }
+            None if matches!(pending.voice, ChangedFilesReadVoice::QuietUnlessSlow) => {
+                // The pane now shows the answer. Retire the spinner (a no-op
+                // when the read landed before one was ever raised) without
+                // writing over whatever else the status line is saying.
+                self.status.clear(&pending.key, None);
+            }
+            None => {
+                // Folded folders count by the files inside them.
+                let staged = yaran_core::model::total_file_count(&self.engine.staged_files);
+                let unstaged = yaran_core::model::total_file_count(&self.engine.unstaged_files);
+                self.status.set(
+                    Instant::now(),
+                    Some(pending.key),
+                    StatusTone::Info,
+                    format!(
+                        "Changed files for \"{name}\" refreshed: {staged} staged, {unstaged} unstaged."
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The file or folder under the cursor, which may sit inside an expanded
+    /// folder. `None` on a placeholder row (a folder still being listed).
+    pub(crate) fn selected_changed_file(&self) -> Option<&ChangedFile> {
+        self.selected_changes_row()?.file()
+    }
+
+    /// How many rows the focused section shows, expanded folders included.
+    pub(crate) fn current_files_len(&self) -> usize {
+        self.changes_row_count(self.right_section)
+    }
+
+    pub(crate) fn clamp_files_cursor(&mut self) {
+        if self.right_section == RightSection::CommitInput {
+            return;
+        }
+        let len = self.current_files_len();
+        if len == 0 {
+            self.files_index = 0;
+        } else if self.files_index >= len {
+            self.files_index = len.saturating_sub(1);
+        }
+    }
+
+    pub(crate) fn has_files_search(&self) -> bool {
+        !self.files_search.is_empty()
+    }
+
+    pub(crate) fn clear_files_search(&mut self) {
+        self.files_search.clear();
+        self.files_search_active = false;
+    }
+
+    pub(crate) fn update_files_search(&mut self, query: String) -> bool {
+        self.files_search.set_text(query);
+        if self.files_search.is_empty() {
+            return false;
+        }
+        self.select_files_search_match(0)
+    }
+
+    pub(crate) fn advance_files_search_match(&mut self) -> bool {
+        let matches = self.files_search_matches();
+        if matches.is_empty() {
+            return false;
+        }
+
+        let current = (self.right_section, self.files_index);
+        let next_index = matches
+            .iter()
+            .position(|candidate| *candidate == current)
+            .map_or(0, |index| (index + 1) % matches.len());
+
+        self.apply_files_match(matches[next_index]);
+        true
+    }
+
+    fn select_files_search_match(&mut self, match_index: usize) -> bool {
+        let matches = self.files_search_matches();
+        if matches.is_empty() {
+            return false;
+        }
+
+        let target = matches[match_index.min(matches.len().saturating_sub(1))];
+        self.apply_files_match(target);
+        true
+    }
+
+    fn apply_files_match(&mut self, target: (RightSection, usize)) {
+        self.right_section = target.0;
+        self.files_index = target.1;
+        self.clamp_files_cursor();
+    }
+
+    fn files_search_matches(&self) -> Vec<(RightSection, usize)> {
+        if self.files_search.is_empty() {
+            return Vec::new();
+        }
+
+        // Over the rows on screen, so a file inside an expanded folder is
+        // found too; a collapsed folder is matched by its own path.
+        let needle = self.files_search.text.to_lowercase();
+        let mut matches = Vec::new();
+        for section in [RightSection::Unstaged, RightSection::Staged] {
+            matches.extend(
+                self.changes_rows(section)
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, row)| {
+                        row.file()
+                            .is_some_and(|file| file.path.to_lowercase().contains(&needle))
+                    })
+                    .map(|(index, _)| (section, index)),
+            );
+        }
+        matches
+    }
+
+    /// Open the read-only Agent Info modal for the focused agent. Routed through
+    /// `PromptState` so `Esc` closes it uniformly with every other prompt.
+    pub(crate) fn open_agent_info(&mut self) {
+        if let Some(session) = self.selected_session().cloned() {
+            let label = session.display_label();
+            // A standalone agent has no project, so there is no project default
+            // to compare its provider against and the divergence note is simply
+            // not written for it.
+            let project_default = session
+                .project_id()
+                .and_then(|project_id| self.engine.projects.iter().find(|p| p.id == project_id))
+                .map(|p| p.default_provider.clone());
+            self.input_target = InputTarget::None;
+            self.fullscreen_overlay = FullscreenOverlay::None;
+            let prs: Vec<(String, &crate::model::AgentPr)> = self
+                .ordered_prs(&session.id)
+                .visible
+                .into_iter()
+                .map(|pr| (self.engine.pull_request_label(&session.id, pr), pr))
+                .collect();
+            let directory_missing = if self.engine.folder_repo_status(&session.id)
+                == yaran_core::git::FolderRepoStatus::Missing
+            {
+                WorkingCopy::Missing
+            } else {
+                WorkingCopy::Present
+            };
+            let lines = agent_info_lines(&session, project_default, &prs, directory_missing);
+            self.prompt = PromptState::AgentInfo(AgentInfoPrompt {
+                session_label: label,
+                lines,
+            });
+        } else {
+            self.set_error("No agent session selected. Select an agent to see its info.");
+        }
+    }
+
+    pub(crate) fn open_rename_session(&mut self) {
+        if let Some(session) = self.selected_session().cloned() {
+            if self
+                .engine
+                .is_in_flight(&yaran_core::engine::InFlightKey::BranchRename(
+                    session.id.clone(),
+                ))
+            {
+                self.set_error(
+                    "A rename is already in progress for this agent. Wait for it to finish before renaming again.",
+                );
+                return;
+            }
+            let branch_named = session.supports_branch_git();
+            self.input_target = InputTarget::None;
+            self.fullscreen_overlay = FullscreenOverlay::None;
+            // The field holds the custom name, empty when there is none, and
+            // shows what an empty name falls back to (the branch, or a
+            // standalone agent's folder) as its placeholder, so clearing it is
+            // visibly the way back.
+            let fallback = {
+                let mut bare = session.clone();
+                bare.title = None;
+                bare.display_label()
+            };
+            let current = session.title.clone().unwrap_or_default();
+            // Every agent's name follows the same rules, a standalone agent's
+            // included, even though no branch is renamed for one.
+            let input = TextInput::with_text(current)
+                .with_char_map(crate::git::agent_name_char_map)
+                .with_placeholder(fallback);
+            self.prompt = PromptState::RenameSession {
+                open_pr: self.engine.rename_open_pull_request(&session.id),
+                session_id: session.id.clone(),
+                input,
+                rename_branch: false,
+                focus: RenameSessionFocus::Input,
+                branch_named,
+                pushed: false,
+            };
+            if branch_named {
+                self.spawn_rename_pushed_probe(&session.id);
+            }
+        } else {
+            self.set_error("No agent session selected.");
+        }
+    }
+
+    /// Ask, off the UI thread, whether the agent's branch has a pushed copy, so
+    /// the rename dialog can warn that a branch rename leaves it on the old
+    /// name. One-shot rather than a stored fact: it is rendered only by the
+    /// dialog that asked.
+    fn spawn_rename_pushed_probe(&mut self, session_id: &str) {
+        let Some((worktree, branch)) = self.engine.rename_pushed_probe(session_id) else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        self.rename_pushed_rx = Some(rx);
+        let session_id = session_id.to_string();
+        std::thread::spawn(move || {
+            if let Ok(pushed) = yaran_core::git::branch_is_pushed(Path::new(&worktree), &branch) {
+                let _ = tx.send((session_id, pushed));
+            }
+        });
+    }
+
+    /// Fold a landed pushed-branch answer into the rename dialog that asked for
+    /// it, dropping one that belongs to a dialog since closed for another agent.
+    pub(crate) fn drain_rename_pushed_probe(&mut self) {
+        let Some(rx) = self.rename_pushed_rx.as_ref() else {
+            return;
+        };
+        let answer = match rx.try_recv() {
+            Ok(answer) => answer,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.rename_pushed_rx = None;
+                return;
+            }
+        };
+        self.rename_pushed_rx = None;
+        if let PromptState::RenameSession {
+            session_id, pushed, ..
+        } = &mut self.prompt
+            && *session_id == answer.0
+        {
+            *pushed = answer.1;
+            self.mark_frame_dirty();
+        }
+    }
+
+    /// Answers whether the rename was taken; a refusal is on the status line.
+    pub(crate) fn apply_rename_session(
+        &mut self,
+        session_id: &str,
+        new_name: &str,
+        rename: yaran_core::engine::BranchRename,
+    ) -> bool {
+        // The engine owns the whole rename, the branch worker included, so the
+        // web's rename runs the same rules and says the same sentences.
+        match self.engine.rename_agent(session_id, new_name, rename) {
+            Ok(reaction) => {
+                self.apply_reaction(reaction);
+                true
+            }
+            Err(err) => {
+                // A refusal or a worker that never started can still have
+                // changed nothing but the list; keep it consistent either way.
+                self.rebuild_left_items();
+                self.set_error(format!("{err:#}"));
+                false
+            }
+        }
+    }
+
+    /// Derives a companion terminal status for a session from the multi-terminal map.
+    /// Running if any terminal exists for this session, `NotLaunched` otherwise.
+    pub(crate) fn companion_terminal_status(&self, session_id: &str) -> CompanionTerminalStatus {
+        if self.session_terminal_count(session_id) > 0 {
+            CompanionTerminalStatus::Running
+        } else {
+            CompanionTerminalStatus::NotLaunched
+        }
+    }
+
+    pub(crate) fn selected_companion_terminal_status(&self) -> CompanionTerminalStatus {
+        self.selected_session()
+            .map_or(CompanionTerminalStatus::NotLaunched, |session| {
+                self.companion_terminal_status(&session.id)
+            })
+    }
+
+    pub(crate) fn clear_companion_terminals_for_session(&mut self, session_id: &str) {
+        self.engine
+            .companion_terminals
+            .retain(|_, t| !t.owner.closed_by_session_delete(session_id));
+        if let Some(ref id) = self.active_terminal_id
+            && !self.engine.companion_terminals.contains_key(id)
+        {
+            self.active_terminal_id = None;
+        }
+    }
+
+    /// How many browsers have this agent open: any of its provider tabs or its
+    /// companion terminals, the way the row's liveness ORs across tabs, because
+    /// the agent's row is the only place that fact is shown at all (the terminal
+    /// rows carry no count of their own).
+    ///
+    /// Browsers, not sockets: one browser watching two of the agent's terminals,
+    /// or the same one in two of its tabs, is one browser, read from the
+    /// attachment registry the web's sockets join. A project or standalone
+    /// terminal belongs to no agent, so its watchers never reach this count.
+    ///
+    /// Zero when nothing is serving, structurally: only a web socket attaches as
+    /// a browser, and without a serve there are none.
+    pub(crate) fn remote_browser_count(&self, session_id: &str) -> usize {
+        let scope = yaran_core::attachments::Scope {
+            ptys: BTreeSet::default(),
+            agents: [session_id.to_string()].into(),
+        };
+        self.engine
+            .attachments
+            .browsers_attached(&scope, std::time::Instant::now())
+    }
+
+    /// How many browsers have the one PTY `pty_id` open, counted like
+    /// [`Self::remote_browser_count`].
+    pub(crate) fn pty_browser_count(&self, pty_id: &str) -> usize {
+        let scope = yaran_core::attachments::Scope {
+            ptys: [pty_id.to_string()].into(),
+            agents: BTreeSet::default(),
+        };
+        self.engine
+            .attachments
+            .browsers_attached(&scope, std::time::Instant::now())
+    }
+
+    pub(crate) fn running_companion_terminal_count(&self) -> usize {
+        self.engine.companion_terminals.len()
+    }
+
+    /// The project and standalone terminals, which are rows of the agents list
+    /// (an agent's own terminals live in its dock instead), in no particular
+    /// order: the list orders them with the agents.
+    pub(crate) fn list_terminal_ids(&self) -> Vec<String> {
+        let mut ids: Vec<(&String, &CompanionTerminal)> = self
+            .engine
+            .companion_terminals
+            .iter()
+            // Exhaustive rather than a `matches!`: whether a terminal is a row of
+            // its own is an owner-presentation decision.
+            .filter(|(_, terminal)| match terminal.owner.as_ref() {
+                TerminalOwnerRef::Session(_) => false,
+                TerminalOwnerRef::Project(_) | TerminalOwnerRef::Standalone => true,
+            })
+            .collect();
+        ids.sort_by_key(|(_, terminal)| terminal.sort_order);
+        ids.into_iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    /// The terminal whose row the cursor is on, when it is on one.
+    pub(crate) fn selected_terminal_row(&self) -> Option<String> {
+        match self.left_items().get(self.selected_left) {
+            Some(LeftItem::Terminal(index)) => self
+                .left_terminals
+                .get(*index)
+                .filter(|id| self.engine.companion_terminals.contains_key(id.as_str()))
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    /// The terminal ids in `session_id`'s dock, in dock order.
+    pub(crate) fn dock_terminal_ids(&self, session_id: &str) -> Vec<String> {
+        let mut ids: Vec<(&String, &CompanionTerminal)> = self
+            .engine
+            .companion_terminals
+            .iter()
+            .filter(|(_, terminal)| match terminal.owner.as_ref() {
+                TerminalOwnerRef::Session(owner) => owner == session_id,
+                TerminalOwnerRef::Project(_) | TerminalOwnerRef::Standalone => false,
+            })
+            .collect();
+        ids.sort_by_key(|(_, terminal)| terminal.sort_order);
+        ids.into_iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    /// The selected agent's dock terminals, or none when no agent is selected.
+    pub(crate) fn selected_dock_terminal_ids(&self) -> Vec<String> {
+        self.selected_session()
+            .map_or_default(|session| self.dock_terminal_ids(&session.id))
+    }
+
+    /// Whether any of the selected agent's tabs has a live process, which is
+    /// what makes it running rather than stopped.
+    pub(crate) fn selected_agent_running(&self) -> bool {
+        self.selected_session().is_some_and(|session| {
+            self.session_tab_ids(&session.id)
+                .iter()
+                .any(|tab| self.engine.providers.contains_key(TabIdRef::new(tab)))
+        })
+    }
+
+    /// The selected agent's center layout. An agent with no terminals has no
+    /// dock, so it is always the agent alone; one that is stopped while its
+    /// terminals run opens on its terminal, whatever was remembered, because
+    /// nothing that opens it starts it.
+    pub(crate) fn selected_dock_layout(&self) -> DockLayout {
+        let Some(session) = self.selected_session() else {
+            return DockLayout::Agent;
+        };
+        if self.dock_terminal_ids(&session.id).is_empty() {
+            return DockLayout::Agent;
+        }
+        if let Some((id, layout)) = &self.stopped_layout
+            && *id == session.id
+        {
+            return *layout;
+        }
+        if !self.selected_agent_running() {
+            return DockLayout::Term;
+        }
+        self.dock_layouts
+            .get(&session.id)
+            .copied()
+            .unwrap_or(DockLayout::Split)
+    }
+
+    /// The center parts the selected row's layout draws, top to bottom: a
+    /// terminal row draws its terminal alone, an agent its layout's parts.
+    pub(crate) fn layout_parts(&self) -> Vec<CenterPart> {
+        if self.selected_terminal_row().is_some() {
+            return vec![CenterPart::Dock];
+        }
+        match self.selected_dock_layout() {
+            DockLayout::Agent => vec![CenterPart::Main],
+            DockLayout::Split => vec![CenterPart::Main, CenterPart::Dock],
+            DockLayout::Term => vec![CenterPart::Dock],
+        }
+    }
+
+    /// The terminal on screen in the dock ended: show its neighbour in the
+    /// strip, the one to its right or, when it was the last, to its left, the
+    /// way a browser lands beside a closed tab. With none left the dock goes and
+    /// the agent shows alone.
+    pub(crate) fn land_beside_a_closed_terminal(&mut self, closed: &str) {
+        let alive = |id: &str| self.engine.companion_terminals.contains_key(id);
+        let neighbour = self.last_dock_strip.as_ref().and_then(|strip| {
+            yaran_core::agent_tabs::tab_after_close(strip, closed)
+                .filter(|id| alive(id))
+                .map(str::to_string)
+                .or_else(|| strip.iter().find(|id| alive(id)).cloned())
+        });
+        self.active_terminal_id = neighbour;
+        if let Some(session_id) = self.selected_session().map(|s| s.id.clone()) {
+            if let Some(id) = self.active_terminal_id.clone() {
+                self.dock_active.insert(session_id, id);
+            } else {
+                self.dock_active.remove(&session_id);
+                self.session_surface = SessionSurface::Agent;
+            }
+        }
+        self.part_snapshots.dock.last_id = None;
+        self.reconcile_center_target();
+    }
+
+    /// Point the center pane at the row under the cursor: a terminal row shows
+    /// its terminal, and an agent row shows its dock terminal (the one it showed
+    /// last, or its first) with focus on a part that is drawn. Run on every
+    /// selection change and before every frame, so a terminal that ended or a
+    /// row that moved can never leave the center aimed at something gone.
+    pub(crate) fn reconcile_center_target(&mut self) {
+        if let Some(terminal_id) = self.selected_terminal_row() {
+            if self.active_terminal_id.as_deref() != Some(terminal_id.as_str()) {
+                self.active_terminal_id = Some(terminal_id);
+                self.part_snapshots.dock.last_id = None;
+            }
+            if self.session_surface != SessionSurface::Terminal {
+                self.session_surface = SessionSurface::Terminal;
+            }
+            return;
+        }
+        let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
+            if self.session_surface == SessionSurface::Terminal
+                && self
+                    .active_terminal_id
+                    .as_ref()
+                    .is_none_or(|id| !self.engine.companion_terminals.contains_key(id))
+            {
+                self.session_surface = SessionSurface::Agent;
+            }
+            return;
+        };
+        // A stopped agent's layout is dropped once it runs, returning to the
+        // remembered one, but not while its terminal is the part with the
+        // keyboard: the remembered layout could hide it and move the keyboard
+        // onto the agent mid-keystroke. It applies once focus leaves the dock.
+        let typing_into_dock =
+            self.focus == FocusPane::Center && self.focused_part() == CenterPart::Dock;
+        if self
+            .stopped_layout
+            .as_ref()
+            .is_some_and(|(id, _)| *id != session_id)
+            || (self.selected_agent_running() && !typing_into_dock)
+        {
+            self.stopped_layout = None;
+        }
+        // A stopped agent beside its terminals opens on them, and that layout is
+        // held until it is dropped above.
+        if self.stopped_layout.is_none()
+            && !self.selected_agent_running()
+            && !self.dock_terminal_ids(&session_id).is_empty()
+        {
+            self.stopped_layout = Some((session_id.clone(), DockLayout::Term));
+        }
+        let dock = self.dock_terminal_ids(&session_id);
+        let current_is_ours = self
+            .active_terminal_id
+            .as_ref()
+            .is_some_and(|id| dock.contains(id));
+        if !current_is_ours {
+            let remembered = self
+                .dock_active
+                .get(&session_id)
+                .filter(|id| dock.contains(id))
+                .cloned();
+            self.active_terminal_id = remembered.or_else(|| dock.first().cloned());
+            // Another agent's terminal was on screen, so focus starts on this
+            // agent, unless its agent part is not drawn at all.
+            self.session_surface = SessionSurface::Agent;
+        }
+        if let Some(active) = self.active_terminal_id.clone() {
+            self.dock_active.insert(session_id, active);
+        }
+        // The part being typed into or shown fullscreen keeps the keyboard,
+        // whatever the layout draws around it: the pane focus is brought in
+        // step with it rather than moved off it.
+        let surface = if self.input_target != InputTarget::None
+            || self.fullscreen_overlay != FullscreenOverlay::None
+        {
+            self.focused_surface()
+        } else {
+            match self.selected_dock_layout() {
+                DockLayout::Agent => SessionSurface::Agent,
+                DockLayout::Term => SessionSurface::Terminal,
+                DockLayout::Split => self.session_surface,
+            }
+        };
+        if self.session_surface != surface {
+            self.session_surface = surface;
+        }
+    }
+
+    /// Whether `terminal` passes a live sidebar query, through the shared core
+    /// matcher (`yaran_core::agent_search::matches_terminal`, the twin of the web's
+    /// `matchesTerminalQuery`).
+    ///
+    /// The owner element is the SAME resolved string the row renders
+    /// ([`Self::terminal_owner_label`]), so what matches is what the user is
+    /// looking at: `agent@project` for a companion terminal, the project name for
+    /// a project terminal, and the `~`-shortened spawn directory for a standalone
+    /// one (which has no owner to name).
+    fn terminal_matches_filter(&self, terminal: &CompanionTerminal, query: &str) -> bool {
+        yaran_core::agent_search::matches_terminal(
+            &terminal.label,
+            terminal.foreground_cmd.as_deref(),
+            &self.terminal_owner_label(terminal),
+            &self.terminal_owner_project_name(terminal),
+            query,
+        )
+    }
+
+    /// The owner element on a terminal row's second line, resolved once so the
+    /// renderer and the sidebar filter can never disagree about what a row says.
+    ///
+    /// Exhaustive over the owner kinds rather than a `matches!`: naming a row is
+    /// one of the owner-presentation decisions, so a fourth kind has to answer
+    /// here.
+    pub(crate) fn terminal_owner_label(&self, terminal: &CompanionTerminal) -> String {
+        match &terminal.owner {
+            // A companion terminal shows `agent@project`; a project terminal
+            // shows just the project name (it has no agent).
+            TerminalOwner::Session(sid) => self
+                .engine
+                .sessions
+                .iter()
+                .find(|s| &s.id == sid)
+                .map_or_else(
+                    || sid.clone(),
+                    |s| {
+                        let agent = s.display_label();
+                        // A standalone agent has no project to qualify the label
+                        // with, so the terminal's owner is just the agent's name.
+                        match s.project_id().and_then(|project_id| {
+                            self.engine.projects.iter().find(|p| p.id == project_id)
+                        }) {
+                            Some(p) => format!("{agent}@{}", p.name),
+                            None => agent,
+                        }
+                    },
+                ),
+            TerminalOwner::Project(pid) => self
+                .engine
+                .projects
+                .iter()
+                .find(|p| &p.id == pid)
+                .map_or_else(|| pid.clone(), |p| p.name.clone()),
+            // No owner to name, so the row names the DIRECTORY instead, with the
+            // home directory collapsed to `~`. Truthful, useful, ellipsizes
+            // cleanly as the left element on that line must, and gives the
+            // sidebar search something to match.
+            TerminalOwner::Standalone => {
+                yaran_core::home_path::shorten_home(terminal.client.spawn_dir())
+            }
+        }
+    }
+
+    /// The project a terminal belongs to, named, or an empty string when it
+    /// belongs to none. A separate search field from the owner label (which is
+    /// what the row shows), keeping the TUI's searched fields identical to the
+    /// web's `matchesTerminalQuery`.
+    fn terminal_owner_project_name(&self, terminal: &CompanionTerminal) -> String {
+        let project_id = match &terminal.owner {
+            TerminalOwner::Session(sid) => match self
+                .engine
+                .sessions
+                .iter()
+                .find(|s| &s.id == sid)
+                .and_then(|session| session.project_id())
+            {
+                Some(project_id) => project_id.to_string(),
+                // Either the session is gone, or it is a standalone agent,
+                // which belongs to no project. Truthfully empty either way.
+                None => return String::new(),
+            },
+            TerminalOwner::Project(pid) => pid.clone(),
+            // Truthfully empty: a standalone terminal belongs to no project.
+            TerminalOwner::Standalone => return String::new(),
+        };
+        self.engine
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map_or_default(|p| p.name.clone())
+    }
+
+    /// Returns the number of running companion terminals for a given session.
+    pub(crate) fn session_terminal_count(&self, session_id: &str) -> usize {
+        self.engine
+            .companion_terminals
+            .values()
+            // Exhaustive rather than a `matches!`: the sidebar row's terminal
+            // count is one of the owner-presentation decisions, so a new owner
+            // kind has to say whether it counts toward an agent's row.
+            .filter(|t| match t.owner.as_ref() {
+                TerminalOwnerRef::Session(sid) => sid == session_id,
+                // Neither a project terminal nor a standalone terminal counts
+                // toward an agent's row: the first belongs to a project, the
+                // second to nothing at all.
+                TerminalOwnerRef::Project(_) | TerminalOwnerRef::Standalone => false,
+            })
+            .count()
+    }
+
+    /// The `forward_scroll` policy for the currently selected terminal
+    /// surface. Agents resolve it from their provider config; companion
+    /// terminals have no provider config, so they always auto-detect (`None`).
+    pub(crate) fn selected_surface_forward_scroll(&self) -> Option<bool> {
+        match self.focused_surface() {
+            SessionSurface::Agent => {
+                let session = self.selected_session()?;
+                let provider = self.focused_tab_provider(session);
+                provider_config(&self.engine.config, &provider).forward_scroll
+            }
+            SessionSurface::Terminal => None,
+        }
+    }
+
+    /// The center part keyboard commands and typing act on: the dock while an
+    /// agent's terminal has focus, the row's own terminal otherwise.
+    ///
+    /// The part being typed into, or shown fullscreen, always wins over the
+    /// pane focus, so the part that receives bytes is the part on screen with
+    /// the keyboard and the two can never disagree.
+    pub(crate) fn focused_part(&self) -> CenterPart {
+        match (self.fullscreen_overlay, self.input_target) {
+            (FullscreenOverlay::Agent, _) | (_, InputTarget::Agent) => CenterPart::Main,
+            (FullscreenOverlay::Terminal, _) | (_, InputTarget::Terminal) => CenterPart::Dock,
+            _ => match self.session_surface {
+                SessionSurface::Agent => CenterPart::Main,
+                SessionSurface::Terminal => CenterPart::Dock,
+            },
+        }
+    }
+
+    /// Which kind of terminal the part with the keyboard draws. Every reader
+    /// asks this rather than the pane focus, which the part being typed into
+    /// or shown fullscreen outranks.
+    pub(crate) fn focused_surface(&self) -> SessionSurface {
+        Self::part_surface(self.focused_part())
+    }
+
+    /// Which kind of terminal `part` draws.
+    pub(crate) fn part_surface(part: CenterPart) -> SessionSurface {
+        match part {
+            CenterPart::Main => SessionSurface::Agent,
+            CenterPart::Dock => SessionSurface::Terminal,
+        }
+    }
+
+    /// The pty id `part` draws: the focused tab id for an agent, the terminal
+    /// id for a terminal. `None` when that part has no live PTY, so it always
+    /// agrees with [`Self::part_client`] about whether there is one at all.
+    pub(crate) fn part_pty_id(&self, part: CenterPart) -> Option<String> {
+        match Self::part_surface(part) {
+            SessionSurface::Agent => {
+                let session_id = self.selected_session()?.id.clone();
+                let tab_id = self.focused_tab_id(&session_id);
+                self.engine
+                    .providers
+                    .contains_key(TabIdRef::new(&tab_id))
+                    .then_some(tab_id)
+            }
+            SessionSurface::Terminal => {
+                let id = self.active_terminal_id.as_ref()?;
+                self.engine
+                    .companion_terminals
+                    .contains_key(id)
+                    .then(|| id.clone())
+            }
+        }
+    }
+
+    /// The PTY behind `part`.
+    pub(crate) fn part_client(&self, part: CenterPart) -> Option<&PtyClient> {
+        match Self::part_surface(part) {
+            SessionSurface::Agent => {
+                let session_id = self.selected_session()?.id.clone();
+                self.engine
+                    .providers
+                    .get(TabIdRef::new(&self.focused_tab_id(&session_id)))
+            }
+            SessionSurface::Terminal => {
+                let id = self.active_terminal_id.as_ref()?;
+                self.engine.companion_terminals.get(id).map(|t| &t.client)
+            }
+        }
+    }
+
+    /// The id that names the focused terminal surface (see
+    /// [`Self::focused_part`]). Scroll mode is keyed by this id so scrolling
+    /// back in one agent never suppresses typing in another.
+    pub(crate) fn selected_terminal_surface_id(&self) -> Option<String> {
+        self.part_pty_id(self.focused_part())
+    }
+
+    pub(crate) fn selected_terminal_surface_client(&self) -> Option<&PtyClient> {
+        self.part_client(self.focused_part())
+    }
+
+    /// The geometry last sent to the focused part's pty, or zero when none was:
+    /// what a page of scrolling is.
+    pub(crate) fn focused_pty_size(&self) -> (u16, u16) {
+        self.selected_terminal_surface_id()
+            .and_then(|id| self.pty_sizes.get(&id).copied())
+            .unwrap_or((0, 0))
+    }
+
+    /// Forget every geometry sent, so the next frame sends each drawn part's
+    /// size again whether or not it changed.
+    pub(crate) fn forget_sent_pty_sizes(&mut self) {
+        self.pty_sizes.clear();
+        self.part_targets = PartTargets::default();
+    }
+
+    // ---- Agent tabs: per-session focused tab, switching, labels ----
+
+    /// The focused tab id for a session, defaulting to the tab the session's
+    /// `slot_tab_id` pointer names. Clamps back to that tab when the stored one
+    /// no longer exists, so every seam that resolves the focused tab is safe
+    /// after a tab close.
+    ///
+    /// The in-process `focused_tabs` `HashMap` is the live value and wins when it
+    /// has an entry for this session. When it has none (e.g. right after a
+    /// restart, before this process has focused anything itself), falls back to
+    /// the engine's persisted `AgentSession.last_focused_tab` via the shared
+    /// resolver so the remembered tab survives a restart too.
+    pub(crate) fn focused_tab_id(&self, session_id: &str) -> String {
+        let session_ref = SessionIdRef::new(session_id);
+        match self.focused_tabs.get(session_id) {
+            Some(id) if self.engine.is_slot_tab_of(session_ref, TabIdRef::new(id)) => id.clone(),
+            Some(id)
+                if self
+                    .engine
+                    .agent_tabs
+                    .get(TabIdRef::new(id))
+                    .is_some_and(|t| t.session_id == session_id) =>
+            {
+                id.clone()
+            }
+            Some(_) => self.engine.slot_tab_id_of(session_ref).to_string(),
+            None => match self.engine.session_by_id(session_id) {
+                Some(session) => {
+                    let live_extra_ids = self
+                        .engine
+                        .agent_tabs
+                        .values()
+                        .filter(|t| t.session_id == session_id)
+                        .map(|t| TabIdRef::new(&t.id));
+                    session.resolved_focused_tab(live_extra_ids).to_string()
+                }
+                None => session_id.to_string(),
+            },
+        }
+    }
+
+    /// The effective provider of a session's focused tab (Main resolves to the
+    /// session's running/pinned provider; an extra tab to its own, honoring a
+    /// swap-while-running pin). Used for the center title, caption, and
+    /// scroll-routing config lookup.
+    pub(crate) fn focused_tab_provider(&self, session: &AgentSession) -> ProviderKind {
+        let tab = self.focused_tab_id(&session.id);
+        // The pin -> tab-row -> session.provider chain is the single source of
+        // truth `Engine::tab_running_provider` owns; the TUI's other tab-label
+        // helper (`tab_provider_label` in render.rs) also delegates to it so the
+        // two call sites can't drift.
+        self.engine
+            .tab_running_provider(session, TabIdRef::new(&tab))
+    }
+
+    /// Ordered tab ids for a session as owned strings, for the render and input
+    /// paths that index the strip. The order is the engine's one display
+    /// ordering; this only spells it as `String`.
+    pub(crate) fn session_tab_ids(&self, session_id: &str) -> Vec<String> {
+        self.engine
+            .ordered_tab_ids_for_session(SessionIdRef::new(session_id))
+            .into_iter()
+            .map(TabId::into_string)
+            .collect()
+    }
+
+    /// Set the focused tab for a session (Main clears the entry). Switching
+    /// forces a snapshot + PTY-size refresh and clears the terminal selection,
+    /// mirroring the side effects of a surface change.
+    ///
+    /// Also writes the choice through to the engine's persisted
+    /// `last_focused_tab` (a tiny synchronous UPDATE, like
+    /// `ToggleAgentAutoReopen`) so it survives a restart and is visible to the
+    /// web surface sharing the same SQLite file. This is a silent, best-effort
+    /// persist: a failure here must not block or roll back the (already
+    /// authoritative) in-process focus switch, so any error is intentionally
+    /// discarded, matching the wire command's "no status" contract.
+    pub(crate) fn set_focused_tab(&mut self, session_id: &str, tab_id: &str) {
+        // The slot tab is the default focus, so focusing it is recorded as "no
+        // memory" on both the in-process map and the persisted column.
+        // The drawing of the strip is only refreshed when the strip is drawn, and
+        // a focus change made while it is not (a diff, a fullscreen overlay) must
+        // not be overridden by a later close elsewhere landing from the old one.
+        if let Some(drawn) = self.last_tab_strip.as_mut()
+            && drawn.session_id == session_id
+        {
+            drawn.focused = tab_id.to_string();
+        }
+        let is_slot = self
+            .engine
+            .is_slot_tab_of(SessionIdRef::new(session_id), TabIdRef::new(tab_id));
+        if is_slot {
+            self.focused_tabs.remove(session_id);
+        } else {
+            self.focused_tabs
+                .insert(session_id.to_string(), tab_id.to_string());
+        }
+        let _ = self
+            .engine
+            .set_last_focused_tab(session_id, (!is_slot).then_some(tab_id));
+        self.part_snapshots.main.last_id = None;
+        self.forget_sent_pty_sizes();
+        self.terminal_selection = None;
+        // Switching tabs foregrounds the owning agent, so refresh its PR status.
+        self.engine.spawn_foreground_pr_check(session_id);
+    }
+
+    /// Drop a session's focused-tab entry (called on session teardown so
+    /// stale entries can't leak). Mirrors `clear_companion_terminals_for_session`.
+    pub(crate) fn clear_focused_tab_for_session(&mut self, session_id: &str) {
+        self.focused_tabs.remove(session_id);
+    }
+
+    /// Move focus to the next/previous tab of the selected session (wrapping).
+    /// No-op when the session has fewer than two tabs.
+    pub(crate) fn focus_tab_relative(&mut self, direction: FocusStep) {
+        let Some(session_id) = self.selected_session().map(|s| s.id.clone()) else {
+            return;
+        };
+        let ids = self.session_tab_ids(&session_id);
+        if ids.len() < 2 {
+            return;
+        }
+        let cur = self.focused_tab_id(&session_id);
+        let idx = ids.iter().position(|i| *i == cur).unwrap_or(0);
+        let next = if direction == FocusStep::Forward {
+            (idx + 1) % ids.len()
+        } else {
+            (idx + ids.len() - 1) % ids.len()
+        };
+        let target = ids[next].clone();
+        self.set_focused_tab(&session_id, &target);
+    }
+
+    /// Jump to the nth tab (0-based) of the selected session, if it exists.
+    pub(crate) fn focus_tab_index(&mut self, n: usize) {
+        let Some(session_id) = self.selected_session().map(|s| s.id.clone()) else {
+            return;
+        };
+        let ids = self.session_tab_ids(&session_id);
+        if let Some(target) = ids.get(n).cloned() {
+            self.set_focused_tab(&session_id, &target);
+        }
+    }
+
+    /// The scroll state of the snapshot currently in the focused part's
+    /// buffer, as a [`SelectionOrigin`].
+    pub(crate) fn snapshot_selection_origin(&self) -> SelectionOrigin {
+        self.part_selection_origin(self.focused_part())
+    }
+
+    /// The scroll state of `part`'s snapshot, as a [`SelectionOrigin`]. Callers
+    /// stamp it onto a new selection and pass it back in as the "now" frame
+    /// when testing live cells.
+    pub(crate) fn part_selection_origin(&self, part: CenterPart) -> SelectionOrigin {
+        // The capacity the part's PTY was spawned with, read from the client
+        // rather than from config: capacity is fixed when the emulator is built
+        // and a live reload never reaches a running PTY, so reading
+        // `ui.agent_scrollback_lines` here would make a full ring read as
+        // unsaturated the moment someone raised the setting. A zero capacity, or
+        // no resolvable client, means "never saturated" rather than "always", so
+        // an unconfigured surface keeps the ordinary behaviour.
+        let capacity = self
+            .part_client(part)
+            .map_or(0, yaran_core::pty::PtyClient::scrollback_capacity);
+        let snapshot = self.part_snapshots.get(part);
+        SelectionOrigin {
+            history_saturated: capacity > 0 && snapshot.buf.scrollback_total >= capacity,
+            grid_generation: snapshot.generation,
+            scrollback_offset: snapshot.buf.scrollback_offset,
+            scrollback_total: snapshot.buf.scrollback_total,
+            grid_size: (snapshot.buf.rows, snapshot.buf.cols),
+        }
+    }
+
+    /// Refresh the focused part's snapshot. See [`Self::refresh_part_snapshot`].
+    pub(crate) fn refresh_snapshot_buf(&mut self) -> bool {
+        self.refresh_part_snapshot(self.focused_part())
+    }
+
+    /// Refresh `part`'s snapshot from the PTY it draws, reusing the existing
+    /// cell allocation. Returns `true` if a provider was found and the snapshot
+    /// was updated.
+    pub(crate) fn refresh_part_snapshot(&mut self, part: CenterPart) -> bool {
+        let Some(client_id) = self.part_pty_id(part) else {
+            return false;
+        };
+        let collect_links = self.engine.config.capabilities.hyperlinks;
+        // Looked up through the engine field alone, so the snapshot can be
+        // borrowed beside it.
+        let provider = match Self::part_surface(part) {
+            SessionSurface::Agent => self.engine.providers.get(TabIdRef::new(&client_id)),
+            SessionSurface::Terminal => self
+                .engine
+                .companion_terminals
+                .get(&client_id)
+                .map(|terminal| &terminal.client),
+        };
+        let Some(provider) = provider else {
+            return false;
+        };
+        let snapshot = self.part_snapshots.get_mut(part);
+        let switched = snapshot.last_id.as_deref() != Some(&client_id);
+        if switched {
+            provider.mark_dirty();
+            snapshot.last_id = Some(client_id);
+        }
+        // A rebuild means the grid MOVED (output, a scroll, a resize). The
+        // counter is what lets `drop_drifted_selection` tell "nothing has
+        // happened since this selection was stamped" from "the grid has moved
+        // and, at saturation, I can no longer say by how much".
+        if provider.snapshot_into(
+            &mut snapshot.buf,
+            if collect_links {
+                yaran_core::pty::Hyperlinks::Collect
+            } else {
+                yaran_core::pty::Hyperlinks::Skip
+            },
+        ) {
+            snapshot.generation = snapshot.generation.wrapping_add(1);
+        }
+        if switched {
+            self.retire_stamps_on_part(part);
+        }
+        true
+    }
+
+    /// Retire what was stamped against `part`'s previous grid: the selection
+    /// and a withheld link press, when either was made on this part. Retired
+    /// EAGERLY rather than left to the release's own surface check, so
+    /// switching away and back cannot hand the record a grid it happens to
+    /// match again. The repeat-open guard is stamped against that same
+    /// picture, so it goes too: the cell it names belongs to another pty's
+    /// link now. What was stamped on the other part stays.
+    fn retire_stamps_on_part(&mut self, part: CenterPart) {
+        if self
+            .terminal_selection
+            .as_ref()
+            .is_none_or(|selection| selection.part == part)
+        {
+            self.terminal_selection = None;
+        }
+        if self
+            .pending_link_click
+            .as_ref()
+            .is_none_or(|press| press.part == part)
+        {
+            self.pending_link_click = None;
+            self.last_link_open = None;
+        }
+    }
+}
+
+pub(crate) use yaran_core::project_browser::load_projects;
+
+// Sync-direct by design: bootstrap/reload-worker project-sync runs before/outside the queue.
+pub(crate) fn persist_runtime_projects_to_config_and_store(
+    projects: &[Project],
+    config: &mut Config,
+    paths: &YaranPaths,
+    _bindings: &RuntimeBindings,
+    session_store: &SessionStore,
+) -> Result<()> {
+    let existing_projects = config.projects.clone();
+    let stored_project_configs = projects
+        .iter()
+        .map(|project| runtime_project_to_config(project, &existing_projects))
+        .collect::<Vec<_>>();
+    let config_project_configs = stored_project_configs
+        .iter()
+        .cloned()
+        .map(|mut project| {
+            project.leading_branch = None;
+            project
+        })
+        .collect::<Vec<_>>();
+
+    let stored_projects = session_store.load_projects()?;
+    for (index, project_config) in stored_project_configs.iter().enumerate() {
+        let stored_project = stored_projects.iter().find(|stored| {
+            stored.id == project_config.id || same_expanded_project_path(stored, project_config)
+        });
+        if stored_project != Some(project_config) {
+            session_store.upsert_project_at(project_config, usize_to_i64(index))?;
+        }
+    }
+
+    if config.projects != config_project_configs {
+        // Only the projects change here, so only they are written: the base is
+        // the config before the change, and a key set on disk since it was read
+        // is left alone.
+        let base = config.clone();
+        config.projects = config_project_configs;
+        let written = yaran_core::config_write::save_config_three_way(
+            &paths.config_path,
+            Some(yaran_core::config_write::SaveBase::read(&base)),
+            config,
+            yaran_core::config_write::Durability::Fsync,
+        )?;
+        // The file is now this text: what a later save compares with.
+        config.source_text =
+            yaran_core::config_write::source_after_sync(&base.source_text, &written, config);
+    }
+
+    Ok(())
+}
+
+// Sync-direct by design: bootstrap/reload-worker project-sync runs before/outside the queue.
+pub(crate) fn sync_config_projects_with_store(
+    config: &mut Config,
+    paths: &YaranPaths,
+    _bindings: &RuntimeBindings,
+    session_store: &SessionStore,
+) -> Result<()> {
+    // The reconciliation DECISION (validate identity, merge per field, adopt
+    // config-only, write store-only back) is the core-owned
+    // `yaran_core::config_sync::reconcile_config_projects`, shared with the web
+    // server's bootstrap. Only PERSISTING is a surface concern: the TUI renders
+    // the full commented template via `save_config`.
+    // Three-way against the config as read, so the sync writes only the
+    // projects it changed and never undoes a key set on disk meanwhile.
+    let base = config.clone();
+    let mut written: Option<String> = None;
+    yaran_core::config_sync::reconcile_config_projects(config, session_store, |config| {
+        written = Some(yaran_core::config_write::save_config_three_way(
+            &paths.config_path,
+            Some(yaran_core::config_write::SaveBase::read(&base)),
+            config,
+            yaran_core::config_write::Durability::Fsync,
+        )?);
+        Ok(())
+    })?;
+    // The file is now this text: what a later save compares with.
+    if let Some(text) = written {
+        config.source_text =
+            yaran_core::config_write::source_after_sync(&base.source_text, &text, config);
+    }
+    Ok(())
+}
+
+/// Pre-flight for the in-process flip from the TUI to the web server: resolve
+/// local-mode addresses (loopback:port on IPv4 and IPv6, plus the machine's
+/// Tailscale address:port when one was detected) and actually bind a std `TcpListener`
+/// for each before the TUI tears anything down. Returning the bound listeners
+/// rather than addresses means there is no rebind race when the web server
+/// adopts them.
+///
+/// Structurally local-only: it takes `port` and `tailscale_ip`, never a
+/// configurable bind host, so it can never open a public listener. Tailscale
+/// detection (`tailscale ip`) is a subprocess call the caller runs on a worker
+/// thread; nothing here blocks beyond the local `TcpListener::bind`.
+///
+/// Loopback is required on both families, so a bind failure there fails the
+/// whole pre-flight (the TUI stays up, the failing address is logged, and
+/// already-bound listeners drop), except that a machine without IPv6 skips the
+/// IPv6 loopback silently; the Tailscale leg is best-effort, so a failure there
+/// is dropped with a warning in the returned `warnings` and the flip proceeds
+/// loopback-only.
+///
+/// Each display URL reflects the listener's `local_addr`, so an ephemeral `:0`
+/// port resolves to the real port the user can open, and every later leg binds
+/// that same port. Returns `(listeners, urls, warnings)`.
+fn preflight_server_listeners(
+    port: u16,
+    tailscale_ip: Option<std::net::IpAddr>,
+) -> Result<(Vec<std::net::TcpListener>, Vec<String>, Vec<String>)> {
+    bind_preflight_addrs(&yaran_core::config::local_addrs(port, tailscale_ip))
+}
+
+/// How many times a pre-flight on port 0 picks a port before a clash on the
+/// one it picked is reported like any other. Every attempt is a fresh port from
+/// the kernel, so a second clash in a row is already unusual.
+const PREFLIGHT_PORT_PICKS: usize = 5;
+
+type Preflight = (Vec<std::net::TcpListener>, Vec<String>, Vec<String>);
+
+/// The binding half of [`preflight_server_listeners`], over a given plan.
+fn bind_preflight_addrs(addrs: &[yaran_core::config::PlanAddr]) -> Result<Preflight> {
+    bind_preflight_addrs_with(addrs, std::net::TcpListener::bind)
+}
+
+/// [`bind_preflight_addrs`] over a given bind, so a test can make the kernel's
+/// pick land where it wants.
+///
+/// On port 0 the first listener's port is one the kernel picked, and every later
+/// leg binds that same port. Something else holding it on another address (a
+/// dev server on `[::1]`, say) is a clash on a port nobody chose, so it means
+/// "pick again" rather than a refusal: everything bound so far is dropped and the
+/// whole pick starts over, up to [`PREFLIGHT_PORT_PICKS`] times. A configured
+/// port is never re-picked.
+fn bind_preflight_addrs_with(
+    addrs: &[yaran_core::config::PlanAddr],
+    mut bind: impl FnMut(std::net::SocketAddr) -> std::io::Result<std::net::TcpListener>,
+) -> Result<Preflight> {
+    let mut attempt = 1;
+    loop {
+        match bind_preflight_once(addrs, &mut bind) {
+            Err(PreflightFailure::PickedPortTaken(_)) if attempt < PREFLIGHT_PORT_PICKS => {
+                attempt += 1;
+            }
+            Err(PreflightFailure::PickedPortTaken(err) | PreflightFailure::Refused(err)) => {
+                return Err(err);
+            }
+            Ok(bound) => return Ok(bound),
+        }
+    }
+}
+
+enum PreflightFailure {
+    /// A required leg clashed on a port the kernel picked for this attempt.
+    PickedPortTaken(anyhow::Error),
+    Refused(anyhow::Error),
+}
+
+fn bind_preflight_once(
+    addrs: &[yaran_core::config::PlanAddr],
+    bind: &mut impl FnMut(std::net::SocketAddr) -> std::io::Result<std::net::TcpListener>,
+) -> std::result::Result<Preflight, PreflightFailure> {
+    let mut listeners = Vec::with_capacity(addrs.len());
+    let mut urls = Vec::with_capacity(addrs.len());
+    let mut warnings = Vec::new();
+    let mut picked_port = None;
+    for plan_addr in addrs {
+        let mut addr = plan_addr.addr();
+        let mut on_picked_port = false;
+        if addr.port() == 0
+            && let Some(port) = picked_port
+        {
+            addr.set_port(port);
+            on_picked_port = true;
+        }
+        match bind(addr) {
+            Ok(listener) => {
+                let bound = listener.local_addr().unwrap_or(addr);
+                picked_port.get_or_insert(bound.port());
+                urls.push(format!("http://{bound}"));
+                listeners.push(listener);
+            }
+            Err(err) if plan_addr.skips_bind_failure(&err) => {
+                yaran_core::logger::debug(&format!(
+                    "[server] not serving on {addr}: this machine has no IPv6 ({err})"
+                ));
+            }
+            Err(err) if plan_addr.is_required() => {
+                let error = anyhow::anyhow!(
+                    "could not start the web server: {err} \
+                     (is something already listening on {addr}?)"
+                );
+                if on_picked_port && err.kind() == std::io::ErrorKind::AddrInUse {
+                    yaran_core::logger::debug(&format!(
+                        "[server] {addr} is taken on the port the system picked; picking again"
+                    ));
+                    return Err(PreflightFailure::PickedPortTaken(error));
+                }
+                // Loopback (required): the flip cannot serve without it. Log the
+                // failing address to yaran.log, then fail the pre-flight so the TUI
+                // surfaces the error and stays up.
+                yaran_core::logger::error(&format!("[server] {error}"));
+                return Err(PreflightFailure::Refused(error));
+            }
+            Err(err) => {
+                // Tailscale leg (best-effort): drop it, warn, serve loopback-only.
+                // The same words `yaran server` prints for the same failure.
+                let warning = yaran_core::serve_log::tailscale_bind_warning(addr, &err);
+                yaran_core::logger::warn(&format!("[server] {warning}"));
+                warnings.push(warning);
+            }
+        }
+    }
+    Ok((listeners, urls, warnings))
+}
+
+// The project-reconciliation helpers (`validate_project_records`,
+// `merge_project_records`, and the config-authoritative field merge) moved to
+// core `yaran_core::config_sync` and are reached there via
+// `sync_config_projects_with_store` above. The low-level path helpers stay
+// reachable to the OTHER TUI callers below (`persist_runtime_projects_*`,
+// `runtime_project_to_config`) as re-exports of the single core source.
+pub(crate) use yaran_core::config_sync::portable_project_path;
+use yaran_core::config_sync::{expanded_project_path, same_expanded_project_path};
+
+pub(crate) fn runtime_project_to_config(
+    project: &Project,
+    existing_projects: &[crate::config::ProjectConfig],
+) -> crate::config::ProjectConfig {
+    let path = existing_projects
+        .iter()
+        .find(|existing| {
+            existing.id == project.id
+                && expanded_project_path(existing).is_some_and(|expanded| expanded == project.path)
+        })
+        .map_or_else(
+            || portable_project_path(&project.path),
+            |existing| existing.path.clone(),
+        );
+
+    crate::config::ProjectConfig {
+        id: project.id.clone(),
+        path,
+        name: Some(project.name.clone()),
+        default_provider: project
+            .explicit_default_provider
+            .as_ref()
+            .map(|provider| provider.as_str().to_string()),
+        leading_branch: project.leading_branch.clone(),
+        auto_reopen_agents: project.auto_reopen_agents,
+        startup_command: project.startup_command.clone(),
+        env: project.env.clone(),
+    }
+}
+
+/// Enter raw mode and the alternate screen and build the terminal on them:
+/// what `ratatui::init` does, without the panic hook it installs, which
+/// restores the host terminal on a panic on ANY thread, including a worker
+/// panic yaran catches and keeps running after. A partial failure is undone by
+/// the unconditional teardown in [`App::run`].
+fn enter_tui_terminal() -> std::io::Result<ratatui::DefaultTerminal> {
+    crossterm::terminal::enable_raw_mode()?;
+    execute!(stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))
+}
+
+/// Turn off the input modes [`App::run`] turns on beside raw mode and the
+/// alternate screen, which `ratatui::restore` does not know about. Left on,
+/// the user's shell prints every mouse move and focus change as escape text.
+fn disable_input_modes() {
+    write_disable_input_modes(&mut stdout(), &crate::host_keys::HOST_KEYS);
+}
+
+/// The bytes of [`disable_input_modes`], written to `out`: first the
+/// switch-off for the extended keys `record` says yaran switched on (so the
+/// pop lands on the alternate screen, before `ratatui::restore` leaves it),
+/// then the input modes. Write errors are ignored: this runs while the
+/// terminal is handed back, a panic included.
+pub(crate) fn write_disable_input_modes(
+    out: &mut impl std::io::Write,
+    record: &crate::host_keys::HostKeysRecord,
+) {
+    crate::host_keys::write_switch_off(out, record);
+    let _ = execute!(
+        out,
+        DisableMouseCapture,
+        DisableFocusChange,
+        DisableBracketedPaste
+    );
+}
+
+/// Write a host-keys plan's log line, if it has one.
+fn log_host_keys_plan(plan: &crate::host_keys::Plan) {
+    match &plan.log {
+        Some((crate::host_keys::LogLevel::Warn, line)) => logger::warn(line),
+        Some((crate::host_keys::LogLevel::Info, line)) => logger::info(line),
+        None => {}
+    }
+}
+
+/// The thread [`App::run`] draws the terminal UI on.
+static TUI_THREAD: Mutex<Option<thread::ThreadId>> = Mutex::new(None);
+
+fn register_tui_thread() {
+    *TUI_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread::current().id());
+}
+
+/// Whether a panic on `thread` ends the terminal UI. Only the thread the UI
+/// runs on does: a worker's panic ends that worker (yaran catches several and
+/// reports them), and the UI keeps drawing on a terminal that must stay set up.
+fn panic_takes_the_tui_down(thread: thread::ThreadId) -> bool {
+    *TUI_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        == Some(thread)
+}
+
+/// Make a panic that ends the terminal UI hand the host terminal back: input
+/// modes off, alternate screen left, raw mode off, before the panic message is
+/// printed. Installed once per process; every run records its thread.
+fn install_terminal_restore_panic_hook() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    register_tui_thread();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if panic_takes_the_tui_down(thread::current().id()) {
+                disable_input_modes();
+                ratatui::restore();
+                // The process is on its way out: a bounded git, gh or
+                // tailscale call in a group of its own would outlive it.
+                yaran_core::kill_live_child_groups();
+            }
+            previous(info);
+        }));
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn only_a_panic_on_the_terminal_ui_thread_restores_the_terminal() {
+        register_tui_thread();
+        assert!(panic_takes_the_tui_down(thread::current().id()));
+        let worker = thread::spawn(|| thread::current().id())
+            .join()
+            .expect("worker thread");
+        assert!(!panic_takes_the_tui_down(worker));
+
+        // The panic hook and the normal exit both hand the terminal back
+        // through `disable_input_modes`, so one record's teardown bytes are
+        // the same on either path: the pop and the tmux reset, each once.
+        let record = crate::host_keys::HostKeysRecord::new();
+        crate::host_keys::switch_on_kitty(&mut Vec::new(), &record).expect("write");
+        crate::host_keys::switch_on_tmux(&mut Vec::new(), &record).expect("write");
+        let mut first = Vec::new();
+        write_disable_input_modes(&mut first, &record);
+        let count = |haystack: &[u8], needle: &[u8]| {
+            haystack
+                .windows(needle.len())
+                .filter(|w| *w == needle)
+                .count()
+        };
+        assert_eq!(count(&first, crate::host_keys::KITTY_POP), 1, "{first:?}");
+        assert_eq!(count(&first, crate::host_keys::TMUX_RESET), 1, "{first:?}");
+        let mut second = Vec::new();
+        write_disable_input_modes(&mut second, &record);
+        assert_eq!(count(&second, crate::host_keys::KITTY_POP), 0);
+        assert_eq!(count(&second, crate::host_keys::TMUX_RESET), 0);
+        let mut quiet = Vec::new();
+        write_disable_input_modes(&mut quiet, &crate::host_keys::HostKeysRecord::new());
+        assert_eq!(second, quiet, "only the input modes are left to switch off");
+    }
+
+    /// Each force redraw starts its own tmux probe; an answer from an older
+    /// one arriving last is ignored, or it would switch tmux back.
+    #[test]
+    fn a_tmux_probe_answer_from_an_older_probe_is_ignored() {
+        use crate::host_keys::TmuxReport;
+        use yaran_core::config::ExtendedKeysMode;
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.host_keys.host = crate::host_keys::Host::Tmux;
+        let record = crate::host_keys::HostKeysRecord::new();
+        let older = app.host_keys.probes.start();
+        let newer = app.host_keys.probes.start();
+        app.apply_tmux_report_to(
+            &mut Vec::new(),
+            &record,
+            older,
+            ExtendedKeysMode::On,
+            Some(TmuxReport::XtermFormat),
+        );
+        assert_eq!(app.host_keys.last_tmux_report, None);
+        assert_ne!(app.status.tone(), StatusTone::Warning);
+
+        let off = TmuxReport::ExtendedKeysOff { needs_format: true };
+        app.apply_tmux_report_to(
+            &mut Vec::new(),
+            &record,
+            newer,
+            ExtendedKeysMode::On,
+            Some(off.clone()),
+        );
+        assert_eq!(app.host_keys.last_tmux_report, Some(off));
+        assert_eq!(app.status.tone(), StatusTone::Warning);
+    }
+
+    /// Every ready answer asks tmux again, the bit already set or not, so a
+    /// force redraw restores a pane whose mode was reset since; and nothing is
+    /// written when this run's host is not a verified tmux.
+    #[test]
+    fn every_ready_tmux_answer_asks_tmux_again_only_under_a_verified_tmux() {
+        use crate::host_keys::{HostKeysRecord, TMUX_REQUEST, TmuxReport};
+        use yaran_core::config::ExtendedKeysMode;
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let record = HostKeysRecord::new();
+        let mut out = Vec::new();
+        let probe = app.host_keys.probes.start();
+        app.apply_tmux_report_to(
+            &mut out,
+            &record,
+            probe,
+            ExtendedKeysMode::Auto,
+            Some(TmuxReport::Ready),
+        );
+        assert_eq!(out, Vec::<u8>::new(), "an unverified host is left alone");
+        assert!(!record.current().tmux_extended);
+
+        app.host_keys.host = crate::host_keys::Host::Tmux;
+        for _ in 0..2 {
+            let probe = app.host_keys.probes.start();
+            app.apply_tmux_report_to(
+                &mut out,
+                &record,
+                probe,
+                ExtendedKeysMode::Auto,
+                Some(TmuxReport::Ready),
+            );
+        }
+        assert_eq!(out, [TMUX_REQUEST, TMUX_REQUEST].concat());
+        assert!(record.current().tmux_extended);
+    }
+
+    /// A spoken changed-files read is live for as long as its busy shows, so a
+    /// slow `git status` keeps its spinner rather than being called timed out.
+    #[test]
+    fn a_spoken_changed_files_read_is_live_until_it_lands() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let worktree = tempfile::tempdir().expect("worktree");
+        let path = worktree.path().to_path_buf();
+        *app.engine.watched_worktree.lock().unwrap() = Some(path.clone());
+        let key = "refresh-changes:test".to_string();
+        app.begin_changed_files_refresh(
+            key.clone(),
+            "agent".to_string(),
+            path,
+            ChangedFilesReadVoice::Spoken,
+        );
+        assert!(app.engine.status_op_is_live(&key));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.pending_changed_files_refresh.is_some() && Instant::now() < deadline {
+            app.drain_events();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            app.pending_changed_files_refresh.is_none(),
+            "the read landed"
+        );
+        assert!(!app.engine.status_op_is_live(&key));
+    }
+
+    /// The watched worktree is plain data, so a thread that panicked while
+    /// holding its lock leaves it readable: a failed read is still reported.
+    #[test]
+    fn a_poisoned_watch_still_reports_a_failed_changed_files_read() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let path = PathBuf::from("/tmp/watched-worktree");
+        *app.engine.watched_worktree.lock().unwrap() = Some(path.clone());
+        let watched = Arc::clone(&app.engine.watched_worktree);
+        let _ = thread::spawn(move || {
+            let _guard = watched.lock().unwrap();
+            panic!("poison the watch");
+        })
+        .join();
+        assert!(app.engine.watched_worktree.is_poisoned());
+        app.pending_changed_files_refresh = Some(PendingChangedFilesRefresh {
+            key: "refresh-changes:test".to_string(),
+            label: "agent".to_string(),
+            worktree: path.clone(),
+            voice: ChangedFilesReadVoice::Spoken,
+            announce_at: None,
+        });
+        app.apply_changed_files_refresh_outcome(&path, Some("git broke".to_string()));
+        assert_eq!(app.status.tone(), StatusTone::Error);
+        assert!(
+            app.status.text().contains("git broke"),
+            "{}",
+            app.status.text()
+        );
+    }
+
+    /// A changed-files read whose worker never starts still gets its keyed
+    /// busy a final: the engine answers for the worker.
+    #[test]
+    fn a_changed_files_read_that_never_starts_gives_its_busy_a_final() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let worktree = tempfile::tempdir().expect("worktree");
+        let path = worktree.path().to_path_buf();
+        *app.engine.watched_worktree.lock().unwrap() = Some(path.clone());
+        let key = "refresh-changes:test".to_string();
+        yaran_core::engine::fail_next_worker_spawn();
+        app.begin_changed_files_refresh(
+            key.clone(),
+            "agent".to_string(),
+            path,
+            ChangedFilesReadVoice::Spoken,
+        );
+        app.drain_events();
+        let open: Vec<_> = app
+            .status
+            .snapshot()
+            .into_iter()
+            .filter(|status| status.key.as_deref() == Some(key.as_str()) && status.tone == "busy")
+            .collect();
+        assert!(open.is_empty(), "the read's busy got a final: {open:?}");
+        assert!(app.pending_changed_files_refresh.is_none());
+        assert!(!app.engine.status_op_is_live(&key));
+    }
+
+    /// Every command the palette lists must reach an arm of `execute_command`,
+    /// never the catch-all that reports it as unknown. Each name runs on a
+    /// fresh app, so one command's state cannot hide another's miss.
+    #[test]
+    fn every_palette_command_reaches_a_real_arm() {
+        let mut missing = Vec::new();
+        for command in yaran_core::palette::PALETTE_COMMANDS {
+            let mut app = test_support::test_app(test_support::default_bindings());
+            // Both ways to serve refuse early while a flip is starting, so the
+            // sweep never binds a port or detects Tailscale.
+            app.serving.flip_preflight_pending = true;
+            // An `Err` is a real arm refusing on this bare fixture; only the
+            // catch-all's status says the name was never matched.
+            let _ = app.execute_command(command.name);
+            if let Some((_, message)) = app.status.most_recent_tui()
+                && message.contains("Unknown command")
+            {
+                missing.push(command.name);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "palette commands with no execute_command arm: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn the_palette_opens_the_agent_filter_in_view_and_focused() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.focus = FocusPane::Center;
+        app.panes.left_collapsed = true;
+
+        app.execute_command("filter-agents").unwrap();
+
+        assert!(app.agent_filter.is_some(), "the filter must be open");
+        assert_eq!(app.focus, FocusPane::Left, "typing must reach the filter");
+        assert!(!app.panes.left_collapsed, "the filter must be on screen");
+    }
+
+    #[test]
+    fn the_palette_asks_before_closing_the_terminal_in_a_focused_dock() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.show_companion_terminal();
+
+        app.execute_command("close-terminal").unwrap();
+
+        assert!(
+            matches!(app.prompt, PromptState::ConfirmDeleteTerminal { .. }),
+            "expected the close-terminal confirmation, got {:?}",
+            app.prompt
+        );
+    }
+
+    #[test]
+    fn the_palette_asks_before_closing_the_terminal_on_a_selected_row() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        test_support::add_terminal(&mut app, "term-1", TerminalOwner::Standalone);
+        app.reselect_left_terminal("term-1");
+        app.focus = FocusPane::Left;
+
+        app.execute_command("close-terminal").unwrap();
+
+        assert!(
+            matches!(
+                &app.prompt,
+                PromptState::ConfirmDeleteTerminal { terminal_id, .. } if terminal_id == "term-1"
+            ),
+            "expected the close confirmation for the selected row, got {:?}",
+            app.prompt
+        );
+    }
+
+    #[test]
+    fn the_palette_refuses_to_close_a_terminal_the_user_is_not_on() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.show_companion_terminal();
+        // The agent's row, not its dock: no terminal is the one the user means.
+        app.focus = FocusPane::Left;
+
+        app.execute_command("close-terminal").unwrap();
+
+        assert!(matches!(app.prompt, PromptState::None));
+        assert!(
+            app.status.text().contains(
+                "Focus an agent's terminal dock, or select a project or standalone terminal"
+            ),
+            "{}",
+            app.status.text()
+        );
+    }
+
+    #[test]
+    fn the_palette_asks_before_checking_out_the_default_branch() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+
+        app.execute_command("checkout-project-default-branch")
+            .unwrap();
+
+        assert!(
+            matches!(app.prompt, PromptState::ConfirmCheckoutDefaultBranch { .. }),
+            "expected the checkout confirmation, got {:?}",
+            app.prompt
+        );
+    }
+
+    /// An engine status built from parts, for the web's name chips, reaches the
+    /// terminal UI's status line as exactly the sentence it printed before the
+    /// parts existed: straight quotes where it always had them, nothing else.
+    #[test]
+    fn a_status_built_from_parts_prints_byte_for_byte_as_before() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        let update = yaran_core::engine::StatusUpdate::info(
+            yaran_core::engine::checkout_default_branch_message(
+                "app",
+                "main",
+                &yaran_core::engine::ProjectBaseAdoption::Moved,
+            ),
+        );
+        assert!(update.segments.is_some(), "the sentence carries its parts");
+        app.apply_reaction(yaran_core::engine::EventReaction::Status(update));
+        assert_eq!(
+            app.status.text().as_bytes(),
+            b"Checked out \"main\" for project \"app\". New worktrees branch from \"main\" now."
+        );
+    }
+
+    #[test]
+    fn run_loop_uses_raw_input_only_for_unobscured_terminal_targets() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.prompt = PromptState::None;
+        app.fullscreen_overlay = FullscreenOverlay::None;
+
+        app.input_target = InputTarget::Agent;
+        assert!(app.should_poll_raw_input());
+
+        app.input_target = InputTarget::Terminal;
+        assert!(app.should_poll_raw_input());
+
+        app.input_target = InputTarget::None;
+        assert!(!app.should_poll_raw_input());
+
+        app.input_target = InputTarget::Agent;
+        app.fullscreen_overlay = FullscreenOverlay::StartupLog;
+        assert!(!app.should_poll_raw_input());
+
+        app.fullscreen_overlay = FullscreenOverlay::None;
+        app.prompt = PromptState::Command {
+            input: TextInput::default(),
+            selected: 0,
+        };
+        assert!(!app.should_poll_raw_input());
+    }
+
+    #[test]
+    fn attention_blink_phase_double_blinks_then_holds() {
+        // Blink 1: show then hide.
+        assert!(attention_blink_phase(0));
+        assert!(attention_blink_phase(199));
+        assert!(!attention_blink_phase(200));
+        assert!(!attention_blink_phase(399));
+        // Blink 2: show then hide.
+        assert!(attention_blink_phase(400));
+        assert!(!attention_blink_phase(600));
+        assert!(!attention_blink_phase(799));
+        // Hold: steady visibility until the cycle restarts. No separator hide
+        // at the end (it would read as a third blink).
+        assert!(attention_blink_phase(800));
+        assert!(attention_blink_phase(1300));
+        assert!(attention_blink_phase(1800));
+        assert!(attention_blink_phase(1999));
+        // The next cycle starts with its first hide at the same offset, so
+        // exactly two hides happen per cycle.
+        assert!(attention_blink_phase(2000));
+        assert!(!attention_blink_phase(2000 + 250));
+        assert!(attention_blink_phase(2000 + 450));
+        assert!(!attention_blink_phase(2000 + 650));
+    }
+
+    fn test_session(id: &str, project_id: &str, created_offset: i64) -> AgentSession {
+        let now = Utc::now() + chrono::Duration::seconds(created_offset);
+        AgentSession {
+            id: id.to_string(),
+            slot_tab_id: format!("{id}-slot"),
+            provider: ProviderKind::from_str("codex"),
+            title: None,
+            started_providers: Vec::new(),
+            desired_running: false,
+            auto_reopen_enabled: true,
+            status: SessionStatus::Detached,
+            created_at: now,
+            updated_at: now,
+            last_focused_tab: None,
+            workspace: yaran_core::model::AgentWorkspace::Managed(
+                yaran_core::model::ManagedWorkspace {
+                    project_id: project_id.to_string(),
+                    project_path: Some(format!("/tmp/{project_id}")),
+                    source_branch: "main".to_string(),
+                    branch_name: id.to_string(),
+                    initial_branch: id.to_string(),
+                    branch_provenance: yaran_core::model::BranchProvenance::CreatedByYaran,
+                    worktree_path: format!("/tmp/worktrees/{id}"),
+                },
+            ),
+        }
+    }
+
+    fn test_standalone_session(id: &str, folder: &str) -> AgentSession {
+        let mut session = test_session(id, "p1", 0);
+        session.title = Some(format!("{id}-title"));
+        session.workspace =
+            yaran_core::model::AgentWorkspace::Folder(yaran_core::model::FolderWorkspace {
+                folder_path: folder.to_string(),
+            });
+        session
+    }
+
+    /// The info panel says what this agent is and where it runs, and says
+    /// nothing about branches: it has none, and a row reading "Current:" with
+    /// an empty value is worse than no row.
+    #[test]
+    fn agent_info_lines_for_a_standalone_agent_name_the_folder_and_no_branches() {
+        let s = test_standalone_session("sa1", "/home/someone/notes");
+        let lines = agent_info_lines(&s, None, &[], WorkingCopy::Present);
+        let text = lines
+            .iter()
+            .map(|(l, _)| l.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            text.contains("Standalone agent"),
+            "the panel must say what kind of agent this is, got:\n{text}"
+        );
+        assert!(
+            text.contains("Folder:"),
+            "and name the folder it runs in, got:\n{text}"
+        );
+        assert!(
+            text.contains("notes"),
+            "with the folder's actual path, got:\n{text}"
+        );
+        for absent in ["Current:", "Original:", "Forked from:", "Worktree:"] {
+            assert!(
+                !text.contains(absent),
+                "{absent} must be absent, not blank, got:\n{text}"
+            );
+        }
+    }
+
+    /// The info panel is where a user goes to ask what is wrong with an agent,
+    /// so it says the directory is gone rather than showing a worktree path that
+    /// leads nowhere. Warning-toned, like the drift line, and the browser's
+    /// dialog carries the same words.
+    #[test]
+    fn agent_info_lines_flag_a_directory_that_is_gone() {
+        let managed = test_session("s1", "p1", 0);
+        let lines = agent_info_lines(&managed, None, &[], WorkingCopy::Missing);
+        let flagged = lines
+            .iter()
+            .find(|(_, tone)| *tone == AgentInfoTone::Warning)
+            .expect("a warning line");
+        assert_eq!(
+            flagged.0,
+            yaran_core::working_copy::MISSING_WORKING_COPY_INFO_LINE
+        );
+        assert!(flagged.0.contains("Recreate it"), "{}", flagged.0);
+
+        assert!(
+            !agent_info_lines(&managed, None, &[], WorkingCopy::Present)
+                .iter()
+                .any(|(text, _)| text == yaran_core::working_copy::MISSING_WORKING_COPY_INFO_LINE),
+            "and nothing is flagged while the copy is there"
+        );
+
+        // yaran never puts a standalone agent's folder back, so its line names a
+        // different remedy.
+        let standalone = test_standalone_session("sa1", "/home/someone/notes");
+        let lines = agent_info_lines(&standalone, None, &[], WorkingCopy::Missing);
+        assert!(
+            lines
+                .iter()
+                .any(|(text, _)| text == yaran_core::working_copy::MISSING_FOLDER_INFO_LINE),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn agent_info_lines_include_lineage_and_drift() {
+        let mut s = test_session("s1", "p1", 0);
+        s.title = Some("server-mode".into());
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_name = "agent-tabs".into();
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .initial_branch = "server-mode".into();
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .source_branch = "main".into();
+
+        let lines = agent_info_lines(&s, None, &[], WorkingCopy::Present);
+        assert!(lines.iter().any(|(l, _)| l.contains("agent-tabs"))); // current branch
+        assert!(lines.iter().any(|(l, _)| l.contains("server-mode"))); // original
+        assert!(lines.iter().any(|(l, _)| l.contains("main"))); // forked from
+        // The drift note is present AND tagged Warning (structured tone, not
+        // substring-matched by the renderer).
+        let drift = lines
+            .iter()
+            .find(|(l, _)| l.to_lowercase().contains("changed since creation"))
+            .expect("drift line present");
+        assert_eq!(drift.1, AgentInfoTone::Warning);
+        // Every other line is Neutral.
+        assert!(
+            lines
+                .iter()
+                .filter(|(l, _)| !l.to_lowercase().contains("changed since creation"))
+                .all(|(_, tone)| *tone == AgentInfoTone::Neutral)
+        );
+    }
+
+    #[test]
+    fn agent_info_lines_omit_drift_line_when_no_drift() {
+        let mut s = test_session("s1", "p1", 0);
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_name = "main".into();
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .initial_branch = "main".into();
+        let lines = agent_info_lines(&s, None, &[], WorkingCopy::Present);
+        // Both checks below are shaped so they would pass on an EMPTY list, so
+        // pin that there is something to check first. Without this the test
+        // passes while reporting nothing at all.
+        assert!(
+            !lines.is_empty(),
+            "there must be lines to inspect, or the checks below prove nothing"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|(l, _)| l.to_lowercase().contains("changed since creation"))
+        );
+        // With no drift, every line is Neutral, no Warning tone anywhere.
+        assert!(
+            lines
+                .iter()
+                .all(|(_, tone)| *tone == AgentInfoTone::Neutral)
+        );
+    }
+
+    #[test]
+    fn agent_info_lines_omit_drift_line_when_initial_empty() {
+        let mut s = test_session("s1", "p1", 0);
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_name = "main".into();
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .initial_branch = String::new();
+        let lines = agent_info_lines(&s, None, &[], WorkingCopy::Present);
+        assert!(
+            !lines
+                .iter()
+                .any(|(l, _)| l.to_lowercase().contains("changed since creation")),
+            "an empty initial_branch must not produce a phantom drift line"
+        );
+    }
+
+    #[test]
+    fn agent_info_lines_list_every_pull_request_and_name_the_attached_ones() {
+        let s = test_session("s1", "p1", 0);
+        let found = crate::model::AgentPr::found(
+            &crate::model::PrInfo {
+                number: 42,
+                state: crate::model::PrState::Open,
+                title: "Fix the frobnicator".to_string(),
+                host: "github.com".to_string(),
+                owner_repo: "o/r".to_string(),
+                url: "https://github.com/o/r/pull/42".to_string(),
+                ..Default::default()
+            },
+            chrono::Utc::now(),
+        );
+        let mut attached = crate::model::AgentPr::found(
+            &crate::model::PrInfo {
+                number: 77,
+                state: crate::model::PrState::Draft,
+                title: "Allow the preview host".to_string(),
+                host: "github.com".to_string(),
+                owner_repo: "acme/infra".to_string(),
+                url: "https://github.com/acme/infra/pull/77".to_string(),
+                ..Default::default()
+            },
+            chrono::Utc::now(),
+        );
+        attached.found = false;
+        attached.attached = true;
+        let pr_lines = |lines: Vec<(String, AgentInfoTone)>| -> Vec<(String, AgentInfoTone)> {
+            lines
+                .into_iter()
+                .skip_while(|(l, _)| !l.starts_with("Pull request"))
+                .collect()
+        };
+
+        // No pull request: no line at all.
+        let none = agent_info_lines(&s, None, &[], WorkingCopy::Present);
+        assert_eq!(pr_lines(none), Vec::new());
+
+        // One found: number, lowercase state, title, no attachment marker.
+        let one = pr_lines(agent_info_lines(
+            &s,
+            None,
+            &[("#42".to_string(), &found)],
+            WorkingCopy::Present,
+        ));
+        assert_eq!(
+            one,
+            vec![(
+                "Pull request: #42 (open) Fix the frobnicator".to_string(),
+                AgentInfoTone::Neutral
+            )]
+        );
+
+        // Several: one line each in the order given, under one plural label,
+        // and an attached one says so. This is the only place the terminal UI
+        // says a pull request was attached, so the marker is load-bearing.
+        let both = pr_lines(agent_info_lines(
+            &s,
+            None,
+            &[
+                ("#42".to_string(), &found),
+                ("acme/infra#77".to_string(), &attached),
+            ],
+            WorkingCopy::Present,
+        ));
+        assert_eq!(
+            both,
+            vec![
+                ("Pull requests:".to_string(), AgentInfoTone::Neutral),
+                (
+                    "              #42 (open) Fix the frobnicator".to_string(),
+                    AgentInfoTone::Neutral
+                ),
+                (
+                    "              acme/infra#77 (draft) Allow the preview host (manually attached)"
+                        .to_string(),
+                    AgentInfoTone::Neutral
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_info_provider_line_notes_a_divergent_project_default() {
+        let s = test_session("s1", "p1", 0); // provider "codex"
+        // Matching default: plain provider line, no annotation.
+        let same = agent_info_lines(
+            &s,
+            Some(ProviderKind::from_str("codex")),
+            &[],
+            WorkingCopy::Present,
+        );
+        let provider_same = same
+            .iter()
+            .find(|(l, _)| l.starts_with("Provider:"))
+            .expect("provider line");
+        assert!(!provider_same.0.contains("project default"));
+
+        // Divergent default: the line spells out the project default too.
+        let diff = agent_info_lines(
+            &s,
+            Some(ProviderKind::from_str("claude")),
+            &[],
+            WorkingCopy::Present,
+        );
+        let provider_diff = diff
+            .iter()
+            .find(|(l, _)| l.starts_with("Provider:"))
+            .expect("provider line");
+        assert!(provider_diff.0.contains("codex"));
+        assert!(provider_diff.0.contains("project default: claude"));
+    }
+
+    #[test]
+    fn preflight_binds_loopback_and_reports_actual_port() {
+        // Port 0 lets the OS pick a free port; the display URL must reflect the
+        // ACTUAL bound port (via local_addr), not the configured ":0". With no
+        // Tailscale address, LOCAL MODE binds loopback only.
+        let (listeners, urls, warnings) =
+            preflight_server_listeners(0, None).expect("loopback bind should succeed");
+        assert!(warnings.is_empty(), "no tailscale leg → no warnings");
+        assert_eq!(urls.len(), listeners.len());
+
+        let bound = listeners[0]
+            .local_addr()
+            .expect("listener has a local addr");
+        assert_eq!(bound.ip(), std::net::Ipv4Addr::LOCALHOST, "IPv4 first");
+        assert_ne!(bound.port(), 0, "OS must have assigned a real port");
+        assert_eq!(urls[0], format!("http://{bound}"));
+        assert!(
+            !urls[0].ends_with(":0"),
+            "URL must not show the placeholder port"
+        );
+        // The IPv6 loopback, where this machine has IPv6, on the port the
+        // kernel picked for the first leg.
+        if let Some(v6) = listeners.get(1) {
+            let v6 = v6.local_addr().expect("listener has a local addr");
+            assert_eq!(v6.ip(), std::net::Ipv6Addr::LOCALHOST);
+            assert_eq!(v6.port(), bound.port());
+            assert_eq!(urls[1], format!("http://[::1]:{}", bound.port()));
+        }
+        assert!(listeners.len() <= 2, "no tailscale → loopback only");
+    }
+
+    #[test]
+    fn preflight_is_local_only_and_never_reads_bind_host() {
+        // STRUCTURAL: the flip pre-flight takes a port + optional Tailscale IP,
+        // never the configurable [server] host, so it can only ever bind loopback
+        // (and Tailscale). Even with a public host configured, the flip path is
+        // unaffected because it does not consult that field at all; this test
+        // documents the local-only guarantee by exercising the only inputs the
+        // flip can take.
+        let (listeners, _urls, _warnings) =
+            preflight_server_listeners(0, None).expect("loopback-only pre-flight succeeds");
+        assert!(
+            listeners
+                .iter()
+                .all(|l| l.local_addr().expect("addr").ip().is_loopback()),
+            "the flip must bind loopback only when no tailscale address is present"
+        );
+    }
+
+    #[test]
+    fn preflight_reports_port_already_in_use() {
+        // Hold a loopback port, then ask the pre-flight to bind the same one. The
+        // loopback leg is REQUIRED, so the pre-flight FAILS (the flip is refused).
+        let held = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
+        let addr = held.local_addr().expect("held addr");
+
+        let err = preflight_server_listeners(addr.port(), None)
+            .expect_err("binding an in-use loopback port must fail pre-flight");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("could not start the web server") && text.contains(&addr.to_string()),
+            "collision error should name the address: {text}"
+        );
+    }
+
+    /// A port P held on `[::1]`, and 127.0.0.1:P held too for a staged IPv4
+    /// pick to hand out, so the IPv6 loopback clashes on a port yaran picked.
+    struct ClashOnIpv6 {
+        _ipv6: std::net::TcpListener,
+        ipv4: std::net::TcpListener,
+        port: u16,
+    }
+
+    impl ClashOnIpv6 {
+        /// The kernel's IPv4 pick landing on P. A duplicate of the listener
+        /// held from staging, never a fresh bind: P is free on IPv4 to every
+        /// other test in the process, and one that bound 127.0.0.1:0 in between
+        /// could be given it.
+        fn pick(&self) -> std::io::Result<std::net::TcpListener> {
+            self.ipv4.try_clone()
+        }
+    }
+
+    /// `None` when this machine has no IPv6 or 127.0.0.1:P is not free.
+    fn a_pick_that_clashes_on_ipv6() -> Option<ClashOnIpv6> {
+        let ipv6 = match std::net::TcpListener::bind("[::1]:0") {
+            Ok(held) => held,
+            Err(err) if yaran_core::config::ipv6_unavailable(&err) => return None,
+            Err(err) => panic!("hold [::1]: {err}"),
+        };
+        let port = ipv6.local_addr().expect("held addr").port();
+        let ipv4 = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).ok()?;
+        Some(ClashOnIpv6 {
+            _ipv6: ipv6,
+            ipv4,
+            port,
+        })
+    }
+
+    #[test]
+    fn preflight_on_port_zero_picks_again_when_its_pick_is_taken_on_ipv6() {
+        let Some(staged) = a_pick_that_clashes_on_ipv6() else {
+            return;
+        };
+        let clash = staged.port;
+        let mut picks = 0;
+        let (listeners, urls, _) =
+            bind_preflight_addrs_with(&yaran_core::config::local_addrs(0, None), |addr| {
+                if addr.port() == 0 {
+                    picks += 1;
+                    if picks == 1 {
+                        return staged.pick();
+                    }
+                }
+                std::net::TcpListener::bind(addr)
+            })
+            .expect("a clash on a picked port must pick again, not refuse");
+
+        assert_eq!(picks, 2, "the whole pick starts over once");
+        let ports: Vec<u16> = listeners
+            .iter()
+            .map(|l| l.local_addr().expect("addr").port())
+            .collect();
+        assert_eq!(listeners.len(), 2, "{urls:?}");
+        assert_ne!(ports[0], clash);
+        assert_eq!(ports[0], ports[1], "both loopbacks on the new pick");
+    }
+
+    #[test]
+    fn preflight_on_port_zero_stops_picking_after_a_bounded_number_of_clashes() {
+        let Some(staged) = a_pick_that_clashes_on_ipv6() else {
+            return;
+        };
+        let clash = staged.port;
+        let mut picks = 0;
+        let err = bind_preflight_addrs_with(&yaran_core::config::local_addrs(0, None), |addr| {
+            if addr.port() == 0 {
+                picks += 1;
+                return staged.pick();
+            }
+            std::net::TcpListener::bind(addr)
+        })
+        .expect_err("a clash on every pick ends in the ordinary refusal");
+
+        assert_eq!(picks, PREFLIGHT_PORT_PICKS);
+        let text = format!("{err:#}");
+        assert!(
+            text.contains(&format!("listening on [::1]:{clash}?")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn preflight_refuses_a_taken_ipv6_loopback_and_names_it() {
+        let held = match std::net::TcpListener::bind("[::1]:0") {
+            Ok(held) => held,
+            Err(err) if yaran_core::config::ipv6_unavailable(&err) => return,
+            Err(err) => panic!("hold [::1]: {err}"),
+        };
+        let port = held.local_addr().expect("held addr").port();
+
+        let err = bind_preflight_addrs(&[yaran_core::config::PlanAddr::ipv6_loopback(port)])
+            .expect_err("a program on [::1] must stop the start");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("could not start the web server")
+                && text.contains(&format!("listening on [::1]:{port}?")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn preflight_best_effort_tailscale_bind_failure_degrades_to_loopback() {
+        // Reproduce the real-world bug: a third-party process already holds the
+        // Tailscale ip:port while loopback:port is free. The "Tailscale" leg is
+        // best-effort, so the pre-flight must SUCCEED on loopback only, drop the
+        // failed leg, and carry a warning naming the busy address.
+        //
+        // A SECOND loopback address stands in for the Tailscale IP: 127.0.0.2
+        // on Linux, where the whole 127.0.0.0/8 range is loopback, and IPv6
+        // loopback on macOS, which configures only 127.0.0.1 of that range.
+        // Hold it on port P and leave 127.0.0.1:P free. The plan is built by
+        // hand because on macOS the stand-in is the IPv6 loopback leg itself.
+        let ts_ip: std::net::IpAddr = if cfg!(target_os = "macos") {
+            "::1".parse().unwrap()
+        } else {
+            "127.0.0.2".parse().unwrap()
+        };
+        let held = std::net::TcpListener::bind((ts_ip, 0)).expect("hold a second-loopback port");
+        let held_addr = held.local_addr().expect("held addr");
+        let port = held_addr.port();
+
+        let (listeners, urls, warnings) = bind_preflight_addrs(&[
+            yaran_core::config::PlanAddr::required((std::net::Ipv4Addr::LOCALHOST, port).into()),
+            yaran_core::config::PlanAddr::best_effort(held_addr),
+        ])
+        .expect("a busy Tailscale leg must NOT fail the pre-flight");
+
+        // Only the required loopback leg bound; the best-effort Tailscale leg was
+        // dropped. Every bound listener is genuine loopback → host-only.
+        assert_eq!(listeners.len(), 1, "the best-effort leg must be dropped");
+        assert_eq!(urls.len(), 1, "only the bound listener gets a URL");
+        let bound = listeners[0].local_addr().expect("bound addr");
+        assert_eq!(bound.ip(), std::net::Ipv4Addr::LOCALHOST);
+        assert!(
+            urls.iter().all(|u| u.contains("127.0.0.1")),
+            "the URL list must exclude the failed Tailscale address: {urls:?}"
+        );
+        // The warning names the busy address in exactly the words `yaran server`
+        // prints for the same failure, so the flip's log and `yaran server`'s match.
+        assert_eq!(warnings.len(), 1, "exactly one bind warning: {warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!(
+                "could not bind the Tailscale address {held_addr}: "
+            )),
+            "the warning must name the busy Tailscale address: {}",
+            warnings[0]
+        );
+        assert!(
+            warnings[0].ends_with(
+                "Something else is already listening there, so yaran is serving on the \
+                 remaining address(es) only. Stop that process or change [server].port to \
+                 also serve on Tailscale."
+            ),
+            "the warning must be yaran server's wording: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn pick_project_filter_matches_by_name_and_path() {
+        let entry = |id: &str, name: &str, path: &str| ProjectChooserEntry {
+            id: id.to_string(),
+            name: name.to_string(),
+            path: path.to_string(),
+            agent_count: 0,
+            path_missing: false,
+            base_branch: None,
+            orphaned: false,
+        };
+        let entries = vec![
+            entry("a", "alpha", "/home/me/alpha"),
+            entry("b", "beta", "/home/me/work/beta"),
+            entry("c", "gamma", "/srv/gamma"),
+        ];
+        let vis = |query: &str| {
+            let mut list = SearchableList::new();
+            list.filter = TextInput::with_text(query.to_string());
+            list.visible_indices(&entries, pick_project_matches)
+        };
+        // Empty filter matches everything in order.
+        assert_eq!(vis(""), vec![0, 1, 2]);
+        // Name match, case-insensitive.
+        assert_eq!(vis("BETA"), vec![1]);
+        // Path match (segment not in any name).
+        assert_eq!(vis("work"), vec![1]);
+        // No match.
+        assert_eq!(vis("zzz"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn searchable_list_clamps_and_toggles() {
+        let mut list = SearchableList::new();
+        assert!(!list.is_filtering());
+        list.begin_search();
+        assert!(list.searching && list.is_filtering());
+        // move_down is bounded by the visible length; move_up saturates at 0.
+        list.selected = 0;
+        list.move_down(2);
+        assert_eq!(list.selected, 1);
+        list.move_down(2); // already at the last visible row
+        assert_eq!(list.selected, 1);
+        list.move_up();
+        list.move_up();
+        assert_eq!(list.selected, 0);
+        // Shrinking the visible set clamps the selection back into range.
+        list.selected = 5;
+        list.clamp_selected(3);
+        assert_eq!(list.selected, 2);
+        list.clamp_selected(0);
+        assert_eq!(list.selected, 0);
+        // Leaving search is one step: the mode goes off and the query goes
+        // with it, so the next close key belongs to the modal.
+        assert!(list.exit_search_clearing_filter());
+        assert!(!list.searching);
+        assert!(list.filter.is_empty());
+        assert_eq!(list.selected, 0);
+        assert!(
+            !list.exit_search_clearing_filter(),
+            "an idle, empty search row has nothing to leave"
+        );
+    }
+
+    /// The list built from agents alone, with none of their own terminals running.
+    fn agent_rows(
+        sessions: &[AgentSession],
+        tail: InactiveTail,
+        mode: AgentSortMode,
+        is_hot: &dyn Fn(usize) -> bool,
+        is_visible: &dyn Fn(usize) -> bool,
+    ) -> Vec<LeftItem> {
+        build_left_items(
+            sessions,
+            &[],
+            tail,
+            mode,
+            &yaran_core::flat_list::AgentRowFacts {
+                is_hot,
+                is_visible,
+                has_running_terminal: &|_| false,
+            },
+            &|_| true,
+        )
+    }
+
+    #[test]
+    fn build_left_items_flat_splits_active_and_inactive() {
+        let mut active = test_session("active-1", "p", 0);
+        active.status = SessionStatus::Active;
+        // test_session defaults to Detached, i.e. inactive.
+        let inactive = test_session("gone-1", "p", 0);
+        let sessions = vec![active, inactive];
+
+        // Collapsed (default): the active row, then a single Inactive toggle; the
+        // inactive session is hidden.
+        assert_eq!(
+            agent_rows(
+                &sessions,
+                InactiveTail::Collapsed,
+                AgentSortMode::Active,
+                &|_| false,
+                &|_| { true }
+            ),
+            vec![LeftItem::Session(0), LeftItem::InactiveToggle],
+        );
+
+        // Expanded: the inactive session follows the toggle.
+        assert_eq!(
+            agent_rows(
+                &sessions,
+                InactiveTail::Expanded,
+                AgentSortMode::Active,
+                &|_| false,
+                &|_| { true }
+            ),
+            vec![
+                LeftItem::Session(0),
+                LeftItem::InactiveToggle,
+                LeftItem::Session(1),
+            ],
+        );
+    }
+
+    #[test]
+    fn build_left_items_flat_has_no_toggle_without_inactive() {
+        let mut a = test_session("a", "p", 0);
+        a.status = SessionStatus::Active;
+        let mut b = test_session("b", "other", 0);
+        b.status = SessionStatus::Active;
+        let items = agent_rows(
+            &[a, b],
+            InactiveTail::Collapsed,
+            AgentSortMode::Active,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(items, vec![LeftItem::Session(0), LeftItem::Session(1)]);
+        assert!(!items.contains(&LeftItem::InactiveToggle));
+    }
+
+    #[test]
+    fn build_left_items_flat_orphan_sessions_are_plain_rows() {
+        // A session whose project record is gone is a normal Session row (the
+        // renderer marks it inline); there is no separate orphan header, and no
+        // project grouping interleaves the list.
+        let mut real = test_session("real", "p", 0);
+        real.status = SessionStatus::Active;
+        let mut ghost = test_session("ghost", "gone-project", 0);
+        ghost.status = SessionStatus::Active;
+        assert_eq!(
+            agent_rows(
+                &[real, ghost],
+                InactiveTail::Collapsed,
+                AgentSortMode::Active,
+                &|_| false,
+                &|_| true
+            ),
+            vec![LeftItem::Session(0), LeftItem::Session(1)],
+        );
+    }
+
+    #[test]
+    fn build_left_items_active_mode_floats_hot_and_orders_inactive_by_updated() {
+        // Three active agents (indices 0,1,2) and two inactive (3,4). Only index 2
+        // is hot. Active mode floats it above the non-hot actives while keeping
+        // their incoming order; the inactive tail sorts most-recently-updated.
+        let t0 = Utc::now();
+        let mk = |id: &str, status: SessionStatus, updated_offset: i64| {
+            let mut s = test_session(id, "p", 0);
+            s.status = status;
+            s.updated_at = t0 + chrono::Duration::seconds(updated_offset);
+            s
+        };
+        let sessions = vec![
+            mk("a0", SessionStatus::Active, 0),
+            mk("a1", SessionStatus::Active, 0),
+            mk("a2", SessionStatus::Active, 0),
+            mk("i3", SessionStatus::Detached, 10), // older
+            mk("i4", SessionStatus::Exited, 20),   // newer
+        ];
+        let hot = |i: usize| i == 2;
+        let items = agent_rows(
+            &sessions,
+            InactiveTail::Expanded,
+            AgentSortMode::Active,
+            &hot,
+            &|_| true,
+        );
+        assert_eq!(
+            items,
+            vec![
+                LeftItem::Session(2), // hot floats up
+                LeftItem::Session(0),
+                LeftItem::Session(1),
+                LeftItem::InactiveToggle,
+                LeftItem::Session(4), // newer updated_at first
+                LeftItem::Session(3),
+            ],
+        );
+    }
+
+    #[test]
+    fn build_left_items_name_and_name_desc_are_reversed_without_touching_sessions() {
+        let mk = |id: &str, name: &str| {
+            let mut s = test_session(id, "p", 0);
+            s.status = SessionStatus::Active;
+            s.workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .branch_name = name.to_string();
+            s.title = None;
+            s
+        };
+        let sessions = vec![mk("s0", "charlie"), mk("s1", "alpha"), mk("s2", "bravo")];
+
+        let asc = agent_rows(
+            &sessions,
+            InactiveTail::Collapsed,
+            AgentSortMode::NameAsc,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(
+            asc,
+            vec![
+                LeftItem::Session(1), // alpha
+                LeftItem::Session(2), // bravo
+                LeftItem::Session(0), // charlie
+            ],
+        );
+
+        let desc = agent_rows(
+            &sessions,
+            InactiveTail::Collapsed,
+            AgentSortMode::NameDesc,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(
+            desc,
+            vec![
+                LeftItem::Session(0), // charlie
+                LeftItem::Session(2), // bravo
+                LeftItem::Session(1), // alpha
+            ],
+        );
+
+        // `sessions` order is untouched: still the incoming order.
+        assert_eq!(
+            sessions[0].branch_name().expect("managed test session"),
+            "charlie"
+        );
+        assert_eq!(
+            sessions[1].branch_name().expect("managed test session"),
+            "alpha"
+        );
+        assert_eq!(
+            sessions[2].branch_name().expect("managed test session"),
+            "bravo"
+        );
+    }
+
+    #[test]
+    fn build_left_items_manual_renders_verbatim_incoming_order() {
+        // A web-set "manual" mode displays engine.sessions verbatim (the TUI shows
+        // it but never offers it).
+        let mk = |id: &str, name: &str| {
+            let mut s = test_session(id, "p", 0);
+            s.status = SessionStatus::Active;
+            s.workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .branch_name = name.to_string();
+            s
+        };
+        let sessions = vec![mk("s0", "charlie"), mk("s1", "alpha"), mk("s2", "bravo")];
+        let items = agent_rows(
+            &sessions,
+            InactiveTail::Collapsed,
+            AgentSortMode::Manual,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(
+            items,
+            vec![
+                LeftItem::Session(0),
+                LeftItem::Session(1),
+                LeftItem::Session(2),
+            ],
+        );
+    }
+
+    #[test]
+    fn build_left_items_nameasc_sorts_active_but_leaves_inactive_verbatim() {
+        // The ACTIVE bucket sorts by name; the inactive tail stays in incoming
+        // order (matching the web, which never sorts its dormant tail).
+        let mk = |id: &str, name: &str, status: SessionStatus| {
+            let mut s = test_session(id, "p", 0);
+            s.status = status;
+            s.workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .branch_name = name.to_string();
+            s.title = None;
+            s
+        };
+        let sessions = vec![
+            mk("a0", "charlie", SessionStatus::Active),
+            mk("a1", "alpha", SessionStatus::Active),
+            mk("i2", "zeta", SessionStatus::Detached),
+            mk("i3", "aardvark", SessionStatus::Detached),
+        ];
+        let items = agent_rows(
+            &sessions,
+            InactiveTail::Expanded,
+            AgentSortMode::NameAsc,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(
+            items,
+            vec![
+                LeftItem::Session(1), // alpha (active, name-sorted)
+                LeftItem::Session(0), // charlie
+                LeftItem::InactiveToggle,
+                LeftItem::Session(2), // zeta   (inactive, verbatim, NOT sorted)
+                LeftItem::Session(3), // aardvark
+            ],
+            "active bucket name-sorted, inactive tail left in incoming order",
+        );
+    }
+
+    #[test]
+    fn build_left_items_active_mode_orders_inactive_tail_by_recency() {
+        // Under Active mode (the ONLY mode that sorts the tail) the inactive
+        // bucket orders most-recently-updated first, regardless of incoming order.
+        let t0 = Utc::now();
+        let mk = |id: &str, status: SessionStatus, off: i64| {
+            let mut s = test_session(id, "p", 0);
+            s.status = status;
+            s.updated_at = t0 + chrono::Duration::seconds(off);
+            s
+        };
+        let sessions = vec![
+            mk("a0", SessionStatus::Active, 0),
+            mk("i1", SessionStatus::Detached, 5),  // older
+            mk("i2", SessionStatus::Detached, 50), // newer
+        ];
+        let items = agent_rows(
+            &sessions,
+            InactiveTail::Expanded,
+            AgentSortMode::Active,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(
+            items,
+            vec![
+                LeftItem::Session(0),
+                LeftItem::InactiveToggle,
+                LeftItem::Session(2), // newer updated_at first
+                LeftItem::Session(1),
+            ],
+        );
+    }
+
+    #[test]
+    fn build_left_items_updated_and_created_order_active_by_recency() {
+        // The active bucket orders most-recent first under both Updated and
+        // Created (test_session sets updated_at == created_at == now + offset).
+        let mk = |id: &str, off: i64| {
+            let mut s = test_session(id, "p", off);
+            s.status = SessionStatus::Active;
+            s
+        };
+        let sessions = vec![mk("s0", 0), mk("s1", 100), mk("s2", 50)];
+
+        let updated = agent_rows(
+            &sessions,
+            InactiveTail::Collapsed,
+            AgentSortMode::Updated,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(
+            updated,
+            vec![
+                LeftItem::Session(1), // newest
+                LeftItem::Session(2),
+                LeftItem::Session(0), // oldest
+            ],
+            "Updated must order the active bucket newest-first",
+        );
+
+        let created = agent_rows(
+            &sessions,
+            InactiveTail::Collapsed,
+            AgentSortMode::Created,
+            &|_| false,
+            &|_| true,
+        );
+        assert_eq!(
+            created,
+            vec![
+                LeftItem::Session(1),
+                LeftItem::Session(2),
+                LeftItem::Session(0),
+            ],
+            "Created must order the active bucket newest-first",
+        );
+    }
+
+    #[test]
+    fn build_left_items_tie_stability_keeps_incoming_order() {
+        // Two active agents with identical updated_at/created_at AND identical
+        // names must keep incoming order under every comparator mode (the sorts
+        // are stable), so a tie never reshuffles the list.
+        let t = Utc::now();
+        let mk = |id: &str| {
+            let mut s = test_session(id, "p", 0);
+            s.status = SessionStatus::Active;
+            s.workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .branch_name = "same".to_string();
+            s.title = None;
+            s.updated_at = t;
+            s.created_at = t;
+            s
+        };
+        let sessions = vec![mk("s0"), mk("s1")];
+        for mode in [
+            AgentSortMode::Updated,
+            AgentSortMode::Created,
+            AgentSortMode::NameAsc,
+            AgentSortMode::NameDesc,
+        ] {
+            let items = agent_rows(
+                &sessions,
+                InactiveTail::Collapsed,
+                mode,
+                &|_| false,
+                &|_| true,
+            );
+            assert_eq!(
+                items,
+                vec![LeftItem::Session(0), LeftItem::Session(1)],
+                "ties must preserve incoming order under {mode:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn build_left_items_visibility_predicate_prunes_both_buckets() {
+        // A visibility predicate hides one active and one inactive index; the
+        // hidden rows must appear in NEITHER bucket, and the Inactive toggle still
+        // appears because a visible inactive row remains.
+        let mk = |id: &str, status: SessionStatus| {
+            let mut s = test_session(id, "p", 0);
+            s.status = status;
+            s
+        };
+        let sessions = vec![
+            mk("a0", SessionStatus::Active),   // 0: visible active
+            mk("a1", SessionStatus::Active),   // 1: hidden active
+            mk("i2", SessionStatus::Detached), // 2: visible inactive
+            mk("i3", SessionStatus::Detached), // 3: hidden inactive
+        ];
+        let visible = |i: usize| i == 0 || i == 2;
+        let items = agent_rows(
+            &sessions,
+            InactiveTail::Expanded,
+            AgentSortMode::Active,
+            &|_| false,
+            &visible,
+        );
+        assert_eq!(
+            items,
+            vec![
+                LeftItem::Session(0),
+                LeftItem::InactiveToggle,
+                LeftItem::Session(2),
+            ],
+        );
+        assert!(!items.contains(&LeftItem::Session(1)));
+        assert!(!items.contains(&LeftItem::Session(3)));
+    }
+
+    #[test]
+    fn build_left_items_no_toggle_when_every_inactive_is_filtered_out() {
+        // The only inactive row is hidden by the predicate, so no Inactive toggle
+        // should render even though an inactive session exists in `sessions`.
+        let mk = |id: &str, status: SessionStatus| {
+            let mut s = test_session(id, "p", 0);
+            s.status = status;
+            s
+        };
+        let sessions = vec![
+            mk("a0", SessionStatus::Active),
+            mk("i1", SessionStatus::Detached),
+        ];
+        let visible = |i: usize| i == 0;
+        let items = agent_rows(
+            &sessions,
+            InactiveTail::Collapsed,
+            AgentSortMode::Active,
+            &|_| false,
+            &visible,
+        );
+        assert_eq!(items, vec![LeftItem::Session(0)]);
+        assert!(!items.contains(&LeftItem::InactiveToggle));
+    }
+
+    /// App with one ACTIVE agent (index 0) and one EXITED "quiet-fox" agent
+    /// (index 1), so the Inactive tail auto-collapses (an active agent exists)
+    /// and a search can hit either bucket.
+    fn quiet_search_app() -> App {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        app.engine.sessions[0].status = SessionStatus::Active;
+        let mut quiet = app.engine.sessions[0].clone();
+        quiet.id = "session-quiet".to_string();
+        quiet
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_name = "quiet-fox".to_string();
+        quiet
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .initial_branch = "quiet-fox".to_string();
+        quiet.title = None;
+        quiet.status = SessionStatus::Exited;
+        app.engine.sessions.push(quiet);
+        app.rebuild_left_items();
+        app
+    }
+
+    /// Search auto-expand is DERIVED: a query hitting a quiet agent shows its
+    /// row without mutating the collapse preference, and clearing the query
+    /// restores the collapsed tail.
+    #[test]
+    fn quiet_tail_auto_expands_when_search_hits_an_inactive_agent() {
+        let mut app = quiet_search_app();
+        assert!(
+            app.inactive_tail.collapsed,
+            "an active agent auto-collapses the tail"
+        );
+        assert!(!app.left_items().contains(&LeftItem::Session(1)));
+
+        app.agent_filter = Some(TextInput::with_text("fox".to_string()));
+        app.rebuild_left_items();
+        assert!(
+            app.left_items().contains(&LeftItem::Session(1)),
+            "a quiet-hit query must reveal the matching quiet row"
+        );
+        assert!(
+            app.inactive_tail.collapsed,
+            "the derivation must not mutate the user's collapse preference"
+        );
+
+        app.close_agent_filter();
+        assert!(
+            !app.left_items().contains(&LeftItem::Session(1)),
+            "clearing the query must restore the collapsed tail"
+        );
+    }
+
+    #[test]
+    fn quiet_tail_stays_collapsed_for_a_query_matching_only_active_agents() {
+        let mut app = quiet_search_app();
+        app.agent_filter = Some(TextInput::with_text("agent-branch".to_string()));
+        app.rebuild_left_items();
+        // The quiet agent does not match, so it is filtered out entirely: no
+        // revealed row and no Inactive toggle (same as the web, whose section
+        // hides when no quiet row matches).
+        assert!(!app.left_items().contains(&LeftItem::Session(1)));
+        assert!(!app.left_items().contains(&LeftItem::InactiveToggle));
+    }
+
+    /// Collapsing the tail WHILE a matching query holds it open is an explicit
+    /// act that wins for that query; a changed query expires the dismissal.
+    #[test]
+    fn collapsing_a_search_expanded_tail_wins_until_the_query_changes() {
+        let mut app = quiet_search_app();
+        app.agent_filter = Some(TextInput::with_text("fox".to_string()));
+        app.rebuild_left_items();
+        assert!(app.left_items().contains(&LeftItem::Session(1)));
+
+        app.toggle_collapse_selected_project();
+        assert!(
+            !app.left_items().contains(&LeftItem::Session(1)),
+            "a manual collapse must win over the search derivation"
+        );
+        app.rebuild_left_items();
+        assert!(
+            !app.left_items().contains(&LeftItem::Session(1)),
+            "the dismissal must hold across rebuilds under the same query"
+        );
+
+        // A different query that still hits the quiet agent: the dismissal was
+        // scoped to the old query, so the tail derives open again.
+        app.agent_filter = Some(TextInput::with_text("quiet".to_string()));
+        app.rebuild_left_items();
+        assert!(app.left_items().contains(&LeftItem::Session(1)));
+    }
+
+    #[test]
+    fn config_only_project_is_synced_to_sqlite_and_preserved() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees");
+        std::fs::write(
+            &paths.config_path,
+            r#"
+[defaults]
+provider = "codex"
+
+[[projects]]
+id = "project-1"
+path = "$CODE/yaran"
+name = "yaran"
+default_provider = "claude"
+leading_branch = "main"
+"#,
+        )
+        .expect("write config");
+
+        let mut config = ensure_config(&paths).expect("load config");
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store)
+            .expect("sync projects");
+
+        assert_eq!(config.projects.len(), 1);
+        let projects = store.load_projects().expect("load projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, "project-1");
+        assert_eq!(projects[0].path, "$CODE/yaran");
+        assert_eq!(projects[0].name.as_deref(), Some("yaran"));
+        assert_eq!(projects[0].default_provider.as_deref(), Some("claude"));
+        assert_eq!(projects[0].leading_branch.as_deref(), Some("main"));
+
+        let saved = std::fs::read_to_string(&paths.config_path).expect("read config");
+        assert!(saved.contains("[[projects]]"));
+        assert!(saved.contains("project-1"));
+        assert!(!saved.contains("leading_branch"));
+    }
+
+    #[test]
+    fn sqlite_only_project_is_written_to_config() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        paths.ensure_dirs().expect("dirs");
+        std::fs::write(&paths.config_path, "[defaults]\nprovider = \"codex\"\n").expect("config");
+        let mut config = ensure_config(&paths).expect("load config");
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+        store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "project-db".to_string(),
+                path: root.join("repo").to_string_lossy().to_string(),
+                name: Some("repo".to_string()),
+                default_provider: Some("codex".to_string()),
+                leading_branch: Some("main".to_string()),
+                auto_reopen_agents: None,
+                startup_command: Some("npm install".to_string()),
+                env: BTreeMap::default(),
+            })
+            .expect("seed project");
+
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store)
+            .expect("sync projects");
+
+        assert_eq!(config.projects.len(), 1);
+        let saved = std::fs::read_to_string(&paths.config_path).expect("read config");
+        assert!(saved.contains("id = \"project-db\""));
+        assert!(saved.contains("startup_command = \"npm install\""));
+        assert!(!saved.contains("leading_branch"));
+    }
+
+    #[test]
+    fn config_project_backfills_missing_sqlite_optional_fields() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        paths.ensure_dirs().expect("dirs");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo");
+        std::fs::write(
+            &paths.config_path,
+            format!(
+                "[defaults]\nprovider = \"codex\"\n\n[[projects]]\nid = \"project-1\"\npath = \"{}\"\nname = \"repo\"\nleading_branch = \"main\"\n",
+                repo.display()
+            ),
+        )
+        .expect("config");
+        let mut config = ensure_config(&paths).expect("load config");
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+        store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "project-1".to_string(),
+                path: repo.to_string_lossy().to_string(),
+                name: Some("repo".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::default(),
+            })
+            .expect("seed project");
+
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store)
+            .expect("sync projects");
+
+        let projects = store.load_projects().expect("load projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].leading_branch.as_deref(), Some("main"));
+        let saved = std::fs::read_to_string(&paths.config_path).expect("read config");
+        assert!(!saved.contains("leading_branch"));
+    }
+
+    #[test]
+    fn derived_project_leading_branch_is_persisted_to_sqlite_only() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        paths.ensure_dirs().expect("dirs");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo");
+        yaran_core::test_git::fixture_git()
+            .arg("init")
+            .arg(&repo)
+            .output()
+            .expect("git init");
+        yaran_core::test_git::fixture_git()
+            .arg("checkout")
+            .arg("-b")
+            .arg("main")
+            .current_dir(&repo)
+            .output()
+            .expect("git checkout main");
+        std::fs::write(
+            &paths.config_path,
+            format!(
+                "[defaults]\nprovider = \"codex\"\n\n[[projects]]\nid = \"project-1\"\npath = \"{}\"\nname = \"repo\"\n",
+                repo.display()
+            ),
+        )
+        .expect("config");
+        let mut config = ensure_config(&paths).expect("load config");
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+        store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "project-1".to_string(),
+                path: repo.to_string_lossy().to_string(),
+                name: Some("repo".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::default(),
+            })
+            .expect("seed project");
+
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store)
+            .expect("sync projects");
+        let projects = load_projects(
+            &store.load_projects().expect("load projects"),
+            &store
+                .load_project_created_ats()
+                .expect("load project created_ats"),
+            &config,
+        );
+        assert_eq!(projects[0].leading_branch.as_deref(), Some("main"));
+
+        persist_runtime_projects_to_config_and_store(
+            &projects,
+            &mut config,
+            &paths,
+            &bindings,
+            &store,
+        )
+        .expect("persist derived projects");
+
+        let saved = std::fs::read_to_string(&paths.config_path).expect("read config");
+        assert!(!saved.contains("leading_branch"));
+        let stored = store.load_projects().expect("reload projects");
+        assert_eq!(stored[0].leading_branch.as_deref(), Some("main"));
+    }
+
+    /// The project sync that writes config.toml on startup and reload only
+    /// writes the projects: a `yaran config set` that landed after the file was
+    /// read is not overwritten.
+    #[test]
+    fn the_project_sync_never_undoes_a_concurrent_set() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        paths.ensure_dirs().expect("dirs");
+        std::fs::write(&paths.config_path, "[server]\nport = 3890\n").expect("config");
+        let mut config = ensure_config(&paths).expect("load config");
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo");
+        store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "store-only".to_string(),
+                path: repo.to_string_lossy().to_string(),
+                name: Some("repo".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::default(),
+            })
+            .expect("seed project");
+        // `yaran config set server.port 4444` from another process.
+        let key = yaran_core::config_keys::lookup("server.port").unwrap();
+        yaran_core::config_keys::set_plain(&paths.config_path, &key, "4444").unwrap();
+
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store)
+            .expect("sync projects");
+        let saved = std::fs::read_to_string(&paths.config_path).expect("read config");
+        assert!(
+            saved.contains("store-only"),
+            "the sync wrote its project:\n{saved}"
+        );
+        assert!(saved.contains("port = 4444"), "the set survives:\n{saved}");
+    }
+
+    /// After the startup sync wrote the file (folding in a `set` that landed
+    /// after yaran read it), the writer's base is what yaran wrote, not a re-read
+    /// of that file: a later save from memory does not revert the set.
+    #[test]
+    fn a_set_folded_into_the_sync_write_is_not_reverted_by_a_later_save() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        paths.ensure_dirs().expect("dirs");
+        std::fs::write(&paths.config_path, "[ui]\nleft_width_pct = 20\n").expect("config");
+        let mut config = ensure_config(&paths).expect("load config");
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo");
+        store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "store-only".to_string(),
+                path: repo.to_string_lossy().to_string(),
+                name: Some("repo".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::default(),
+            })
+            .expect("seed project");
+        let key = yaran_core::config_keys::lookup("ui.left_width_pct").unwrap();
+        yaran_core::config_keys::set_plain(&paths.config_path, &key, "40").unwrap();
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store).expect("sync");
+        // The writer yaran builds from that config, and a save from memory.
+        let writer =
+            yaran_core::config_queue::ConfigWriteQueue::with_base(paths.config_path.clone(), &config);
+        let mut memory = config.clone();
+        memory.ui.copy_on_select = !memory.ui.copy_on_select;
+        writer.save_eager(memory).expect("save");
+        let saved = std::fs::read_to_string(&paths.config_path).expect("read");
+        assert!(
+            saved.contains("left_width_pct = 40"),
+            "the set survives:\n{saved}"
+        );
+    }
+
+    /// After the startup sync writes, a value yaran corrected at load is still
+    /// not a change yaran made (so no later save writes the correction over
+    /// what the file says), and a key deleted by hand before the sync stays
+    /// deleted.
+    #[test]
+    fn the_sync_write_keeps_corrections_and_hand_deletions_apart() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        paths.ensure_dirs().expect("dirs");
+        std::fs::write(
+            &paths.config_path,
+            "[ui]\ngithub_probe_interval_secs = 1\nleft_width_pct = 25\n",
+        )
+        .expect("config");
+        let mut config = ensure_config(&paths).expect("load config");
+        assert_ne!(
+            config.ui.github_probe_interval_secs, 1,
+            "corrected in memory"
+        );
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo");
+        store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "store-only".to_string(),
+                path: repo.to_string_lossy().to_string(),
+                name: Some("repo".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::default(),
+            })
+            .expect("seed project");
+        // Deleted by hand after yaran read the file, before the sync wrote.
+        let text = std::fs::read_to_string(&paths.config_path).unwrap();
+        std::fs::write(
+            &paths.config_path,
+            text.replace("left_width_pct = 25\n", ""),
+        )
+        .unwrap();
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store).expect("sync");
+        let writer =
+            yaran_core::config_queue::ConfigWriteQueue::with_base(paths.config_path.clone(), &config);
+        for round in 0..2 {
+            let mut memory = config.clone();
+            memory.ui.copy_on_select = round == 0;
+            writer.save_eager(memory).expect("save");
+        }
+        let saved = std::fs::read_to_string(&paths.config_path).expect("read");
+        assert!(
+            saved.contains("github_probe_interval_secs = 1\n"),
+            "the file keeps what the user wrote:\n{saved}"
+        );
+        assert!(
+            !saved.contains("left_width_pct"),
+            "the deletion stays:\n{saved}"
+        );
+    }
+
+    #[test]
+    fn config_project_values_update_sqlite_on_sync() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            root: root.clone(),
+        };
+        paths.ensure_dirs().expect("dirs");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).expect("repo");
+        std::fs::write(
+            &paths.config_path,
+            format!(
+                "[defaults]\nprovider = \"codex\"\n\n[[projects]]\nid = \"project-1\"\npath = \"{}\"\nname = \"repo\"\nstartup_command = \"npm install\"\n",
+                repo.display()
+            ),
+        )
+        .expect("config");
+        let mut config = ensure_config(&paths).expect("load config");
+        let bindings = RuntimeBindings::from_keys_config(&config.keys);
+        let store = SessionStore::open(&paths.sessions_db_path).expect("store");
+        store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "project-1".to_string(),
+                path: repo.to_string_lossy().to_string(),
+                name: Some("repo".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: Some("pnpm install".to_string()),
+                env: BTreeMap::default(),
+            })
+            .expect("seed project");
+
+        sync_config_projects_with_store(&mut config, &paths, &bindings, &store)
+            .expect("sync projects");
+
+        let projects = store.load_projects().expect("load projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].startup_command.as_deref(), Some("npm install"));
+    }
+
+    #[test]
+    fn build_visual_rows_respects_expansion() {
+        let rows = vec![
+            ResourceStats {
+                id: None,
+                kind: ResourceKind::Yaran,
+                label: "yaran".into(),
+                pid: Some(1),
+                cpu_percent: 0.0,
+                rss_bytes: 0,
+                process_count: 1,
+                children: Vec::new(),
+            },
+            ResourceStats {
+                id: Some("s1".into()),
+                kind: ResourceKind::Agent,
+                label: "Agent".into(),
+                pid: Some(100),
+                cpu_percent: 5.0,
+                rss_bytes: 1024,
+                process_count: 3,
+                children: vec![
+                    ProcessInfo {
+                        name: "node".into(),
+                        pid: 101,
+                        cpu_percent: 3.0,
+                        rss_bytes: 512,
+                        is_root: false,
+                    },
+                    ProcessInfo {
+                        name: "claude".into(),
+                        pid: 102,
+                        cpu_percent: 2.0,
+                        rss_bytes: 256,
+                        is_root: false,
+                    },
+                ],
+            },
+            ResourceStats {
+                id: None,
+                kind: ResourceKind::Total,
+                label: "TOTAL".into(),
+                pid: None,
+                cpu_percent: 5.0,
+                rss_bytes: 1024,
+                process_count: 4,
+                children: Vec::new(),
+            },
+        ];
+
+        // Nothing expanded: 3 visual rows (one per parent).
+        let visual = build_visual_rows(&rows, &HashSet::new());
+        assert_eq!(visual.len(), 3);
+
+        // Expand PID 100: 3 parents + 2 children = 5 visual rows.
+        let mut expanded = HashSet::new();
+        expanded.insert(100);
+        let visual = build_visual_rows(&rows, &expanded);
+        assert_eq!(visual.len(), 5);
+        assert!(matches!(visual[0], VisualRow::Parent(0)));
+        assert!(matches!(visual[1], VisualRow::Parent(1)));
+        assert!(matches!(visual[2], VisualRow::Child(1, 0)));
+        assert!(matches!(visual[3], VisualRow::Child(1, 1)));
+        assert!(matches!(visual[4], VisualRow::Parent(2)));
+
+        // Expanding a PID that doesn't match any row: no effect.
+        let mut expanded = HashSet::new();
+        expanded.insert(999);
+        let visual = build_visual_rows(&rows, &expanded);
+        assert_eq!(visual.len(), 3);
+    }
+
+    #[test]
+    fn project_worktree_visual_rows_separate_project_checkout() {
+        let entries = vec![
+            ProjectWorktreeEntry {
+                path: PathBuf::from("/repo/managed"),
+                branch_name: "feature".to_string(),
+                branch: Some("feature".to_string()),
+                is_managed_by_yaran: true,
+                existing_session_id: None,
+                is_project_checkout: false,
+            },
+            ProjectWorktreeEntry {
+                path: PathBuf::from("/repo/main"),
+                branch_name: "main".to_string(),
+                branch: Some("main".to_string()),
+                is_managed_by_yaran: false,
+                existing_session_id: None,
+                is_project_checkout: true,
+            },
+        ];
+
+        let rows = project_worktree_visual_rows(&entries, Listing::Loaded, None);
+
+        assert!(matches!(
+            rows.first(),
+            Some(ProjectWorktreeVisualRow::Header("Available Worktrees"))
+        ));
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, ProjectWorktreeVisualRow::Header("Project Checkout")))
+        );
+        assert_eq!(selectable_project_worktree_indices(&entries), vec![0]);
+    }
+
+    #[test]
+    fn terminal_selection_ordered_forward() {
+        let sel = TerminalSelection {
+            anchor: TermGridPos { row: 2, col: 5 },
+            end: TermGridPos { row: 4, col: 10 },
+            dragging: false,
+            origin: SelectionOrigin::default(),
+            part: CenterPart::Main,
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, TermGridPos { row: 2, col: 5 });
+        assert_eq!(end, TermGridPos { row: 4, col: 10 });
+    }
+
+    #[test]
+    fn terminal_selection_ordered_reverse() {
+        let sel = TerminalSelection {
+            anchor: TermGridPos { row: 4, col: 10 },
+            end: TermGridPos { row: 2, col: 5 },
+            dragging: false,
+            origin: SelectionOrigin::default(),
+            part: CenterPart::Main,
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, TermGridPos { row: 2, col: 5 });
+        assert_eq!(end, TermGridPos { row: 4, col: 10 });
+    }
+
+    #[test]
+    fn terminal_selection_ordered_same_row() {
+        let sel = TerminalSelection {
+            anchor: TermGridPos { row: 3, col: 15 },
+            end: TermGridPos { row: 3, col: 5 },
+            dragging: false,
+            origin: SelectionOrigin::default(),
+            part: CenterPart::Main,
+        };
+        let (start, end) = sel.ordered();
+        assert_eq!(start, TermGridPos { row: 3, col: 5 });
+        assert_eq!(end, TermGridPos { row: 3, col: 15 });
+    }
+
+    #[test]
+    fn terminal_selection_contains_single_row() {
+        let sel = TerminalSelection {
+            anchor: TermGridPos { row: 3, col: 5 },
+            end: TermGridPos { row: 3, col: 10 },
+            dragging: false,
+            origin: SelectionOrigin::default(),
+            part: CenterPart::Main,
+        };
+        assert!(sel.contains(3, 5));
+        assert!(sel.contains(3, 7));
+        assert!(sel.contains(3, 10));
+        assert!(!sel.contains(3, 4));
+        assert!(!sel.contains(3, 11));
+        assert!(!sel.contains(2, 7));
+        assert!(!sel.contains(4, 7));
+    }
+
+    #[test]
+    fn terminal_selection_contains_multi_row() {
+        let sel = TerminalSelection {
+            anchor: TermGridPos { row: 2, col: 10 },
+            end: TermGridPos { row: 4, col: 5 },
+            dragging: false,
+            origin: SelectionOrigin::default(),
+            part: CenterPart::Main,
+        };
+        // First row: from anchor col to end of line.
+        assert!(sel.contains(2, 10));
+        assert!(sel.contains(2, 50));
+        assert!(!sel.contains(2, 9));
+        // Middle row: fully selected.
+        assert!(sel.contains(3, 0));
+        assert!(sel.contains(3, 100));
+        // Last row: from start of line to end col.
+        assert!(sel.contains(4, 0));
+        assert!(sel.contains(4, 5));
+        assert!(!sel.contains(4, 6));
+        // Outside rows.
+        assert!(!sel.contains(1, 10));
+        assert!(!sel.contains(5, 0));
+    }
+
+    #[test]
+    fn terminal_selection_contains_reverse_anchor() {
+        // Anchor after end: should still work via ordered().
+        let sel = TerminalSelection {
+            anchor: TermGridPos { row: 4, col: 5 },
+            end: TermGridPos { row: 2, col: 10 },
+            dragging: false,
+            origin: SelectionOrigin::default(),
+            part: CenterPart::Main,
+        };
+        assert!(sel.contains(2, 10));
+        assert!(sel.contains(3, 0));
+        assert!(sel.contains(4, 5));
+        assert!(!sel.contains(2, 9));
+        assert!(!sel.contains(4, 6));
+    }
+
+    /// A selection recorded at scrollback offset 4 with 100 lines of history.
+    /// Every translation case below starts from this one frame.
+    fn anchored_selection() -> TerminalSelection {
+        TerminalSelection {
+            anchor: TermGridPos { row: 10, col: 0 },
+            end: TermGridPos { row: 10, col: 3 },
+            dragging: false,
+            origin: SelectionOrigin {
+                scrollback_offset: 4,
+                scrollback_total: 100,
+                ..Default::default()
+            },
+            part: CenterPart::Main,
+        }
+    }
+
+    /// Scrolling UP by 5 leaves history alone and pushes the text 5 rows DOWN
+    /// the screen, so the cell now at row 15 is the one recorded at row 10.
+    #[test]
+    fn to_origin_row_follows_a_user_scroll_up() {
+        let sel = anchored_selection();
+        let now = SelectionOrigin {
+            scrollback_offset: 9,
+            scrollback_total: 100,
+            ..Default::default()
+        };
+        assert_eq!(sel.to_origin_row(15, now), Some(10));
+        assert!(sel.contains_live(15, 1, now));
+        // The old screen row now holds different text and must not highlight.
+        assert!(!sel.contains_live(10, 1, now));
+    }
+
+    /// At the live edge the offset stays 0 while history grows, so 3 new lines
+    /// carry the text 3 rows UP: row 10 then is row 7 now.
+    #[test]
+    fn to_origin_row_follows_output_at_the_live_edge() {
+        let sel = TerminalSelection {
+            origin: SelectionOrigin {
+                scrollback_offset: 0,
+                scrollback_total: 100,
+                ..Default::default()
+            },
+            ..anchored_selection()
+        };
+        let now = SelectionOrigin {
+            scrollback_offset: 0,
+            scrollback_total: 103,
+            ..Default::default()
+        };
+        assert_eq!(sel.to_origin_row(7, now), Some(10));
+        assert!(sel.contains_live(7, 1, now));
+        assert!(!sel.contains_live(10, 1, now));
+    }
+
+    /// While the user is scrolled back, alacritty bumps `display_offset` in
+    /// step with the history it grows, so the two deltas cancel and the text
+    /// does not move. The selection must not move either.
+    #[test]
+    fn to_origin_row_holds_still_for_output_while_scrolled_back() {
+        let sel = anchored_selection();
+        let now = SelectionOrigin {
+            scrollback_offset: 7,
+            scrollback_total: 103,
+            ..Default::default()
+        };
+        assert_eq!(sel.to_origin_row(10, now), Some(10));
+        assert!(sel.contains_live(10, 1, now));
+    }
+
+    /// Scrolling back far enough brings text from ABOVE the recorded viewport
+    /// onto the screen. Those rows translate to negative numbers, and the
+    /// translation must say so rather than wrap into a bogus `u16` row that
+    /// would highlight and copy the wrong line.
+    #[test]
+    fn to_origin_row_refuses_rows_from_above_the_recorded_viewport() {
+        let sel = anchored_selection();
+        let now = SelectionOrigin {
+            scrollback_offset: 9,
+            scrollback_total: 100,
+            ..Default::default()
+        };
+        // The user scrolled back 5, so live row 2 was row -3 when recorded.
+        assert_eq!(sel.to_origin_row(2, now), None);
+        assert!(!sel.contains_live(2, 1, now));
+    }
+
+    /// The opposite direction is NOT a refusal. After 20 lines of output at the
+    /// live edge, live row 0 holds what was row 20, which is a real recorded
+    /// row and translates cleanly. What went off the top of the screen simply
+    /// stops appearing among live cells, so it is dropped from the copy without
+    /// the translation ever being asked about it.
+    #[test]
+    fn to_origin_row_still_answers_after_the_text_slid_up() {
+        let sel = TerminalSelection {
+            origin: SelectionOrigin {
+                scrollback_offset: 0,
+                scrollback_total: 100,
+                ..Default::default()
+            },
+            ..anchored_selection()
+        };
+        let now = SelectionOrigin {
+            scrollback_offset: 0,
+            scrollback_total: 120,
+            ..Default::default()
+        };
+        assert_eq!(sel.to_origin_row(0, now), Some(20));
+    }
+
+    /// Write a harmless executable stand-in for `gh`, so a test that trips an
+    /// off-to-on transition spawns the probe against it rather than shelling out
+    /// to the real `gh` (which would need a network call and a real login). The
+    /// script itself is yaran-core's one shared builder; only the body is ours.
+    fn stand_in_gh(dir: &std::path::Path) -> std::ffi::OsString {
+        yaran_core::gh::probe_test_support::stand_in_gh(dir, "exit 0").into()
+    }
+
+    /// The palette toggle is one of the four off-to-on transitions that must
+    /// re-ask `gh` which hosts it can serve. Without it a user who logs in to
+    /// their enterprise host and then enables the integration would be stuck
+    /// with the answer yaran computed at boot.
+    #[test]
+    fn the_palette_toggle_re_runs_the_host_probe() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.engine.gh_probe.program = stand_in_gh(dir.path());
+        app.engine.github_integration_enabled = false;
+        app.engine.config.ui.github_integration = false;
+        assert_eq!(app.engine.gh_probe.generation, 0);
+
+        app.execute_command("toggle-github-integration")
+            .expect("toggle on");
+        assert_eq!(
+            app.engine.gh_probe.generation, 1,
+            "enabling re-runs the probe",
+        );
+
+        app.execute_command("toggle-github-integration")
+            .expect("toggle off");
+        assert_eq!(
+            app.engine.gh_probe.generation, 1,
+            "disabling asks gh nothing new",
+        );
+
+        app.execute_command("toggle-github-integration")
+            .expect("toggle on again");
+        assert_eq!(
+            app.engine.gh_probe.generation, 2,
+            "off and on again re-runs the probe a second time",
+        );
+    }
+
+    /// The palette gates the pull-request commands on the LIVE status, so a
+    /// re-check that finds `gh` working brings them back without a restart. The
+    /// same engine value the web publishes is read here on every keystroke.
+    #[test]
+    fn palette_gating_follows_the_live_gh_status() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.engine.github_integration_enabled = true;
+        app.engine.gh_status = crate::model::GhStatus::Unreachable;
+        let names = |app: &App| -> Vec<String> {
+            app.filtered_palette_commands("")
+                .into_iter()
+                .filter_map(|binding| binding.palette_name.map(str::to_string))
+                .collect()
+        };
+
+        assert!(!names(&app).contains(&"new-agent-from-pr".to_string()));
+        // The way back is offered precisely while gh does not work.
+        assert!(names(&app).contains(&"recheck-github".to_string()));
+
+        app.engine.gh_status = crate::model::GhStatus::Available;
+        assert!(
+            names(&app).contains(&"new-agent-from-pr".to_string()),
+            "the PR command returns with no restart",
+        );
+        assert!(
+            names(&app).contains(&"recheck-github".to_string()),
+            "and the re-check does not vanish once it has worked",
+        );
+
+        app.engine.github_integration_enabled = false;
+        assert!(
+            !names(&app).contains(&"recheck-github".to_string()),
+            "with the integration off there is nothing to re-check",
+        );
+    }
+
+    #[test]
+    fn the_palette_re_check_asks_gh_again() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.engine.gh_probe.program = stand_in_gh(dir.path());
+        app.engine.github_integration_enabled = true;
+        app.engine.gh_status = crate::model::GhStatus::Unreachable;
+
+        app.execute_command("recheck-github")
+            .expect("palette re-check");
+
+        assert_eq!(app.engine.gh_probe.generation, 1, "it launched the probe");
+        assert!(
+            app.engine.gh_probe.announce_outcome,
+            "and the outcome is reported even if it does not change",
+        );
+    }
+
+    /// The terminal UI's two off-to-on sites obey the same rule as the web's:
+    /// launch the probe, arm nothing. Counted, because the failure mode is
+    /// multiplication rather than absence: acting on the pre-probe status armed
+    /// a refresh that the probe's completion then armed again, and each enable
+    /// left another permanent poller behind.
+    #[test]
+    fn the_tui_off_to_on_sites_arm_nothing_until_the_probe_answers() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.engine.gh_probe.program = stand_in_gh(dir.path());
+        app.engine.github_integration_enabled = false;
+        app.engine.config.ui.github_integration = false;
+        // The stale answer an enable must NOT act on: gh looked available when
+        // the integration was last on, and nothing has re-checked since.
+        app.engine.gh_status = crate::model::GhStatus::Available;
+
+        app.execute_command("toggle-github-integration")
+            .expect("palette toggle on");
+        assert_eq!(
+            (
+                app.engine.pr_sync.refresh_starts(),
+                app.engine.pr_sync.poller_starts(),
+            ),
+            (0, 0),
+            "the palette toggle must arm no refresh and no poller of its own",
+        );
+        assert_eq!(app.engine.gh_probe.generation, 1, "it launched the probe");
+
+        // The same flip arriving through a config reload.
+        app.execute_command("toggle-github-integration")
+            .expect("palette toggle off");
+        let mut config = app.engine.config.clone();
+        config.ui.github_integration = true;
+        app.apply_reloaded_config(config)
+            .expect("apply reloaded config");
+        assert_eq!(
+            (
+                app.engine.pr_sync.refresh_starts(),
+                app.engine.pr_sync.poller_starts(),
+            ),
+            (0, 0),
+            "nor may an off-to-on config reload",
+        );
+        assert_eq!(app.engine.gh_probe.generation, 2, "it launched the probe");
+    }
+
+    /// The other TUI transition: the same flip arriving through a config reload.
+    #[test]
+    fn a_tui_config_reload_that_enables_the_integration_re_runs_the_probe() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.engine.gh_probe.program = stand_in_gh(dir.path());
+        app.engine.github_integration_enabled = false;
+        app.engine.config.ui.github_integration = false;
+
+        let mut config = app.engine.config.clone();
+        config.ui.github_integration = true;
+        app.apply_reloaded_config(config.clone())
+            .expect("apply reloaded config");
+        assert_eq!(
+            app.engine.gh_probe.generation, 1,
+            "a reload that turns the integration on re-runs the probe",
+        );
+
+        // A reload that leaves it on with a settled, working answer is not a
+        // transition and must not re-run it.
+        app.engine.gh_status = yaran_core::model::GhStatus::Available;
+        app.apply_reloaded_config(config.clone())
+            .expect("apply reloaded config again");
+        assert_eq!(app.engine.gh_probe.generation, 1);
+
+        // One that leaves it on while `gh` is not usable re-checks, the same
+        // rule the engine follows for every surface: reloading is one of the
+        // ways a user retries after fixing `gh`.
+        app.engine.gh_status = yaran_core::model::GhStatus::NotInstalled;
+        app.apply_reloaded_config(config)
+            .expect("apply reloaded config a third time");
+        assert_eq!(app.engine.gh_probe.generation, 2);
+    }
+
+    /// A config the engine adopted after its own apply failed follows the
+    /// same rule: the integration was already on and `gh` is not usable, so
+    /// the reload re-checks it.
+    #[test]
+    fn an_adopted_config_re_checks_an_unusable_gh() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.engine.gh_probe.program = stand_in_gh(dir.path());
+        app.engine.github_integration_enabled = true;
+        app.engine.config.ui.github_integration = true;
+        app.engine.gh_status = yaran_core::model::GhStatus::NotInstalled;
+        let before = app.engine.config.clone();
+        let generation = app.engine.gh_probe.generation;
+
+        app.apply_reaction(yaran_core::engine::EventReaction::ConfigAdopted {
+            before: Box::new(before),
+            github_was_enabled: true,
+            error: "the session database could not be read".to_string(),
+        });
+
+        assert_eq!(app.engine.gh_probe.generation, generation.wrapping_add(1));
+    }
+
+    /// A config file that turns the option on and leaves both pane actions on
+    /// Tab arrives without anyone toggling anything, so the reload is the only
+    /// place that can say the pane now has no keyboard way out.
+    #[test]
+    fn a_tui_config_reload_warns_when_tab_reaches_agent_leaves_no_pane_chord() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+
+        let mut config = app.engine.config.clone();
+        config.ui.tab_reaches_agent = true;
+        config
+            .keys
+            .bindings
+            .insert("focus_next".to_string(), vec!["tab".to_string()]);
+        config
+            .keys
+            .bindings
+            .insert("focus_prev".to_string(), vec!["shift-tab".to_string()]);
+        app.apply_reloaded_config(config.clone())
+            .expect("apply reloaded config");
+
+        let message = app.status.message();
+        assert_eq!(
+            app.status.tone(),
+            StatusTone::Warning,
+            "the reload must warn, got: {message}"
+        );
+        assert!(
+            message.contains("no pane chord reaches yaran") && message.contains("focus_next"),
+            "the warning must say what is wrong and what to rebind, got: {message}"
+        );
+
+        // A reload that leaves a chord in place says nothing.
+        config
+            .keys
+            .bindings
+            .insert("focus_next".to_string(), vec!["ctrl-o".to_string()]);
+        // The first reload's warning is a real warning about the user's config,
+        // not a hint, so the queue is right to still be showing it and the
+        // pre-clear stays: it is how "the second reload said nothing" can be
+        // asserted at all.
+        app.set_info(String::new());
+        app.set_info("nothing to report");
+        app.apply_reloaded_config(config)
+            .expect("apply reloaded config again");
+        assert_eq!(
+            app.status.message(),
+            "nothing to report",
+            "a reload with a surviving pane chord must not warn"
+        );
+    }
+
+    /// `ui.status_clear_seconds` is one of the settings the web Preferences
+    /// dialog writes, so the TUI's controller must adopt the reloaded value
+    /// rather than keeping the lifetime it was constructed with.
+    #[test]
+    fn a_tui_config_reload_retunes_the_status_clear_lifetime() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let t0 = Instant::now();
+        app.status
+            .set(t0, None, StatusTone::Info, "something happened");
+
+        let mut config = app.engine.config.clone();
+        config.ui.status_clear_seconds = 1;
+        app.apply_reloaded_config(config)
+            .expect("apply reloaded config");
+
+        app.status.tick(t0 + Duration::from_secs(2), BUSY_TIMEOUT);
+        assert!(
+            app.status.most_recent_tui().is_none(),
+            "a two-second-old info status is gone once the lifetime is one second",
+        );
+    }
+
+    /// The terminal UI applies a reload without going through
+    /// `Engine::apply_reloaded_config`, so it has to retune the live poll loops
+    /// itself or `ui.branch_sync_interval` stays a restart-only setting here.
+    #[test]
+    fn a_tui_config_reload_retunes_the_live_branch_sync_interval() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        let mut config = app.engine.config.clone();
+        config.ui.branch_sync_interval = 45;
+
+        app.apply_reloaded_config(config)
+            .expect("apply reloaded config");
+
+        assert_eq!(
+            app.engine
+                .branch_sync_interval_secs
+                .load(std::sync::atomic::Ordering::Relaxed),
+            45,
+        );
+    }
+
+    /// A reentrant config reload (one already in flight) is queued behind it with an Info status
+    /// and spawns no worker, so `reload_config_from_disk` must NOT set the
+    /// "Reloading…" busy. Doing so would clobber the Info and strand a spinner
+    /// that nothing would ever clear.
+    #[test]
+    fn reentrant_reload_does_not_strand_a_busy() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.engine.reloading = true; // pretend a reload is already in flight
+
+        app.reload_config_from_disk().expect("reload returns Ok");
+
+        assert_ne!(
+            app.status.tone(),
+            crate::statusline::StatusTone::Busy,
+            "a rejected reload must not show a busy spinner, got: {}",
+            app.status.text(),
+        );
+        assert!(
+            app.status.message().contains("already running"),
+            "the engine's Info must survive, got: {}",
+            app.status.message(),
+        );
+    }
+
+    /// Quitting the TUI must SIGTERM the running agents (the analogue of the
+    /// server's shutdown path) so they get a grace window to save state, rather
+    /// than being hard-killed by `PtyClient::drop`. We drive the wind-down step
+    /// directly because the full run loop needs a TTY.
+    #[test]
+    fn shutdown_agents_gracefully_terminates_running_provider() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+
+        // `cat` ignores EOF-less stdin and runs until signalled, so it can only
+        // be gone if the graceful SIGTERM actually reached it.
+        let client =
+            crate::pty::PtyClient::spawn("cat", &[], std::path::Path::new("/tmp"), 24, 80, 1000)
+                .expect("spawn cat for test");
+        app.engine
+            .providers
+            .insert(TabId::new("session-1-slot"), client);
+
+        app.shutdown_agents_gracefully();
+
+        let client = app
+            .engine
+            .providers
+            .get_mut(TabIdRef::new("session-1-slot"))
+            .unwrap();
+        assert!(
+            client.is_exited() || client.try_wait().is_some(),
+            "cat should have exited after the graceful SIGTERM on quit"
+        );
+        let session = app
+            .engine
+            .sessions
+            .iter()
+            .find(|s| s.id == "session-1")
+            .unwrap();
+        assert_eq!(session.status, SessionStatus::Detached);
+    }
+
+    #[test]
+    fn shutdown_agents_gracefully_uses_the_top_level_timeout_not_server() {
+        // Regression guard for the config wiring: the TUI quit path must read the
+        // top-level `shutdown_timeout_seconds`, not `[server]` and not the 30s
+        // default. We set the top-level value to 1s and the server value to a much
+        // larger 20s, then time a quit with a SIGTERM-ignoring agent. If the call
+        // site read the wrong field, the wait would be ~20s (or the 30s default)
+        // instead of ~1s.
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.engine.config.shutdown_timeout_seconds = 1;
+        app.engine.config.server.shutdown_timeout_seconds = 20;
+
+        // `trap '' TERM HUP` makes the shell ignore the whole graceful salvo
+        // (`terminate()` sends SIGTERM then SIGHUP); `echo ready` marks the
+        // trap as installed; the busy loop keeps it alive until force-killed.
+        let client = crate::pty::PtyClient::spawn(
+            "sh",
+            &[
+                "-c".to_string(),
+                "trap '' TERM HUP; echo ready; while true; do :; done".to_string(),
+            ],
+            std::path::Path::new("/tmp"),
+            24,
+            80,
+            1000,
+        )
+        .expect("spawn sigterm-ignorer for test");
+        app.engine
+            .providers
+            .insert(TabId::new("session-1-slot"), client);
+
+        // Wait until the trap is installed before quitting.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !app
+            .engine
+            .providers
+            .get(TabIdRef::new("session-1-slot"))
+            .unwrap()
+            .has_output()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "ignorer never readied"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let start = std::time::Instant::now();
+        app.shutdown_agents_gracefully();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "the 1s top-level grace should have been waited out, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "a ~1s top-level grace was configured, but the wait took {elapsed:?}; \
+             the quit path likely read [server] (20s) or the 30s default instead"
+        );
+    }
+
+    /// Proves the mechanism behind the TUI↔server graceful-shutdown handoff and
+    /// why `serve_with_engine` must NOT reset SIGINT/SIGTERM to `SIG_DFL` on a
+    /// flip-back. Both surfaces register through the same process-global
+    /// `signal-hook-registry`, which installs its master OS handler exactly once
+    /// per signal and routes a delivered signal to whatever actions are live.
+    ///
+    /// We use `SIGURG` (default action: ignore) so a *dormant* handler plus a
+    /// `raise` cannot terminate the test process; a missed signal shows up as an
+    /// unset flag, not a killed test. `raise` delivers synchronously to the
+    /// calling thread, so the handler has run by the time it returns.
+    #[test]
+    fn signal_hook_master_handler_survives_reregistration_but_not_sig_dfl_reset() {
+        // Phase 1, the flip we rely on: register, unregister (flip to server),
+        // then register again (resume the TUI). The signal still reaches the
+        // freshly registered flag, because the master handler stays installed.
+        let first = Arc::new(AtomicBool::new(false));
+        let first_id =
+            signal_hook::flag::register(libc::SIGURG, Arc::clone(&first)).expect("register SIGURG");
+        signal_hook::low_level::unregister(first_id);
+
+        let after_resume = Arc::new(AtomicBool::new(false));
+        let resume_id = signal_hook::flag::register(libc::SIGURG, Arc::clone(&after_resume))
+            .expect("re-register SIGURG after a flip");
+        // SAFETY: SIGURG is ignored by default, and the only handler installed for
+        // it is signal-hook's, which sets an atomic flag; raising it on this
+        // thread runs nothing else.
+        unsafe { libc::raise(libc::SIGURG) };
+        assert!(
+            after_resume.load(Ordering::SeqCst),
+            "a re-registered handler must still fire: this is what lets a resumed \
+             TUI catch SIGTERM and wind agents down gracefully"
+        );
+        signal_hook::low_level::unregister(resume_id);
+
+        // Phase 2, the regression guard: if the web server forced the OS
+        // disposition back to SIG_DFL (as it used to via `libc::signal`), the
+        // registry will NOT re-arm on the resume's register (the slot already
+        // exists, so no fresh `sigaction`), leaving the TUI handler dormant.
+        let pre_reset = Arc::new(AtomicBool::new(false));
+        let pre_reset_id = signal_hook::flag::register(libc::SIGURG, Arc::clone(&pre_reset))
+            .expect("register SIGURG before reset");
+        signal_hook::low_level::unregister(pre_reset_id);
+        // SAFETY: restoring SIGURG's default disposition (ignore) installs no
+        // handler, so nothing runs in signal context.
+        unsafe { libc::signal(libc::SIGURG, libc::SIG_DFL) };
+
+        let dormant = Arc::new(AtomicBool::new(false));
+        let dormant_id = signal_hook::flag::register(libc::SIGURG, Arc::clone(&dormant))
+            .expect("re-register SIGURG after a SIG_DFL reset");
+        // SAFETY: SIGURG is ignored by default, and the only handler installed for
+        // it is signal-hook's, which sets an atomic flag; raising it on this
+        // thread runs nothing else.
+        unsafe { libc::raise(libc::SIGURG) };
+        assert!(
+            !dormant.load(Ordering::SeqCst),
+            "after a SIG_DFL reset the re-registration cannot re-arm the OS \
+             disposition, so the handler is dormant: exactly why serve_with_engine \
+             must not perform that reset"
+        );
+        signal_hook::low_level::unregister(dormant_id);
+    }
+}
+
+#[cfg(test)]
+mod pinned_warning_tests {
+    use super::*;
+    use crate::statusline::LiveStatusKeys;
+    use std::time::{Duration, Instant};
+
+    const WINDOW: Duration = Duration::from_secs(6);
+
+    /// The helper retires ITS OWN message and nobody else's. It runs on every
+    /// selection move, so "clear the unkeyed line" is far too broad a gesture
+    /// for it: another producer's standing warning about something the user
+    /// still has to do would go with it every time they pressed Down.
+    #[test]
+    fn retiring_the_missing_project_warning_leaves_another_producers_warning_alone() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.status.set_clear_after(WINDOW);
+        app.engine.projects[0].path_missing = true;
+        let elsewhere = standalone_row(&mut app);
+        let missing_row = missing_project_row(&mut app);
+
+        app.set_pinned_warning("Restart yaran to apply the new settings.");
+        app.select_left_agent_item(missing_row);
+        app.select_left_agent_item(elsewhere);
+
+        let message = app.status.message();
+        assert!(
+            message.contains("Restart yaran to apply"),
+            "the other producer's warning must still be on the line: {message}"
+        );
+    }
+
+    /// And it retires its own message wherever that message has ended up. Asking
+    /// "is mine the newest unkeyed one" and then clearing the unkeyed line is two
+    /// guesses: the moment somebody else writes, the first guess says no, the
+    /// clear never runs, and a warning about a project the user is no longer
+    /// looking at stays queued.
+    #[test]
+    fn the_missing_project_warning_is_retired_even_once_another_message_has_arrived() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.status.set_clear_after(WINDOW);
+        app.engine.projects[0].path_missing = true;
+        let elsewhere = standalone_row(&mut app);
+        let missing_row = missing_project_row(&mut app);
+
+        app.select_left_agent_item(missing_row);
+        app.set_info("Something else happened.");
+        app.select_left_agent_item(elsewhere);
+
+        let message = app.status.message();
+        assert!(
+            !message.contains("Project path not found"),
+            "the warning is about a row the user has left: {message}"
+        );
+        assert!(
+            app.status
+                .snapshot()
+                .iter()
+                .all(|entry| !entry.message.contains("Project path not found")),
+            "and it is not queued behind anything either: {:?}",
+            app.status.snapshot()
+        );
+    }
+
+    /// A warning that stays true for as long as the user leaves a row selected
+    /// is not a transient: the row is still there, so the reason is too. And
+    /// moving off the row is what retires it, through the real selection path.
+    #[test]
+    fn the_missing_project_warning_holds_the_line_while_its_row_is_selected_and_goes_when_it_is_not()
+     {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.status.set_clear_after(WINDOW);
+        app.engine.projects[0].path_missing = true;
+        let elsewhere = standalone_row(&mut app);
+        let missing_row = missing_project_row(&mut app);
+
+        app.select_left_agent_item(missing_row);
+        let message = app
+            .status
+            .most_recent_tui()
+            .map_or_default(|(_, message)| message);
+        assert!(
+            message.contains("Project path not found"),
+            "the warning must be on the line: {message}"
+        );
+
+        let now = Instant::now();
+        let _ = app
+            .status
+            .tick(now + WINDOW * 4, yaran_core::statusline::BUSY_TIMEOUT);
+        assert!(
+            app.status
+                .most_recent_tui()
+                .is_some_and(|(_, message)| message.contains("Project path not found")),
+            "it must survive the warning window while the row stays selected"
+        );
+
+        // Moving to a row with no missing project is what retires it, and the
+        // move goes through the same path a Down key takes.
+        app.select_left_agent_item(elsewhere);
+        // The empty message the clear writes now empties the line outright
+        // rather than leaving an empty entry sitting on it: with a queue behind
+        // the line, an empty message is a clear and not a thing to read.
+        assert_eq!(
+            app.status.most_recent_tui().map(|(_, message)| message),
+            None,
+            "leaving the row must clear the warning"
+        );
+    }
+
+    /// The missing-project warning clears ITS OWN message and nothing else. It
+    /// runs on every selection move, so clearing whatever warning happens to be
+    /// on the line wipes standing warnings the user still has to act on.
+    #[test]
+    fn moving_the_selection_leaves_another_producers_pinned_warning_alone() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.status.set_clear_after(WINDOW);
+        let elsewhere = standalone_row(&mut app);
+        let agent_row = missing_project_row(&mut app);
+
+        // No project is missing here: the restart warning is the only thing on
+        // the line, and it is owed until the user restarts.
+        app.set_pinned_warning(workers::server_restart_warning(
+            workers::BackgroundServing::Serving,
+            &["port"],
+        ));
+        app.select_left_agent_item(agent_row);
+        app.select_left_agent_item(elsewhere);
+        assert!(
+            app.status
+                .most_recent_tui()
+                .is_some_and(|(_, message)| message.contains("start it again")),
+            "moving the selection must not wipe a warning it never wrote: {}",
+            app.status.text()
+        );
+    }
+
+    /// The seeded managed agent's row, whose project is the one tests mark
+    /// missing.
+    fn missing_project_row(app: &mut App) -> usize {
+        app.rebuild_left_items();
+        app.left_items()
+            .iter()
+            .position(|item| matches!(item, LeftItem::Session(index) if *index == 0))
+            .expect("the seeded agent needs a row")
+    }
+
+    /// A second row to move onto: a standalone agent has no project at all, so
+    /// selecting it can never be the missing-project case.
+    fn standalone_row(app: &mut App) -> usize {
+        if !app
+            .engine
+            .sessions
+            .iter()
+            .any(|session| session.id == "standalone-1")
+        {
+            let mut standalone = app.engine.sessions[0].clone();
+            standalone.id = "standalone-1".to_string();
+            standalone.workspace =
+                yaran_core::model::AgentWorkspace::Folder(yaran_core::model::FolderWorkspace {
+                    folder_path: app.engine.paths.root.to_string_lossy().to_string(),
+                });
+            app.engine.sessions.push(standalone);
+        }
+        app.rebuild_left_items();
+        app.left_items()
+            .iter()
+            .position(|item| matches!(item, LeftItem::Session(index) if *index == 1))
+            .expect("the standalone agent needs a row")
+    }
+
+    /// A theme that will not load is a standing fact about the user's config,
+    /// so it waits for them rather than for a timer.
+    #[test]
+    fn the_unloadable_theme_warning_holds_the_line() {
+        let mut app = test_support::test_app(test_support::default_bindings());
+        app.status.set_clear_after(WINDOW);
+        let mut config = app.engine.config.clone();
+        config.ui.theme = "no-such-theme-exists".to_string();
+        app.apply_reloaded_config(config).expect("reload applies");
+
+        let message = app
+            .status
+            .most_recent_tui()
+            .map_or_default(|(_, message)| message);
+        assert!(
+            message.contains("could not be loaded"),
+            "the theme warning must be on the line: {message}"
+        );
+
+        let now = Instant::now();
+        let _ = app
+            .status
+            .tick(now + WINDOW * 4, yaran_core::statusline::BUSY_TIMEOUT);
+        assert!(
+            app.status
+                .most_recent_tui()
+                .is_some_and(|(_, message)| message.contains("could not be loaded")),
+            "it must survive the warning window"
+        );
+    }
+
+    /// Both boot paths (a cold start and the resume after the web server hands
+    /// the terminal back) seed their status line through `boot_status`, so this
+    /// pins what both of them do.
+    #[test]
+    fn the_boot_status_holds_the_orientation_hint_past_every_window() {
+        let t0 = Instant::now();
+        let mut status = boot_status(
+            WINDOW,
+            LiveStatusKeys::default(),
+            "Press ? for help.",
+            None,
+            None,
+            None,
+        );
+        let _ = status.tick(t0 + WINDOW * 4, yaran_core::statusline::BUSY_TIMEOUT);
+        assert_eq!(
+            status.message(),
+            "Press ? for help.",
+            "the pinned hint waits for the user's first action, not for a timer"
+        );
+    }
+
+    #[test]
+    fn the_boot_status_holds_an_unloadable_theme_warning_past_every_window() {
+        let t0 = Instant::now();
+        let mut status = boot_status(
+            WINDOW,
+            LiveStatusKeys::default(),
+            "Press ? for help.",
+            None,
+            Some("Theme 'nope' could not be loaded.".to_string()),
+            None,
+        );
+        let _ = status.tick(t0 + WINDOW * 4, yaran_core::statusline::BUSY_TIMEOUT);
+        assert!(
+            status.message().contains("could not be loaded"),
+            "a theme that will not load is still true tomorrow: {}",
+            status.message()
+        );
+    }
+
+    /// A yaran that started without its control socket says so on the line, and
+    /// keeps saying it: it stays true until yaran starts again.
+    #[test]
+    fn the_boot_status_holds_the_missing_control_socket_warning_past_every_window() {
+        let t0 = Instant::now();
+        let mut status = boot_status(
+            WINDOW,
+            LiveStatusKeys::default(),
+            "Press ? for help.",
+            None,
+            None,
+            Some("yaran is running without its control socket: the path is too long.".to_string()),
+        );
+        let _ = status.tick(t0 + WINDOW * 4, yaran_core::statusline::BUSY_TIMEOUT);
+        assert_eq!(
+            status.most_recent_tui().map(|(tone, _)| tone),
+            Some(StatusTone::Warning)
+        );
+        assert!(
+            status.message().contains("without its control socket"),
+            "{}",
+            status.message()
+        );
+    }
+}

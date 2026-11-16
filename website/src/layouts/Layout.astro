@@ -31,10 +31,10 @@ const ogImageURL = new URL(ogImage, site).toString();
 // Alt text for the social card: it describes what the card SHOWS rather than
 // defining the product, so only a redraw of public/og.png needs it reworded.
 const ogImageAlt =
-  "dux: your AI agents deserve a proper office. A dux session running several AI coding agents in parallel, one git worktree each.";
+  "yaran: your AI agents deserve a proper office. A yaran session running several AI coding agents in parallel, one git worktree each.";
 
 const keywords = [
-  "dux",
+  "yaran",
   "getdux",
   "AI coding agents",
   "Claude Code",
@@ -47,11 +47,11 @@ const keywords = [
   "terminal UI",
   "TUI",
   "Rust TUI",
-  // dux has a web UI as well as the TUI, and people search for both. Neither
-  // set is a claim that dux is only one of them; see lib/site.ts for the
+  // yaran has a web UI as well as the TUI, and people search for both. Neither
+  // set is a claim that yaran is only one of them; see lib/site.ts for the
   // positioning the copy has to carry.
   "web UI",
-  "dux server",
+  "yaran server",
   "AI agents in the browser",
   "self-hosted AI coding",
   "AI coding agents on your phone",
@@ -65,8 +65,8 @@ const sd = {
   software: {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    name: "dux",
-    alternateName: ["getdux", "dux TUI", "dux server"],
+    name: "yaran",
+    alternateName: ["getdux", "yaran TUI", "yaran server"],
     operatingSystem: ["macOS", "Linux", "Windows (WSL2)"],
     applicationCategory: "DeveloperApplication",
     // Two front ends over one workspace, so the subcategory is not a single value.
@@ -92,7 +92,7 @@ const sd = {
       "One git worktree per agent",
       "PTY-based, runs real CLIs (Claude, Codex, Copilot, Grok, OpenCode, any)",
       "Terminal UI and web UI over the same workspace",
-      "Web UI served by `dux server`, reachable from a phone",
+      "Web UI served by `yaran server`, reachable from a phone",
       "Edit files in the browser with a real editor",
       "Built-in git staging, diffs, commit, push, and pull",
       "Macros for reusable prompts",
@@ -106,7 +106,7 @@ const sd = {
   website: {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: "dux",
+    name: "yaran",
     url: site.toString(),
     description,
     publisher: {
@@ -131,8 +131,8 @@ const sd = {
     <meta name="author" content="Patrick D'appollonio" />
     <meta name="theme-color" content="#0b0b14" />
     <meta name="color-scheme" content="dark" />
-    <meta name="application-name" content="dux" />
-    <meta name="apple-mobile-web-app-title" content="dux" />
+    <meta name="application-name" content="yaran" />
+    <meta name="apple-mobile-web-app-title" content="yaran" />
     {noIndex && <meta name="robots" content="noindex, nofollow" />}
     {!noIndex && <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />}
 
@@ -143,14 +143,14 @@ const sd = {
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="sitemap" type="application/xml" href="/sitemap-index.xml" />
-    <link rel="alternate" type="application/rss+xml" title="dux blog" href="/rss.xml" />
+    <link rel="alternate" type="application/rss+xml" title="yaran blog" href="/rss.xml" />
 
     {/* Open Graph */}
     <meta property="og:type" content="website" />
     <meta property="og:url" content={canonical} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:site_name" content="dux" />
+    <meta property="og:site_name" content="yaran" />
     <meta property="og:locale" content="en_US" />
     <meta property="og:image" content={ogImageURL} />
     <meta property="og:image:type" content="image/png" />

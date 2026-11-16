@@ -9,10 +9,10 @@ import Stats from "./Stats.astro";
     <div>
       <span class="pill">▸ install</span>
       <h2 class="heading mt-3 text-3xl font-bold tracking-tight sm:text-4xl">
-        Get dux on your <span class="text-[color:var(--color-accent)]">PATH</span>, your way.
+        Get yaran on your <span class="text-[color:var(--color-accent)]">PATH</span>, your way.
       </h2>
       <p class="mt-3 text-[color:var(--color-muted)]">
-        Pick whichever one makes you feel the least guilty. They all end with you running <span class="mono text-[color:var(--color-text)]">dux</span> in a terminal.
+        Pick whichever one makes you feel the least guilty. They all end with you running <span class="mono text-[color:var(--color-text)]">yaran</span> in a terminal.
       </p>
     </div>
 
@@ -23,13 +23,13 @@ import Stats from "./Stats.astro";
         <span class="mt-0.5 shrink-0 text-[color:var(--color-success)]">✓</span>
         <p>
           <strong class="text-[color:var(--color-text)]">One binary, both front ends.</strong>{" "}
-          There is no separate server package and no second thing to install. <span class="mono text-[color:var(--color-text)]">dux</span> opens the terminal UI; <span class="mono text-[color:var(--color-text)]">dux server</span> serves the web UI out of that same executable, assets and all.
+          There is no separate server package and no second thing to install. <span class="mono text-[color:var(--color-text)]">yaran</span> opens the terminal UI; <span class="mono text-[color:var(--color-text)]">yaran server</span> serves the web UI out of that same executable, assets and all.
         </p>
       </div>
       <div class="flex items-start gap-2.5 rounded-lg border border-[color:var(--color-border-soft)] bg-[color:var(--color-panel-2)]/50 p-4 text-sm text-[color:var(--color-muted)]">
         <span class="mt-0.5 shrink-0 text-[color:var(--color-success)]">✓</span>
         <p>
-          The only hard requirement is <code>git</code> (dux is built on worktrees). Beyond that the CLI needs <strong class="text-[color:var(--color-text)]">no dependencies</strong>. The <code>gh</code> CLI is optional: install it for PR tracking and agent-opened PRs; skip it and dux quietly disables anything GitHub.
+          The only hard requirement is <code>git</code> (yaran is built on worktrees). Beyond that the CLI needs <strong class="text-[color:var(--color-text)]">no dependencies</strong>. The <code>gh</code> CLI is optional: install it for PR tracking and agent-opened PRs; skip it and yaran quietly disables anything GitHub.
         </p>
       </div>
     </div>
@@ -54,21 +54,21 @@ import Stats from "./Stats.astro";
 
         <dl class="mt-5 space-y-4 text-sm">
           <div>
-            <dt class="mono text-[color:var(--color-accent)]">DUX_INSTALL_DIR</dt>
+            <dt class="mono text-[color:var(--color-accent)]">YARAN_INSTALL_DIR</dt>
             <dd class="mt-1 text-[color:var(--color-muted)]">
               Override the target directory. Defaults to <code>~/.local/bin</code> when it exists and is on <code>PATH</code>, else <code>/usr/local/bin</code>.
             </dd>
             <div class="mt-2 rounded-md border border-[color:var(--color-border-soft)] bg-[color:var(--color-ink)] p-2.5 mono text-[11px] overflow-x-auto">
-              <span class="text-[color:var(--color-dim)]">$</span> curl -sSfL https://getdux.app/install.sh | <span class="text-[color:var(--color-pink)]">DUX_INSTALL_DIR=~/.bin</span> bash
+              <span class="text-[color:var(--color-dim)]">$</span> curl -sSfL https://getdux.app/install.sh | <span class="text-[color:var(--color-pink)]">YARAN_INSTALL_DIR=~/.bin</span> bash
             </div>
           </div>
           <div>
-            <dt class="mono text-[color:var(--color-accent)]">DUX_VERSION</dt>
+            <dt class="mono text-[color:var(--color-accent)]">YARAN_VERSION</dt>
             <dd class="mt-1 text-[color:var(--color-muted)]">
               Pin to a specific tag instead of the latest release.
             </dd>
             <div class="mt-2 rounded-md border border-[color:var(--color-border-soft)] bg-[color:var(--color-ink)] p-2.5 mono text-[11px] overflow-x-auto">
-              <span class="text-[color:var(--color-dim)]">$</span> curl -sSfL https://getdux.app/install.sh | <span class="text-[color:var(--color-pink)]">DUX_VERSION=v0.1.0</span> bash
+              <span class="text-[color:var(--color-dim)]">$</span> curl -sSfL https://getdux.app/install.sh | <span class="text-[color:var(--color-pink)]">YARAN_VERSION=v0.1.0</span> bash
             </div>
           </div>
         </dl>
@@ -84,7 +84,7 @@ import Stats from "./Stats.astro";
       <a href="https://github.com/patrickdappollonio/homebrew-tap" class="card p-4 hover:border-[color:var(--color-accent)]/50 transition-colors">
         <div class="mono text-[10px] uppercase tracking-wider text-[color:var(--color-dim)]">macOS / Linux</div>
         <div class="mt-1 text-sm font-medium text-[color:var(--color-text)]">Homebrew tap</div>
-        <p class="mt-1 text-xs text-[color:var(--color-muted)]">brew install patrickdappollonio/tap/dux</p>
+        <p class="mt-1 text-xs text-[color:var(--color-muted)]">brew install patrickdappollonio/tap/yaran</p>
       </a>
       <a href="https://www.npmjs.com/package/@patrickdappollonio/dux" class="card p-4 hover:border-[color:var(--color-accent)]/50 transition-colors">
         <div class="mono text-[10px] uppercase tracking-wider text-[color:var(--color-dim)]">Cross-platform</div>

@@ -19,13 +19,13 @@ const defaultTabs: Tab[] = [
     label: "Shell",
     badge: "any unix",
     cmd: "curl -sSfL https://getdux.app/install.sh | bash",
-    hint: "Sniffs your OS + arch, drops dux in <code>~/.local/bin</code> (or <code>/usr/local/bin</code>).",
+    hint: "Sniffs your OS + arch, drops yaran in <code>~/.local/bin</code> (or <code>/usr/local/bin</code>).",
   },
   {
     id: "brew",
     label: "Homebrew",
     badge: "mac · linux",
-    cmd: "brew install patrickdappollonio/tap/dux",
+    cmd: "brew install patrickdappollonio/tap/yaran",
     hint: "Tap and install in one shot. Life's too short for two-command installs.",
   },
   {
@@ -46,8 +46,8 @@ const defaultTabs: Tab[] = [
     id: "binary",
     label: "Binary",
     badge: "manual",
-    cmd: "curl -sSfL https://github.com/patrickdappollonio/dux/releases/latest/download/dux-<os>-<arch>.tar.gz | tar xz && mv dux ~/.local/bin/",
-    hint: 'The hands-on route: swap <code>&lt;os&gt;-&lt;arch&gt;</code> for your platform (macOS/Linux · amd64/arm64), or just browse the <a href="https://github.com/patrickdappollonio/dux/releases/latest" target="_blank" rel="noopener" class="text-[color:var(--color-accent)] hover:underline">Releases</a> page. Then drop <code>dux</code> wherever you want on your <code>PATH</code>.',
+    cmd: "curl -sSfL https://github.com/patrickdappollonio/dux/releases/latest/download/yaran-<os>-<arch>.tar.gz | tar xz && mv yaran ~/.local/bin/",
+    hint: 'The hands-on route: swap <code>&lt;os&gt;-&lt;arch&gt;</code> for your platform (macOS/Linux · amd64/arm64), or just browse the <a href="https://github.com/patrickdappollonio/dux/releases/latest" target="_blank" rel="noopener" class="text-[color:var(--color-accent)] hover:underline">Releases</a> page. Then drop <code>yaran</code> wherever you want on your <code>PATH</code>.',
   },
 ];
 
@@ -65,7 +65,7 @@ const uid = "tabs-" + Math.random().toString(36).slice(2, 8);
     <span class="term-dot" style="background:#ff5f56"></span>
     <span class="term-dot" style="background:#febc2e"></span>
     <span class="term-dot" style="background:#28c840"></span>
-    <span class="ml-3 mono text-[11px] text-[color:var(--color-dim)]">~ install dux</span>
+    <span class="ml-3 mono text-[11px] text-[color:var(--color-dim)]">~ install yaran</span>
     <div class="ml-auto flex flex-wrap items-center justify-end gap-1" role="tablist" aria-label="Install methods">
       {
         tabs.map((t) => (

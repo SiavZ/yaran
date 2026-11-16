@@ -1,15 +1,15 @@
-# dux preview environment
+# yaran preview environment
 
-An isolated, Docker-only way to run **dux web mode** so its UI can be driven
-and screenshotted without touching the developer's real dux instance. Built so
+An isolated, Docker-only way to run **yaran web mode** so its UI can be driven
+and screenshotted without touching the developer's real yaran instance. Built so
 a person or an agent can SEE UI work: bring it up, drive real user journeys,
 capture PNGs.
 
-> **Never run `dux server` (or the TUI) directly on a development host to
-> inspect the UI, and never kill dux processes on the host.** A directly-run
-> instance shares the developer's real `~/.config/dux` (config, sessions
-> database, locks) with whatever dux they already have running, and on this
-> project the developer is often driving the working session FROM dux itself:
+> **Never run `yaran server` (or the TUI) directly on a development host to
+> inspect the UI, and never kill yaran processes on the host.** A directly-run
+> instance shares the developer's real `~/.config/yaran` (config, sessions
+> database, locks) with whatever yaran they already have running, and on this
+> project the developer is often driving the working session FROM yaran itself:
 > a stray instance corrupts state, and a killed process can destroy their live
 > session. This container is the sanctioned path; Docker-only is a decision,
 > not a limitation.
@@ -19,12 +19,12 @@ capture PNGs.
 - A Docker image with the **runtime** deps: recent glibc (rolling Arch base),
   git, node/npm, and the `claude` + `codex` CLIs installed via npm (they run
   and prompt for login, exactly as they would anywhere).
-- The **dux binary is built on the host** and bind-mounted read-only. The host
+- The **yaran binary is built on the host** and bind-mounted read-only. The host
   already has cargo plus the node setup `build.rs` needs to embed `web/dist`,
   and building on the same machine avoids glibc/CPU ABI skew.
-- All dux state (config, sessions, seeded repos) lives in **named volumes**,
-  so the container cannot reach the host's real dux config
-  (`DUX_HOME=/data/dux`).
+- All yaran state (config, sessions, seeded repos) lives in **named volumes**,
+  so the container cannot reach the host's real yaran config
+  (`YARAN_HOME=/data/yaran`).
 - A seeded config adds a **`fake` streaming provider** (`fake-agent.sh`): no
   real agent CLI needs to be authenticated (or even work) for UI testing. It
   streams forever, so working-state visuals are exercisable; closing its tab
@@ -47,18 +47,18 @@ back to `sg docker` when the group was added without a re-login.
 
 ```bash
 cd tools/preview-env
-./up.sh                       # builds dux (this repo) + starts the container
-DUX_SRC=/path/to/worktree ./up.sh   # preview a different branch/worktree
+./up.sh                       # builds yaran (this repo) + starts the container
+YARAN_SRC=/path/to/worktree ./up.sh   # preview a different branch/worktree
 ```
 
-Then open `http://127.0.0.1:8790` (loopback only; `DUX_PORT` overrides).
+Then open `http://127.0.0.1:8790` (loopback only; `YARAN_PORT` overrides).
 
-Two loopback ports are published: the web preview on `DUX_PORT` and the
-concurrent-TUI journey's background server on `DUX_TUI_PORT`, which defaults to
-`DUX_PORT + 208` (so 8790 pairs with 8998). Moving one moves both:
+Two loopback ports are published: the web preview on `YARAN_PORT` and the
+concurrent-TUI journey's background server on `YARAN_TUI_PORT`, which defaults to
+`YARAN_PORT + 208` (so 8790 pairs with 8998). Moving one moves both:
 
 ```bash
-DUX_PORT=9000 ./up.sh         # web 9000, TUI-journey 9208
+YARAN_PORT=9000 ./up.sh         # web 9000, TUI-journey 9208
 ```
 
 ### A second stack beside a running one
@@ -66,9 +66,9 @@ DUX_PORT=9000 ./up.sh         # web 9000, TUI-journey 9208
 Ports are only part of it. A second stack also needs a compose project of its
 own (`COMPOSE_PROJECT_NAME`), so its volumes and network are its own, and a
 container name of its own, because a container name is global to Docker.
-`up.sh` derives the name from the project (`dux-preview-<project>`), or takes
-`DUX_PREVIEW_CONTAINER` if you set it; the default project (`preview-env`) keeps
-the container `dux-preview`, as it always was. Name the second stack with
+`up.sh` derives the name from the project (`yaran-preview-<project>`), or takes
+`YARAN_PREVIEW_CONTAINER` if you set it; the default project (`preview-env`) keeps
+the container `yaran-preview`, as it always was. Name the second stack with
 EXPORTED environment variables, not compose's `-p` flag (the scripts take no
 such flag, so each one would fall back to the default stack) and not a `.env`
 file here (it would rename the default stack too, for everyone using this
@@ -76,19 +76,19 @@ checkout). Export the project and the port for the whole session, so every
 script, compose command and teardown aims at the same stack:
 
 ```bash
-export COMPOSE_PROJECT_NAME=preview-b DUX_PORT=9000
-./up.sh                       # container dux-preview-preview-b, web 9000, TUI 9208
+export COMPOSE_PROJECT_NAME=preview-b YARAN_PORT=9000
+./up.sh                       # container yaran-preview-preview-b, web 9000, TUI 9208
 ./shot.sh / home.png          # this stack, not the default one
 (cd screens && ./reshoot.sh no-password-banner)
 docker compose down -v        # this stack only: the project scopes it
 ```
 
-Every script here reads `DUX_PORT` and `COMPOSE_PROJECT_NAME` from the
+Every script here reads `YARAN_PORT` and `COMPOSE_PROJECT_NAME` from the
 environment, so a session that sets them for one script and not the next ends up
-screenshotting, seeding or tearing down the other stack. The `dux-preview` image
+screenshotting, seeding or tearing down the other stack. The `yaran-preview` image
 is shared between stacks on purpose; do not remove it while another stack is up.
 A compose `up` you run by hand under a project of your own also needs
-`DUX_PREVIEW_CONTAINER` set, since the derivation lives in `up.sh`; `exec`,
+`YARAN_PREVIEW_CONTAINER` set, since the derivation lives in `up.sh`; `exec`,
 `logs` and `down` find the container by its project and need only that.
 
 ### Iterate on code
@@ -98,8 +98,8 @@ A compose `up` you run by hand under a project of your own also needs
 ```
 
 A rebuilt binary is a new inode, so the container is recreated to pick it up.
-Bringing it up waits until dux actually answers, rather than until the container
-has started: a container that is up is a dux still opening its database and
+Bringing it up waits until yaran actually answers, rather than until the container
+has started: a container that is up is a yaran still opening its database and
 sweeping its agents, and a seed or a page load aimed at that window is a race
 nobody can see afterwards.
 
@@ -107,8 +107,8 @@ Recreating it from a shell that says nothing about the screenshot switches would
 turn a screenshot container back into an ordinary preview (no stand-in `gh`, no
 transcript provider, no `opencode` alias, and `--no-tailscale` back on), so what
 the running container was brought up with carries forward and only an explicit
-`DUX_SCREENS=` or `DUX_NO_TAILSCALE=` changes it. What does NOT survive a
-restart is the agents: dux brings tabs back dormant by design, so the workspace
+`YARAN_SCREENS=` or `YARAN_NO_TAILSCALE=` changes it. What does NOT survive a
+restart is the agents: yaran brings tabs back dormant by design, so the workspace
 the scenes are written against is gone until something relights it. `reshoot.sh`
 seeds before it shoots, which does exactly that; a scene driven by hand against
 a just-restarted stack is shot against dormant agents, and its guards say so.
@@ -167,13 +167,13 @@ forwarded port), and `puppeteer-core` is already in this directory's
 `package.json`. Use journey-specific selectors instead of a generic action DSL;
 real flows need bespoke selectors, and the extra abstraction cannot express
 many UI interactions. Driving the app over REST (`/api/v1/...`) is often faster
-than clicking; see the routes in `crates/dux-web/src/`.
+than clicking; see the routes in `crates/yaran-web/src/`.
 
 ## TUI screenshots
 
 `tui-shot.sh` runs the real terminal UI in a disposable Docker container at a
 fixed terminal grid. It drives a small journey script, captures the styled terminal
-cells, and renders them in headless Chromium. The capture has its own `DUX_HOME`,
+cells, and renders them in headless Chromium. The capture has its own `YARAN_HOME`,
 repositories, and process lock, so it can run while the web preview is up.
 
 The default 160×45 grid renders 2632 pixels wide at 2× scale and is the desktop
@@ -187,7 +187,7 @@ baseline. Use `--cols` and `--rows` only for a different terminal class.
 ```
 
 The face is **MonoLisa Nerd Font Mono** when the host has it installed, and the
-bundled Dux Mono stack otherwise. MonoLisa is commercial, so it is referenced by
+bundled Yaran Mono stack otherwise. MonoLisa is commercial, so it is referenced by
 family name and never vendored here; a host without it still captures correctly
 and says so on stderr, at a slightly different cell size than the committed
 screenshots. The font size is 12.5 for a measured reason spelled out in
@@ -226,18 +226,18 @@ copy it to a throwaway `*.tmp.js` file and use the supplied `createAgent`,
 export, which refuses the capture unless those strings are on the screen it
 captured (a throwaway may leave it off and is told on stderr that nothing
 checked what it captured). Two more optional exports change what runs:
-`launch = "server"` starts `dux server` in the captured terminal instead of the
+`launch = "server"` starts `yaran server` in the captured terminal instead of the
 terminal UI (and skips adding the demo projects, which only the TUI needs),
 `launch = "shell"` starts a plain `bash` with a `$ ` prompt for a journey that
-types a dux command, with `HOME=/home/you` and the seeded state at that home's
-default config directory so what dux prints names a path a reader recognizes, and
-`tailscale = { ip, status, serve }` puts a stand-in `tailscale` CLI on dux's PATH
+types a yaran command, with `HOME=/home/you` and the seeded state at that home's
+default config directory so what yaran prints names a path a reader recognizes, and
+`tailscale = { ip, status, serve }` puts a stand-in `tailscale` CLI on yaran's PATH
 that answers `ip`, `status --json --peers=false` and `serve status --json` with
 those values, and adds `ip` to the container's loopback so the Tailscale listener
 really binds (the capture service is granted `NET_ADMIN` for exactly this, inside
 its own disposable network namespace). Use an obviously fake machine and tailnet,
 never a real one. `github = true` keeps GitHub integration on and puts the
-screenshot fixtures' stand-in `gh` on dux's PATH, so a journey can show pull
+screenshot fixtures' stand-in `gh` on yaran's PATH, so a journey can show pull
 requests; the journey points a repository's `origin` at a GitHub URL itself,
 once its agents exist. Throwaway scripts are ignored
 by Git, matching the web screenshot workflow; the journeys behind the docs
@@ -271,21 +271,21 @@ screenshot fixtures, and seeds it. Both are for the browser scenes only: a
 terminal UI journey runs in a disposable container of its own, so reshooting one
 of those touches neither the preview nor its workspace. Those fixtures are the
 pieces an ordinary preview must not have, and they are installed only under
-`DUX_SCREENS=1`:
+`YARAN_SCREENS=1`:
 
 | Fixture | Why |
 | --- | --- |
-| `screens/fixtures/gh` | A stand-in `gh` answering only dux's auth probe, its bounded `pr view` per number and the pull-request sync's GraphQL questions, all from one canned table, so the pull-request chip, banner, list and dialogs are shootable without a GitHub login. Anything else fails loudly. |
+| `screens/fixtures/gh` | A stand-in `gh` answering only yaran's auth probe, its bounded `pr view` per number and the pull-request sync's GraphQL questions, all from one canned table, so the pull-request chip, banner, list and dialogs are shootable without a GitHub login. Anything else fails loudly. |
 | `screens/fixtures/notes-agent` | A transcript provider installed as `claude`, so the folder agent's pane shows a scripted session rather than a streaming fixture. |
-| An `opencode` alias | dux refuses a tab for a CLI that is not on PATH, and the tab strip shows one tab per provider, so `opencode` points at the fake provider for the length of the run. |
+| An `opencode` alias | yaran refuses a tab for a CLI that is not on PATH, and the tab strip shows one tab per provider, so `opencode` points at the fake provider for the length of the run. |
 
 Separately, and for **every** preview rather than only a screenshot run, the
 entrypoint makes git non-interactive (`credential.helper` emptied,
 `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=/bin/true`). Nothing in the container can
 answer a credential prompt and the container has a tty, so a git operation
 against an unreachable remote would otherwise sit on `Username for ...` forever
-and wedge whatever dux was doing.
-| `DUX_NO_TAILSCALE=0` | Drops `--no-tailscale`, which otherwise refuses a live mode change for the whole run and changes what the Preferences dialog says. |
+and wedge whatever yaran was doing.
+| `YARAN_NO_TAILSCALE=0` | Drops `--no-tailscale`, which otherwise refuses a live mode change for the whole run and changes what the Preferences dialog says. |
 
 A website test asserts the loop stays closed: every PNG has a scene, every scene
 has a PNG, and every PNG is shown by a docs page.
@@ -323,15 +323,15 @@ shot of a working agent. Everything else should come back the same.
 ## Logs / teardown
 
 ```bash
-docker compose logs -f dux     # from tools/preview-env
+docker compose logs -f yaran     # from tools/preview-env
 docker compose down            # stop, keep volumes
 docker compose down -v         # stop + wipe all preview state
 ```
 
 These need no environment set: every variable in `compose.yml` defaults to what
 the scripts pass, so plain compose commands work from this directory. The one
-exception is a moved port: the `DUX_PORT + 208` derivation lives in `up.sh`, so
-a compose command you run yourself with `DUX_PORT` set needs `DUX_TUI_PORT` set
+exception is a moved port: the `YARAN_PORT + 208` derivation lives in `up.sh`, so
+a compose command you run yourself with `YARAN_PORT` set needs `YARAN_TUI_PORT` set
 too, or the second published port stays on its 8998 default.
 
 ## Login-walled providers
@@ -347,14 +347,14 @@ container can only run a Linux binary of its own architecture); `up.sh`
 refuses on macOS rather than mount garbage.
 
 - **Linux host:** default path. Fast incremental cargo, zero ABI skew.
-- **macOS ARM host:** build dux **in-container** for linux/arm64 instead: add
+- **macOS ARM host:** build yaran **in-container** for linux/arm64 instead: add
   rust to the Dockerfile, mount the source, and build with cached target +
   cargo-registry volumes. First build is minutes; incrementals fast.
 
 ## Glibc note
 
 The mounted host binary needs container glibc >= host glibc.
-`archlinux:latest` (rolling) normally satisfies this. If `dux --help` inside
+`archlinux:latest` (rolling) normally satisfies this. If `yaran --help` inside
 the container reports `GLIBC_2.xx not found`, pass a base image matching your
 host (`BASE_IMAGE=<image> ./up.sh`) or use the in-container build.
 
@@ -363,8 +363,8 @@ host (`BASE_IMAGE=<image> ./up.sh`) or use the in-container build.
 | File | Role |
 | --- | --- |
 | `Dockerfile` | Runtime image (glibc/git/node/tmux + claude/codex CLIs). The container journeys build it with `AGENT_CLIS=0` and `JOURNEY_TOOLS=1`: no agent CLIs, plus socat, curl and Chromium. |
-| `entrypoint.sh` | Seeds config + demo repos, then serves the web UI. Its opt-in switches (`DUX_BIND`, `DUX_FAKE_TAILSCALE`, `DUX_RELAYS`, `DUX_LAUNCH`, `DUX_RESTART_LOOP`, `DUX_TAIL_LOG`, hooks in `/journey/seed.d`) are for the container journeys in `crates/dux-journeys`; a preview sets none of them. |
-| `tailscale-stand-in.sh` | A stand-in `tailscale` CLI answering from files under `/data/tailscale`, installed only under `DUX_FAKE_TAILSCALE=1`. |
+| `entrypoint.sh` | Seeds config + demo repos, then serves the web UI. Its opt-in switches (`YARAN_BIND`, `YARAN_FAKE_TAILSCALE`, `YARAN_RELAYS`, `YARAN_LAUNCH`, `YARAN_RESTART_LOOP`, `YARAN_TAIL_LOG`, hooks in `/journey/seed.d`) are for the container journeys in `crates/yaran-journeys`; a preview sets none of them. |
+| `tailscale-stand-in.sh` | A stand-in `tailscale` CLI answering from files under `/data/tailscale`, installed only under `YARAN_FAKE_TAILSCALE=1`. |
 | `journey-images.env` | The base, nginx and Caddy images the container journeys and their CI workflow use, pinned by digest. |
 | `fake-agent.sh` | Fake provider with live preview output and deterministic capture fixtures. |
 | `compose.yml` | Defines the isolated web preview and opt-in TUI capture service. |

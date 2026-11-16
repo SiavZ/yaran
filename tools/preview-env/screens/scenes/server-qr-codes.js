@@ -1,4 +1,4 @@
-// `dux server` on a tailnet where `tailscale serve` already points at it: the
+// `yaran server` on a tailnet where `tailscale serve` already points at it: the
 // MagicDNS and HTTPS rows follow the banner's listeners, and the two QR codes
 // sit side by side under them, the Tailscale IP on the left and the HTTPS
 // name on the right.
@@ -7,7 +7,7 @@
 // stand-in answering with an obviously fake machine and tailnet, in the shapes
 // the real CLI prints. Nothing here is a real name or address.
 module.exports = async ({ sleep, waitFor }) => {
-  await waitFor("Scan to open dux", 30000)
+  await waitFor("Scan to open yaran", 30000)
   await sleep(600)
 }
 
@@ -47,7 +47,7 @@ module.exports.config = (text) => text.replace(/^port = \d+$/m, "port = 3890")
 
 // Both codes' URLs, the listener row they come from, and the caption over them.
 module.exports.expectText = [
-  "Scan to open dux",
+  "Scan to open yaran",
   "http://100.101.102.103:3890",
   "https://demo-box.example-tailnet.ts.net",
   "Tailscale (HTTPS, tailscale serve)",

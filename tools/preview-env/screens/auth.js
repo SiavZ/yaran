@@ -1,8 +1,8 @@
 // The web password, staged for the sign-in screenshots.
 //
-// Every change goes through `dux config set` inside the preview container, the
-// way the docs tell a person to make it, and a running dux reloads on it by
-// itself. The preview reaches dux through Docker's published port, so to dux a
+// Every change goes through `yaran config set` inside the preview container, the
+// way the docs tell a person to make it, and a running yaran reloads on it by
+// itself. The preview reaches yaran through Docker's published port, so to yaran a
 // browser on the host is "everyone else": with a password set it gets the
 // sign-in page, which is exactly the visitor these pictures are about.
 //
@@ -10,7 +10,7 @@
 // so the workspace every other scene is shot against stays password-free.
 const { BASE, DESKTOP, boxOf, containerSh, refusal, sleep, steadyBox } = require("./lib.js")
 
-const DUX_HOME = "/data/dux"
+const YARAN_HOME = "/data/yaran"
 
 // The passwords the scenes sign in with. Made up for the screenshots, and never
 // on screen: every field they are typed into hides them.
@@ -23,12 +23,12 @@ const WEAK_PASSWORD = "sunshine1"
 const quote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`
 
 function configSet(key, value) {
-  containerSh(`DUX_HOME=${DUX_HOME} dux config set ${quote(key)} ${quote(value)}`)
+  containerSh(`YARAN_HOME=${YARAN_HOME} yaran config set ${quote(key)} ${quote(value)}`)
 }
 
 function setPassword(password) {
   containerSh(
-    `printf '%s\\n' ${quote(password)} | DUX_HOME=${DUX_HOME} dux config set server.auth.password --stdin`,
+    `printf '%s\\n' ${quote(password)} | YARAN_HOME=${YARAN_HOME} yaran config set server.auth.password --stdin`,
   )
 }
 
@@ -37,7 +37,7 @@ async function status() {
   return { code: res.status, body: await res.json().catch(() => ({})) }
 }
 
-// The reload `dux config set` asks for is a signal, so it lands a moment later;
+// The reload `yaran config set` asks for is a signal, so it lands a moment later;
 // wait until the server's own answer says the change is in force.
 async function waitForStatus(what, holds, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs
@@ -47,7 +47,7 @@ async function waitForStatus(what, holds, timeoutMs = 20000) {
     if (last && holds(last)) return last
     await sleep(300)
   }
-  throw refusal(`dux never reported ${what}; its last answer was ${JSON.stringify(last)}`)
+  throw refusal(`yaran never reported ${what}; its last answer was ${JSON.stringify(last)}`)
 }
 
 // Back to no password and every [server.auth] setting the scenes touch at its
@@ -78,7 +78,7 @@ async function requirePassword({ cookieSecure = "auto" } = {}) {
   )
 }
 
-// A password below today's minimums, set the only way dux lets one in: with the
+// A password below today's minimums, set the only way yaran lets one in: with the
 // minimums lowered while it is stored, then put back.
 async function requireWeakPassword() {
   configSet("server.auth.minimum_password_length", "8")

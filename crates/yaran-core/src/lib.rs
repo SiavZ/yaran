@@ -1,0 +1,130 @@
+//! yaran-core: the headless domain layer for yaran.
+//!
+//! This crate must not depend on `ratatui`, `crossterm`, or any web/server
+//! crate. Surfaces (TUI, web) depend on `yaran-core`, never the reverse.
+
+pub mod action;
+pub mod activity;
+pub mod add_project_plan;
+pub mod add_project_prose;
+pub mod agent_job;
+pub mod agent_search;
+pub mod agent_tabs;
+pub mod attached_prose;
+pub mod attachments;
+pub mod attention;
+pub mod auth;
+pub mod background_serve;
+pub mod base_branch;
+pub mod bidi;
+pub(crate) mod bounded_command;
+/// Kill the process groups of the bounded git, gh and tailscale calls still
+/// running, on yaran's way out.
+pub use bounded_command::kill_live_child_groups;
+pub mod branch_history;
+pub mod browser;
+pub mod changes_lane;
+pub mod changes_status;
+pub(crate) mod checkout_move;
+pub mod client;
+pub mod clone_project;
+pub mod config;
+pub mod config_auth;
+pub mod config_effective;
+pub mod config_keys;
+pub mod config_migrate;
+pub mod config_queue;
+pub mod config_reload_status;
+pub mod config_resources;
+pub mod config_sync;
+pub mod config_write;
+pub mod container;
+pub mod control_socket;
+pub mod delete_agent_prose;
+pub mod destructive;
+pub mod device_label;
+pub mod diff;
+pub(crate) mod duration_text;
+pub mod editor;
+pub mod engine;
+pub mod file_drop;
+pub mod file_follow;
+pub mod file_modes;
+pub mod first_load;
+pub mod flat_list;
+pub mod focus;
+pub mod gh;
+pub mod git;
+pub mod gitignore_seed;
+pub mod home_path;
+pub mod ids;
+pub mod io_retry;
+pub mod leftover_folders;
+pub mod lockfile;
+pub mod logger;
+pub mod macros;
+pub mod model;
+pub(crate) mod numeric;
+pub mod operations;
+pub mod palette;
+pub mod poller_status;
+pub mod pr_list;
+pub mod pr_reference;
+pub mod process_sessions;
+pub mod project_browser;
+pub mod project_order;
+pub mod project_prose;
+pub mod prose;
+pub mod provider;
+pub mod pty;
+pub mod pty_owners;
+pub mod qr;
+pub mod quiet_tail;
+pub mod release_notes;
+pub mod reload_signal;
+pub mod resource_stats;
+#[cfg(all(test, target_os = "linux"))]
+mod review27_tests;
+pub mod route_checks;
+pub mod row_state;
+pub mod scroll_hint;
+pub(crate) mod scroll_margins;
+pub mod serve_log;
+pub mod shell_quote;
+pub mod sidebar;
+#[cfg(any(test, feature = "test-support"))]
+pub mod start_check_fixtures;
+pub mod startup;
+pub mod status_text;
+pub mod statusline;
+pub mod storage;
+pub mod tab_verdict;
+pub mod tailscale;
+pub mod term_identity;
+pub mod terminal_title;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_git;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_provider;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_scratch;
+pub mod text;
+pub mod text_encoding;
+pub mod theme;
+pub mod urls;
+pub mod viewmodel;
+pub mod web_sessions;
+pub mod welcome;
+pub mod welcome_screen;
+pub mod wire;
+pub mod worker;
+pub mod working_copy;
+pub mod working_cue;
+pub mod worktree_file;
+pub mod worktree_manager;
+pub mod worktree_ops;
+
+/// Display version string ('vX.Y.Z' for release builds, 'development' otherwise), set by build.rs, mirroring the TUI's `YARAN_DISPLAY_VERSION`.
+pub fn display_version() -> &'static str {
+    env!("YARAN_DISPLAY_VERSION")
+}

@@ -1,13 +1,13 @@
 // The start-web-server flip's log viewer with no password set: the flip binds
 // this machine and its Tailscale address, the second of which reaches beyond
-// this machine, so the log carries the same red warning `dux server` prints.
+// this machine, so the log carries the same red warning `yaran server` prints.
 //
 // There is no tailnet in the capture container, so the Tailscale CLI is a
 // stand-in answering with an obviously fake machine and tailnet, in the shapes
 // the real CLI prints. Nothing here is a real name or address.
 module.exports = async ({ palette, sendKeys, sleep, waitFor }) => {
   await palette("start-web-server")
-  await waitFor("dux server running", 30000)
+  await waitFor("yaran server running", 30000)
   // The log follows its latest line, and the QR codes printed after the
   // warning push it off the top, so the viewer is moved back to its oldest
   // line, where the warning sits under the listeners it is about.
@@ -44,8 +44,8 @@ module.exports.config = (text) => text.replace(/^port = \d+$/m, "port = 3890")
 
 // The flip's heading and the warning in its log.
 module.exports.expectText = [
-  "dux server running",
-  "No password is set and dux is reachable beyond this machine",
+  "yaran server running",
+  "No password is set and yaran is reachable beyond this machine",
 ]
 
 module.exports.file = "tui-flip-no-password-warning.png"

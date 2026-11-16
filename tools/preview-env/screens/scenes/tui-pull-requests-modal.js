@@ -6,13 +6,13 @@ const { execFileSync } = require("child_process")
 // have it: the stand-in gh finds the open one on its branch and a merged one on
 // a branch its worktree was on before, and a draft from another repository is
 // attached through the Pull requests picker.
-async function seedPullRequests({ createAgent, duxHome, palette, repos, sendKeys, sendText, waitFor }) {
+async function seedPullRequests({ createAgent, yaranHome, palette, repos, sendKeys, sendText, waitFor }) {
   await createAgent(0, "fix-login-redirect")
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe" })
-  // Only now: dux pulls a project before creating an agent, and nothing
+  // Only now: yaran pulls a project before creating an agent, and nothing
   // answers this URL.
   git(`${repos}/demo-api`, "remote", "add", "origin", "https://github.com/acme/demo-api.git")
-  const worktree = `${duxHome}/worktrees/demo-api/fix-login-redirect`
+  const worktree = `${yaranHome}/worktrees/demo-api/fix-login-redirect`
   git(worktree, "checkout", "-q", "-b", "login-session-cookie")
   git(worktree, "checkout", "-q", "fix-login-redirect")
   await palette("pull-requests")

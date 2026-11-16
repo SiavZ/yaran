@@ -1,0 +1,3779 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
+import type { Spine } from "./workspaceApi"
+import { ownerKey } from "./terminalOwner"
+import { agentRoot } from "@/lib/editorRoot"
+
+// Routing: the URL is the source of truth for where the app is. The screen is
+// DERIVED from the hash (no target = home, a target = terminal, a `/changes`
+// suffix = changes), moving in PUSHES a hash entry, and Back is the browser's
+// own Back. Nothing counts entries, and the one relative step is a fallback's
+// single step back onto the entry yaran labelled behind it (see the suite
+// "a fallback onto the entry behind it steps back").
+//
+// These tests drive a fake history that models the real thing: entry 0 is the
+// page the browser showed BEFORE yaran (a new-tab page), entry 1 is yaran itself.
+// Stepping below entry 1 means the user was thrown out of the app, which is the
+// bug this suite exists to pin.
+
+const OUTSIDE_ENTRY = "about:newtab"
+const YARAN_ENTRY_INDEX = 1
+
+let entries: string[]
+// What each entry's `history.state` holds, kept beside `entries` so a
+// traversal hands back the state that entry was written with, as a browser
+// does.
+let entryStates: unknown[]
+let index: number
+let leftApp: boolean
+// Armed to make the next history WRITE fail, the way Safari does when a page
+// exceeds its rate limit on history calls.
+let historyWriteError: Error | null = null
+let popstateListeners: (() => void)[]
+let hashchangeListeners: (() => void)[]
+let loc: {
+  protocol: string
+  host: string
+  hash: string
+  pathname: string
+  search: string
+}
+
+// Mirror the entry the fake history is parked on into the fake `location`, the
+// way a browser does before it fires popstate.
+function applyCurrentEntry(): void {
+  const url = entries[index] ?? "/"
+  loc.hash = url.startsWith("#") ? url : ""
+}
+
+// Every traversal, the browser's own Back included, is QUEUED and resolved
+// when it runs, not when it was asked for: a Back queued behind another one
+// lands one entry further back. Armed, the queue holds until the test releases
+// it, the way a real browser runs a traversal as a task after the call that
+// asked for it has returned.
+let deferTraversal = false
+let traversals: (() => void)[] = []
+
+// REALISTIC ORDER, opt-in per test: a browser runs every traversal as a later
+// task, and a traversal that changes the fragment fires popstate and then, as
+// a task of its own queued in the same turn, hashchange. A store that reads
+// the hashchange as a second navigation lands twice; only this order shows it.
+let realistic = false
+
+function queueTraversal(run: () => void): void {
+  if (deferTraversal) traversals.push(run)
+  else if (realistic) setTimeout(run, 0)
+  else run()
+}
+
+// Run every held traversal, oldest first.
+function releaseTraversals(): void {
+  deferTraversal = false
+  const held = traversals
+  traversals = []
+  for (const run of held) run()
+}
+
+// Each entry's Navigation API key: one per slot, kept by a replace and new on
+// a push, as the API defines it.
+let entryKeys: string[]
+let nextKey = 0
+function mintKey(): string {
+  nextKey += 1
+  return `k${nextKey}`
+}
+
+function landOn(target: number): void {
+  const before = loc.hash
+  index = target
+  applyCurrentEntry()
+  if (realistic && loc.hash !== before) {
+    setTimeout(() => {
+      for (const listener of [...hashchangeListeners]) listener()
+    }, 0)
+  }
+  for (const listener of [...popstateListeners]) listener()
+}
+
+const fakeHistory = {
+  get state(): unknown {
+    return entryStates[index] ?? null
+  },
+  pushState(state: unknown, _title: string, url: string) {
+    if (historyWriteError) throw historyWriteError
+    entries = entries.slice(0, index + 1)
+    entryStates = entryStates.slice(0, index + 1)
+    entryKeys = entryKeys.slice(0, index + 1)
+    entries.push(String(url))
+    entryStates.push(state)
+    entryKeys.push(mintKey())
+    index = entries.length - 1
+    applyCurrentEntry()
+  },
+  replaceState(state: unknown, _title: string, url: string) {
+    if (historyWriteError) throw historyWriteError
+    entries[index] = String(url)
+    entryStates[index] = state
+    applyCurrentEntry()
+  },
+  go(delta: number) {
+    queueTraversal(() => {
+      const target = index + delta
+      if (target < YARAN_ENTRY_INDEX) {
+        // The browser would happily leave yaran for whatever preceded it.
+        leftApp = true
+        return
+      }
+      // A real browser ignores a Forward past the newest entry.
+      if (target >= entries.length) return
+      landOn(target)
+    })
+  },
+  back() {
+    fakeHistory.go(-1)
+  },
+  forward() {
+    fakeHistory.go(1)
+  },
+}
+
+// The Navigation API, as far as the store uses it. `traverseTo` goes to the
+// entry holding that key when it runs, wherever the cursor is by then, and
+// fails when no entry holds it any more.
+const fakeNavigation = {
+  transition: null as unknown,
+  get currentEntry() {
+    return { key: entryKeys[index], index, url: entries[index] }
+  },
+  entries() {
+    return entryKeys.map((key, i) => ({ key, index: i, url: entries[i] }))
+  },
+  traverseTo(key: string) {
+    const calls = { resolve: () => {}, reject: (_err: unknown) => {} }
+    const committed = new Promise<void>((resolve, reject) => {
+      calls.resolve = resolve
+      calls.reject = reject
+    })
+    committed.catch(() => {})
+    queueTraversal(() => {
+      const target = entryKeys.indexOf(key)
+      if (target < 0) {
+        calls.reject(new Error("InvalidStateError"))
+        return
+      }
+      if (target < YARAN_ENTRY_INDEX) leftApp = true
+      else if (target !== index) landOn(target)
+      calls.resolve()
+    })
+    return { committed, finished: committed }
+  },
+}
+// Whether the stubbed window offers the Navigation API. Every test has it
+// until it says otherwise.
+let navigationApi = true
+
+// WHICH SHELL IS ON SCREEN, as a width a test can set. The store asks the real
+// `isMobileViewport`, so the stubbed window below answers with this; every test
+// is on a computer until it says otherwise, and the shared `beforeEach` puts it
+// back.
+let viewportWidth = 1280
+
+// Every warning the store raised, so a fallback that is supposed to be OUT
+// LOUD can be told from one that merely happened.
+const warnings: string[] = []
+vi.mock("./notify", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./notify")>()
+  return {
+    ...actual,
+    notifyWarning: (message: Parameters<typeof actual.notifyWarning>[0]) =>
+      void warnings.push(actual.noticeText(message)),
+  }
+})
+
+// A session descriptor for `makeSpine`. `tabs` lists the EXTRA tabs; the
+// session-slot tab (`tabId === sessionId`) is always present and is added here
+// so a caller never has to remember it.
+interface SessionSpec {
+  id: string
+  project_id: string
+  status?: string
+  tabs?: string[]
+  terminals?: string[]
+  // The default "active" sort floats a working agent above the rest, so this is
+  // what lets a test tell the sort apart from the raw server order.
+  working?: boolean
+  // The tab the server remembers as last focused.
+  focused?: string
+  // Its tabs have a running process.
+  live?: boolean
+}
+
+function makeSpine(
+  sessions: SessionSpec[],
+  projects: { id: string; terminals?: string[] }[] = [],
+  // Terminals owned by nothing. They hang off no session and no project, which
+  // is exactly why they need their own argument here.
+  standaloneTerminals: string[] = [],
+): Spine {
+  return {
+    projects: projects.map((p) => ({
+      id: p.id,
+      name: p.id,
+      path: `/tmp/${p.id}`,
+    })) as unknown as Spine["projects"],
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      workspace: {
+        kind: "managed",
+        project_id: s.project_id,
+        branch_name: s.id,
+        initial_branch: "",
+        branch_provenance: "created",
+        source_branch: "",
+        worktree_path: "",
+      },
+      status: s.status ?? "active",
+      title: s.id,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      working: s.working ?? false,
+      last_focused_tab: s.focused ?? null,
+      needs_attention: false,
+      // The slot tab is a GENERATED id the session points at, deliberately not
+      // the session id, so a URL that names the agent by the bare form has to
+      // come from the pointer rather than from the two strings matching.
+      slot_tab_id: `${s.id}-slot`,
+      tabs: [{ id: `${s.id}-slot` }, ...(s.tabs ?? []).map((id) => ({ id }))].map((tab) =>
+        s.live ? { ...tab, has_live_process: true } : tab,
+      ),
+    })) as unknown as Spine["sessions"],
+    // Every terminal, of every owner, in one flat owner-tagged collection: the
+    // sessions' terminals in session order, then the projects' in project order.
+    terminals: [
+      ...sessions.flatMap((s) =>
+        (s.terminals ?? []).map((id) => ({
+          id,
+          label: id,
+          owner: { kind: "session", session_id: s.id },
+        })),
+      ),
+      ...projects.flatMap((p) =>
+        (p.terminals ?? []).map((id) => ({
+          id,
+          label: id,
+          owner: { kind: "project", project_id: p.id },
+        })),
+      ),
+      ...standaloneTerminals.map((id) => ({
+        id,
+        label: id,
+        owner: { kind: "standalone", cwd_label: "~/code" },
+      })),
+    ] as unknown as Spine["terminals"],
+    sidebar: { groups: [], agentless_start: null },
+  }
+}
+
+let spineBody: Spine = makeSpine([])
+
+// Holds the spine fetch open so a popstate can arrive while `state.spine` is
+// still null: a slow spine fetch, or a session/bfcache restore that comes back
+// with a back stack already. `releaseSpine` lets the response through.
+let spineGate: Promise<void> | null = null
+let releaseSpine: () => void = () => {}
+
+function holdSpine(): void {
+  spineGate = new Promise<void>((resolve) => {
+    releaseSpine = () => {
+      spineGate = null
+      resolve()
+    }
+  })
+}
+
+// Which run of the server answers `GET /api/v1/build`. A test that moves it and
+// reconnects sees the page reload, which `reloadPage` records rather than does.
+let serverRun = "run-1"
+let reloadedAtIndex: number | null = null
+vi.mock("./reloadPage", () => ({
+  reloadPage: () => {
+    reloadedAtIndex = index
+  },
+}))
+
+const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
+  const u = String(url)
+  if (u.includes("/api/v1/build")) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ version: "development", process: serverRun }),
+      text: async () => "",
+      headers: { get: () => null },
+    } as unknown as Response
+  }
+  if (u.includes("/api/v1/workspace")) {
+    if (spineGate) await spineGate
+    return {
+      ok: true,
+      status: 200,
+      json: async () => spineBody,
+      text: async () => "",
+      headers: { get: () => null },
+    } as unknown as Response
+  }
+  if (u.includes("/changes")) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ rev: 1, staged: [], unstaged: [] }),
+      text: async () => "",
+      headers: { get: () => null },
+    } as unknown as Response
+  }
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    text: async () => "{}",
+    headers: { get: () => null },
+  } as unknown as Response
+})
+
+class FakeWebSocket {
+  onopen: (() => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: (() => void) | null = null
+  binaryType = ""
+  readyState = 1
+  close() {}
+  send() {}
+}
+
+beforeEach(() => {
+  serverRun = "run-1"
+  reloadedAtIndex = null
+  spineBody = makeSpine([])
+  spineGate = null
+  releaseSpine = () => {}
+  leftApp = false
+  historyWriteError = null
+  deferTraversal = false
+  traversals = []
+  realistic = false
+  navigationApi = true
+  fakeNavigation.transition = null
+  popstateListeners = []
+  hashchangeListeners = []
+  vi.stubGlobal("localStorage", {
+    getItem: () => null,
+    setItem: () => {},
+    removeItem: () => {},
+  })
+  viewportWidth = 1280
+  vi.stubGlobal("window", {
+    get innerWidth() {
+      return viewportWidth
+    },
+    get navigation() {
+      return navigationApi ? fakeNavigation : undefined
+    },
+    addEventListener: (type: string, handler: () => void) => {
+      if (type === "popstate") popstateListeners.push(handler)
+      if (type === "hashchange") hashchangeListeners.push(handler)
+    },
+  })
+  vi.stubGlobal("history", fakeHistory)
+  vi.stubGlobal("WebSocket", FakeWebSocket)
+  vi.stubGlobal("fetch", fetchMock)
+  vi.resetModules()
+})
+
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
+  vi.unstubAllGlobals()
+})
+
+// Boot the store with `hash` as the URL the browser landed on and `sessions` as
+// the first spine. The fake history starts parked on yaran's own entry, one step
+// above the page that preceded it.
+async function loadStore(
+  hash: string,
+  sessions: SessionSpec[],
+  projects: { id: string; terminals?: string[] }[] = [],
+  standaloneTerminals: string[] = [],
+) {
+  entries = [OUTSIDE_ENTRY, hash === "" ? "/" : hash]
+  entryStates = [null, null]
+  entryKeys = [mintKey(), mintKey()]
+  index = YARAN_ENTRY_INDEX
+  loc = {
+    protocol: "http:",
+    host: "localhost:0",
+    hash,
+    pathname: "/",
+    search: "",
+  }
+  vi.stubGlobal("location", loc)
+  spineBody = makeSpine(sessions, projects, standaloneTerminals)
+  const mod = await import("./store")
+  await vi.waitFor(() => {
+    expect(mod.getSnapshot().spine).not.toBeNull()
+  })
+  return mod
+}
+
+// Boot the store WITHOUT waiting for the spine: the fetch is held open by
+// `holdSpine`, so the store comes up with `state.spine` still null and a
+// popstate can land in that window.
+async function loadStoreWithHeldSpine(hash: string, sessions: SessionSpec[]) {
+  entries = [OUTSIDE_ENTRY, hash === "" ? "/" : hash]
+  entryStates = [null, null]
+  entryKeys = [mintKey(), mintKey()]
+  index = YARAN_ENTRY_INDEX
+  loc = {
+    protocol: "http:",
+    host: "localhost:0",
+    hash,
+    pathname: "/",
+    search: "",
+  }
+  vi.stubGlobal("location", loc)
+  spineBody = makeSpine(sessions)
+  holdSpine()
+  const mod = await import("./store")
+  // The popstate listener registers at module scope, so it is live the moment
+  // the import resolves, spine or no spine.
+  await vi.waitFor(() => {
+    expect(popstateListeners.length).toBeGreaterThan(0)
+  })
+  expect(mod.getSnapshot().spine).toBeNull()
+  return mod
+}
+
+// Model a real popstate: the browser moves its own cursor onto another entry
+// and THEN fires the event. Written directly rather than through
+// `history.pushState`, because a push is the app's own write and fires nothing.
+function popstateTo(url: string): void {
+  entries = entries.slice(0, index + 1)
+  entryStates = entryStates.slice(0, index + 1)
+  entryKeys = entryKeys.slice(0, index + 1)
+  entries.push(url)
+  entryStates.push(null)
+  entryKeys.push(mintKey())
+  index = entries.length - 1
+  applyCurrentEntry()
+  if (realistic) {
+    setTimeout(() => {
+      for (const listener of [...hashchangeListeners]) listener()
+    }, 0)
+  }
+  for (const listener of [...popstateListeners]) listener()
+}
+
+// Push a new spine through the events socket, as the server does when the
+// session list changes (a delete, a create).
+async function pushSpine(
+  mod: Awaited<ReturnType<typeof loadStore>>,
+  sessions: SessionSpec[],
+  projects: { id: string; terminals?: string[] }[] = [],
+  standaloneTerminals: string[] = [],
+) {
+  spineBody = makeSpine(sessions, projects, standaloneTerminals)
+  mod.eventsSocket.onEvent({ event: "sessions.changed" })
+  // Wait on the ids, not just the session count: a push that only closes a
+  // project terminal or one tab leaves the count untouched, and a count-only
+  // wait would return before the apply had run. Terminals are one flat,
+  // owner-tagged collection now, so their identity here is id + owner.
+  const shape = (spine: Spine | null) =>
+    JSON.stringify({
+      sessions: spine?.sessions.map((s) => [s.id, s.tabs.map((t) => t.id)]) ?? [],
+      terminals: spine?.terminals.map((t) => [t.id, ownerKey(t.owner)]) ?? [],
+    })
+  const want = shape(spineBody)
+  await vi.waitFor(
+    () => {
+      expect(shape(mod.getSnapshot().spine)).toBe(want)
+    },
+    { interval: 2 },
+  )
+}
+
+// Open a terminal the agent did not have, the way creating one does: the
+// spine gains it and the reply focuses it. An agent opened before its first
+// terminal existed has an address that names no terminal, which is what gives
+// these journeys an entry for the agent alone behind the terminal's.
+async function openNewTerminal(
+  mod: Awaited<ReturnType<typeof loadStore>>,
+  sessionId: string,
+  terminalId: string,
+  others: SessionSpec[] = [],
+) {
+  await pushSpine(mod, [{ id: sessionId, project_id: "p1", terminals: [terminalId] }, ...others])
+  mod.selectTerminal(terminalId, { kind: "session", sessionId })
+}
+
+describe("a deleted agent never throws the user out of yaran", () => {
+  it("keeps the user inside the app after a deep-linked agent is deleted", async () => {
+    // The reported bug: arriving on `#/agent/s1` sets the terminal screen
+    // without pushing an entry, so collapsing the screen by stepping back
+    // walked past yaran onto the browser's new-tab page.
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    expect(leftApp).toBe(false)
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("lands on the next active agent when the focused one is deleted", async () => {
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    expect(loc.hash).toBe("#/agent/s2")
+  })
+
+  // ON A PHONE THE DESTINATION IS THE HUB, NOT THE NEXT AGENT.
+  //
+  // The two shells differ in what is on screen beside the terminal. A computer
+  // keeps the agents list in a pane, so landing on the next row shows the user
+  // both the deletion and where they ended up. A phone shows one screen at a
+  // time: the deleted agent filled it and the next agent fills it identically,
+  // so nothing on screen says the delete happened and it reads as having hit
+  // the wrong agent. Going up to the list is the honest answer, and it is a
+  // rewrite like every other vanish, because the entry it replaces names an
+  // agent that no longer exists.
+  describe("on a phone", () => {
+    beforeEach(() => {
+      viewportWidth = 390
+    })
+
+    it("lands on the hub when the focused agent is deleted, with a live one left", async () => {
+      const mod = await loadStore("#/agent/s1", [
+        { id: "s1", project_id: "p1" },
+        { id: "s2", project_id: "p1" },
+      ])
+      const entryCount = entries.length
+      await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+      expect(mod.getSnapshot().selectedSessionId).toBeNull()
+      expect(mod.getSnapshot().selectedTarget).toBeNull()
+      expect(mod.getSnapshot().mobileScreen).toBe("home")
+      // Home names nothing, so its entry carries no hash at all.
+      expect(loc.hash).toBe("")
+      // Rewritten, not pushed: no new entry, and the user is still in yaran.
+      expect(entries.length).toBe(entryCount)
+      expect(index).toBe(YARAN_ENTRY_INDEX)
+      expect(leftApp).toBe(false)
+    })
+
+    it("leaves theater with the agent it was showing, stranding nothing", async () => {
+      const mod = await loadStore("#/agent/s1", [
+        { id: "s1", project_id: "p1" },
+        { id: "s2", project_id: "p1" },
+      ])
+      mod.enterTheater()
+      expect(mod.getSnapshot().theater).toBe(true)
+      await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+      // The hub is chrome, so a mode whose whole point is hiding chrome cannot
+      // survive the trip to it.
+      expect(mod.getSnapshot().theater).toBe(false)
+      expect(mod.getSnapshot().selectedTarget).toBeNull()
+      expect(mod.getSnapshot().mobileScreen).toBe("home")
+      expect(leftApp).toBe(false)
+    })
+  })
+
+  it("skips an agent that detached in the same push that deleted the focused one", async () => {
+    // The neighbour must be detached only in the NEW spine, never in the old
+    // one. Starting it detached proved nothing: `nextActiveSessionId` walks the
+    // PREVIOUS list, which is itself filtered to active agents, so an
+    // already-detached neighbour never reaches the candidate check at all and
+    // the test passed with that check removed. Here s2 is active while the walk
+    // is built and dormant by the time it is consulted, which is the only shape
+    // that exercises it.
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+      { id: "s3", project_id: "p1" },
+    ])
+    await pushSpine(mod, [
+      { id: "s2", project_id: "p1", status: "detached" },
+      { id: "s3", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().selectedSessionId).toBe("s3")
+  })
+
+  it("picks the destination by the sort the user is looking at", async () => {
+    // Every other store-level vanish test boots with the default sort and no
+    // agent working, where every sort key produces the same order, so replacing
+    // the sort lookup with a hardcoded "manual" left them all green. s2 is
+    // working, so the default "active" sort floats it above s1 and the next row
+    // after s1 on screen is s3, not the s2 that raw server order would give.
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1", working: true },
+      { id: "s3", project_id: "p1" },
+    ])
+    await pushSpine(mod, [
+      { id: "s2", project_id: "p1", working: true },
+      { id: "s3", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().selectedSessionId).toBe("s3")
+  })
+
+  it("follows an in-flight drag order, not the order the server still reports", async () => {
+    // A drag is applied optimistically and only retired once the server echoes
+    // it back. Until then the list on screen is the overlay's order, so the
+    // destination has to be read off the overlay too, or the user lands on a row
+    // that is not the one below the agent that vanished.
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+      { id: "s3", project_id: "p1" },
+    ])
+    mod.setAgentSort("manual")
+    mod.reorderAgents(["s1", "s3", "s2"])
+    // The server has not confirmed the drag yet: its order is still s2 then s3.
+    await pushSpine(mod, [
+      { id: "s2", project_id: "p1" },
+      { id: "s3", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().selectedSessionId).toBe("s3")
+  })
+
+  it("falls back to the owning agent when a companion terminal closes", async () => {
+    // A session-owned terminal's PTY exits while the user is watching it. Its
+    // agent is alive one level up, so that is the destination: ejecting all the
+    // way to home threw away a position that still exists. The deep-link path
+    // already did this; the prune path used to disagree with it.
+    const mod = await loadStore("#/agent/s1/terminal/t1", [
+      { id: "s1", project_id: "p1", terminals: ["t1"] },
+    ])
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "terminal",
+      terminalId: "t1",
+      owner: { kind: "session", sessionId: "s1" },
+    })
+    const depth = index
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "s1-slot",
+    })
+    // Out loud: the address bar must stop naming the dead terminal.
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(index).toBe(depth)
+  })
+
+  it("shows the dock terminal to the right of the one that closed, else the one to its left", async () => {
+    const mod = await loadStore("#/agent/s1/terminal/t2", [
+      { id: "s1", project_id: "p1", terminals: ["t1", "t2", "t3"] },
+    ])
+    const depth = index
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", terminals: ["t1", "t3"] }])
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t3" })
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t1" })
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+    expect(index).toBe(depth)
+  })
+
+  it("leaves a stopped agent resting, not starting, when its last terminal closes under the user", async () => {
+    const mod = await loadStore("#/agent/s1/terminal/t1", [
+      { id: "s1", project_id: "p1", status: "detached", terminals: ["t1"] },
+    ])
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", status: "detached" }])
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "s1-slot",
+    })
+    expect(mod.getSnapshot().endedInViewTab).toBe("s1-slot")
+  })
+
+  it("pushes for a dock terminal brought to the front, and replaces for typing moving between parts", async () => {
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1", terminals: ["t1", "t2"] },
+    ])
+    const depth = index
+    mod.selectTerminal("t2", { kind: "session", sessionId: "s1" })
+    expect(index).toBe(depth + 1)
+    mod.chooseStackPart("s1", "s1-slot")
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent" })
+    // The address names the part typing goes to, and the entry behind already
+    // named the agent, so the page goes back onto it rather than copying it.
+    await vi.waitFor(() => expect(index).toBe(depth))
+    expect(loc.hash).toBe("#/agent/s1")
+  })
+
+  it.each([
+    ["the agent", "#/agent/s1", "detached"],
+    ["its terminal", "#/agent/s1/terminal/t1", "detached"],
+    ["an active agent's dormant first tab", "#/agent/s1", "active"],
+  ])(
+    "holds the dormant first tab when the last terminal ends with %s on screen",
+    async (_what, hash, status) => {
+      const mod = await loadStore(hash, [
+        { id: "s1", project_id: "p1", status, tabs: ["b2"], terminals: ["t1"] },
+      ])
+      await pushSpine(mod, [{ id: "s1", project_id: "p1", status, tabs: ["b2"] }])
+      expect(mod.getSnapshot().endedInViewTab).toBe("s1-slot")
+    },
+  )
+
+  it("lets an explicit selection from the list start the agent again", async () => {
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1", status: "detached", terminals: ["t1"] },
+    ])
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", status: "detached" }])
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().endedInViewTab).toBeNull()
+  })
+
+  it("moves typing to a part on screen without touching the address or history", async () => {
+    const mod = await loadStore("#/agent/s1/tab/b2", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1"] },
+    ])
+    const depth = index
+    mod.reconcileStackPart("s1", "t1")
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t1" })
+    expect(loc.hash).toBe("#/agent/s1/tab/b2")
+    expect(index).toBe(depth)
+    // The tab named by the link stays the one on top of the stack.
+    expect(mod.getSnapshot().stackTabs.s1).toBe("b2")
+  })
+
+  it("picks the neighbour by the dock as drawn, a drag still in flight included", async () => {
+    const mod = await loadStore("#/agent/s1/terminal/t2", [
+      { id: "s1", project_id: "p1", terminals: ["t1", "t2", "t3"] },
+    ])
+    mod.reorderDock("s1", ["t3", "t2", "t1"])
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", terminals: ["t1", "t3"] }])
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t1" })
+  })
+
+  it("goes home when a PROJECT terminal closes under the user", async () => {
+    // A project terminal has no agent above it, so home is the only honest
+    // destination.
+    const mod = await loadStore(
+      "#/project/p1/terminal/t1",
+      [{ id: "s1", project_id: "p1" }],
+      [{ id: "p1", terminals: ["t1"] }],
+    )
+    expect(mod.getSnapshot().selectedTarget).not.toBeNull()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], [{ id: "p1", terminals: [] }])
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(loc.hash).toBe("")
+  })
+
+  it("goes home when a STANDALONE terminal closes under the user", async () => {
+    // It has neither an agent nor a project above it, so home is the only
+    // honest destination, and the address bar must say so rather than going on
+    // naming a terminal that is gone.
+    const mod = await loadStore("#/terminal/solo-1", [], [], ["solo-1"])
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "terminal",
+      terminalId: "solo-1",
+      owner: { kind: "standalone" },
+    })
+    await pushSpine(mod, [], [], [])
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(loc.hash).toBe("")
+  })
+
+  it("goes home when no active agent is left", async () => {
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1", status: "detached" },
+    ])
+    await pushSpine(mod, [{ id: "s2", project_id: "p1", status: "detached" }])
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(leftApp).toBe(false)
+    expect(loc.hash).toBe("")
+    // The world changed under the user, so this is a REWRITE of the entry they
+    // were parked on, never a new position they can Back out of.
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("rewrites the entry rather than burying it under a new one", async () => {
+    // The position assertion the address-only test could not make: leaving the
+    // changes screen for another agent's terminal screen is a SCREEN change, so
+    // a destination that forgot to replace would push here.
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.openChangesScreen()
+    const depth = index
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(loc.hash).toBe("#/agent/s2")
+    expect(index).toBe(depth)
+    expect(entries).not.toContain("#/agent/s1/changes")
+  })
+
+  it("rewrites the entry when the focused TAB vanishes under the user", async () => {
+    // Another device closes the tab you are on while you are reading its
+    // changes. The fall back to the parent agent is not a move the user made,
+    // so it must not leave an entry behind for them to Back into.
+    const mod = await loadStore("#/agent/s1/tab/t2/changes", [
+      { id: "s1", project_id: "p1", tabs: ["t2"] },
+    ])
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    const depth = index
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "s1-slot",
+    })
+    // Only the invalid part of the route is corrected: the tab is gone, but
+    // changed files are session-scoped, so the screen being read survives.
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(loc.hash).toBe("#/agent/s1/changes")
+    expect(index).toBe(depth)
+    expect(entries).not.toContain("#/agent/s1/tab/t2/changes")
+  })
+})
+
+// A popstate can arrive before the first spine lands. Returning early in that
+// window on the theory that the boot deep-link restore will resolve the hash is
+// wrong: the boot restore resolves the BOOT hash, not the address the browser
+// has since moved to.
+describe("a popstate that beats the first spine is not dropped", () => {
+  it("adopts the agent the browser moved to while the spine was still loading", async () => {
+    const mod = await loadStoreWithHeldSpine("", [{ id: "s1", project_id: "p1" }])
+    popstateTo("#/agent/s1")
+    releaseSpine()
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().spine).not.toBeNull()
+    })
+    // The address bar named s1 the whole time; the app has to be showing it.
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    expect(loc.hash).toBe("#/agent/s1")
+  })
+
+  it("does not undo a Back to home that arrived before the spine", async () => {
+    const mod = await loadStoreWithHeldSpine("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+    ])
+    popstateTo("/")
+    releaseSpine()
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().spine).not.toBeNull()
+    })
+    // The boot link named s1, but the user has since left it. Restoring the
+    // boot hash here would both yank them back and overwrite the entry they
+    // landed on.
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(loc.hash).toBe("")
+    expect(entries[index]).toBe("/")
+  })
+
+  it("keeps the changes screen a pre-spine popstate named", async () => {
+    const mod = await loadStoreWithHeldSpine("", [{ id: "s1", project_id: "p1" }])
+    popstateTo("#/agent/s1/changes")
+    releaseSpine()
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().spine).not.toBeNull()
+    })
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(loc.hash).toBe("#/agent/s1/changes")
+  })
+})
+
+describe("moving in pushes, and Back unwinds exactly", () => {
+  it("returns to the starting history position after going in and back out", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    mod.openChangesScreen()
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+
+    history.back()
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    history.back()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+    expect(leftApp).toBe(false)
+  })
+
+  it("walks back through the agents it visited, newest first", async () => {
+    // Another agent is another position, so each selection pushes and Back
+    // retraces them in reverse rather than jumping straight home.
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+      { id: "s3", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.selectSession("s2")
+    mod.selectSession("s3")
+    expect(index).toBe(YARAN_ENTRY_INDEX + 3)
+    expect(loc.hash).toBe("#/agent/s3")
+
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(loc.hash).toBe("#/agent/s2")
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(loc.hash).toBe("#/agent/s1")
+    history.back()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+    expect(leftApp).toBe(false)
+  })
+
+  it("re-selects the previous agent on a popstate to its hash", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.selectSession("s2")
+    popstateTo("#/agent/s1")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+  })
+
+  it("selects a standalone terminal as a position of its own", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }], [], ["t9"])
+    mod.selectSession("s1")
+    const afterAgent = index
+    mod.selectTerminal("t9", { kind: "standalone" })
+    expect(index).toBe(afterAgent + 1)
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+  })
+
+  it("pushes a tab switch inside one agent, so Back walks its tabs", async () => {
+    // Every tab looked at is a position, like a browser tab: Back from an
+    // extra tab returns to the tab before it, then leaves the agent.
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["t2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s2")
+    mod.selectSession("s1")
+    const afterAgent = index
+    mod.selectTab("s1", "t2")
+    expect(index).toBe(afterAgent + 1)
+    expect(loc.hash).toBe("#/agent/s1/tab/t2")
+    // The agent now remembers the extra tab, and Back still lands on the first
+    // tab, the one that entry was written for.
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "s1-slot",
+    })
+    expect(loc.hash).toBe("#/agent/s1")
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+  })
+
+  it("leaves a Back that actually moves after ten trips in and out", async () => {
+    // Up is ordinary navigation to a different position, so it PUSHES like any
+    // other move. When it replaced instead, every trip in pushed an entry and
+    // every trip out overwrote the top one with home, so ten cycles silted up
+    // ten identical home entries and the browser's Back did nothing visible ten
+    // times before it did anything at all.
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    for (let i = 0; i < 10; i++) {
+      mod.selectSession("s1")
+      mod.navigateUp()
+    }
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    // No two neighbouring entries name the same position, so no Back is inert.
+    const inertSteps = entries.filter(
+      (entry, at) => at > YARAN_ENTRY_INDEX && entry === entries[at - 1],
+    )
+    expect(inertSteps).toEqual([])
+    // One Back from home lands back on the agent, not on another home entry.
+    history.back()
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    expect(loc.hash).toBe("#/agent/s1")
+  })
+
+  it("restores the selection named by the entry Back lands on", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.openChangesScreen()
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+  })
+
+  // A dialog, sheet or open menu holds ONE history entry of its own that names
+  // no new position, so the browser's Back closes it and leaves the page where
+  // it is. These drive the store through the same registry the shared UI
+  // primitives use; a test dialog's close does what a real one does, which is
+  // to stop being open.
+  describe("with a dialog open", () => {
+    // Open a dialog the way a shared primitive does. `closedByBack` counts the
+    // closes the store asked for; `cancel` is any other way out (Cancel, a
+    // confirm, Escape, the target vanishing).
+    async function openDialog() {
+      const modals = await import("./modalHistory")
+      const dialog = { closedByBack: 0, cancel: () => {} }
+      dialog.cancel = modals.registerModal(() => {
+        dialog.closedByBack += 1
+        dialog.cancel()
+      })
+      await settle()
+      return dialog
+    }
+
+    // The store reconciles history after the commit that opened or closed a
+    // dialog, so a test lets that turn pass before it looks.
+    function settle(): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    it("closes the dialog on Back and leaves the page and its address alone", async () => {
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      const dialog = await openDialog()
+      // One entry more, at the same address.
+      expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s1"])
+      expect(index).toBe(3)
+      history.back()
+      expect(dialog.closedByBack).toBe(1)
+      expect(loc.hash).toBe("#/agent/s1")
+      expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+      expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+      // And Back again moves the page as usual.
+      await settle()
+      history.back()
+      expect(mod.getSnapshot().selectedTarget).toBeNull()
+      expect(loc.hash).toBe("")
+      expect(dialog.closedByBack).toBe(1)
+    })
+
+    it("takes its entry away when it closes another way, so the next Back moves the page", async () => {
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      const dialog = await openDialog()
+      expect(index).toBe(3)
+      dialog.cancel()
+      await settle()
+      expect(index).toBe(2)
+      history.back()
+      expect(mod.getSnapshot().selectedTarget).toBeNull()
+      expect(loc.hash).toBe("")
+    })
+
+    it("leaves no entry behind when it closes and then navigates", async () => {
+      const mod = await loadStore("", [
+        { id: "s1", project_id: "p1" },
+        { id: "s2", project_id: "p1" },
+      ])
+      mod.selectSession("s1")
+      const dialog = await openDialog()
+      expect(index).toBe(3)
+      dialog.cancel()
+      mod.selectSession("s2")
+      await settle()
+      expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s2"])
+      expect(index).toBe(3)
+      history.back()
+      expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    })
+
+    it("leaves no entry behind when it navigates and then closes", async () => {
+      const mod = await loadStore("", [
+        { id: "s1", project_id: "p1" },
+        { id: "s2", project_id: "p1" },
+      ])
+      mod.selectSession("s1")
+      const dialog = await openDialog()
+      expect(index).toBe(3)
+      mod.selectSession("s2")
+      dialog.cancel()
+      await settle()
+      expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s2"])
+      expect(index).toBe(3)
+      expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+      history.back()
+      expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    })
+
+    it("closes nested dialogs one per Back, top first", async () => {
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      const outer = await openDialog()
+      const inner = await openDialog()
+      expect(index).toBe(4)
+      history.back()
+      expect(inner.closedByBack).toBe(1)
+      expect(outer.closedByBack).toBe(0)
+      await settle()
+      history.back()
+      expect(outer.closedByBack).toBe(1)
+      expect(loc.hash).toBe("#/agent/s1")
+      await settle()
+      history.back()
+      expect(mod.getSnapshot().selectedTarget).toBeNull()
+    })
+
+    it("hands a closing menu's entry to the dialog it opened", async () => {
+      // A menu item that opens a dialog closes the menu in the same commit.
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      const menu = await openDialog()
+      const modals = await import("./modalHistory")
+      menu.cancel()
+      let dialogClosed = 0
+      const release = modals.registerModal(() => {
+        dialogClosed += 1
+        release()
+      })
+      await settle()
+      expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s1"])
+      history.back()
+      expect(dialogClosed).toBe(1)
+      expect(menu.closedByBack).toBe(0)
+      expect(loc.hash).toBe("#/agent/s1")
+      await settle()
+      history.back()
+      expect(mod.getSnapshot().selectedTarget).toBeNull()
+    })
+
+    it("takes a menu's entry away before a phone's editor opens over it", async () => {
+      // On a phone the editor is this tab at the standalone address, reached by
+      // a fragment navigation rather than a store write, so it must wait for
+      // the menu's entry to go or it lands on top of it.
+      viewportWidth = 390
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      const menu = await openDialog()
+      expect(index).toBe(3)
+      mod.openEditor(agentRoot("s1"), "a.ts")
+      menu.cancel()
+      await settle()
+      expect(index).toBe(2)
+      expect(loc.hash).toBe("#/editor/agent/s1/file/a.ts")
+    })
+
+    it("steps onto the page behind when the agent under a dialog is deleted elsewhere", async () => {
+      viewportWidth = 390
+      const mod = await loadStore("#/agent/s2", [
+        { id: "s1", project_id: "p1" },
+        { id: "s2", project_id: "p1" },
+      ])
+      mod.navigateUp()
+      mod.selectSession("s1")
+      expect(entries).toEqual([OUTSIDE_ENTRY, "#/agent/s2", "/", "#/agent/s1"])
+      await openDialog()
+      expect(index).toBe(4)
+      // A browser takes the dialog's entry away as a later task.
+      deferTraversal = true
+      await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+      releaseTraversals()
+      await settle()
+      // Home was already the entry behind the agent, so the fallback lands on
+      // it rather than writing a second home over the agent's entry.
+      expect(mod.getSnapshot().mobileScreen).toBe("home")
+      expect(index).toBe(2)
+      expect(entries.slice(0, 3)).toEqual([OUTSIDE_ENTRY, "#/agent/s2", "/"])
+      history.back()
+      expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    })
+
+    it("never stops on a dialog's entry again once Back has closed it", async () => {
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      const dialog = await openDialog()
+      history.back()
+      expect(dialog.closedByBack).toBe(1)
+      await settle()
+      // Forward lands on the closed dialog's entry, which is no place at all.
+      history.forward()
+      await settle()
+      expect(index).toBe(2)
+      expect(dialog.closedByBack).toBe(1)
+      history.back()
+      expect(mod.getSnapshot().selectedTarget).toBeNull()
+    })
+
+    it("takes the dialog's entry away before a new server run reloads the page", async () => {
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      // The first open belongs to boot; the next one is a reconnect.
+      mod.eventsSocket.onOpen()
+      await settle()
+      await openDialog()
+      expect(index).toBe(3)
+      serverRun = "run-2"
+      mod.eventsSocket.onOpen()
+      await vi.waitFor(() => {
+        expect(reloadedAtIndex).not.toBeNull()
+      })
+      expect(reloadedAtIndex).toBe(2)
+    })
+
+    it("steps off a dialog's entry a previous load of the page left current", async () => {
+      // A reload while a dialog was open: the page comes back up on the
+      // dialog's entry, at the same address as the page entry behind it.
+      entries = [OUTSIDE_ENTRY, "#/agent/s1", "#/agent/s1"]
+      entryStates = [null, null, { yaranModal: { session: "an-earlier-load", id: 1 } }]
+      entryKeys = [mintKey(), mintKey(), mintKey()]
+      index = 2
+      loc = { protocol: "http:", host: "localhost:0", hash: "#/agent/s1", pathname: "/", search: "" }
+      vi.stubGlobal("location", loc)
+      spineBody = makeSpine([{ id: "s1", project_id: "p1" }])
+      const mod = await import("./store")
+      await vi.waitFor(() => {
+        expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+      })
+      await settle()
+      expect(index).toBe(1)
+      expect(loc.hash).toBe("#/agent/s1")
+    })
+
+    it("pushes no entry for a dialog that opened without the user's gesture", async () => {
+      // Chrome marks the entry a page pushes over without a user activation as
+      // one Back skips, which would carry Back past the page and out of yaran.
+      vi.stubGlobal("navigator", { userActivation: { isActive: false } })
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      await openDialog()
+      expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1"])
+    })
+
+    it("pushes no entry where the browser has no Navigation API", async () => {
+      navigationApi = false
+      const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+      mod.selectSession("s1")
+      await openDialog()
+      expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1"])
+      expect(index).toBe(2)
+    })
+  })
+})
+
+// The changes screen is a position like any other, so the URL has to keep
+// naming it. Resolving a route used to commit the target first and set the
+// screen second, so the URL was written from a half-applied route and the
+// `/changes` segment was stripped off the address the user was looking at.
+describe("the changes screen keeps its place in the URL", () => {
+  it("keeps the address it booted on", async () => {
+    const mod = await loadStore("#/agent/s1/changes", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    // Reload, bookmark and share all read this back, so it has to survive.
+    expect(loc.hash).toBe("#/agent/s1/changes")
+    expect(entries[index]).toBe("#/agent/s1/changes")
+  })
+
+  it("keeps the address it booted on for an extra tab", async () => {
+    const mod = await loadStore("#/agent/s1/tab/t2/changes", [
+      { id: "s1", project_id: "p1", tabs: ["t2"] },
+    ])
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(loc.hash).toBe("#/agent/s1/tab/t2/changes")
+  })
+
+  it("survives being visited by Back and Forward, repeatedly", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    mod.openChangesScreen()
+    expect(loc.hash).toBe("#/agent/s1/changes")
+
+    history.back()
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    history.forward()
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(loc.hash).toBe("#/agent/s1/changes")
+
+    // The second round trip is the one that used to fail: the first Forward
+    // rewrote the entry down to the bare agent, so the screen became
+    // permanently unreachable by Forward.
+    history.back()
+    history.forward()
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(loc.hash).toBe("#/agent/s1/changes")
+  })
+
+  it("keeps its segment when the agent it names comes back", async () => {
+    // The not-found retry resolves the route the URL still names, changes
+    // segment included.
+    const mod = await loadStore("#/agent/s1/changes", [])
+    expect(mod.getSnapshot().routeNotFound).not.toBeNull()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(loc.hash).toBe("#/agent/s1/changes")
+  })
+})
+
+describe("a URL naming a missing agent renders not-found", () => {
+  it("reports not-found for a deep link to an agent that does not exist", async () => {
+    const mod = await loadStore("#/agent/missing", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().routeNotFound).toEqual({
+      kind: "agent",
+      sessionId: "missing",
+    })
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+  })
+
+  it("reports not-found when Back lands on a deleted agent", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    mod.openChangesScreen()
+    // The changes entry is rewritten to the destination when s1 vanishes, but
+    // the terminal entry underneath still names s1.
+    await pushSpine(mod, [])
+    history.back()
+    expect(mod.getSnapshot().routeNotFound).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+    })
+  })
+
+  it("stops saying not-found once the agent is back in the spine", async () => {
+    // The agent is missing from the first spine (this client connected while it
+    // was being created, or a delete was rolled back) and arrives in a later
+    // one. Nothing else clears the flag: the user is looking at a dead-end
+    // screen whose single button is the only way out, so the spine that proves
+    // the URL right again has to retire it.
+    const mod = await loadStore("#/agent/s1", [])
+    expect(mod.getSnapshot().routeNotFound).not.toBeNull()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+  })
+
+  it("keeps not-found when a later spine still lacks the agent", async () => {
+    const mod = await loadStore("#/agent/s1", [])
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    expect(mod.getSnapshot().routeNotFound).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+    })
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+  })
+
+  it("clears not-found once a real destination is selected", async () => {
+    const mod = await loadStore("#/agent/missing", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().routeNotFound).not.toBeNull()
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+  })
+
+  it("leaves no not-found entry behind when the user takes its way out", async () => {
+    // "Back to agents" is a correction of a bad URL, not a place worth keeping:
+    // if it pushed home, the browser's Back would put the user straight back on
+    // the dead end they just left.
+    const mod = await loadStore("#/agent/missing", [
+      { id: "s1", project_id: "p1" },
+    ])
+    mod.navigateUp()
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(loc.hash).toBe("")
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+    expect(entries[index]).toBe("/")
+  })
+})
+
+// When the thing on screen disappears, the fallback lands on a position. When
+// the entry right behind the current one IS that position, rewriting the
+// current entry would leave two identical entries in a row, and the next Back
+// would change nothing on screen. So the fallback goes to that exact entry
+// instead, and only when yaran itself wrote it during this page load and the
+// browser can name it (the Navigation API).
+describe("a fallback onto the entry behind it steps back", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("goes back to the agent when its terminal closes, keeping a tab clicked on the way", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    await openNewTerminal(mod, "s1", "t1")
+    expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s1/terminal/t1"])
+    // A browser runs the traversal later, as a task.
+    deferTraversal = true
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(traversals.length).toBe(1)
+    // While the traversal is pending nothing writes the address: not a second
+    // spine running the prune again, and not a click.
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", tabs: ["t2"] }])
+    mod.selectTab("s1", "t2")
+    expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s1/terminal/t1"])
+    expect(index).toBe(3)
+    releaseTraversals()
+    // Landed on the agent's own entry, and the click made while it was
+    // pending wins over what that entry named. Another tab is a position of
+    // its own, so it is a step on from the entry landed on.
+    expect(index).toBe(3)
+    expect(entries.slice(2)).toEqual(["#/agent/s1", "#/agent/s1/tab/t2"])
+    expect(loc.hash).toBe("#/agent/s1/tab/t2")
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "t2",
+    })
+    history.back()
+    expect(loc.hash).toBe("#/agent/s1")
+    history.back()
+    expect(loc.hash).toBe("")
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(leftApp).toBe(false)
+  })
+
+  it("keeps another agent clicked while the traversal was pending", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    await openNewTerminal(mod, "s1", "t1", [{ id: "s2", project_id: "p1" }])
+    deferTraversal = true
+    await pushSpine(mod, [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s2")
+    releaseTraversals()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s2"])
+    expect(index).toBe(3)
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+  })
+
+  it("falls back again when the entry it was going to vanishes while pending", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    await openNewTerminal(mod, "s1", "t1", [{ id: "s2", project_id: "p1" }])
+    deferTraversal = true
+    await pushSpine(mod, [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    releaseTraversals()
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    // The landed entry named the deleted agent, so it is rewritten rather
+    // than left underneath for Back to reopen.
+    expect(index).toBe(2)
+    expect(entries.slice(0, 3)).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s2"])
+  })
+
+  it("never leaves yaran when the user's own Back is already queued", async () => {
+    // The agent was loaded straight after an outside page, so one entry
+    // further back than it is not yaran at all.
+    const mod = await loadStore("#/agent/s1", [{ id: "s1", project_id: "p1" }])
+    await openNewTerminal(mod, "s1", "t1")
+    expect(entries).toEqual([OUTSIDE_ENTRY, "#/agent/s1", "#/agent/s1/terminal/t1"])
+    deferTraversal = true
+    history.back()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    releaseTraversals()
+    expect(leftApp).toBe(false)
+    expect(index).toBe(1)
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+  })
+
+  it("rewrites the entry when the entry it would go to is gone by the time it runs", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    await openNewTerminal(mod, "s1", "t1")
+    deferTraversal = true
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    // The browser no longer holds an entry under that key.
+    entryKeys[2] = "replaced-elsewhere"
+    releaseTraversals()
+    await vi.waitFor(() => {
+      expect(entries[3]).toBe("#/agent/s1")
+    })
+    expect(index).toBe(3)
+    mod.openChangesScreen()
+    expect(loc.hash).toBe("#/agent/s1/changes")
+  })
+
+  it("rewrites the entry where the browser has no Navigation API", async () => {
+    navigationApi = false
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    await openNewTerminal(mod, "s1", "t1")
+    const back = vi.spyOn(fakeHistory, "back")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(back).not.toHaveBeenCalled()
+    expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s1"])
+    expect(index).toBe(3)
+  })
+
+  it("rewrites the entry while the browser is already traversing", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    await openNewTerminal(mod, "s1", "t1")
+    fakeNavigation.transition = { navigationType: "traverse" }
+    const traverse = vi.spyOn(fakeNavigation, "traverseTo")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(traverse).not.toHaveBeenCalled()
+    expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s1"])
+    expect(index).toBe(3)
+  })
+
+  it("steps back to the agent the user came from when the one on screen is deleted", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.selectSession("s2")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(index).toBe(2)
+    expect(loc.hash).toBe("#/agent/s1")
+    history.back()
+    expect(loc.hash).toBe("")
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+  })
+
+  it("steps back to home on a phone when the agent opened from the hub is deleted", async () => {
+    viewportWidth = 390
+    const mod = await loadStore("#/agent/s2", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.navigateUp()
+    mod.selectSession("s1")
+    expect(entries).toEqual([OUTSIDE_ENTRY, "#/agent/s2", "/", "#/agent/s1"])
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(index).toBe(2)
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+  })
+
+  it("steps back to home when not-found's way out names the home the user came from", async () => {
+    const mod = await loadStore("#/agent/s3", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+      { id: "s3", project_id: "p1" },
+    ])
+    mod.navigateUp()
+    mod.selectSession("s1")
+    mod.selectSession("s2")
+    await pushSpine(mod, [
+      { id: "s2", project_id: "p1" },
+      { id: "s3", project_id: "p1" },
+    ])
+    history.back()
+    expect(mod.getSnapshot().routeNotFound).toEqual({ kind: "agent", sessionId: "s1" })
+    mod.navigateUp()
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(index).toBe(2)
+    expect(loc.hash).toBe("")
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s3")
+  })
+
+  it("steps back to home when a vanished editor's unsaved text is discarded", async () => {
+    const mod = await loadStore("#/agent/s2", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.navigateUp()
+    mod.openEditor(agentRoot("s1"), "a.ts")
+    const root = mod.getSnapshot().editorTarget!.root
+    const tabId = mod.getSnapshot().editorTabs["agent:s1"].tabs[0].id
+    mod.editorSetTabDirty(root, tabId, true)
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    expect(mod.getSnapshot().editorTargetGone).toEqual(root)
+    mod.discardVanishedEditor()
+    expect(index).toBe(2)
+    expect(loc.hash).toBe("")
+    history.back()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+  })
+
+  it("rewrites the entry when the entry behind it is from an earlier page load", async () => {
+    const first = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    first.selectSession("s1")
+    await openNewTerminal(first, "s1", "t1")
+    // A reload: the history and its entries stay, and a new page loads on the
+    // terminal's address.
+    popstateListeners = []
+    hashchangeListeners = []
+    first.eventsSocket.dispose()
+    vi.resetModules()
+    const mod = await import("./store")
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().selectedTarget?.kind).toBe("terminal")
+    })
+    const traverse = vi.spyOn(fakeNavigation, "traverseTo")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    expect(traverse).not.toHaveBeenCalled()
+    expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s1", "#/agent/s1"])
+    expect(index).toBe(3)
+  })
+
+  it("rewrites the entry when the entry behind it is somewhere else", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", terminals: ["t1"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s2")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    const traverse = vi.spyOn(fakeNavigation, "traverseTo")
+    await pushSpine(mod, [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    expect(traverse).not.toHaveBeenCalled()
+    expect(entries).toEqual([OUTSIDE_ENTRY, "/", "#/agent/s2", "#/agent/s1"])
+    expect(index).toBe(3)
+  })
+})
+
+describe("a failing history write is reported as what it is", () => {
+  it("names the history write, not the fetch, when the browser refuses one", async () => {
+    // Safari rate-limits history calls, so a write CAN throw. Reporting that as
+    // "spine fetch failed" for a fetch that worked perfectly would send whoever
+    // reads the console at the network.
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    historyWriteError = new Error("SecurityError: too many history writes")
+    // Deleting the focused agent makes the apply navigate, which writes the URL.
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    const messages = warn.mock.calls.map((call) => String(call[0]))
+    warn.mockRestore()
+    expect(messages).toContain("[yaran] history write refused")
+    expect(messages).not.toContain(
+      "[yaran] spine fetch failed; will retry on reconnect",
+    )
+  })
+
+  it("does not throw out of a user's click", async () => {
+    // The guard used to sit only around the spine apply, so every user-driven
+    // navigation was unprotected: a refused write threw into the click handler
+    // AFTER the screen had already moved.
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    historyWriteError = new Error("SecurityError: too many history writes")
+    expect(() => mod.selectSession("s1")).not.toThrow()
+    expect(() => mod.openChangesScreen()).not.toThrow()
+    expect(() => mod.navigateUp()).not.toThrow()
+    expect(() => mod.selectSession("s2")).not.toThrow()
+    expect(() =>
+      mod.selectTerminal("t1", { kind: "project", projectId: "p1" }),
+    ).not.toThrow()
+    expect(() => mod.selectTab("s1", "s1")).not.toThrow()
+    const messages = warn.mock.calls.map((call) => String(call[0]))
+    warn.mockRestore()
+    // Refused, but reported: the address bar lags until the next write lands.
+    expect(messages).toContain("[yaran] history write refused")
+  })
+})
+
+describe("the in-app Up control never steps out of the app", () => {
+  it("would leave the app entirely if Up stepped history after a deep-link boot", async () => {
+    // The pin for the whole model: a deep-link boot pushes NOTHING, so the
+    // screen the user is looking at IS yaran's first entry. This is what any
+    // relative Back does from there, and it is why Up must name a destination.
+    await loadStore("#/agent/s1", [{ id: "s1", project_id: "p1" }])
+    history.back()
+    expect(leftApp).toBe(true)
+  })
+
+  it("goes home from a deep-linked terminal screen without leaving the app", async () => {
+    const mod = await loadStore("#/agent/s1", [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    const depth = index
+    mod.navigateUp()
+    expect(leftApp).toBe(false)
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(loc.hash).toBe("")
+    // Home is a different position, so it is PUSHED like any other move, and
+    // the deep-linked agent stays underneath it for Back to return to. What Up
+    // must never do is STEP, which from this very entry walks out of yaran.
+    expect(index).toBe(depth + 1)
+    history.back()
+    expect(leftApp).toBe(false)
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+  })
+
+  it("goes from the changes screen up to the agent it belongs to", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    mod.openChangesScreen()
+    const depth = index
+    mod.navigateUp()
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(loc.hash).toBe("#/agent/s1")
+    // Pushed, not rewritten: the agent screen is a position of its own, so Back
+    // returns to the changes screen the user just left rather than skipping it.
+    expect(index).toBe(depth + 1)
+    history.back()
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+  })
+
+  it("goes home from the changes screen when nothing is focused", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.navigateUp()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(leftApp).toBe(false)
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+})
+
+describe("a URL naming a terminal that has closed", () => {
+  it("says the project terminal is not found and keeps the address", async () => {
+    // The address names a terminal the workspace no longer runs. Saying so,
+    // with the address left as it is, beats landing somewhere the link did not
+    // name.
+    const mod = await loadStore(
+      "#/project/p1/terminal/gone",
+      [{ id: "s1", project_id: "p1" }],
+      [{ id: "p1", terminals: [] }],
+    )
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(mod.getSnapshot().routeNotFound).toEqual({
+      kind: "terminal",
+      terminalId: "gone",
+      owner: { kind: "project", projectId: "p1" },
+    })
+    expect(loc.hash).toBe("#/project/p1/terminal/gone")
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("says not found when the project itself is gone", async () => {
+    const mod = await loadStore(
+      "#/project/nope/terminal/t1",
+      [{ id: "s1", project_id: "p1" }],
+      [{ id: "p1", terminals: ["t1"] }],
+    )
+    expect(mod.getSnapshot().routeNotFound).toMatchObject({ kind: "terminal", terminalId: "t1" })
+    expect(loc.hash).toBe("#/project/nope/terminal/t1")
+  })
+
+  it("says not found on every arrival at a closed terminal, Back and Forward included, whoever owned it", async () => {
+    const mod = await loadStore(
+      "",
+      [
+        { id: "s1", project_id: "p1", terminals: ["t1"] },
+        { id: "s2", project_id: "p1" },
+      ],
+      [{ id: "p1", terminals: ["pt1"] }],
+      ["st1"],
+    )
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    mod.selectTerminal("pt1", { kind: "project", projectId: "p1" })
+    mod.selectTerminal("st1", { kind: "standalone" })
+    mod.selectSession("s2")
+    const visited = entries.slice()
+    await pushSpine(
+      mod,
+      [
+        { id: "s1", project_id: "p1" },
+        { id: "s2", project_id: "p1" },
+      ],
+      [{ id: "p1", terminals: [] }],
+      [],
+    )
+    const missing = () => mod.getSnapshot().routeNotFound
+    history.back()
+    expect(missing()).toEqual({ kind: "terminal", terminalId: "st1", owner: { kind: "standalone" } })
+    history.back()
+    expect(missing()).toMatchObject({ terminalId: "pt1", owner: { kind: "project", projectId: "p1" } })
+    history.back()
+    expect(missing()).toMatchObject({ terminalId: "t1", owner: { kind: "session", sessionId: "s1" } })
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+    history.go(1)
+    expect(missing()).toMatchObject({ terminalId: "pt1" })
+    // Nothing was rewritten or added: every entry still names what it named.
+    expect(entries).toEqual(visited)
+  })
+
+  it.each([
+    ["an agent's", "#/agent/s1/terminal/t1", { kind: "session", sessionId: "s1" }],
+    ["a project's", "#/project/p1/terminal/t1", { kind: "project", projectId: "p1" }],
+  ] as const)("retires %s terminal's not-found screen once the terminal is there", async (_w, hash, owner) => {
+    const mod = await loadStore(hash, [{ id: "s1", project_id: "p1" }], [{ id: "p1" }])
+    expect(mod.getSnapshot().routeNotFound).toMatchObject({ kind: "terminal", terminalId: "t1" })
+    const agentTerminals = owner.kind === "session" ? ["t1"] : []
+    const projectTerminals = owner.kind === "project" ? ["t1"] : []
+    await pushSpine(
+      mod,
+      [{ id: "s1", project_id: "p1", terminals: agentTerminals }],
+      [{ id: "p1", terminals: projectTerminals }],
+    )
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().selectedTarget).toEqual({ kind: "terminal", terminalId: "t1", owner })
+  })
+
+  it("retires the not-found screen once the terminal it names is there", async () => {
+    const mod = await loadStore("#/terminal/st1", [], [], [])
+    expect(mod.getSnapshot().routeNotFound).toMatchObject({ kind: "terminal", terminalId: "st1" })
+    await pushSpine(mod, [], [], ["st1"])
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "terminal",
+      terminalId: "st1",
+      owner: { kind: "standalone" },
+    })
+  })
+})
+
+describe("an agent's address names its tab and its terminal", () => {
+  it("restores both parts from an address naming both", async () => {
+    const mod = await loadStore("#/agent/s1/tab/b2/terminal/t2", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1", "t2"] },
+    ])
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "terminal",
+      terminalId: "t2",
+      owner: { kind: "session", sessionId: "s1" },
+    })
+    expect(mod.getSnapshot().stackTabs.s1).toBe("b2")
+    expect(loc.hash).toBe("#/agent/s1/tab/b2/terminal/t2")
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("pushes for every tab and dock terminal switch, and Back walks them in reverse", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1", "t2"] },
+    ])
+    mod.selectSession("s1")
+    expect(loc.hash).toBe("#/agent/s1")
+    const opened = index
+    mod.clickTab("s1", "b2")
+    mod.selectTerminal("t2", { kind: "session", sessionId: "s1" })
+    expect(index).toBe(opened + 2)
+    // A terminal is named with the tab on top of the agent above it.
+    expect(loc.hash).toBe("#/agent/s1/tab/b2/terminal/t2")
+
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toEqual({ kind: "agent", sessionId: "s1", tabId: "b2" })
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "s1-slot",
+    })
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(leftApp).toBe(false)
+    history.go(1)
+    history.go(1)
+    history.go(1)
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t2" })
+    expect(mod.getSnapshot().stackTabs.s1).toBe("b2")
+  })
+
+  it("makes a step of a link naming another of the agent's terminals", async () => {
+    const mod = await loadStore("#/agent/s1/terminal/t1", [
+      { id: "s1", project_id: "p1", terminals: ["t1", "t2"] },
+    ])
+    popstateTo("#/agent/s1/terminal/t2")
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t2" })
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t1" })
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+  })
+
+  it("writes nothing for a layout change", async () => {
+    const mod = await loadStore("#/agent/s1/terminal/t1", [
+      { id: "s1", project_id: "p1", terminals: ["t1"] },
+    ])
+    const before = entries.slice()
+    mod.setStackLayout("s1", "terminal")
+    mod.setStackLayout("s1", "agent")
+    expect(entries).toEqual(before)
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("shows the next terminal in the dock when the one in front ends under the agent", async () => {
+    const mod = await loadStore("#/agent/s1/terminal/t2", [
+      { id: "s1", project_id: "p1", terminals: ["t1", "t2", "t3"] },
+    ])
+    mod.chooseStackPart("s1", "s1-slot")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", terminals: ["t1", "t3"] }])
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent" })
+    expect(mod.getSnapshot().stackTerminals.s1).toBe("t3")
+    // The address names the agent, which is still there.
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("opens an agent bookmark as the agent once its terminals are gone", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", terminals: ["t1"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.selectSession("s2")
+    await pushSpine(mod, [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    history.back()
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent", sessionId: "s1" })
+  })
+
+  it("never leaves two identical entries side by side across typing moves, tab closes and Back", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1"] },
+    ])
+    mod.selectSession("s1")
+    mod.chooseStackPart("s1", "t1")
+    mod.chooseStackPart("s1", "s1-slot")
+    mod.clickTab("s1", "b2")
+    await mod.closeTab("s1", "b2")
+    await vi.waitFor(() => expect(mod.getSnapshot().selectedTarget).toMatchObject({ tabId: "s1-slot" }))
+    mod.chooseStackPart("s1", "t1")
+    history.back()
+    history.go(1)
+    const live = entries.slice(YARAN_ENTRY_INDEX, index + 1)
+    for (let i = 1; i < live.length; i++) expect(live[i]).not.toBe(live[i - 1])
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+  })
+
+  it("leaves no step behind for a tab closed on screen", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", tabs: ["b2", "b3"] }])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.clickTab("s1", "b3")
+    const depth = index
+    await mod.closeTab("s1", "b3")
+    await vi.waitFor(() => expect(mod.getSnapshot().selectedTarget).toMatchObject({ tabId: "b2" }))
+    // The closed tab's entry was the neighbour's own step, so the page went
+    // back onto that entry rather than writing a copy of it.
+    expect(index).toBe(depth - 1)
+    expect(loc.hash).toBe("#/agent/s1/tab/b2")
+  })
+
+  it("falls back out loud from Back onto a tab that has since closed", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.selectSession("s2")
+    await pushSpine(mod, [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "s1-slot",
+    })
+    // Onto the entry behind, which already named the agent, rather than a copy.
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(index).toBe(YARAN_ENTRY_INDEX + 1)
+  })
+
+  it("follows a link to a bare agent address to the tab it remembers, like a boot", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], focused: "b2" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s2")
+    popstateTo("#/agent/s1")
+    expect(mod.getSnapshot().selectedTarget).toEqual({ kind: "agent", sessionId: "s1", tabId: "b2" })
+  })
+
+  it("names only the part on screen on a phone", async () => {
+    viewportWidth = 390
+    const mod = await loadStore("#/agent/s1/tab/b2", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1"] },
+    ])
+    expect(loc.hash).toBe("#/agent/s1/tab/b2")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+  })
+})
+
+// A phone shows an agent or its terminals, never both, and the address names
+// the one on screen, so the switch between them is a move Back undoes.
+describe("a phone shows one part of an agent at a time", () => {
+  beforeEach(() => {
+    viewportWidth = 390
+    // The view is remembered per device, in the browser's own storage.
+    const mem = new Map<string, string>()
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+    })
+  })
+
+  it("switches between the agent and the terminal used last, pushing, and Back flips back", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1", "t2"] },
+    ])
+    mod.selectSession("s1")
+    mod.selectTerminal("t2", { kind: "session", sessionId: "s1" })
+    mod.clickTab("s1", "b2")
+    const at = index
+    mod.switchPhonePart("s1")
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t2" })
+    expect(loc.hash).toBe("#/agent/s1/terminal/t2")
+    mod.switchPhonePart("s1")
+    // The tab this page showed last, not the first one.
+    expect(mod.getSnapshot().selectedTarget).toEqual({ kind: "agent", sessionId: "s1", tabId: "b2" })
+    expect(index).toBe(at + 2)
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t2" })
+    history.back()
+    expect(mod.getSnapshot().selectedTarget).toEqual({ kind: "agent", sessionId: "s1", tabId: "b2" })
+  })
+
+  it("opens an agent on the view this device left it in", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", terminals: ["t1", "t2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    // The first time, the agent.
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent" })
+    mod.selectTerminal("t2", { kind: "session", sessionId: "s1" })
+    mod.selectSession("s2")
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t2" })
+    expect(loc.hash).toBe("#/agent/s1/terminal/t2")
+    mod.switchPhonePart("s1")
+    mod.selectSession("s2")
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent" })
+  })
+
+  it("opens a stopped agent tapped in the list on its running terminal", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", status: "detached", terminals: ["t1"] },
+    ])
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "t1" })
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+  })
+
+  // The address is the position. Memory and the stopped-agent rule decide only
+  // an arrival that names no part: a row of the list.
+  it("reloads an agent's address onto the agent, a stopped one's card included", async () => {
+    const mod = await loadStore("#/agent/s1", [
+      { id: "s1", project_id: "p1", status: "detached", terminals: ["t1"] },
+    ])
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent", sessionId: "s1" })
+    expect(loc.hash).toBe("#/agent/s1")
+  })
+
+  it("reloads onto the agent after it was chosen, though this device last showed a terminal", async () => {
+    const first = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    first.selectSession("s1")
+    first.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    first.switchPhonePart("s1")
+    expect(loc.hash).toBe("#/agent/s1")
+    first.eventsSocket.dispose()
+    vi.resetModules()
+    const reloaded = await loadStore(loc.hash, [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    expect(reloaded.getSnapshot().selectedTarget).toMatchObject({ kind: "agent", sessionId: "s1" })
+  })
+
+  it("keeps a tab on its address when another tab of the same browser shows the terminal", async () => {
+    // Two tabs share this browser's storage: one leaving the agent on its
+    // terminal must not move the other off the agent its address names.
+    const other = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    other.selectSession("s1")
+    other.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    other.eventsSocket.dispose()
+    vi.resetModules()
+    const mine = await loadStore("#/agent/s1", [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    expect(mine.getSnapshot().selectedTarget).toMatchObject({ kind: "agent", sessionId: "s1" })
+    expect(loc.hash).toBe("#/agent/s1")
+  })
+})
+
+describe("the changes screen needs something to show changes for", () => {
+  it("stays on home when opened with nothing focused", async () => {
+    // Without the guard the screen would read "changes" while the URL, which
+    // has no target to hang the suffix on, collapses to home: exactly the
+    // address-versus-state disagreement the router exists to remove.
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.openChangesScreen()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(loc.hash).toBe("")
+  })
+})
+
+// A terminal owned by nothing lives at an address that names no owner. It must
+// be reachable there, land on a real screen rather than falling through to the
+// hub, and write that same address back out.
+describe("a standalone terminal is addressable in its own right", () => {
+  it("boots onto the un-nested address and lands on a real screen", async () => {
+    const mod = await loadStore("#/terminal/solo-1", [], [], ["solo-1"])
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "terminal",
+      terminalId: "solo-1",
+      owner: { kind: "standalone" },
+    })
+    // The phone journey: NOT the home screen. Before the owner was a tagged
+    // value, a kind with no screen of its own fell through to the hub, which
+    // looks exactly like the app ignoring the tap.
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    expect(mod.getSnapshot().selectedSessionId).toBeNull()
+    // It came in on this address, so it stays on it rather than being rewritten.
+    expect(loc.hash).toBe("#/terminal/solo-1")
+    expect(leftApp).toBe(false)
+  })
+
+  it("writes the un-nested address when one is selected from elsewhere", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }], [], [
+      "solo-1",
+    ])
+    mod.selectTerminal("solo-1", { kind: "standalone" })
+    expect(loc.hash).toBe("#/terminal/solo-1")
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+  })
+
+  it("goes up to home, by naming it, never by stepping history", async () => {
+    const mod = await loadStore("#/terminal/solo-1", [], [], ["solo-1"])
+    const depth = index
+    mod.navigateUp()
+    expect(leftApp).toBe(false)
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(loc.hash).toBe("")
+    expect(index).toBe(depth + 1)
+  })
+})
+
+// (c) the editor rides the URL. The route grammar grows an editor suffix
+// (`#/agent/<sid>/editor[/<mode>/<encoded-path>]`), mutually exclusive with
+// the `/changes` suffix; opening the editor PUSHES one entry, in-editor file
+// switches REPLACE it, one Back closes the editor and keeps every draft, and
+// a hard refresh restores the editor and its open file from the address.
+// The two terminal targets whose editors are rooted at their own spawn
+// directory, shared by the grammar rows below.
+const standaloneTerminal = {
+  kind: "terminal" as const,
+  terminalId: "t1",
+  owner: { kind: "standalone" as const },
+}
+const projectTerminal = {
+  kind: "terminal" as const,
+  terminalId: "t2",
+  owner: { kind: "project" as const, projectId: "p1" },
+}
+
+describe("the editor rides the URL", () => {
+  function editorBuffer(path: string, draft: string) {
+    return {
+      path,
+      loadedPath: path,
+      loading: false,
+      loaded: "on disk",
+      draft,
+      binary: false,
+      readOnly: false,
+      diff: null,
+      diffLoadedPath: null,
+      diffLoadedSignal: "",
+      fileError: null,
+      diffError: null,
+      errorPath: null,
+    }
+  }
+
+  it("parses and serializes as exact inverses over the suffix cross-product", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const target = { kind: "agent" as const, sessionId: "s1", tabId: "s1" }
+    const routes = [
+      { target, changes: false, editor: null, standalone: false },
+      { target, changes: true, editor: null, standalone: false },
+      {
+        target,
+        changes: false,
+        editor: { mode: "file" as const, path: null },
+        standalone: false,
+      },
+      {
+        target,
+        changes: false,
+        editor: { mode: "file" as const, path: "src/a b.ts" },
+        standalone: false,
+      },
+      {
+        target,
+        changes: false,
+        editor: { mode: "diff" as const, path: "src/a b.ts" },
+        standalone: false,
+      },
+      // Files whose NAMES collide with the grammar's own keywords: a path
+      // literally called "editor" or "changes" must round-trip exactly (the
+      // parser picks the split point whose prefix is a real target, not the
+      // rightmost "/editor" in the string).
+      {
+        target,
+        changes: false,
+        editor: { mode: "file" as const, path: "editor" },
+        standalone: false,
+      },
+      {
+        target,
+        changes: false,
+        editor: { mode: "diff" as const, path: "docs/editor" },
+        standalone: false,
+      },
+      {
+        target,
+        changes: false,
+        editor: { mode: "file" as const, path: "changes" },
+        standalone: false,
+      },
+      // The standalone surface: the same editor positions at their un-nested
+      // whole-tab addresses.
+      {
+        target,
+        changes: false,
+        editor: { mode: "file" as const, path: null },
+        standalone: true,
+      },
+      {
+        target,
+        changes: false,
+        editor: { mode: "diff" as const, path: "src/a b.ts" },
+        standalone: true,
+      },
+      {
+        target,
+        changes: false,
+        editor: { mode: "file" as const, path: "editor" },
+        standalone: true,
+      },
+      // A TERMINAL root's editor, in-page and as its own tab, for both of the
+      // terminals that get one of their own. The session-owned shape is not
+      // here: it serializes as the agent's editor, which the row above already
+      // covers.
+      {
+        target: standaloneTerminal,
+        changes: false,
+        editor: { mode: "file" as const, path: null },
+        standalone: false,
+      },
+      {
+        target: standaloneTerminal,
+        changes: false,
+        editor: { mode: "file" as const, path: "notes/a b.md" },
+        standalone: false,
+      },
+      {
+        target: standaloneTerminal,
+        changes: false,
+        editor: { mode: "file" as const, path: "editor" },
+        standalone: false,
+      },
+      {
+        target: projectTerminal,
+        changes: false,
+        editor: { mode: "diff" as const, path: "src/a.ts" },
+        standalone: false,
+      },
+      {
+        target: standaloneTerminal,
+        changes: false,
+        editor: { mode: "file" as const, path: null },
+        standalone: true,
+      },
+      {
+        target: projectTerminal,
+        changes: false,
+        editor: { mode: "file" as const, path: "src/a b.ts" },
+        standalone: true,
+      },
+    ]
+    // The grammar gained a THEATER modifier, which every position shape may
+    // carry and no editor or changes shape may; both halves round-trip here.
+    const withTheater = routes.map((r) => ({ ...r, theater: false }))
+    const theaterRoutes = [
+      { target, changes: false, editor: null, standalone: false, theater: true },
+      {
+        target: { kind: "agent" as const, sessionId: "s1", tabId: "t2" },
+        changes: false,
+        editor: null,
+        standalone: false,
+        theater: true,
+      },
+      {
+        target: standaloneTerminal,
+        changes: false,
+        editor: null,
+        standalone: false,
+        theater: true,
+      },
+      {
+        target: projectTerminal,
+        changes: false,
+        editor: null,
+        standalone: false,
+        theater: true,
+      },
+    ]
+    for (const route of [...withTheater, ...theaterRoutes]) {
+      expect(mod.parseRoute(mod.routeHash(route))).toEqual(route)
+    }
+  })
+
+  it("spells the terminal editor addresses the way the affordances write them", async () => {
+    // Pinned literally, because these strings are bookmarks and menu hrefs:
+    // a change here is a change to addresses users already hold.
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const editor = { mode: "file" as const, path: null }
+    expect(
+      mod.routeHash({
+        target: standaloneTerminal,
+        changes: false,
+        editor,
+        standalone: false,
+      }),
+    ).toBe("#/terminal/t1/editor")
+    expect(
+      mod.routeHash({
+        target: projectTerminal,
+        changes: false,
+        editor,
+        standalone: false,
+      }),
+    ).toBe("#/project/p1/terminal/t2/editor")
+    expect(
+      mod.routeHash({
+        target: standaloneTerminal,
+        changes: false,
+        editor,
+        standalone: true,
+      }),
+    ).toBe("#/editor/terminal/t1")
+    expect(
+      mod.routeHash({
+        target: projectTerminal,
+        changes: false,
+        editor,
+        standalone: true,
+      }),
+    ).toBe("#/editor/project/p1/terminal/t2")
+  })
+
+  it("keeps an agent-terminal editor address meaning the AGENT's worktree", async () => {
+    // The address predates terminal roots and must not change meaning under
+    // anyone's bookmark: a terminal spawned in the agent's worktree opens the
+    // agent's editor, with its tabs, its diff mode and its changed files.
+    const mod = await loadStore("#/agent/s1/terminal/t9/editor", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().editorTarget?.root).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+    })
+  })
+
+  it("shows no editor over a missing agent's not-found screen, and keeps its address", async () => {
+    const mod = await loadStore("#/agent/gone/editor/file/x", [{ id: "s1", project_id: "p1" }])
+    expect(mod.getSnapshot().routeNotFound).toEqual({ kind: "agent", sessionId: "gone" })
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(loc.hash).toBe("#/agent/gone/editor/file/x")
+  })
+
+  it("normalizes the shapes the standalone grammar cannot carry", async () => {
+    // Standalone routes are session-slot only BY DEFINITION (the surface is
+    // the editor, not a tab strip), and they carry no changes screen. The
+    // serializer already drops both; the parser can only ever produce the
+    // normalized form, so serialize-then-parse lands on it.
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const editor = { mode: "file" as const, path: "a.ts" }
+    const normalized = {
+      target: { kind: "agent" as const, sessionId: "s1", tabId: "s1" },
+      changes: false,
+      editor,
+      standalone: true,
+      theater: false,
+    }
+    // An extra-tab target normalizes to the session-slot tab.
+    expect(
+      mod.parseRoute(
+        mod.routeHash({
+          target: { kind: "agent", sessionId: "s1", tabId: "t2" },
+          changes: false,
+          editor,
+          standalone: true,
+          theater: false,
+        }),
+      ),
+    ).toEqual(normalized)
+    // A changes flag is dropped: the standalone form has nowhere to say it.
+    expect(
+      mod.parseRoute(
+        mod.routeHash({
+          target: { kind: "agent", sessionId: "s1", tabId: "s1" },
+          changes: true,
+          editor,
+          standalone: true,
+          theater: false,
+        }),
+      ),
+    ).toEqual(normalized)
+  })
+
+  it("the serializer emits at most one suffix, and the parser tries editor first", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const target = { kind: "agent" as const, sessionId: "s1", tabId: "s1" }
+    // A route claiming both suffixes serializes to the editor form only.
+    expect(
+      mod.routeHash({
+        target,
+        changes: true,
+        editor: { mode: "file", path: null },
+      }),
+    ).toBe("#/agent/s1/editor")
+    // And an editor path that literally ends in "changes" stays an editor
+    // route: the parser tries the editor suffix first.
+    const tricky = mod.routeHash({
+      target,
+      changes: false,
+      editor: { mode: "file", path: "changes" },
+    })
+    expect(mod.parseRoute(tricky).editor).toEqual({
+      mode: "file",
+      path: "changes",
+    })
+  })
+
+  it("opening the editor pushes exactly one entry", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    const depth = index
+    mod.openEditor(agentRoot("s1"))
+    expect(loc.hash).toBe("#/agent/s1/editor")
+    expect(index).toBe(depth + 1)
+    history.back()
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+  })
+
+  it("opening from HOME is one push, one position: Back returns straight home", async () => {
+    // The selection move and the editor open are ONE navigation the user
+    // made, so they must land as one entry. Two pushes would bury an agent
+    // screen the user never visited between home and the editor.
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const depth = index
+    mod.openEditor(agentRoot("s1"), "a.ts")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(loc.hash).toBe("#/agent/s1/editor/file/a.ts")
+    expect(index).toBe(depth + 1)
+    history.back()
+    expect(loc.hash).toBe("")
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+  })
+
+  it("opening from ANOTHER AGENT is one push: Back returns to that agent", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s2")
+    const depth = index
+    mod.openEditor(agentRoot("s1"), "a.ts")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(loc.hash).toBe("#/agent/s1/editor/file/a.ts")
+    expect(index).toBe(depth + 1)
+    expect(entries).not.toContain("#/agent/s1")
+    history.back()
+    expect(loc.hash).toBe("#/agent/s2")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+  })
+
+  it("an in-editor file switch replaces the entry rather than piling up", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    mod.selectSession("s1")
+    mod.openEditor(agentRoot("s1"), "a.ts")
+    expect(loc.hash).toBe("#/agent/s1/editor/file/a.ts")
+    const depth = index
+    mod.editorSyncActiveTab(agentRoot("s1"), "file", "b.ts")
+    expect(loc.hash).toBe("#/agent/s1/editor/file/b.ts")
+    expect(index).toBe(depth)
+    mod.editorSyncActiveTab(agentRoot("s1"), "diff", "b.ts")
+    expect(loc.hash).toBe("#/agent/s1/editor/diff/b.ts")
+    expect(index).toBe(depth)
+  })
+
+  it("one Back closes the editor and keeps tabs, dirty flags, and drafts", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const drafts = await import("./editorDrafts")
+    mod.selectSession("s1")
+    mod.openEditor(agentRoot("s1"), "a.ts")
+    const tabId = mod.getSnapshot().editorTabs["agent:s1"].tabs[0].id
+    // The user typed: the store flag flips and the draft cache holds the text
+    // (in the app EditorBody does both; the store test does them directly).
+    mod.editorSetTabDirty(agentRoot("s1"), tabId, true)
+    drafts.storeRootDrafts(
+      "agent:s1",
+      new Map([[tabId, editorBuffer("a.ts", "typed and unsaved")]]),
+    )
+
+    history.back()
+    // Closed, and the dirty state did NOT gate the Back: there is no cancel,
+    // because nothing is lost.
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(mod.getSnapshot().editorTabs["agent:s1"].tabs).toHaveLength(1)
+    expect(mod.getSnapshot().editorTabs["agent:s1"].tabs[0].dirty).toBe(true)
+    expect(drafts.loadRootDrafts("agent:s1").get(tabId)?.draft).toBe(
+      "typed and unsaved",
+    )
+
+    // And Forward reopens it, tab intact, from the address alone.
+    history.forward()
+    expect(mod.getSnapshot().editorTarget).not.toBeNull()
+    expect(mod.getSnapshot().editorRoute).toEqual({
+      root: agentRoot("s1"),
+      mode: "file",
+      path: "a.ts",
+    })
+    drafts.clearRootDrafts("agent:s1")
+  })
+
+  it("a hard refresh restores the editor and its open file from the address", async () => {
+    const mod = await loadStore("#/agent/s1/editor/file/src%2Fa.ts", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().editorTarget).toEqual({
+      root: agentRoot("s1"),
+      initialPath: "src/a.ts",
+      initialMode: "file",
+    })
+    expect(mod.getSnapshot().editorRoute).toEqual({
+      root: agentRoot("s1"),
+      mode: "file",
+      path: "src/a.ts",
+    })
+    expect(mod.getSnapshot().editorTabs["agent:s1"].tabs.map((t) => t.path)).toEqual([
+      "src/a.ts",
+    ])
+    // A restore, not a move: the browser is already parked on this entry.
+    expect(loc.hash).toBe("#/agent/s1/editor/file/src%2Fa.ts")
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("clears the editor with a single URL write when its session vanishes", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.openEditor(agentRoot("s1"), "a.ts")
+    const depth = index
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    // The selection prune is the single URL writer in that pass; the editor
+    // prune only clears state.
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(loc.hash).toBe("#/agent/s2")
+    expect(index).toBe(depth)
+    expect(entries).not.toContain("#/agent/s1/editor/file/a.ts")
+  })
+
+  it("closes the editor when the selection moves to a different session", async () => {
+    // A non-UI caller can move the selection while the editor is open. The
+    // hash must always name the VISIBLE position, so the editor closes in
+    // the same commit rather than being merely hidden from the URL while
+    // its state lingers.
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.openEditor(agentRoot("s1"), "a.ts")
+    expect(mod.getSnapshot().editorRoute).not.toBeNull()
+    mod.selectSession("s2")
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(loc.hash).toBe("#/agent/s2")
+    // Re-selecting the editor's own session keeps it open (the guard is
+    // about a DIFFERENT session, not any selection at all).
+    mod.openEditor(agentRoot("s2"), "b.ts")
+    mod.selectSession("s2")
+    expect(mod.getSnapshot().editorRoute).not.toBeNull()
+  })
+
+  it("follows a fragment navigation delivered ONLY as hashchange", async () => {
+    // Some environments deliver an anchor's fragment navigation as a
+    // hashchange with no popstate. The store listens to both; this delivers
+    // ONLY the hashchange half, which a popstate-only router would miss.
+    const mod = await loadStore("#/editor/agent/s1", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    expect(hashchangeListeners.length).toBeGreaterThan(0)
+    entries = entries.slice(0, index + 1)
+    entries.push("#/agent/s1")
+    index = entries.length - 1
+    applyCurrentEntry()
+    for (const listener of hashchangeListeners) listener()
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+  })
+
+  it("boots the standalone editor surface from its own address", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/src%2Fa.ts", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().editorRoute).toEqual({
+      root: agentRoot("s1"),
+      mode: "file",
+      path: "src/a.ts",
+    })
+    expect(mod.getSnapshot().editorTabs["agent:s1"].tabs.map((t) => t.path)).toEqual([
+      "src/a.ts",
+    ])
+    // A restore of the address the tab opened on: nothing pushed, nothing
+    // rewritten.
+    expect(loc.hash).toBe("#/editor/agent/s1/file/src%2Fa.ts")
+    expect(index).toBe(YARAN_ENTRY_INDEX)
+  })
+
+  it("keeps the standalone grammar when switching files in the standalone tab", async () => {
+    const mod = await loadStore("#/editor/agent/s1", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    const depth = index
+    mod.editorSyncActiveTab(agentRoot("s1"), "file", "b.ts")
+    expect(loc.hash).toBe("#/editor/agent/s1/file/b.ts")
+    expect(index).toBe(depth)
+  })
+
+  it("leaves the standalone surface when the address stops naming it", async () => {
+    // The standalone header's open-in-yaran link is a plain hash anchor: the
+    // browser pushes the entry and fires popstate, and the URL, as always,
+    // is what decides which surface renders.
+    const mod = await loadStore("#/editor/agent/s1", [
+      { id: "s1", project_id: "p1" },
+    ])
+    popstateTo("#/agent/s1")
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    // The in-app address names no editor, so the editor state closed with it.
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+  })
+
+  it("escapes a dead standalone link onto a real surface, never the boot spinner", async () => {
+    // The blocker: a standalone tab whose agent is gone used to keep
+    // `standaloneEditor` true with `editorTarget` null, and the not-found
+    // screen's only button then landed the shell on its boot spinner forever.
+    const mod = await loadStore("#/editor/agent/missing", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().routeNotFound).toEqual({
+      kind: "agent",
+      sessionId: "missing",
+    })
+    // Clearing the editor state outside popstate also clears the surface
+    // flag, so not-found already renders in the ordinary shell.
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    mod.navigateUp()
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(loc.hash).toBe("")
+  })
+
+  it("swaps the standalone tab to the ordinary shell when its session vanishes", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/a.ts", [
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    const depth = index
+    await pushSpine(mod, [{ id: "s2", project_id: "p1" }])
+    // The selection prune stays the single URL writer and writes the in-app
+    // grammar; the editor prune clears the state AND the surface flag, so
+    // the tab renders the workspace rather than a spinner.
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(loc.hash).toBe("#/agent/s2")
+    expect(index).toBe(depth)
+  })
+
+  it("ends a standalone terminal editor out loud when its terminal closes", async () => {
+    // Ruling: an editor does not outlive its target. The terminal closing under
+    // an open editor is not a link arriving at a closed terminal, so there is
+    // no Terminal not found screen here: the tab says what happened and lands
+    // somewhere real.
+    const mod = await loadStore(
+      "#/editor/terminal/t1",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1"],
+    )
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    expect(mod.getSnapshot().editorTarget?.root).toEqual({
+      kind: "terminal",
+      terminalId: "t1",
+      owner: { kind: "standalone" },
+    })
+
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(loc.hash).toBe("")
+    expect(warnings.join(" | ")).toMatch(/terminal/i)
+  })
+
+  it("holds a standalone terminal editor open on unsaved text and asks first", async () => {
+    // The one case where leaving silently would lose something: the buffer is
+    // dirty and the root that could save it is gone. The tab keeps the text on
+    // screen so it can be copied out, and asks before discarding it.
+    const mod = await loadStore(
+      "#/editor/terminal/t1/file/notes.md",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1"],
+    )
+    const root = mod.getSnapshot().editorTarget!.root
+    const tabId = mod.getSnapshot().editorTabs["terminal:t1"].tabs[0].id
+    mod.editorSetTabDirty(root, tabId, true)
+
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+
+    expect(mod.getSnapshot().editorTargetGone).toEqual(root)
+    expect(mod.getSnapshot().editorTarget).not.toBeNull()
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+
+    mod.discardVanishedEditor()
+    expect(mod.getSnapshot().editorTargetGone).toBeNull()
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(loc.hash).toBe("")
+  })
+
+  it("asks once, so a spine that keeps arriving does not reopen the question", async () => {
+    const mod = await loadStore(
+      "#/editor/terminal/t1/file/notes.md",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1"],
+    )
+    const root = mod.getSnapshot().editorTarget!.root
+    const tabId = mod.getSnapshot().editorTabs["terminal:t1"].tabs[0].id
+    mod.editorSetTabDirty(root, tabId, true)
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+    mod.keepVanishedEditor()
+    expect(mod.getSnapshot().editorTargetGone).toBeNull()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+    expect(mod.getSnapshot().editorTargetGone).toBeNull()
+    expect(mod.getSnapshot().editorTarget).not.toBeNull()
+  })
+
+  it("closes an in-app overlay's clean editor out loud when its terminal closes", async () => {
+    // The overlay gets the SAME vanish handling as the standalone tab: a
+    // terminal dies routinely (a typed exit, a crash, another client closing
+    // it), and a clean buffer closes with the warning toast rather than
+    // silently, so the user learns why the editor went.
+    const mod = await loadStore(
+      "#/terminal/t1/editor/file/notes.md",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1"],
+    )
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(mod.getSnapshot().editorTabs["terminal:t1"]).toBeDefined()
+    const before = warnings.length
+
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    expect(mod.getSnapshot().editorTabs["terminal:t1"]).toBeUndefined()
+    expect(warnings.length).toBe(before + 1)
+    expect(warnings[before]).toMatch(/terminal/i)
+
+    // A second spine finds no open editor and warns nothing further.
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+    expect(warnings.length).toBe(before + 1)
+  })
+
+  it("holds an in-app overlay's dirty editor open and asks, like the standalone tab", async () => {
+    const mod = await loadStore(
+      "#/terminal/t1/editor/file/notes.md",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1"],
+    )
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    const root = mod.getSnapshot().editorTarget!.root
+    const tabId = mod.getSnapshot().editorTabs["terminal:t1"].tabs[0].id
+    mod.editorSetTabDirty(root, tabId, true)
+    const before = warnings.length
+
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+
+    // Held: the tabs and the open editor survive, the confirm is raised, and
+    // no warning toast doubles up on the question.
+    expect(mod.getSnapshot().editorTargetGone).toEqual(root)
+    expect(mod.getSnapshot().editorTarget).not.toBeNull()
+    expect(mod.getSnapshot().editorTabs["terminal:t1"]).toBeDefined()
+    expect(warnings.length).toBe(before)
+
+    // Discarding tears down exactly once: the state clears, and a further
+    // spine neither re-asks nor warns again.
+    mod.discardVanishedEditor()
+    expect(mod.getSnapshot().editorTargetGone).toBeNull()
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+    expect(mod.getSnapshot().editorTargetGone).toBeNull()
+    expect(warnings.length).toBe(before)
+  })
+
+  it("keeps an in-app overlay's dirty editor open on Keep, and asks only once", async () => {
+    const mod = await loadStore(
+      "#/terminal/t1/editor/file/notes.md",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1"],
+    )
+    const root = mod.getSnapshot().editorTarget!.root
+    const tabId = mod.getSnapshot().editorTabs["terminal:t1"].tabs[0].id
+    mod.editorSetTabDirty(root, tabId, true)
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+    expect(mod.getSnapshot().editorTargetGone).toEqual(root)
+
+    mod.keepVanishedEditor()
+    expect(mod.getSnapshot().editorTargetGone).toBeNull()
+    expect(mod.getSnapshot().editorTarget).not.toBeNull()
+
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+    expect(mod.getSnapshot().editorTargetGone).toBeNull()
+    expect(mod.getSnapshot().editorTarget).not.toBeNull()
+    expect(mod.getSnapshot().editorTabs["terminal:t1"]).toBeDefined()
+  })
+
+  it("a held dirty root does not shield OTHER vanished roots' tabs from the prune", async () => {
+    // The hold exists to protect exactly one thing: the dirty text whose root
+    // vanished. Tabs belonging to a DIFFERENT dead root have nothing on
+    // screen and no question pending, so they are pruned in the same pass.
+    const mod = await loadStore(
+      "#/terminal/t1/editor/file/notes.md",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1", "t2"],
+    )
+    const root = mod.getSnapshot().editorTarget!.root
+    const tabId = mod.getSnapshot().editorTabs["terminal:t1"].tabs[0].id
+    mod.editorSetTabDirty(root, tabId, true)
+    mod.editorOpenFile(
+      { kind: "terminal", terminalId: "t2", owner: { kind: "standalone" } },
+      "other.md",
+    )
+    expect(mod.getSnapshot().editorTabs["terminal:t2"]).toBeDefined()
+
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }], undefined, [])
+
+    expect(mod.getSnapshot().editorTargetGone).toEqual(root)
+    expect(mod.getSnapshot().editorTabs["terminal:t1"]).toBeDefined()
+    expect(mod.getSnapshot().editorTabs["terminal:t2"]).toBeUndefined()
+  })
+
+  it("refuses diff mode on a terminal root, wherever it is asked for", async () => {
+    // A terminal root has no HEAD to diff against and no diff route on the
+    // server, so the mode is not offered and is not honored either: a
+    // hand-typed or stale address opens the file rather than dead-ending on a
+    // request that cannot be served.
+    const mod = await loadStore(
+      "#/terminal/t1/editor/diff/notes.md",
+      [{ id: "s1", project_id: "p1" }],
+      undefined,
+      ["t1"],
+    )
+    expect(mod.getSnapshot().editorRoute?.mode).toBe("file")
+    expect(mod.getSnapshot().editorTabs["terminal:t1"].tabs[0].mode).toBe("file")
+
+    const root = mod.getSnapshot().editorTarget!.root
+    mod.editorOpenFile(root, "other.md", { mode: "diff" })
+    const tabs = mod.getSnapshot().editorTabs["terminal:t1"].tabs
+    expect(tabs[tabs.length - 1].mode).toBe("file")
+  })
+
+  it("pushes between two standalone editor roots", async () => {
+    // The key carries the subject as well as the surface, so one standalone tab
+    // retargeted from an agent to a terminal is a move Back comes out of.
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const editor = { mode: "file" as const, path: null }
+    expect(
+      mod.routePushKey({
+        target: { kind: "agent", sessionId: "s1", tabId: "s1" },
+        changes: false,
+        editor,
+        standalone: true,
+      }),
+    ).not.toBe(
+      mod.routePushKey({
+        target: standaloneTerminal,
+        changes: false,
+        editor,
+        standalone: true,
+      }),
+    )
+  })
+
+  it("boots the NORMAL shell on a standalone address with a malformed tail", async () => {
+    // Strict parse at boot: the surface flag comes from the same grammar the
+    // router uses, so a mangled link cannot marooon the tab on a standalone
+    // shell whose route resolves to nothing.
+    const mod = await loadStore("#/editor/agent/s1/file/%ZZ", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    expect(mod.getSnapshot().mobileScreen).toBe("home")
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+  })
+
+  it("renders not-found for an editor link to an agent that does not exist", async () => {
+    const mod = await loadStore("#/agent/missing/editor/file/a.ts", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().routeNotFound).toEqual({
+      kind: "agent",
+      sessionId: "missing",
+    })
+    expect(mod.getSnapshot().editorTarget).toBeNull()
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+  })
+})
+
+describe("the editor's view of its file rides the URL", () => {
+  const view = (patch: Record<string, unknown>) => ({
+    preview: false,
+    line: null,
+    top: null,
+    language: null,
+    encoding: null,
+    ...patch,
+  })
+
+  it("parses and serializes the view as exact inverses on both editor grammars", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const target = { kind: "agent" as const, sessionId: "s1", tabId: "s1" }
+    const views = [
+      ["file", "notes.md", view({ preview: true })],
+      ["file", "a.ts", view({ line: 40, top: 31, language: "python", encoding: "Shift_JIS" })],
+      ["diff", "logo.svg", view({ preview: true, encoding: "UTF-16LE" })],
+    ] as const
+    for (const standalone of [false, true]) {
+      for (const [mode, path, v] of views) {
+        const route = {
+          target,
+          changes: false,
+          editor: { mode, path, view: v },
+          standalone,
+          theater: false,
+        }
+        expect(mod.parseRoute(mod.routeHash(route))).toEqual(route)
+      }
+    }
+  })
+
+  it("keeps a literal ? in a hand-written path as part of the path", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    expect(mod.parseRoute("#/agent/s1/editor/file/a?b.md").editor).toEqual({
+      mode: "file",
+      path: "a?b.md",
+    })
+    expect(mod.parseRoute("#/agent/s1/editor/file/a?b=c.md").editor).toEqual({
+      mode: "file",
+      path: "a?b=c.md",
+    })
+    expect(mod.parseRoute("#/agent/s1/editor/file/a.md?view=preview").editor).toEqual({
+      mode: "file",
+      path: "a.md",
+      view: view({ preview: true }),
+    })
+  })
+
+  it("reads the first view value, so theater-then-preview on an editor is neither", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    const route = mod.parseRoute("#/agent/s1/editor/file/a.md?view=theater&view=preview")
+    expect(route.editor).toEqual({ mode: "file", path: "a.md" })
+    expect(route.theater).toBe(false)
+  })
+
+  it("degrades a bad value to the address without it, never to not-found", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+    expect(mod.parseRoute("#/editor/agent/s1/file/a.md?line=zz&lang=%E0").editor).toEqual({
+      mode: "file",
+      path: "a.md",
+    })
+    // A pane address ignores what only an editor can carry.
+    expect(mod.parseRoute("#/agent/s1?view=preview&line=3").target).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: "s1",
+    })
+  })
+
+  it("boots the standalone surface on an address that carries a view", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/notes.md?view=preview&line=8", [
+      { id: "s1", project_id: "p1" },
+    ])
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    expect(mod.getSnapshot().editorRoute).toEqual({
+      root: agentRoot("s1"),
+      mode: "file",
+      path: "notes.md",
+      view: view({ preview: true, line: 8 }),
+    })
+  })
+
+  it("writes a view change in place, and the one-shot spot leaves without the rest", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/a.md?line=8&top=2", [
+      { id: "s1", project_id: "p1" },
+    ])
+    const depth = entries.length
+    mod.editorSyncView(agentRoot("s1"), "a.md", { preview: true, language: "plaintext" })
+    expect(loc.hash).toBe("#/editor/agent/s1/file/a.md?view=preview&line=8&top=2&lang=plaintext")
+    mod.editorConsumeArrival(agentRoot("s1"), "a.md")
+    expect(loc.hash).toBe("#/editor/agent/s1/file/a.md?view=preview&lang=plaintext")
+    // Both are replaces: the same position, so Back has nothing new to undo.
+    expect(entries.length).toBe(depth)
+  })
+
+  it("restores the view on a navigation within the same root", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/a.md", [
+      { id: "s1", project_id: "p1" },
+    ])
+    entries = entries.slice(0, index + 1)
+    entries.push("#/editor/agent/s1/file/b.md?view=preview")
+    index = entries.length - 1
+    applyCurrentEntry()
+    for (const listener of hashchangeListeners) listener()
+    expect(mod.getSnapshot().editorRoute?.view).toEqual(view({ preview: true }))
+  })
+
+  it("keeps one arrival through a paired popstate and hashchange", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/a.md", [
+      { id: "s1", project_id: "p1" },
+    ])
+    entries = entries.slice(0, index + 1)
+    entries.push("#/editor/agent/s1/file/b.ts?line=5")
+    index = entries.length - 1
+    applyCurrentEntry()
+    for (const listener of popstateListeners) listener()
+    const first = mod.getSnapshot().editorRoute?.view
+    expect(first).toEqual(view({ line: 5 }))
+    for (const listener of hashchangeListeners) listener()
+    expect(mod.getSnapshot().editorRoute?.view).toBe(first)
+  })
+
+  it("moves the view with a rename or move of the file it names, in one step", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/src%2Fa.txt?lang=toml&enc=Shift_JIS", [
+      { id: "s1", project_id: "p1" },
+    ])
+    // A move of the folder it is in is the same rename, by prefix.
+    mod.editorRenameTabPaths(agentRoot("s1"), "src", "lib")
+    expect(mod.getSnapshot().editorRoute).toEqual({
+      root: agentRoot("s1"),
+      mode: "file",
+      path: "lib/a.txt",
+      view: view({ language: "toml", encoding: "Shift_JIS" }),
+    })
+    expect(loc.hash).toBe("#/editor/agent/s1/file/lib%2Fa.txt?lang=toml&enc=Shift_JIS")
+  })
+
+  it("drops a pending spot when the editor moves to another file first", async () => {
+    const mod = await loadStore("#/editor/agent/s1/file/a.ts?line=8&lang=python", [
+      { id: "s1", project_id: "p1" },
+    ])
+    mod.editorSyncActiveTab(agentRoot("s1"), "file", "b.ts", undefined)
+    expect(loc.hash).toBe("#/editor/agent/s1/file/b.ts")
+    // Reporting the same file again keeps what the address already says.
+    mod.editorSyncActiveTab(agentRoot("s1"), "file", "b.ts", view({ language: "toml" }))
+    expect(loc.hash).toBe("#/editor/agent/s1/file/b.ts")
+  })
+})
+
+// Back and Forward never stop twice on what looks like the same place, and an
+// entry whose tab has closed is walked past the way the user was going.
+describe("entries that went away, and identical neighbours", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 0))
+  function expectNoIdenticalNeighbours() {
+    const live = entries.slice(YARAN_ENTRY_INDEX)
+    for (let i = 1; i < live.length; i++) expect(live[i]).not.toBe(live[i - 1])
+  }
+
+  it("goes back onto the agent's entry when a press follows a terminal pill", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    mod.selectSession("s1")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    mod.chooseStackPart("s1", "s1-slot")
+    await settle()
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(index).toBe(YARAN_ENTRY_INDEX + 1)
+    expectNoIdenticalNeighbours()
+  })
+
+  it("rewrites in place when the press lands somewhere the entry behind is not", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1", "t2"] }])
+    mod.selectSession("s1")
+    mod.chooseStackPart("s1", "t1")
+    mod.selectTerminal("t2", { kind: "session", sessionId: "s1" })
+    mod.chooseStackPart("s1", "s1-slot")
+    await settle()
+    expect(loc.hash).toBe("#/agent/s1")
+    expectNoIdenticalNeighbours()
+  })
+
+  it("goes back onto the neighbour's entry when the terminal in front closes", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1", "t2"] }])
+    mod.selectSession("s1")
+    mod.selectTerminal("t2", { kind: "session", sessionId: "s1" })
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", terminals: ["t2"] }])
+    await vi.waitFor(() => expect(loc.hash).toBe("#/agent/s1/terminal/t2"))
+    expectNoIdenticalNeighbours()
+  })
+
+  it("stops naming a tab closed while typing goes to the dock", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1"] }])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.chooseStackPart("s1", "t1")
+    expect(loc.hash).toBe("#/agent/s1/tab/b2/terminal/t1")
+    await mod.closeTab("s1", "b2")
+    await vi.waitFor(() => expect(loc.hash).toBe("#/agent/s1/terminal/t1"))
+    expect(mod.getSnapshot().stackTabs.s1).toBe("s1-slot")
+    expectNoIdenticalNeighbours()
+  })
+
+  it("says out loud that a tab Back landed on has closed", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.selectSession("s2")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }, { id: "s2", project_id: "p1" }])
+    const before = warnings.length
+    history.back()
+    await settle()
+    expect(warnings.slice(before).join(" ")).toMatch(/tab/i)
+  })
+
+  it("walks Forward past a closed tab's entry to the place after it", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.selectSession("s2")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }, { id: "s2", project_id: "p1" }])
+    history.back()
+    await settle()
+    expect(loc.hash).toBe("#/agent/s1")
+    history.forward()
+    await settle()
+    await vi.waitFor(() => expect(mod.getSnapshot().selectedSessionId).toBe("s2"))
+    expect(loc.hash).toBe("#/agent/s2")
+  })
+
+  it("rewrites the address when a fold the user pressed moves typing, so a reload keeps the fold", async () => {
+    const mem = new Map<string, string>()
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+    })
+    const first = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1"], live: true }])
+    first.selectSession("s1")
+    first.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    first.setStackLayout("s1", "agent")
+    await settle()
+    expect(first.getSnapshot().selectedTarget).toMatchObject({ kind: "agent" })
+    expect(loc.hash).toBe("#/agent/s1")
+    expectNoIdenticalNeighbours()
+    // A reload of that address opens the agent alone, as it was left.
+    popstateListeners = []
+    hashchangeListeners = []
+    first.eventsSocket.dispose()
+    vi.resetModules()
+    const mod = await import("./store")
+    await vi.waitFor(() => expect(mod.getSnapshot().selectedTarget?.kind).toBe("agent"))
+    const { readStackMemory } = await import("./stackMemory")
+    expect(readStackMemory("s1").layout).toBe("agent")
+  })
+
+  it("opens the agent with its editor when the terminal an editor address passed through is gone", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", terminals: ["t1"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    mod.openEditor(agentRoot("s1"))
+    await settle()
+    mod.selectSession("s2")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }, { id: "s2", project_id: "p1" }])
+    history.back()
+    await settle()
+    expect(mod.getSnapshot().routeNotFound).toBeNull()
+    expect(mod.getSnapshot().editorTarget?.root).toEqual({ kind: "agent", sessionId: "s1" })
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+  })
+
+  it("treats Back onto an entry from before a reload as Back, not as a link", async () => {
+    // The history a reload left behind: the agent's first tab, then its extra
+    // tab, both written by the page before this one.
+    const foreign = (id: number) => ({ yaranRoute: "", yaranEntry: { session: "older-load", id, key: "k", prev: null } })
+    entries = [OUTSIDE_ENTRY, "#/agent/s1", "#/agent/s1/tab/b2"]
+    entryStates = [null, foreign(1), foreign(2)]
+    entryKeys = [mintKey(), mintKey(), mintKey()]
+    index = 2
+    loc = { protocol: "http:", host: "localhost:0", hash: "#/agent/s1/tab/b2", pathname: "/", search: "" }
+    vi.stubGlobal("location", loc)
+    spineBody = makeSpine([{ id: "s1", project_id: "p1", tabs: ["b2"], focused: "b2" }])
+    const mod = await import("./store")
+    await vi.waitFor(() => expect(mod.getSnapshot().selectedTarget).toMatchObject({ tabId: "b2" }))
+    await settle()
+    history.back()
+    await settle()
+    expect(mod.getSnapshot().selectedTarget).toEqual({ kind: "agent", sessionId: "s1", tabId: "s1-slot" })
+    expect(entries).toEqual([OUTSIDE_ENTRY, "#/agent/s1", "#/agent/s1/tab/b2"])
+  })
+})
+
+// Seen by a fuzzer and kept as the shortest journeys that broke a rule: the
+// address and history stay true through presses, folds, tabs closed here and
+// elsewhere, reloads and links, in the order a browser really delivers events.
+describe("journeys a fuzzer found", () => {
+  const settle = async (n = 6) => {
+    for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0))
+  }
+  function identicalNeighbour(): string | null {
+    const live = entries
+      .slice(YARAN_ENTRY_INDEX)
+      .filter((_, i) => {
+        const st = entryStates[i + YARAN_ENTRY_INDEX] as { yaranModal?: unknown } | null
+        return !(st && typeof st === "object" && "yaranModal" in st)
+      })
+    for (let i = 1; i < live.length; i++) if (live[i] === live[i - 1]) return live[i]
+    return null
+  }
+
+  it("goes forward onto the entry ahead when a press names it", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    mod.selectSession("s1")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    history.back()
+    await settle()
+    mod.chooseStackPart("s1", "t1")
+    await settle()
+    expect(identicalNeighbour()).toBeNull()
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+  })
+
+  it("goes forward onto the entry ahead when a fold the user pressed names it", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", terminals: ["t1"], live: true }])
+    mod.selectSession("s1")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    history.back()
+    await settle()
+    mod.setStackLayout("s1", "terminal")
+    await settle()
+    expect(identicalNeighbour()).toBeNull()
+  })
+
+  it("goes back onto the entry behind when the tab on screen closes elsewhere", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", tabs: ["b2"] }])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    await settle()
+    expect(identicalNeighbour()).toBeNull()
+    expect(loc.hash).toBe("#/agent/s1")
+  })
+
+  it("stops naming the tab on top of the dock when it closes elsewhere", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", tabs: ["b2"], terminals: ["t1"] }])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.chooseStackPart("s1", "t1")
+    await settle()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1", terminals: ["t1"] }])
+    await settle()
+    expect(loc.hash).toBe(mod.screenAddress())
+    expect(loc.hash).toBe("#/agent/s1/terminal/t1")
+  })
+
+  it("moves on past a closed tab when its fallback is the place Back left", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", tabs: ["b2"] }])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.clickTab("s1", "s1-slot")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }])
+    const before = mod.screenAddress()
+    history.back()
+    await settle()
+    expect(mod.screenAddress()).not.toBe(before)
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(leftApp).toBe(false)
+  })
+
+  it("goes back where it came from on Forward onto a closed newest tab, and says so", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s2")
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    history.back()
+    await settle()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }, { id: "s2", project_id: "p1" }])
+    const w0 = warnings.length
+    history.forward()
+    await settle()
+    // Forward has nowhere to go past the closed tab; the place it came from is
+    // the only honest landing, and the toast says that is where the user is.
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent", sessionId: "s1" })
+    expect(identicalNeighbour()).toBeNull()
+    expect(warnings.slice(w0)).toHaveLength(1)
+    expect(warnings[w0]).toMatch(/back/i)
+  })
+
+  it("raises one toast for a closed tab Back lands on, in the order a browser fires events", async () => {
+    realistic = true
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.selectSession("s2")
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }, { id: "s2", project_id: "p1" }])
+    const w0 = warnings.length
+    history.back()
+    await settle()
+    expect(warnings.length - w0).toBe(1)
+    expect(loc.hash).toBe("#/agent/s1")
+  })
+
+  it("names where a Forward walk past a closed tab landed", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.clickTab("s1", "b2")
+    mod.selectSession("s2")
+    history.back()
+    await settle()
+    history.back()
+    await settle()
+    await pushSpine(mod, [{ id: "s1", project_id: "p1" }, { id: "s2", project_id: "p1" }])
+    const w0 = warnings.length
+    history.forward()
+    await settle()
+    expect(mod.getSnapshot().selectedSessionId).toBe("s2")
+    expect(warnings.slice(w0)).toHaveLength(1)
+    expect(warnings[w0]).toMatch(/moved on to s2/)
+  })
+
+  // Only with the Navigation API: without it nothing tells this Back from a
+  // link, so the entry resolves as a link does and is rewritten, which is the
+  // tenet's stated fallback for such a browser.
+  it.each([true])(
+    "lands Back on an earlier load's bare agent entry without copying it (Navigation API %s)",
+    async (nav) => {
+      navigationApi = nav
+      const foreign = (id: number) => ({ yaranRoute: "", yaranEntry: { session: "older-load", id, key: "k", prev: null } })
+      entries = [OUTSIDE_ENTRY, "#/agent/s1", "#/agent/s1/tab/b2"]
+      entryStates = [null, foreign(1), foreign(2)]
+      entryKeys = [mintKey(), mintKey(), mintKey()]
+      index = 2
+      loc = { protocol: "http:", host: "localhost:0", hash: "#/agent/s1/tab/b2", pathname: "/", search: "" }
+      vi.stubGlobal("location", loc)
+      spineBody = makeSpine([{ id: "s1", project_id: "p1", tabs: ["b2"], focused: "b2" }])
+      const mod = await import("./store")
+      await vi.waitFor(() => expect(mod.getSnapshot().selectedTarget).toMatchObject({ tabId: "b2" }))
+      await settle()
+      history.back()
+      await settle()
+      expect(identicalNeighbour()).toBeNull()
+    },
+  )
+
+  it("follows a link to a bare agent address to its remembered tab when the browser fires both events", async () => {
+    realistic = true
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["b2"], focused: "b2" },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s2")
+    await settle()
+    popstateTo("#/agent/s1")
+    await settle()
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ tabId: "b2" })
+  })
+})
+
+// A seeded walk through everything that moves the address: selecting agents,
+// tab and terminal pills, the phone's agent/terminals switch, presses into a
+// part, layouts, theater, tabs and
+// terminals closing here and on another device, new ones, dialogs, reloads,
+// links, and runs of Back and Forward, in the order a real browser delivers
+// events. After every step:
+//
+// - no two neighbouring entries are the same address (dialog entries aside);
+// - the screen stands for the address in the bar, or a not-found screen does;
+// - every Back and Forward visibly changes the screen, except a Forward onto a
+//   closed tab with nothing after it, which goes back where it came from and
+//   says so;
+// - a landing on a closed tab raises exactly one toast saying so, and no other
+//   landing raises one.
+//
+// What the tenet itself exempts is exempted, and only that: without the
+// Navigation API a browser rewrites rather than going onto an exact entry, so
+// identical neighbours and still presses are allowed there; an entry written
+// before a reload is not this page's, so it is never gone onto; and a Forward
+// onto a closed dialog's entry with nothing ahead steps back the other way, onto
+// the place it came from.
+describe("a seeded walk keeps the address and history true", () => {
+  type Mod = Awaited<ReturnType<typeof loadStore>>
+  type World = { id: string; tabs: string[]; terminals: string[]; status?: string }[]
+  const SEEDS = 60
+  const STEPS = 50
+  const settle = async (n = 3) => {
+    for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0))
+  }
+  const specs = (w: World): SessionSpec[] =>
+    w.map((s) => ({
+      id: s.id,
+      project_id: "p1",
+      tabs: [...s.tabs],
+      terminals: [...s.terminals],
+      live: s.status === undefined,
+      status: s.status,
+    }))
+  // xorshift: the same seed walks the same steps on every machine.
+  function rng(seed: number) {
+    let x = seed * 2654435761 + 12345
+    return () => {
+      x ^= x << 13
+      x ^= x >>> 17
+      x ^= x << 5
+      return ((x >>> 0) % 1000000) / 1000000
+    }
+  }
+
+  async function walk(seed: number, nav: boolean, phone: boolean) {
+    realistic = true
+    navigationApi = nav
+    viewportWidth = phone ? 390 : 1280
+    const r = rng(seed)
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)]
+    const w: World = [
+      { id: "s1", tabs: ["b2", "b3"], terminals: ["t1", "t2"] },
+      { id: "s2", tabs: ["c2"], terminals: ["u1"] },
+      // Stopped with a terminal left running, so a row tap opens the terminal.
+      { id: "s3", tabs: [], terminals: ["v1"], status: "detached" },
+    ]
+    const mem = new Map<string, string>()
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+    })
+    let mod: Mod = await loadStore("", specs(w))
+    let modals = await import("./modalHistory")
+    const foreignKeys = new Set<string>()
+    const dialogs: (() => void)[] = []
+    const log: string[] = []
+    let n = 0
+    const fail = (why: string): never => {
+      throw new Error(`seed ${seed} (Navigation API ${nav}): ${why}\n  ${log.join("\n  ")}\nlast toasts ${JSON.stringify(warnings.slice(-2))}\nentries ${JSON.stringify(entries)} @${index}`)
+    }
+    const isModal = (i: number) => {
+      const st = entryStates[i] as { yaranModal?: unknown } | null
+      return !!st && typeof st === "object" && "yaranModal" in st
+    }
+    const screen = () => {
+      const s = mod.getSnapshot()
+      return `${mod.screenAddress()}|${JSON.stringify(s.routeNotFound)}|${modals.openModals().length}|${JSON.stringify(s.selectedTarget)}|${s.theater}`
+    }
+    const check = () => {
+      if (leftApp) fail("left the app")
+      const live = entries.map((url, i) => ({ url, i })).filter(({ i }) => i >= YARAN_ENTRY_INDEX && !isModal(i))
+      for (let k = 1; k < live.length; k++) {
+        const [a, b] = [live[k - 1], live[k]]
+        if (a.url !== b.url || !nav || foreignKeys.has(entryKeys[a.i]) || foreignKeys.has(entryKeys[b.i])) continue
+        fail(`identical neighbours ${a.url}`)
+      }
+      const s = mod.getSnapshot()
+      if (s.routeNotFound) {
+        if (mod.parseRoute(loc.hash).target === null) fail(`not-found at home address ${loc.hash}`)
+      } else if (mod.screenAddress() !== loc.hash) {
+        fail(`screen ${mod.screenAddress()} but address ${loc.hash}`)
+      }
+    }
+    const session = (id: string | null) => w.find((s) => s.id === id)
+    const press = async (dir: -1 | 1) => {
+      const target = index + dir
+      if (target < YARAN_ENTRY_INDEX || target >= entries.length) return
+      const url = entries[target]
+      // A tab the address is about: its own address, or the editor or changes
+      // screen over it, never a terminal named under it.
+      const tab = /#\/agent\/([^/?]+)\/tab\/([^/?]+)(\/editor.*|\/changes)?$/.exec(url.replace(/\?.*$/, ""))
+      const owner = tab ? session(tab[1]) : undefined
+      const closedTab = !isModal(target) && owner !== undefined && !owner.tabs.includes(tab![2])
+      const foreign = foreignKeys.has(entryKeys[target])
+      const before = screen()
+      const w0 = warnings.length
+      log.push(`${dir < 0 ? "BACK" : "FORWARD"} -> ${url}${closedTab ? " (closed tab)" : ""}`)
+      if (dir < 0) history.back()
+      else history.forward()
+      await settle(5)
+      const toasts = warnings.slice(w0).filter((m) => /tab has closed/.test(m)).length
+      // Forward onto a closed tab with nothing after it can only go back where
+      // it came from, and the toast says that is what happened.
+      const saidBack = warnings.slice(w0).some((m) => /nothing after it/.test(m))
+      if (screen() === before && nav && !isModal(target) && !foreign && !saidBack) {
+        fail(`${dir < 0 ? "Back" : "Forward"} did not visibly move (${before}; toasts ${JSON.stringify(warnings.slice(w0))})`)
+      }
+      if (closedTab && !foreign && toasts !== 1) fail(`closed-tab landing raised ${toasts} toasts`)
+      if (!closedTab && toasts !== 0) fail(`a plain landing raised ${toasts} closed-tab toasts`)
+    }
+    for (let step = 0; step < STEPS; step++) {
+      const roll = r()
+      const cur = session(mod.getSnapshot().selectedSessionId)
+      if (roll < 0.1) {
+        const s = pick(w)
+        log.push(`select ${s.id}`)
+        mod.selectSession(s.id)
+      } else if (roll < 0.2) {
+        const s = cur ?? pick(w)
+        const t = pick([`${s.id}-slot`, ...s.tabs])
+        log.push(`tab pill ${s.id} ${t}`)
+        mod.clickTab(s.id, t)
+      } else if (roll < 0.3) {
+        const s = cur ?? pick(w)
+        if (s.terminals.length > 0) {
+          const t = pick(s.terminals)
+          log.push(`terminal pill ${s.id} ${t}`)
+          mod.selectTerminal(t, { kind: "session", sessionId: s.id })
+        }
+      } else if (roll < 0.34) {
+        if (cur && cur.terminals.length > 0) {
+          log.push(`switch ${cur.id}`)
+          mod.switchPhonePart(cur.id)
+        }
+      } else if (roll < 0.38) {
+        // A phone has one part on screen, so nothing to press between.
+        if (cur && !phone) {
+          const st = mod.getSnapshot()
+          const parts = [st.stackTabs[cur.id] ?? `${cur.id}-slot`, ...(cur.terminals.length ? [st.stackTerminals[cur.id] ?? cur.terminals[0]] : [])]
+          const p = pick(parts)
+          log.push(`press ${cur.id} ${p}`)
+          mod.chooseStackPart(cur.id, p)
+        }
+      } else if (roll < 0.45) {
+        if (cur && !phone) {
+          const l = pick(["agent", "split", "terminal"] as const)
+          log.push(`layout ${cur.id} ${l}`)
+          mod.setStackLayout(cur.id, l)
+        }
+      } else if (roll < 0.5) {
+        log.push("theater")
+        mod.toggleTheater()
+      } else if (roll < 0.55) {
+        if (cur && cur.tabs.length > 0) {
+          const t = pick(cur.tabs)
+          log.push(`close tab here ${cur.id} ${t}`)
+          await mod.closeTab(cur.id, t)
+          cur.tabs = cur.tabs.filter((x) => x !== t)
+          await pushSpine(mod, specs(w))
+        }
+      } else if (roll < 0.6) {
+        const s = pick(w)
+        if (s.tabs.length > 0) {
+          const t = pick(s.tabs)
+          log.push(`close tab elsewhere ${s.id} ${t}`)
+          s.tabs = s.tabs.filter((x) => x !== t)
+          await pushSpine(mod, specs(w))
+        }
+      } else if (roll < 0.66) {
+        const s = r() < 0.6 && cur ? cur : pick(w)
+        if (s.terminals.length > 0) {
+          const t = pick(s.terminals)
+          log.push(`close terminal ${s.id} ${t}`)
+          s.terminals = s.terminals.filter((x) => x !== t)
+          await pushSpine(mod, specs(w))
+        }
+      } else if (roll < 0.69) {
+        const s = cur ?? pick(w)
+        const t = `n${++n}`
+        // Half the time the create's answer arrives before the workspace that
+        // lists the terminal, which is the order a fast create usually takes.
+        const early = r() < 0.5
+        log.push(`new terminal ${s.id} ${t}${early ? " (before the workspace lists it)" : ""}`)
+        s.terminals.push(t)
+        if (early) {
+          mod.selectTerminal(t, { kind: "session", sessionId: s.id })
+          await pushSpine(mod, specs(w))
+        } else {
+          await pushSpine(mod, specs(w))
+          mod.selectTerminal(t, { kind: "session", sessionId: s.id })
+        }
+      } else if (roll < 0.72) {
+        const s = cur ?? pick(w)
+        const t = `x${++n}`
+        log.push(`new tab ${s.id} ${t}`)
+        s.tabs.push(t)
+        await pushSpine(mod, specs(w))
+        mod.clickTab(s.id, t)
+      } else if (roll < 0.77) {
+        log.push("open dialog")
+        const close: { run: () => void } = { run: () => {} }
+        close.run = modals.registerModal(() => {
+          close.run()
+          dialogs.splice(dialogs.indexOf(close.run), 1)
+        })
+        dialogs.push(close.run)
+      } else if (roll < 0.8) {
+        const close = dialogs.pop()
+        if (close) {
+          log.push("cancel dialog")
+          close()
+        }
+      } else if (roll < 0.83) {
+        log.push(`reload at ${loc.hash}`)
+        for (const k of entryKeys) foreignKeys.add(k)
+        popstateListeners = []
+        hashchangeListeners = []
+        mod.eventsSocket.dispose()
+        dialogs.length = 0
+        vi.resetModules()
+        mod = (await import("./store")) as Mod
+        modals = await import("./modalHistory")
+        await vi.waitFor(() => expect(mod.getSnapshot().spine).not.toBeNull(), { interval: 2 })
+      } else if (roll < 0.86) {
+        const all = ["/", ...w.flatMap((s) => [
+          `#/agent/${s.id}`,
+          ...s.tabs.map((t) => `#/agent/${s.id}/tab/${t}`),
+          ...s.terminals.map((t) => `#/agent/${s.id}/terminal/${t}`),
+        ]), "#/agent/s1/tab/gone9", "#/agent/s1/terminal/gone8", "#/agent/s1/terminal/gone8/editor"]
+        const a = pick(all)
+        if (a !== (loc.hash || "/")) {
+          log.push(`link ${a}`)
+          popstateTo(a)
+        }
+      } else {
+        const dir = roll < 0.94 ? -1 : 1
+        for (let k = 1 + Math.floor(r() * 3); k > 0; k--) {
+          await press(dir)
+          check()
+        }
+      }
+      await settle()
+      check()
+    }
+  }
+
+  for (const [nav, phone, seeds] of [
+    [true, false, SEEDS],
+    [false, false, SEEDS],
+    [true, true, SEEDS / 3],
+    [false, true, SEEDS / 3],
+  ] as const) {
+    it(`holds for ${seeds} seeds of ${STEPS} steps (Navigation API ${nav}${phone ? ", on a phone" : ""})`, async () => {
+      for (let seed = 1; seed <= seeds; seed++) {
+        // Each seed is a fresh page in a fresh tab: no listener, warning or
+        // queued traversal of the seed before it may reach this one.
+        popstateListeners = []
+        hashchangeListeners = []
+        leftApp = false
+        traversals = []
+        warnings.length = 0
+        vi.resetModules()
+        await walk(seed, nav, phone)
+        const store = await import("./store")
+        store.eventsSocket.dispose()
+        await settle(8)
+      }
+    }, 300_000)
+  }
+})
+

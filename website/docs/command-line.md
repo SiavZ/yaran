@@ -1,104 +1,104 @@
 ---
 title: The command line
-description: List and change projects, agents, tabs, terminals, macros and the rest from a shell, on this machine or a dux somewhere else, with output a script can read and exit codes it can trust.
+description: List and change projects, agents, tabs, terminals, macros and the rest from a shell, on this machine or a yaran somewhere else, with output a script can read and exit codes it can trust.
 group: Guides
 order: 55
 ---
 
-dux is a terminal UI, a web UI, and a command line. Everything you can see in the sidebar
+yaran is a terminal UI, a web UI, and a command line. Everything you can see in the sidebar
 you can list from a shell, and most of what you can do to it you can do from a script:
 
 ```bash
-dux projects ls
-dux agents add --project web --name fix-login
-dux agents tabs add fix-login --provider codex
-dux agents rm fix-login --delete-worktree
-dux macros add Review "review this diff for bugs" --surface agent
+yaran projects ls
+yaran agents add --project web --name fix-login
+yaran agents tabs add fix-login --provider codex
+yaran agents rm fix-login --delete-worktree
+yaran macros add Review "review this diff for bugs" --surface agent
 ```
 
 The commands are nouns with verbs under them, the way `docker` does it: `ls` (also
 `list`), `show`, `add`, `rm` (also `remove`), and `start` and `stop` where they make
-sense. `--help` works at every level, from `dux --help` down to `dux agents tabs rm --help`,
+sense. `--help` works at every level, from `yaran --help` down to `yaran agents tabs rm --help`,
 and the [command line reference](/docs/cli-reference) lists every flag of every command
 with that same text.
 
-## It talks to a running dux
+## It talks to a running yaran
 
-Projects, agents, tabs, worktrees, terminals and connections live in the dux that is
-running, so the command line asks that dux rather than reading anything behind its back.
-Any dux will do: the terminal UI, the web server you flipped to, the terminal UI serving
-in the background, or `dux server`. Nothing needs turning on.
+Projects, agents, tabs, worktrees, terminals and connections live in the yaran that is
+running, so the command line asks that yaran rather than reading anything behind its back.
+Any yaran will do: the terminal UI, the web server you flipped to, the terminal UI serving
+in the background, or `yaran server`. Nothing needs turning on.
 
-With no dux running, those commands stop and say so:
+With no yaran running, those commands stop and say so:
 
 ```text
-dux isn't running; start it with "dux" or "dux server"
+yaran isn't running; start it with "yaran" or "yaran server"
 ```
 
-A dux that is running but cannot be reached says that instead, with its PID, and why
-when dux knows. The usual fix is to restart it. A dux that has only just started gets up
-to two seconds to open its socket; if it still has not, the command says dux is still
+A yaran that is running but cannot be reached says that instead, with its PID, and why
+when yaran knows. The usual fix is to restart it. A yaran that has only just started gets up
+to two seconds to open its socket; if it still has not, the command says yaran is still
 starting, and trying again in a moment is the fix.
 
 The resources that live in `config.toml` (macros, providers, keys, themes and the global
-environment) do not need dux running; [see below](#resources-kept-in-configtoml).
+environment) do not need yaran running; [see below](#resources-kept-in-configtoml).
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| [`dux projects ls`](/docs/cli-reference#dux-projects-ls), `show <project>` | Projects, with their branch and how many agents each has. |
-| [`dux projects add <path>`](/docs/cli-reference#dux-projects-add) | Adds a project. `--name` names it, `--checkout-default` checks the repository's default branch out first, and `--init` makes a plain folder a git repository with a first commit. |
-| [`dux projects rm <project>`](/docs/cli-reference#dux-projects-rm) | Removes a project and its agents from dux. Their worktrees stay on disk unless you add `--delete-worktrees`; then the lines before the confirmation say, for each worktree, how many of its files are not committed and will be deleted with it, as the agent delete dialogs do, whenever that is any at all (or that dux could not look). |
-| [`dux projects worktrees ls <project>`](/docs/cli-reference#dux-projects-worktrees-ls) | Every worktree the project has, which agent holds it, and whether it is dirty, in use, or being removed. |
-| [`dux agents ls`](/docs/cli-reference#dux-agents-ls), `show <agent>` | Agents and their state. `--project` keeps one project's; `--worktrees` prints just each agent's id and folder. |
-| [`dux agents add`](/docs/cli-reference#dux-agents-add) | Creates an agent: in a project, from a pull request, as a fork, or in a folder of your own. See [Creating an agent](#creating-an-agent). |
-| [`dux agents rm <agent>`](/docs/cli-reference#dux-agents-rm) | Deletes an agent. `--delete-worktree` removes its worktree too, and the line before the confirmation says how many of the worktree's files are not committed and will be deleted with it, as the delete dialogs do, whenever that is any at all (or that dux could not look). `--delete-branch` or `--keep-branch` decides the branch the worktree is on, and `--delete-other-branches` or `--keep-other-branches` decides every other branch it has been on, like the delete dialogs' two boxes. With a branch flag and `--delete-worktree`, the command reads the agent's branches first: the confirmation names each branch it will delete, the line before it says how many commits deleting them loses when that is any at all, and each is deleted only at the commit it pointed at when the command read it. The project's own branch is never deleted, and the confirmation says so. When a branch flag names only one of the two, keep or delete, the other is decided as the dialogs' box starts, ticked or not, and the confirmation names what that deletes and what it keeps, so `--keep-other-branches` alone still deletes the branch dux created for the agent when the dialog would. When dux could not read the branch the worktree is on, the confirmation says that branch is kept. When git could not count the unpushed commits a branch would lose, that branch is kept and the line before the confirmation says why, as the dialogs do; a flag asking to delete it is refused before anything is asked. With no branch flag at all, the command reads no branches and counts no commits, so none of that applies: the confirmation names no branch, and dux decides by who made each one, so only the branch dux created for the agent goes, and only while dux can prove it is still that branch. Without `--delete-worktree` every branch is kept. The delete flags need `--delete-worktree`, because git will not delete a branch a worktree still has checked out. |
-| [`dux agents stop <agent>`](/docs/cli-reference#dux-agents-stop), `start <agent>` | Stops everything an agent runs, or starts it again. |
-| [`dux agents tabs ls <agent>`](/docs/cli-reference#dux-agents-tabs-ls) | The agent's provider tabs and whether each is running. |
-| [`dux agents tabs add <agent>`](/docs/cli-reference#dux-agents-tabs-add) | Adds a tab, running the project's provider unless `--provider` names another. |
-| [`dux agents tabs rm`](/docs/cli-reference#dux-agents-tabs-rm), `start`, `stop` `<agent> <tab>` | Closes, starts or stops one tab. Stopping keeps the tab, closing removes it. |
-| [`dux agents prs ls <agent>`](/docs/cli-reference#dux-agents-prs-ls) | The agent's pull requests in its order, the one its banner shows first, then the hidden ones, each with its link. See [Pull requests](#pull-requests). |
-| [`dux agents prs attach <agent> <ref>`](/docs/cli-reference#dux-agents-prs-attach) | Attaches a pull request from any repository, beside the ones the agent has. |
-| [`dux agents prs detach`](/docs/cli-reference#dux-agents-prs-detach), [`hide`](/docs/cli-reference#dux-agents-prs-hide), [`unhide`](/docs/cli-reference#dux-agents-prs-unhide) `<agent> <ref>` | Detaches one you attached, hides one dux found, or shows a hidden one again in the place it had. |
-| [`dux agents prs sort <agent> auto\|manual`](/docs/cli-reference#dux-agents-prs-sort) | Orders the pull requests automatically (open, draft, merged, closed, newest first) or in your own order. |
-| [`dux agents prs move <agent> <ref> <to>`](/docs/cli-reference#dux-agents-prs-move) | Moves one to the `top`, `up`, `down`, or to a position counted from 1. |
-| [`dux agents prs branches <agent>`](/docs/cli-reference#dux-agents-prs-branches) | Every branch the agent's worktree has been on, the current one first and the rest newest first, with its former names and its pull requests, then the pull requests on none of them: the ones you attached, and any dux found on a branch not listed. |
-| [`dux terminals ls`](/docs/cli-reference#dux-terminals-ls) | Every terminal and who owns it. |
-| [`dux terminals add`](/docs/cli-reference#dux-terminals-add) | Opens a terminal: in an agent's worktree with `--agent`, at a project's root with `--project`, or a standalone one in your home folder with neither. |
-| [`dux terminals rm <terminal>`](/docs/cli-reference#dux-terminals-rm) | Closes a terminal. |
-| [`dux macros ls`](/docs/cli-reference#dux-macros-ls), `show`, `add`, `rm` | Macros. `add <name> <text>` takes `--surface agent`, `terminal` or `both` (`agent` by default) and replaces a macro of the same name. |
-| [`dux providers ls`](/docs/cli-reference#dux-providers-ls), `show <name>` | Providers, built-in and your own. |
-| [`dux keys ls`](/docs/cli-reference#dux-keys-ls) | The terminal UI's keybindings. |
-| [`dux themes ls`](/docs/cli-reference#dux-themes-ls) | The themes dux can load, and which one is in use. |
-| [`dux env ls`](/docs/cli-reference#dux-env-ls), `set <name>`, `rm <name>` | The global environment. |
-| [`dux server logs`](/docs/cli-reference#dux-server-logs), `dux server connections ls` | The server's log (`-f` follows it, `--lines <N>` picks how many lines to start from) and who is connected; see [Server mode](/docs/server-mode#the-servers-own-log). |
-| [`dux remote …`](/docs/cli-reference#dux-remote) | Other machines' duxes; see [below](#another-machines-dux). |
-| [`dux operations show <id>`](/docs/cli-reference#dux-operations-show) | Where a change started earlier stands. |
+| [`yaran projects ls`](/docs/cli-reference#yaran-projects-ls), `show <project>` | Projects, with their branch and how many agents each has. |
+| [`yaran projects add <path>`](/docs/cli-reference#yaran-projects-add) | Adds a project. `--name` names it, `--checkout-default` checks the repository's default branch out first, and `--init` makes a plain folder a git repository with a first commit. |
+| [`yaran projects rm <project>`](/docs/cli-reference#yaran-projects-rm) | Removes a project and its agents from yaran. Their worktrees stay on disk unless you add `--delete-worktrees`; then the lines before the confirmation say, for each worktree, how many of its files are not committed and will be deleted with it, as the agent delete dialogs do, whenever that is any at all (or that yaran could not look). |
+| [`yaran projects worktrees ls <project>`](/docs/cli-reference#yaran-projects-worktrees-ls) | Every worktree the project has, which agent holds it, and whether it is dirty, in use, or being removed. |
+| [`yaran agents ls`](/docs/cli-reference#yaran-agents-ls), `show <agent>` | Agents and their state. `--project` keeps one project's; `--worktrees` prints just each agent's id and folder. |
+| [`yaran agents add`](/docs/cli-reference#yaran-agents-add) | Creates an agent: in a project, from a pull request, as a fork, or in a folder of your own. See [Creating an agent](#creating-an-agent). |
+| [`yaran agents rm <agent>`](/docs/cli-reference#yaran-agents-rm) | Deletes an agent. `--delete-worktree` removes its worktree too, and the line before the confirmation says how many of the worktree's files are not committed and will be deleted with it, as the delete dialogs do, whenever that is any at all (or that yaran could not look). `--delete-branch` or `--keep-branch` decides the branch the worktree is on, and `--delete-other-branches` or `--keep-other-branches` decides every other branch it has been on, like the delete dialogs' two boxes. With a branch flag and `--delete-worktree`, the command reads the agent's branches first: the confirmation names each branch it will delete, the line before it says how many commits deleting them loses when that is any at all, and each is deleted only at the commit it pointed at when the command read it. The project's own branch is never deleted, and the confirmation says so. When a branch flag names only one of the two, keep or delete, the other is decided as the dialogs' box starts, ticked or not, and the confirmation names what that deletes and what it keeps, so `--keep-other-branches` alone still deletes the branch yaran created for the agent when the dialog would. When yaran could not read the branch the worktree is on, the confirmation says that branch is kept. When git could not count the unpushed commits a branch would lose, that branch is kept and the line before the confirmation says why, as the dialogs do; a flag asking to delete it is refused before anything is asked. With no branch flag at all, the command reads no branches and counts no commits, so none of that applies: the confirmation names no branch, and yaran decides by who made each one, so only the branch yaran created for the agent goes, and only while yaran can prove it is still that branch. Without `--delete-worktree` every branch is kept. The delete flags need `--delete-worktree`, because git will not delete a branch a worktree still has checked out. |
+| [`yaran agents stop <agent>`](/docs/cli-reference#yaran-agents-stop), `start <agent>` | Stops everything an agent runs, or starts it again. |
+| [`yaran agents tabs ls <agent>`](/docs/cli-reference#yaran-agents-tabs-ls) | The agent's provider tabs and whether each is running. |
+| [`yaran agents tabs add <agent>`](/docs/cli-reference#yaran-agents-tabs-add) | Adds a tab, running the project's provider unless `--provider` names another. |
+| [`yaran agents tabs rm`](/docs/cli-reference#yaran-agents-tabs-rm), `start`, `stop` `<agent> <tab>` | Closes, starts or stops one tab. Stopping keeps the tab, closing removes it. |
+| [`yaran agents prs ls <agent>`](/docs/cli-reference#yaran-agents-prs-ls) | The agent's pull requests in its order, the one its banner shows first, then the hidden ones, each with its link. See [Pull requests](#pull-requests). |
+| [`yaran agents prs attach <agent> <ref>`](/docs/cli-reference#yaran-agents-prs-attach) | Attaches a pull request from any repository, beside the ones the agent has. |
+| [`yaran agents prs detach`](/docs/cli-reference#yaran-agents-prs-detach), [`hide`](/docs/cli-reference#yaran-agents-prs-hide), [`unhide`](/docs/cli-reference#yaran-agents-prs-unhide) `<agent> <ref>` | Detaches one you attached, hides one yaran found, or shows a hidden one again in the place it had. |
+| [`yaran agents prs sort <agent> auto\|manual`](/docs/cli-reference#yaran-agents-prs-sort) | Orders the pull requests automatically (open, draft, merged, closed, newest first) or in your own order. |
+| [`yaran agents prs move <agent> <ref> <to>`](/docs/cli-reference#yaran-agents-prs-move) | Moves one to the `top`, `up`, `down`, or to a position counted from 1. |
+| [`yaran agents prs branches <agent>`](/docs/cli-reference#yaran-agents-prs-branches) | Every branch the agent's worktree has been on, the current one first and the rest newest first, with its former names and its pull requests, then the pull requests on none of them: the ones you attached, and any yaran found on a branch not listed. |
+| [`yaran terminals ls`](/docs/cli-reference#yaran-terminals-ls) | Every terminal and who owns it. |
+| [`yaran terminals add`](/docs/cli-reference#yaran-terminals-add) | Opens a terminal: in an agent's worktree with `--agent`, at a project's root with `--project`, or a standalone one in your home folder with neither. |
+| [`yaran terminals rm <terminal>`](/docs/cli-reference#yaran-terminals-rm) | Closes a terminal. |
+| [`yaran macros ls`](/docs/cli-reference#yaran-macros-ls), `show`, `add`, `rm` | Macros. `add <name> <text>` takes `--surface agent`, `terminal` or `both` (`agent` by default) and replaces a macro of the same name. |
+| [`yaran providers ls`](/docs/cli-reference#yaran-providers-ls), `show <name>` | Providers, built-in and your own. |
+| [`yaran keys ls`](/docs/cli-reference#yaran-keys-ls) | The terminal UI's keybindings. |
+| [`yaran themes ls`](/docs/cli-reference#yaran-themes-ls) | The themes yaran can load, and which one is in use. |
+| [`yaran env ls`](/docs/cli-reference#yaran-env-ls), `set <name>`, `rm <name>` | The global environment. |
+| [`yaran server logs`](/docs/cli-reference#yaran-server-logs), `yaran server connections ls` | The server's log (`-f` follows it, `--lines <N>` picks how many lines to start from) and who is connected; see [Server mode](/docs/server-mode#the-servers-own-log). |
+| [`yaran remote …`](/docs/cli-reference#yaran-remote) | Other machines' yaranes; see [below](#another-machines-yaran). |
+| [`yaran operations show <id>`](/docs/cli-reference#yaran-operations-show) | Where a change started earlier stands. |
 
 A project, agent, tab, terminal or macro is named by its id or by its name. A name that
 two of them share is refused with both ids, so you can pick one. A new project, agent,
 tab or terminal's id is the last line `add` prints, which makes it easy to capture:
 
 ```bash
-agent=$(dux agents add --project web --name fix-login --yes | tail -n 1)
+agent=$(yaran agents add --project web --name fix-login --yes | tail -n 1)
 ```
 
-Paths you give are made absolute for the dux on this machine. A remote dux is another
+Paths you give are made absolute for the yaran on this machine. A remote yaran is another
 machine, so it refuses a relative path; give the whole thing.
 
 ### Pull requests
 
-`dux agents prs` names one of an agent's pull requests by its link (copied straight from
+`yaran agents prs` names one of an agent's pull requests by its link (copied straight from
 the browser is fine, `/files` or a comment's `#issuecomment-…` included), as
 `owner/repo#123` (the repository in any case), or as just `123`. `#123` works too, but
 quote it (`'#123'`): your shell reads a word starting with `#` as a comment and drops the
 rest of the line. A number two of its pull requests share, say `77` in two repositories,
 is refused with both links, so you can name one as `owner/repo#77` or by its link. The
-links are what `dux agents prs ls -q` prints, so its output feeds the other commands.
+links are what `yaran agents prs ls -q` prints, so its output feeds the other commands.
 `attach` takes the same forms, and a bare number there means the agent's own repository.
 
-- `detach` is for pull requests you attached and `hide` for the ones dux found; asking for
+- `detach` is for pull requests you attached and `hide` for the ones yaran found; asking for
   the other one is refused before anything is asked, naming the command that does it.
 - `move` takes `top`, `up`, `down` or a position counted from 1, and moves only a pull
   request the agent shows: a hidden one, or a position past the ones it shows, is refused
@@ -107,13 +107,13 @@ links are what `dux agents prs ls -q` prints, so its output feeds the other comm
   you were looking at, and replaces any order you had saved; `sort <agent> manual` without
   a move brings a saved order back.
 - A standalone agent has no branch of its own and so no pull requests: every
-  `dux agents prs` command refuses it before anything is asked.
-- There is no command that opens a pull request: the command line may be talking to a dux
+  `yaran agents prs` command refuses it before anything is asked.
+- There is no command that opens a pull request: the command line may be talking to a yaran
   on another machine, so it prints the links instead.
 
 ### Creating an agent
 
-`dux agents add` needs to know where the agent comes from. `--name` names it, and
+`yaran agents add` needs to know where the agent comes from. `--name` names it, and
 `--copy-uncommitted` brings the project's uncommitted changes along (with `--project`,
 alone or with `--existing-branch`).
 
@@ -127,7 +127,7 @@ alone or with `--existing-branch`).
 
 #### A pull request with no project named
 
-Give `--from-pr` an address or `owner/repo#123` and leave out `--project`, and dux finds
+Give `--from-pr` an address or `owner/repo#123` and leave out `--project`, and yaran finds
 the project that has the repository. When none does:
 
 1. It clones the repository (or adds an existing checkout of it) into the folder
@@ -140,7 +140,7 @@ the project that has the repository. When none does:
 When the pull request's own branch cannot be used, the agent needs a separate review copy,
 and **`--review-copy`** is how you agree to one.
 
-- If dux knows up front, it says so and refuses before it clones or adds anything. Run it
+- If yaran knows up front, it says so and refuses before it clones or adds anything. Run it
   again with `--review-copy`.
 - If it only turns out after the clone or the add, the project stays. Run the command again
   with `--review-copy` (and `--path` naming that project's folder, or `--project`).
@@ -153,16 +153,16 @@ Every `ls` prints an aligned table with a header row. Two flags change that:
   room for.
 - `-q` prints only the ids, one per line, ready for `xargs`.
 
-`dux agents ls`, for example, has the columns `ID`, `NAME`, `PROJECT`, `WORKTREE`,
+`yaran agents ls`, for example, has the columns `ID`, `NAME`, `PROJECT`, `WORKTREE`,
 `PROVIDER`, `STATE`, `TABS` (running of total) and `BROWSERS`. An agent's state is
 `active`, `detached` or `exited`, or `removing` while its deletion is still running.
 `show` prints one field per line.
 
-An agent's pull requests have no column in that table. `dux agents show` prints the one
+An agent's pull requests have no column in that table. `yaran agents show` prints the one
 its banner shows as `pull_request` (`#418 open https://…`), every one it shows, in order,
 as `pull_requests` (`#418 open store-tab-rows https://…`, or
 `acme/infra#77 open attached https://…` for one attached from another repository), and the
-hidden ones as `pull_requests_hidden`. In `dux agents ls --format json`, each agent's
+hidden ones as `pull_requests_hidden`. In `yaran agents ls --format json`, each agent's
 `pull_requests` is how many it shows and `pull_request` is the shown one, so a script can
 pick agents without a `show` for each.
 
@@ -173,18 +173,18 @@ pick agents without a `show` for each.
 > or terminals it has open. So it can be higher than the count on the agent's row in the
 > terminal UI, which shows only the browsers that have it open right now.
 
-`dux terminals ls` has the columns `ID`, `LABEL`, `OWNER`, `RUNNING` and `BROWSERS`.
+`yaran terminals ls` has the columns `ID`, `LABEL`, `OWNER`, `RUNNING` and `BROWSERS`.
 Its `BROWSERS` counts the same way, for the browsers that would stop closing the terminal.
 A browser with any of an agent's tabs or terminals open counts on every terminal of that
 agent, because closing one of them is refused over it exactly as stopping the agent is.
 
 ## Changes ask first, and wait until they are done
 
-A change asks before it does anything, and the question names the dux it is about to
+A change asks before it does anything, and the question names the yaran it is about to
 change:
 
 ```text
-Delete agent fix-login on this machine's dux? [y/N]
+Delete agent fix-login on this machine's yaran? [y/N]
 ```
 
 `--yes` answers for you. Without a terminal to ask on (a script, a pipe, cron), a change
@@ -199,19 +199,19 @@ command returns. If part of a change failed, the command says which part and exi
   `[cli] wait_timeout_seconds` (10 minutes). No wait lasts more than a day; see
   [Configuration](/docs/configuration#how-long-a-command-waits-cli).
 - A wait that runs out says the outcome is unknown, prints the id, and exits 6. The change
-  has not been stopped: it carries on, and `dux operations show <id>` tells you how it
+  has not been stopped: it carries on, and `yaran operations show <id>` tells you how it
   ends.
 - A change whose answer is lost (the connection drops after the change was sent) or that
-  is answered with a server error, by dux or by a proxy in front of it, may or may not
+  is answered with a server error, by yaran or by a proxy in front of it, may or may not
   have been made, so it also exits 6. Check before running it again.
 
 > [!NOTE]
-> A second `dux agents add` that runs while another agent is still being created waits for
+> A second `yaran agents add` that runs while another agent is still being created waits for
 > that creation to finish (within the same wait time), then creates its own and says it
 > waited. If the wait runs out first, it never starts its own: it is refused and exits 3.
 > With `--no-wait` it is refused at once, as the browser and the terminal UI refuse it.
 
-dux keeps a finished change's outcome for `[server] operation_retention_seconds` (30
+yaran keeps a finished change's outcome for `[server] operation_retention_seconds` (30
 minutes by default), in memory, so a restart forgets them all.
 
 One thing changes at a time. Changing an agent, tab, terminal or project that another
@@ -242,65 +242,65 @@ by default), so the agent you are working on from the couch stays protected.
 ## Resources kept in config.toml
 
 Macros, providers, keys, themes and the global environment live in `config.toml`, so on
-this machine their listings read the file itself, whether dux is running or not.
+this machine their listings read the file itself, whether yaran is running or not.
 
-Changes (`dux macros add` and `rm`, `dux env set` and `rm`) go through the running dux
+Changes (`yaran macros add` and `rm`, `yaran env set` and `rm`) go through the running yaran
 when there is one, so they apply at once, in the terminal UI and in every browser. With
-no dux running they edit the file, keeping its comments, and apply the next time dux
-starts. Until such a change has been confirmed and written, dux cannot start on this
-machine (it says another dux is running and names the command's process), and a command
-that needs the running dux is refused with exit 3, saying the edit is in progress.
+no yaran running they edit the file, keeping its comments, and apply the next time yaran
+starts. Until such a change has been confirmed and written, yaran cannot start on this
+machine (it says another yaran is running and names the command's process), and a command
+that needs the running yaran is refused with exit 3, saying the edit is in progress.
 
 Providers, keys and themes are read-only here: change a provider's fields with
-`dux config set`, and keys and themes in the terminal UI or the file.
+`yaran config set`, and keys and themes in the terminal UI or the file.
 
 The environment's values are usually secrets, so they are treated like it:
 
-- `dux env ls` prints only the names. `--show` prints the values too.
-- `dux env set <name>` asks for the value without echoing it, or reads it from a pipe with
+- `yaran env ls` prints only the names. `--show` prints the values too.
+- `yaran env set <name>` asks for the value without echoing it, or reads it from a pipe with
   `--stdin`. It never takes the value as an argument, where shell history would keep it.
   Reading from a pipe leaves no terminal to confirm on, so `--stdin` always needs `--yes`.
 
 A macro whose name is anything other than letters, digits, `_` and `-` keeps its text
-hidden, the same rule `dux config get` follows:
+hidden, the same rule `yaran config get` follows:
 
 - `ls` lists it under a placeholder name.
-- `dux macros show '<name>'` finds it by its real name but prints only that placeholder and
+- `yaran macros show '<name>'` finds it by its real name but prints only that placeholder and
   its surface.
 - `ls -q` leaves it out, since a placeholder is no id another command takes, and says on
   stderr how many it left out.
 - The macro editor in the browser shows it in full.
 
-## Another machine's dux
+## Another machine's yaran
 
-A dux serving the web UI on another machine can be driven from here too. Save it once:
+A yaran serving the web UI on another machine can be driven from here too. Save it once:
 
 ```bash
-dux remote add box https://box.tailnet-name.ts.net
-dux remote login box        # only if it asks for a password
-dux --remote box agents ls
+yaran remote add box https://box.tailnet-name.ts.net
+yaran remote login box        # only if it asks for a password
+yaran --remote box agents ls
 ```
 
 | Command | What it does |
 |---|---|
-| `dux remote add <name> <url>` | Saves a remote. |
-| `dux remote ls` | The saved remotes, which one is the default, and which you are signed in to. |
-| `dux remote rm <name>` | Forgets a remote and drops its sign-in here, without telling the remote; that sign-in then ends there once it goes unused. `logout` first to end it at once. |
-| `dux remote default <name>`, `default --unset` | Picks the remote used when none is named, or goes back to this machine. |
-| `dux remote login [<name>]`, `logout [<name>]` | Signs in with that dux's [web password](/docs/web-login), or out. |
+| `yaran remote add <name> <url>` | Saves a remote. |
+| `yaran remote ls` | The saved remotes, which one is the default, and which you are signed in to. |
+| `yaran remote rm <name>` | Forgets a remote and drops its sign-in here, without telling the remote; that sign-in then ends there once it goes unused. `logout` first to end it at once. |
+| `yaran remote default <name>`, `default --unset` | Picks the remote used when none is named, or goes back to this machine. |
+| `yaran remote login [<name>]`, `logout [<name>]` | Signs in with that yaran's [web password](/docs/web-login), or out. |
 
-The commands that talk to a dux take two flags, before or after the command's own words,
-and `dux config` takes them before the word `config`. Starting dux or `dux server` takes
+The commands that talk to a yaran take two flags, before or after the command's own words,
+and `yaran config` takes them before the word `config`. Starting yaran or `yaran server` takes
 neither:
 
 - `--remote <name>` talks to that saved remote.
-- `--local` talks to this machine's dux, whatever else says otherwise.
+- `--local` talks to this machine's yaran, whatever else says otherwise.
 
-Which dux a command talks to is decided in this order:
+Which yaran a command talks to is decided in this order:
 
 1. `--local`
 2. `--remote`
-3. the `DUX_REMOTE` environment variable (set in your shell profile, it works as
+3. the `YARAN_REMOTE` environment variable (set in your shell profile, it works as
    set-and-forget)
 4. the default remote
 5. this machine
@@ -309,14 +309,14 @@ Whatever is chosen is used: a remote that does not answer stops the command, and
 quietly tries this machine instead.
 
 > [!WARNING]
-> `dux config` always edits this machine's `config.toml`. With a remote selected, through
-> `DUX_REMOTE` or a default, it refuses rather than let you think you changed the other
-> machine. Run `dux --local config …` to go ahead.
+> `yaran config` always edits this machine's `config.toml`. With a remote selected, through
+> `YARAN_REMOTE` or a default, it refuses rather than let you think you changed the other
+> machine. Run `yaran --local config …` to go ahead.
 
-`dux config` reads the saved remotes only to learn whether one is selected, and that
-includes `dux config reset`: with a default remote saved, it refuses like every other
-`dux config` command. If that file cannot be read, `dux config` stops and names it:
-`dux --local config …` goes ahead without it, and `dux config reset` goes ahead past it
+`yaran config` reads the saved remotes only to learn whether one is selected, and that
+includes `yaran config reset`: with a default remote saved, it refuses like every other
+`yaran config` command. If that file cannot be read, `yaran config` stops and names it:
+`yaran --local config …` goes ahead without it, and `yaran config reset` goes ahead past it
 (a reset removes it).
 
 The listings of macros, providers, keys, themes and the environment come from the remote's
@@ -326,55 +326,55 @@ environment.
 ### Signing in
 
 A remote that does not ask this machine for a password needs no sign-in: commands reach it
-as they are. That covers a dux on your tailnet with the default `require = "network"`, and
-any dux with no password at all. One that does ask stops with exit 5 when this machine needs
+as they are. That covers a yaran on your tailnet with the default `require = "network"`, and
+any yaran with no password at all. One that does ask stops with exit 5 when this machine needs
 a sign-in there (none saved, or the saved one ended):
 
 ```text
-box asks for its password; run "dux remote login box"
+box asks for its password; run "yaran remote login box"
 ```
 
-`dux remote login` asks for the password without echoing it, or reads it from a pipe with
+`yaran remote login` asks for the password without echoing it, or reads it from a pipe with
 `--stdin`. Wrong guesses count exactly like wrong guesses on the sign-in page, slow-downs
 and bans included.
 
 A sign-in stays good until:
 
-- it goes unused for `[server.auth] cli_token_idle_days` on that dux (30 by default);
-- you run `dux remote logout`;
+- it goes unused for `[server.auth] cli_token_idle_days` on that yaran (30 by default);
+- you run `yaran remote logout`;
 - the password changes, which signs every command line out at once.
 
-Signing in again where you already were ends the earlier sign-in on that dux. If it cannot
-be ended, `dux remote login` says so, keeps the new one, and the earlier one ends on its
+Signing in again where you already were ends the earlier sign-in on that yaran. If it cannot
+be ended, `yaran remote login` says so, keeps the new one, and the earlier one ends on its
 own once it goes unused.
 
 ### When the remote's address changes hands
 
-A remote remembers which dux it signed in to (or, saved before it knew, the first dux it
-reaches). If a different dux answers at that URL later, say because yours moved to another
+A remote remembers which yaran it signed in to (or, saved before it knew, the first yaran it
+reaches). If a different yaran answers at that URL later, say because yours moved to another
 port, the command stops before anything else, password included:
 
 ```text
-box (https://box.tailnet-name.ts.net) is now a different dux than the one this remote signed in to
-Run "dux remote login box" to use it.
+box (https://box.tailnet-name.ts.net) is now a different yaran than the one this remote signed in to
+Run "yaran remote login box" to use it.
 ```
 
-`dux remote login box` makes the dux there the one `box` means from now on. If a program
-that isn't dux answers instead, the command says `box (https://…) answers, but not as dux`
+`yaran remote login box` makes the yaran there the one `box` means from now on. If a program
+that isn't yaran answers instead, the command says `box (https://…) answers, but not as yaran`
 rather than printing whatever page it sent back.
 
 > [!WARNING]
 > Saved remotes and their sign-ins are kept in `remotes.toml` in the config folder,
 > readable only by you, never in `config.toml`. Neither file is safe to paste into a bug
 > report: `config.toml` holds your environment's secrets and the password hash. Paste the
-> plain `dux config diff` summary instead. `dux config reset` removes `remotes.toml`.
+> plain `yaran config diff` summary instead. `yaran config reset` removes `remotes.toml`.
 
 ### Plain HTTP
 
 `https://` works everywhere. Plain `http://` is accepted only to this machine and to
 Tailscale addresses and `.ts.net` names, where the connection is already encrypted. Any
 other plain-HTTP address is refused, because your password would cross the network in the
-clear; add `--insecure` to `dux remote add` if you trust every network in between, and
+clear; add `--insecure` to `yaran remote add` if you trust every network in between, and
 every login to it then says so.
 
 > [!IMPORTANT]
@@ -386,10 +386,10 @@ every login to it then says so.
 > the networks in between.
 
 URLs carrying a user name or password, a query or a fragment are refused too. A remote is
-saved as its address alone, and its password is asked for at `dux remote login`.
+saved as its address alone, and its password is asked for at `yaran remote login`.
 
 The remote has to accept the name you reach it by. A name it does not know is refused by
-that dux before anything else; add it to its `[server] allowed_hosts`.
+that yaran before anything else; add it to its `[server] allowed_hosts`.
 
 ## Exit codes
 
@@ -401,9 +401,9 @@ Scripts can rely on these:
 | `1` | The change failed or partly failed, or what you named does not exist. |
 | `2` | The command line is wrong: a bad flag, a name two things share, an unknown remote. |
 | `3` | Refused: somebody is connected, another change is in the way, or the change was not confirmed. |
-| `4` | dux isn't running, or does not answer. |
+| `4` | yaran isn't running, or does not answer. |
 | `5` | The remote asks for its password and this machine needs a sign-in there (none saved, or the saved one ended). |
 | `6` | The outcome is unknown: the wait ran out and the change keeps running, or the change was sent and its answer was lost or was a server error. |
 
-`dux operations show <id>` exits 0 for a change that succeeded, 1 for one that failed or
+`yaran operations show <id>` exits 0 for a change that succeeded, 1 for one that failed or
 partly failed, and 6 for one still running.

@@ -12,27 +12,27 @@ on, what to do about it, and where the full story lives.
 
 ### Signing in to an agent CLI from another device goes nowhere
 
-An agent's sign-in tries to open a browser on the machine dux runs on, which is not the
-one in front of you when you drive dux from a laptop or a phone. Every CLI also prints a
+An agent's sign-in tries to open a browser on the machine yaran runs on, which is not the
+one in front of you when you drive yaran from a laptop or a phone. Every CLI also prints a
 sign-in link, and what to do with it depends on the CLI:
 
 - **Claude Code**: open the printed link on any device, sign in, and paste the code the
   page shows back into the CLI. This works from anywhere.
-- **Codex**: after you sign in, the browser is sent back to an address on the dux machine
+- **Codex**: after you sign in, the browser is sent back to an address on the yaran machine
   itself (`127.0.0.1`, port `1455`).
   - Finish the sign-in on that machine, or
   - from another computer, forward the port over SSH with
     `ssh -L 1455:127.0.0.1:1455 <host>` and open the link on your own computer, or
   - run `codex login --device-auth`, if your organisation allows device-code sign-in.
-- **OpenCode**: its browser sign-ins also return to the dux machine (ChatGPT accounts use
+- **OpenCode**: its browser sign-ins also return to the yaran machine (ChatGPT accounts use
   port `1455`), so the same advice as Codex applies.
-- **Grok**: its first-run sign-in opens a browser on the dux machine. Run
+- **Grok**: its first-run sign-in opens a browser on the yaran machine. Run
   `grok login --device-auth` instead, which xAI documents for headless and remote machines.
 - **Copilot**: set a GitHub token in the environment as `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`
   or `GITHUB_TOKEN`.
   - It has to be a fine-grained personal access token with the "Copilot Requests"
     permission; classic `ghp_` tokens are not accepted.
-  - Put it in dux's `[env]` table so every agent gets it, or use device-code sign-in if your
+  - Put it in yaran's `[env]` table so every agent gets it, or use device-code sign-in if your
     organisation allows it.
   - Read [keeping secrets out of `[env]`](/docs/configuration#keeping-secrets-out-of-env)
     before you paste a token into the file.
@@ -63,7 +63,7 @@ full story, and [what plain HTTP costs](/docs/tailscale#plain-http-costs-you-a-f
 ### A second tab of the same CLI starts with a blank conversation
 
 A CLI's "continue" picks up the newest conversation in the folder, not a particular tab's,
-so two tabs of the same CLI would both open the same one. dux gives the resume to a tab
+so two tabs of the same CLI would both open the same one. yaran gives the resume to a tab
 only when it is the only tab of its CLI coming up, and any tab you create starts fresh. To
 reach an older conversation, use the CLI's own history or resume command in a fresh tab.
 See [how resume works](/docs/agent-tabs#how-resume-works).
@@ -71,20 +71,20 @@ See [how resume works](/docs/agent-tabs#how-resume-works).
 ### A Copilot tab never resumes its conversation
 
 Copilot's own "continue" picks up the most recent conversation from anywhere on your
-machine, not the one that belongs to this worktree, so dux never uses it. Every Copilot
+machine, not the one that belongs to this worktree, so yaran never uses it. Every Copilot
 tab starts fresh. See [Copilot](/docs/supported-agents#copilot).
 
 ### The working spinner drops to idle for a moment while you type or scroll
 
 For most agents, "working" means the agent printed something in the last second. Your own
-typing is echoed back, and scrolling makes the agent redraw, so dux ignores the agent's
+typing is echoed back, and scrolling makes the agent redraw, so yaran ignores the agent's
 output for about a second after each key or scroll rather than calling your own echo
 work. Agents that report their own progress (Claude Code and Copilot) don't do this. The
 spinner comes back on its own as soon as the agent prints again.
 
 ### "Needs you" sometimes misses, or fires when nothing is needed
 
-There is no standard way for a CLI to say it is waiting on you, so dux listens for the
+There is no standard way for a CLI to say it is waiting on you, so yaran listens for the
 terminal bell and desktop-notification codes, and what each CLI sends depends on the CLI
 and its settings. Text an agent prints can also carry those codes by accident. See
 [when nothing lights up](/docs/attention-indicators#when-nothing-lights-up).
@@ -107,7 +107,7 @@ tab shows, and [custom agents](/docs/custom-agents) for setting one up.
 ### A dropped file's path doesn't reach the agent intact
 
 Some agent CLIs misread the pasted path, and the file is not attached. Either way **the file
-is still saved** and the toast names where. dux cleans up the name of a file it saves for an
+is still saved** and the toast names where. yaran cleans up the name of a file it saves for an
 agent, but not the folders above it, so two things can go wrong:
 
 - **A folder with an apostrophe or a backslash in its name** (a project folder called
@@ -126,9 +126,9 @@ See [what is known to fail](/docs/dropping-files#what-is-known-to-fail).
 
 ## Terminals
 
-### Terminals don't come back after dux restarts
+### Terminals don't come back after yaran restarts
 
-A terminal exists only while its shell runs, so it ends when dux does. Agents come back
+A terminal exists only while its shell runs, so it ends when yaran does. Agents come back
 after a restart; terminals don't. See
 [companion terminals](/docs/web-workspace#companion-terminals).
 
@@ -150,9 +150,9 @@ When the program in the terminal takes the mouse, a plain drag goes to the progr
 ### Some browser features are missing over plain `http://`
 
 Browsers switch off a few features on a plain-HTTP address that is not `localhost`:
-right-click paste (`Ctrl+v` still works), desktop notifications, and installing dux as
+right-click paste (`Ctrl+v` still works), desktop notifications, and installing yaran as
 an app. Copies from an agent still work, with the **Copy** button described
-[above](#copying-inside-an-agent-cli-lands-on-the-wrong-clipboard). Open dux on
+[above](#copying-inside-an-agent-cli-lands-on-the-wrong-clipboard). Open yaran on
 `localhost`, or put HTTPS in front of it with `tailscale serve`, and all of them come back.
 See
 [what plain HTTP costs](/docs/tailscale#plain-http-costs-you-a-few-browser-features).
@@ -171,14 +171,14 @@ already taken is refused rather than overwriting it. See
 ### Switching branches or pulling can delete ignored files
 
 git treats ignored files as disposable, so when the incoming branch tracks a path where an
-ignored file or folder stands, git replaces it. dux refuses when that path holds something
+ignored file or folder stands, git replaces it. yaran refuses when that path holds something
 it knows about, such as an agent's worktree, and lets git have its way otherwise. Move
 anything that matters aside first. See
 [switching and pulling safely](/docs/creating-agents#switching-and-pulling-safely).
 
-### Submodules are not updated by dux's pulls and switches
+### Submodules are not updated by yaran's pulls and switches
 
-dux's pulls and branch switches move the submodule pointer but leave the submodule's files
+yaran's pulls and branch switches move the submodule pointer but leave the submodule's files
 where they are, even when your git config sets `submodule.recurse`. Run
 `git submodule update` yourself when you want them to follow. See
 [switching and pulling safely](/docs/creating-agents#switching-and-pulling-safely).
@@ -195,8 +195,8 @@ settings five of them block everyone there. See
 and, behind a proxy,
 [one client IP for everybody](/docs/public-hosting#the-console-shows-one-client-ip-for-everybody).
 
-### Only one dux can run per config folder
+### Only one yaran can run per config folder
 
-A second dux started against the same config folder stops at once with an "already
+A second yaran started against the same config folder stops at once with an "already
 running" message. You rarely need a second: see
 [running both at once](/docs/faq#can-i-run-the-terminal-ui-and-the-browser-at-the-same-time).

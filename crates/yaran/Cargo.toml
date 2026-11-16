@@ -1,0 +1,17 @@
+[package]
+name = "yaran"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+yaran-tui = { path = "../yaran-tui" }
+yaran-web = { path = "../yaran-web" }
+yaran-core.workspace = true
+anyhow.workspace = true
+clap = { version = "4.6.7", features = ["derive"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,33 +1,33 @@
 ---
 title: Command line reference
-description: Every dux command, subcommand, argument and flag, with the same help text --help prints.
+description: Every yaran command, subcommand, argument and flag, with the same help text --help prints.
 group: Reference
 order: 90
-editSource: crates/dux/src/commands.rs
+editSource: crates/yaran/src/commands.rs
 ---
 
-<!-- Generated from the dux command line's own definitions; do not edit by hand. The help of the `dux config` subcommands is defined in crates/dux-tui/src/config_spec.rs. -->
+<!-- Generated from the yaran command line's own definitions; do not edit by hand. The help of the `yaran config` subcommands is defined in crates/yaran-tui/src/config_spec.rs. -->
 
-Every command dux has, with the same text `dux <command> --help` prints. For how the
+Every command yaran has, with the same text `yaran <command> --help` prints. For how the
 commands fit together, and examples, see [The command line](/docs/command-line).
 
 ## Flags every command takes
 
 | Flag | Value | Description |
 |---|---|---|
-| `--remote` | `<NAME>` | Talk to this saved remote instead of the local dux. |
-| `--local` |  | Talk to the dux on this machine, whatever a saved default says. |
+| `--remote` | `<NAME>` | Talk to this saved remote instead of the local yaran. |
+| `--local` |  | Talk to the yaran on this machine, whatever a saved default says. |
 | `-h`, `--help` | | Print the help for the command. |
-| `-V`, `--version` | | Print the version; `dux` alone takes it. |
+| `-V`, `--version` | | Print the version; `yaran` alone takes it. |
 
-`dux config` is the exception: it reads `--local` only before the word `config`, and it refuses `--remote` (and any selected remote) unless `--local` is given, because it always edits this machine's file.
+`yaran config` is the exception: it reads `--local` only before the word `config`, and it refuses `--remote` (and any selected remote) unless `--local` is given, because it always edits this machine's file.
 
 ## Environment variables
 
 | Variable | Description |
 |---|---|
-| `DUX_HOME` | Override the config directory (must be an absolute path). When unset, defaults to:<br>macOS: \~/.dux/<br>Linux: $XDG_CONFIG_HOME/dux/ or \~/.config/dux/ |
-| `DUX_REMOTE` | The saved remote to talk to when neither `--remote` nor `--local` is given. It wins over the default set with `dux remote default`. |
+| `YARAN_HOME` | Override the config directory (must be an absolute path). When unset, defaults to:<br>macOS: \~/.yaran/<br>Linux: $XDG_CONFIG_HOME/yaran/ or \~/.config/yaran/ |
+| `YARAN_REMOTE` | The saved remote to talk to when neither `--remote` nor `--local` is given. It wins over the default set with `yaran remote default`. |
 
 ## Exit codes
 
@@ -37,61 +37,61 @@ commands fit together, and examples, see [The command line](/docs/command-line).
 | `1` | the change failed, or what was named does not exist |
 | `2` | the command line is wrong |
 | `3` | refused: someone is attached, another change is in the way, or the change was not confirmed |
-| `4` | dux isn't running, or does not answer |
-| `5` | the remote asks for its password; sign in with `dux remote login` |
+| `4` | yaran isn't running, or does not answer |
+| `5` | the remote asks for its password; sign in with `yaran remote login` |
 | `6` | the outcome is unknown: the wait ran out, and the change keeps running |
 
-## `dux`
+## `yaran`
 
 Terminal and web UI for AI worktree sessions, and a command line for their state. Run with no command to launch the terminal UI.
 
 ```text
-dux [OPTIONS] [COMMAND]
+yaran [OPTIONS] [COMMAND]
 ```
 
-- [`dux server`](#dux-server): Serve the web UI without the terminal UI, or inspect a running server.
-- [`dux config`](#dux-config): Manage the configuration file on this machine.
-- [`dux projects`](#dux-projects): Projects dux knows about.
-- [`dux agents`](#dux-agents): Agents, their tabs and their worktrees.
-- [`dux terminals`](#dux-terminals): Terminals, project-owned, agent-owned and standalone.
-- [`dux macros`](#dux-macros): Macros from config.toml.
-- [`dux providers`](#dux-providers): Providers from config.toml.
-- [`dux keys`](#dux-keys): Keybindings from config.toml.
-- [`dux themes`](#dux-themes): Themes dux can load.
-- [`dux env`](#dux-env): The global environment from config.toml.
-- [`dux remote`](#dux-remote): Saved remote duxes and the sign-ins for them.
-- [`dux operations`](#dux-operations): Look up a change that was started earlier.
+- [`yaran server`](#yaran-server): Serve the web UI without the terminal UI, or inspect a running server.
+- [`yaran config`](#yaran-config): Manage the configuration file on this machine.
+- [`yaran projects`](#yaran-projects): Projects yaran knows about.
+- [`yaran agents`](#yaran-agents): Agents, their tabs and their worktrees.
+- [`yaran terminals`](#yaran-terminals): Terminals, project-owned, agent-owned and standalone.
+- [`yaran macros`](#yaran-macros): Macros from config.toml.
+- [`yaran providers`](#yaran-providers): Providers from config.toml.
+- [`yaran keys`](#yaran-keys): Keybindings from config.toml.
+- [`yaran themes`](#yaran-themes): Themes yaran can load.
+- [`yaran env`](#yaran-env): The global environment from config.toml.
+- [`yaran remote`](#yaran-remote): Saved remote yaranes and the sign-ins for them.
+- [`yaran operations`](#yaran-operations): Look up a change that was started earlier.
 
-## `dux server`
+## `yaran server`
 
 Serve the web UI without the terminal UI, or inspect a running server.
 
-Run the dux web UI without the terminal UI. The web UI has one optional
+Run the yaran web UI without the terminal UI. The web UI has one optional
 password for one owner, and everyone who gets in shares the one workspace. Set
-it with `dux config set server.auth.password`; [server.auth] require decides
+it with `yaran config set server.auth.password`; [server.auth] require decides
 who is asked for it (by default everyone but this machine and your tailnet).
 With no password, anyone who can reach a non-loopback address controls your
-agents and terminals, and dux says so loudly as it starts.
+agents and terminals, and yaran says so loudly as it starts.
 
 ```text
-dux server [OPTIONS] [COMMAND]
+yaran server [OPTIONS] [COMMAND]
 ```
 
 | Flag | Value | Description |
 |---|---|---|
 | `--bind` | `<ADDR:PORT>` | Bind this exact address, overriding [server] host and port. An IP:port address (hostnames are NOT resolved), e.g. 0.0.0.0:3890. |
-| `--port` | `<PORT>` | Override [server] port only (ignored when `--bind` is set). dux binds host:port, and the machine's Tailscale address unless disabled. |
+| `--port` | `<PORT>` | Override [server] port only (ignored when `--bind` is set). yaran binds host:port, and the machine's Tailscale address unless disabled. |
 | `--no-tailscale` |  | Skip Tailscale detection this run (serve the configured host only). |
 
-- [`dux server logs`](#dux-server-logs): Show the server's log: the last lines of server.log, read from the file when dux is not running.
-- [`dux server connections`](#dux-server-connections): The connections attached to the server.
+- [`yaran server logs`](#yaran-server-logs): Show the server's log: the last lines of server.log, read from the file when yaran is not running.
+- [`yaran server connections`](#yaran-server-connections): The connections attached to the server.
 
-### `dux server logs`
+### `yaran server logs`
 
-Show the server's log: the last lines of server.log, read from the file when dux is not running.
+Show the server's log: the last lines of server.log, read from the file when yaran is not running.
 
 ```text
-dux server logs [OPTIONS]
+yaran server logs [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -99,24 +99,24 @@ dux server logs [OPTIONS]
 | `-f`, `--follow` |  | Keep printing new lines as they are written, until interrupted. |
 | `--lines` | `<N>` | How many of the last lines to start from. Default: `100`. |
 
-### `dux server connections`
+### `yaran server connections`
 
 The connections attached to the server.
 
 ```text
-dux server connections [OPTIONS] <COMMAND>
+yaran server connections [OPTIONS] <COMMAND>
 ```
 
-- [`dux server connections ls`](#dux-server-connections-ls): List the connections.
+- [`yaran server connections ls`](#yaran-server-connections-ls): List the connections.
 
-### `dux server connections ls`
+### `yaran server connections ls`
 
 Also: `list`
 
 List the connections.
 
 ```text
-dux server connections ls [OPTIONS]
+yaran server connections ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -124,36 +124,36 @@ dux server connections ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-## `dux config`
+## `yaran config`
 
-Manage the dux configuration file.
+Manage the yaran configuration file.
 
 ```text
-dux config <COMMAND>
+yaran config <COMMAND>
 ```
 
-- [`dux config path`](#dux-config-path): Print the config file path.
-- [`dux config get`](#dux-config-get): Print one setting's value, for example `dux config get server.port`.
-- [`dux config set`](#dux-config-set): Change one setting, keeping the file's comments, and have a running dux reload, saying whether it worked (exit 1 if it refused or half applied, 6 if it gave no answer in time).
-- [`dux config diff`](#dux-config-diff): Show settings that differ from defaults (summary; [env] and project details are summarized, never printed, so it is safe to paste into a bug report).
-- [`dux config reset`](#dux-config-reset): Remove config, logs and saved remotes (keeps agents and worktrees).
-- [`dux config regenerate`](#dux-config-regenerate): Preview a fresh default config (shows diff; [env] and other sensitive values are hidden unless you add `--show`).
-- [`dux config restore-docs`](#dux-config-restore-docs): Preview re-adding the explanatory comments to your config, keeping every value you have set (hides values like regenerate; `--show` reveals them).
+- [`yaran config path`](#yaran-config-path): Print the config file path.
+- [`yaran config get`](#yaran-config-get): Print one setting's value, for example `yaran config get server.port`.
+- [`yaran config set`](#yaran-config-set): Change one setting, keeping the file's comments, and have a running yaran reload, saying whether it worked (exit 1 if it refused or half applied, 6 if it gave no answer in time).
+- [`yaran config diff`](#yaran-config-diff): Show settings that differ from defaults (summary; [env] and project details are summarized, never printed, so it is safe to paste into a bug report).
+- [`yaran config reset`](#yaran-config-reset): Remove config, logs and saved remotes (keeps agents and worktrees).
+- [`yaran config regenerate`](#yaran-config-regenerate): Preview a fresh default config (shows diff; [env] and other sensitive values are hidden unless you add `--show`).
+- [`yaran config restore-docs`](#yaran-config-restore-docs): Preview re-adding the explanatory comments to your config, keeping every value you have set (hides values like regenerate; `--show` reveals them).
 
-### `dux config path`
+### `yaran config path`
 
 Print the config file path.
 
 ```text
-dux config path
+yaran config path
 ```
 
-### `dux config get`
+### `yaran config get`
 
-Print one setting's value, for example `dux config get server.port`.
+Print one setting's value, for example `yaran config get server.port`.
 
 ```text
-dux config get [OPTIONS] <SETTING>
+yaran config get [OPTIONS] <SETTING>
 ```
 
 | Argument | Description |
@@ -164,14 +164,14 @@ dux config get [OPTIONS] <SETTING>
 |---|---|---|
 | `--show` |  | Values that can hold secrets (env, projects) need `--show`. |
 
-### `dux config set`
+### `yaran config set`
 
-Change one setting, keeping the file's comments, and have a running dux reload, saying whether it worked (exit 1 if it refused or half applied, 6 if it gave no answer in time).
+Change one setting, keeping the file's comments, and have a running yaran reload, saying whether it worked (exit 1 if it refused or half applied, 6 if it gave no answer in time).
 
-`dux config set server.auth.password` sets the web UI password: asked for twice without echo, with a strength meter. Never a command-line argument; add `--stdin` to pipe it in instead. env.\<NAME\> values are asked for the same way.
+`yaran config set server.auth.password` sets the web UI password: asked for twice without echo, with a strength meter. Never a command-line argument; add `--stdin` to pipe it in instead. env.\<NAME\> values are asked for the same way.
 
 ```text
-dux config set [OPTIONS] <SETTING> [VALUE]
+yaran config set [OPTIONS] <SETTING> [VALUE]
 ```
 
 | Argument | Description |
@@ -183,36 +183,36 @@ dux config set [OPTIONS] <SETTING> [VALUE]
 |---|---|---|
 | `--stdin` |  | Pipe the password or an env.\<NAME\> value in instead of being asked for it. |
 
-### `dux config diff`
+### `yaran config diff`
 
 Show settings that differ from defaults (summary; [env] and project details are summarized, never printed, so it is safe to paste into a bug report).
 
 ```text
-dux config diff [OPTIONS]
+yaran config diff [OPTIONS]
 ```
 
 | Flag | Value | Description |
 |---|---|---|
 | `--raw` |  | Show a unified diff against the default config. This prints the WHOLE config, [env] values included: redact it before sharing. |
 
-### `dux config reset`
+### `yaran config reset`
 
 Remove config, logs and saved remotes (keeps agents and worktrees).
 
 ```text
-dux config reset [OPTIONS]
+yaran config reset [OPTIONS]
 ```
 
 | Flag | Value | Description |
 |---|---|---|
-| `--all` |  | Full factory reset: remove config, logs, saved remotes, sessions, and worktrees (deletes nothing if a program dux started still runs). |
+| `--all` |  | Full factory reset: remove config, logs, saved remotes, sessions, and worktrees (deletes nothing if a program yaran started still runs). |
 
-### `dux config regenerate`
+### `yaran config regenerate`
 
 Preview a fresh default config (shows diff; [env] and other sensitive values are hidden unless you add `--show`).
 
 ```text
-dux config regenerate [OPTIONS]
+yaran config regenerate [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -220,12 +220,12 @@ dux config regenerate [OPTIONS]
 | `--yes` |  | Overwrite the config file with fresh defaults. |
 | `--show` |  | Show [env] and other sensitive values in the preview. |
 
-### `dux config restore-docs`
+### `yaran config restore-docs`
 
 Preview re-adding the explanatory comments to your config, keeping every value you have set (hides values like regenerate; `--show` reveals them).
 
 ```text
-dux config restore-docs [OPTIONS]
+yaran config restore-docs [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -233,28 +233,28 @@ dux config restore-docs [OPTIONS]
 | `--yes` |  | Apply it (writes a timestamped backup first). |
 | `--show` |  | Show the hidden values in the preview. |
 
-## `dux projects`
+## `yaran projects`
 
-Projects dux knows about.
+Projects yaran knows about.
 
 ```text
-dux projects [OPTIONS] <COMMAND>
+yaran projects [OPTIONS] <COMMAND>
 ```
 
-- [`dux projects ls`](#dux-projects-ls): List projects.
-- [`dux projects show`](#dux-projects-show): Show one project.
-- [`dux projects add`](#dux-projects-add): Add a project from a path and print its id last.
-- [`dux projects rm`](#dux-projects-rm): Remove a project. Its agents' worktrees stay on disk unless `--delete-worktrees` is given.
-- [`dux projects worktrees`](#dux-projects-worktrees): The worktrees of a project.
+- [`yaran projects ls`](#yaran-projects-ls): List projects.
+- [`yaran projects show`](#yaran-projects-show): Show one project.
+- [`yaran projects add`](#yaran-projects-add): Add a project from a path and print its id last.
+- [`yaran projects rm`](#yaran-projects-rm): Remove a project. Its agents' worktrees stay on disk unless `--delete-worktrees` is given.
+- [`yaran projects worktrees`](#yaran-projects-worktrees): The worktrees of a project.
 
-### `dux projects ls`
+### `yaran projects ls`
 
 Also: `list`
 
 List projects.
 
 ```text
-dux projects ls [OPTIONS]
+yaran projects ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -262,29 +262,29 @@ dux projects ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux projects show`
+### `yaran projects show`
 
 Show one project.
 
 ```text
-dux projects show [OPTIONS] <PROJECT>
+yaran projects show [OPTIONS] <PROJECT>
 ```
 
 | Argument | Description |
 |---|---|
 | `<PROJECT>` | Required. A project's id or name; a name two projects share is refused with both ids. |
 
-### `dux projects add`
+### `yaran projects add`
 
 Add a project from a path and print its id last.
 
 ```text
-dux projects add [OPTIONS] <PATH>
+yaran projects add [OPTIONS] <PATH>
 ```
 
 | Argument | Description |
 |---|---|
-| `<PATH>` | Required. The folder of the repository to add, on the machine dux runs on. |
+| `<PATH>` | Required. The folder of the repository to add, on the machine yaran runs on. |
 
 | Flag | Value | Description |
 |---|---|---|
@@ -295,14 +295,14 @@ dux projects add [OPTIONS] <PATH>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux projects rm`
+### `yaran projects rm`
 
 Also: `remove`
 
 Remove a project. Its agents' worktrees stay on disk unless `--delete-worktrees` is given.
 
 ```text
-dux projects rm [OPTIONS] <PROJECT>
+yaran projects rm [OPTIONS] <PROJECT>
 ```
 
 | Argument | Description |
@@ -317,24 +317,24 @@ dux projects rm [OPTIONS] <PROJECT>
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 | `--dangerously-ignore-connected` |  | Go ahead even though someone is attached. |
 
-### `dux projects worktrees`
+### `yaran projects worktrees`
 
 The worktrees of a project.
 
 ```text
-dux projects worktrees [OPTIONS] <COMMAND>
+yaran projects worktrees [OPTIONS] <COMMAND>
 ```
 
-- [`dux projects worktrees ls`](#dux-projects-worktrees-ls): List a project's worktrees.
+- [`yaran projects worktrees ls`](#yaran-projects-worktrees-ls): List a project's worktrees.
 
-### `dux projects worktrees ls`
+### `yaran projects worktrees ls`
 
 Also: `list`
 
 List a project's worktrees.
 
 ```text
-dux projects worktrees ls [OPTIONS] <PROJECT>
+yaran projects worktrees ls [OPTIONS] <PROJECT>
 ```
 
 | Argument | Description |
@@ -346,31 +346,31 @@ dux projects worktrees ls [OPTIONS] <PROJECT>
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-## `dux agents`
+## `yaran agents`
 
 Agents, their tabs and their worktrees.
 
 ```text
-dux agents [OPTIONS] <COMMAND>
+yaran agents [OPTIONS] <COMMAND>
 ```
 
-- [`dux agents ls`](#dux-agents-ls): List agents.
-- [`dux agents show`](#dux-agents-show): Show one agent.
-- [`dux agents add`](#dux-agents-add): Create an agent and print its id last.
-- [`dux agents rm`](#dux-agents-rm): Delete an agent. With no branch flag, only the branch dux made for the agent goes with the worktree, and only while dux can prove it is still that branch; every other branch is kept.
-- [`dux agents stop`](#dux-agents-stop): Stop everything an agent runs.
-- [`dux agents start`](#dux-agents-start): Start an agent.
-- [`dux agents tabs`](#dux-agents-tabs): An agent's provider tabs.
-- [`dux agents prs`](#dux-agents-prs): An agent's pull requests: the ones dux found on the branches its worktree has been on, and the ones you attached from any repository.
+- [`yaran agents ls`](#yaran-agents-ls): List agents.
+- [`yaran agents show`](#yaran-agents-show): Show one agent.
+- [`yaran agents add`](#yaran-agents-add): Create an agent and print its id last.
+- [`yaran agents rm`](#yaran-agents-rm): Delete an agent. With no branch flag, only the branch yaran made for the agent goes with the worktree, and only while yaran can prove it is still that branch; every other branch is kept.
+- [`yaran agents stop`](#yaran-agents-stop): Stop everything an agent runs.
+- [`yaran agents start`](#yaran-agents-start): Start an agent.
+- [`yaran agents tabs`](#yaran-agents-tabs): An agent's provider tabs.
+- [`yaran agents prs`](#yaran-agents-prs): An agent's pull requests: the ones yaran found on the branches its worktree has been on, and the ones you attached from any repository.
 
-### `dux agents ls`
+### `yaran agents ls`
 
 Also: `list`
 
 List agents.
 
 ```text
-dux agents ls [OPTIONS]
+yaran agents ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -380,24 +380,24 @@ dux agents ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux agents show`
+### `yaran agents show`
 
 Show one agent.
 
 ```text
-dux agents show [OPTIONS] <AGENT>
+yaran agents show [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
 |---|---|
 | `<AGENT>` | Required. An agent's id or name; a name two agents share is refused with both ids. |
 
-### `dux agents add`
+### `yaran agents add`
 
 Create an agent and print its id last.
 
 ```text
-dux agents add [OPTIONS] <--project <PROJECT>|--fork <AGENT>|--standalone <FOLDER>|--from-pr <PR>>
+yaran agents add [OPTIONS] <--project <PROJECT>|--fork <AGENT>|--standalone <FOLDER>|--from-pr <PR>>
 ```
 
 | Flag | Value | Description |
@@ -417,14 +417,14 @@ dux agents add [OPTIONS] <--project <PROJECT>|--fork <AGENT>|--standalone <FOLDE
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents rm`
+### `yaran agents rm`
 
 Also: `remove`
 
-Delete an agent. With no branch flag, only the branch dux made for the agent goes with the worktree, and only while dux can prove it is still that branch; every other branch is kept.
+Delete an agent. With no branch flag, only the branch yaran made for the agent goes with the worktree, and only while yaran can prove it is still that branch; every other branch is kept.
 
 ```text
-dux agents rm [OPTIONS] <AGENT>
+yaran agents rm [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
@@ -443,12 +443,12 @@ dux agents rm [OPTIONS] <AGENT>
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 | `--dangerously-ignore-connected` |  | Go ahead even though someone is attached. |
 
-### `dux agents stop`
+### `yaran agents stop`
 
 Stop everything an agent runs.
 
 ```text
-dux agents stop [OPTIONS] <AGENT>
+yaran agents stop [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
@@ -462,12 +462,12 @@ dux agents stop [OPTIONS] <AGENT>
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 | `--dangerously-ignore-connected` |  | Go ahead even though someone is attached. |
 
-### `dux agents start`
+### `yaran agents start`
 
 Start an agent.
 
 ```text
-dux agents start [OPTIONS] <AGENT>
+yaran agents start [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
@@ -480,28 +480,28 @@ dux agents start [OPTIONS] <AGENT>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents tabs`
+### `yaran agents tabs`
 
 An agent's provider tabs.
 
 ```text
-dux agents tabs [OPTIONS] <COMMAND>
+yaran agents tabs [OPTIONS] <COMMAND>
 ```
 
-- [`dux agents tabs ls`](#dux-agents-tabs-ls): List an agent's tabs.
-- [`dux agents tabs add`](#dux-agents-tabs-add): Add a tab to an agent.
-- [`dux agents tabs rm`](#dux-agents-tabs-rm): Close a tab.
-- [`dux agents tabs start`](#dux-agents-tabs-start): Start a tab.
-- [`dux agents tabs stop`](#dux-agents-tabs-stop): Stop a tab.
+- [`yaran agents tabs ls`](#yaran-agents-tabs-ls): List an agent's tabs.
+- [`yaran agents tabs add`](#yaran-agents-tabs-add): Add a tab to an agent.
+- [`yaran agents tabs rm`](#yaran-agents-tabs-rm): Close a tab.
+- [`yaran agents tabs start`](#yaran-agents-tabs-start): Start a tab.
+- [`yaran agents tabs stop`](#yaran-agents-tabs-stop): Stop a tab.
 
-### `dux agents tabs ls`
+### `yaran agents tabs ls`
 
 Also: `list`
 
 List an agent's tabs.
 
 ```text
-dux agents tabs ls [OPTIONS] <AGENT>
+yaran agents tabs ls [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
@@ -513,12 +513,12 @@ dux agents tabs ls [OPTIONS] <AGENT>
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux agents tabs add`
+### `yaran agents tabs add`
 
 Add a tab to an agent.
 
 ```text
-dux agents tabs add [OPTIONS] <AGENT>
+yaran agents tabs add [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
@@ -532,14 +532,14 @@ dux agents tabs add [OPTIONS] <AGENT>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents tabs rm`
+### `yaran agents tabs rm`
 
 Also: `remove`
 
 Close a tab.
 
 ```text
-dux agents tabs rm [OPTIONS] <AGENT> <TAB>
+yaran agents tabs rm [OPTIONS] <AGENT> <TAB>
 ```
 
 | Argument | Description |
@@ -554,12 +554,12 @@ dux agents tabs rm [OPTIONS] <AGENT> <TAB>
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 | `--dangerously-ignore-connected` |  | Go ahead even though someone is attached. |
 
-### `dux agents tabs start`
+### `yaran agents tabs start`
 
 Start a tab.
 
 ```text
-dux agents tabs start [OPTIONS] <AGENT> <TAB>
+yaran agents tabs start [OPTIONS] <AGENT> <TAB>
 ```
 
 | Argument | Description |
@@ -573,12 +573,12 @@ dux agents tabs start [OPTIONS] <AGENT> <TAB>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents tabs stop`
+### `yaran agents tabs stop`
 
 Stop a tab.
 
 ```text
-dux agents tabs stop [OPTIONS] <AGENT> <TAB>
+yaran agents tabs stop [OPTIONS] <AGENT> <TAB>
 ```
 
 | Argument | Description |
@@ -593,31 +593,31 @@ dux agents tabs stop [OPTIONS] <AGENT> <TAB>
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 | `--dangerously-ignore-connected` |  | Go ahead even though someone is attached. |
 
-### `dux agents prs`
+### `yaran agents prs`
 
-An agent's pull requests: the ones dux found on the branches its worktree has been on, and the ones you attached from any repository.
+An agent's pull requests: the ones yaran found on the branches its worktree has been on, and the ones you attached from any repository.
 
 ```text
-dux agents prs [OPTIONS] <COMMAND>
+yaran agents prs [OPTIONS] <COMMAND>
 ```
 
-- [`dux agents prs ls`](#dux-agents-prs-ls): List an agent's pull requests in its order, the one its banner shows first, then the hidden ones. Each row's id is the pull request's link, which every other `prs` command accepts.
-- [`dux agents prs attach`](#dux-agents-prs-attach): Attach a pull request to an agent, beside the ones it has. It can come from any repository, and stays until you detach it.
-- [`dux agents prs detach`](#dux-agents-prs-detach): Detach a pull request you attached. One dux also found on the agent's branches stays in the list, as found.
-- [`dux agents prs hide`](#dux-agents-prs-hide): Hide a pull request dux found, until you unhide it. It keeps its place in your own order.
-- [`dux agents prs unhide`](#dux-agents-prs-unhide): Show a hidden pull request again, in the place it had.
-- [`dux agents prs sort`](#dux-agents-prs-sort): Choose how an agent's pull requests are ordered. Your own order is kept while the order is automatic, so choosing `manual` again brings it back.
-- [`dux agents prs move`](#dux-agents-prs-move): Move one of an agent's shown pull requests in its order. A move made while the order is automatic switches to your own order, starting from the order it was in, and replaces any order you had saved.
-- [`dux agents prs branches`](#dux-agents-prs-branches): List every branch an agent's worktree has been on, the one checked out now first and the rest newest first, with the names each had before a rename and its pull requests, then the pull requests that are on none of them: the ones you attached, and any dux found on a branch not listed.
+- [`yaran agents prs ls`](#yaran-agents-prs-ls): List an agent's pull requests in its order, the one its banner shows first, then the hidden ones. Each row's id is the pull request's link, which every other `prs` command accepts.
+- [`yaran agents prs attach`](#yaran-agents-prs-attach): Attach a pull request to an agent, beside the ones it has. It can come from any repository, and stays until you detach it.
+- [`yaran agents prs detach`](#yaran-agents-prs-detach): Detach a pull request you attached. One yaran also found on the agent's branches stays in the list, as found.
+- [`yaran agents prs hide`](#yaran-agents-prs-hide): Hide a pull request yaran found, until you unhide it. It keeps its place in your own order.
+- [`yaran agents prs unhide`](#yaran-agents-prs-unhide): Show a hidden pull request again, in the place it had.
+- [`yaran agents prs sort`](#yaran-agents-prs-sort): Choose how an agent's pull requests are ordered. Your own order is kept while the order is automatic, so choosing `manual` again brings it back.
+- [`yaran agents prs move`](#yaran-agents-prs-move): Move one of an agent's shown pull requests in its order. A move made while the order is automatic switches to your own order, starting from the order it was in, and replaces any order you had saved.
+- [`yaran agents prs branches`](#yaran-agents-prs-branches): List every branch an agent's worktree has been on, the one checked out now first and the rest newest first, with the names each had before a rename and its pull requests, then the pull requests that are on none of them: the ones you attached, and any yaran found on a branch not listed.
 
-### `dux agents prs ls`
+### `yaran agents prs ls`
 
 Also: `list`
 
 List an agent's pull requests in its order, the one its banner shows first, then the hidden ones. Each row's id is the pull request's link, which every other `prs` command accepts.
 
 ```text
-dux agents prs ls [OPTIONS] <AGENT>
+yaran agents prs ls [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
@@ -629,12 +629,12 @@ dux agents prs ls [OPTIONS] <AGENT>
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux agents prs attach`
+### `yaran agents prs attach`
 
 Attach a pull request to an agent, beside the ones it has. It can come from any repository, and stays until you detach it.
 
 ```text
-dux agents prs attach [OPTIONS] <AGENT> <REF>
+yaran agents prs attach [OPTIONS] <AGENT> <REF>
 ```
 
 | Argument | Description |
@@ -648,12 +648,12 @@ dux agents prs attach [OPTIONS] <AGENT> <REF>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents prs detach`
+### `yaran agents prs detach`
 
-Detach a pull request you attached. One dux also found on the agent's branches stays in the list, as found.
+Detach a pull request you attached. One yaran also found on the agent's branches stays in the list, as found.
 
 ```text
-dux agents prs detach [OPTIONS] <AGENT> <REF>
+yaran agents prs detach [OPTIONS] <AGENT> <REF>
 ```
 
 | Argument | Description |
@@ -667,12 +667,12 @@ dux agents prs detach [OPTIONS] <AGENT> <REF>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents prs hide`
+### `yaran agents prs hide`
 
-Hide a pull request dux found, until you unhide it. It keeps its place in your own order.
+Hide a pull request yaran found, until you unhide it. It keeps its place in your own order.
 
 ```text
-dux agents prs hide [OPTIONS] <AGENT> <REF>
+yaran agents prs hide [OPTIONS] <AGENT> <REF>
 ```
 
 | Argument | Description |
@@ -686,12 +686,12 @@ dux agents prs hide [OPTIONS] <AGENT> <REF>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents prs unhide`
+### `yaran agents prs unhide`
 
 Show a hidden pull request again, in the place it had.
 
 ```text
-dux agents prs unhide [OPTIONS] <AGENT> <REF>
+yaran agents prs unhide [OPTIONS] <AGENT> <REF>
 ```
 
 | Argument | Description |
@@ -705,12 +705,12 @@ dux agents prs unhide [OPTIONS] <AGENT> <REF>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents prs sort`
+### `yaran agents prs sort`
 
 Choose how an agent's pull requests are ordered. Your own order is kept while the order is automatic, so choosing `manual` again brings it back.
 
 ```text
-dux agents prs sort [OPTIONS] <AGENT> <MODE>
+yaran agents prs sort [OPTIONS] <AGENT> <MODE>
 ```
 
 | Argument | Description |
@@ -724,12 +724,12 @@ dux agents prs sort [OPTIONS] <AGENT> <MODE>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents prs move`
+### `yaran agents prs move`
 
 Move one of an agent's shown pull requests in its order. A move made while the order is automatic switches to your own order, starting from the order it was in, and replaces any order you had saved.
 
 ```text
-dux agents prs move [OPTIONS] <AGENT> <REF> <TO>
+yaran agents prs move [OPTIONS] <AGENT> <REF> <TO>
 ```
 
 | Argument | Description |
@@ -744,12 +744,12 @@ dux agents prs move [OPTIONS] <AGENT> <REF> <TO>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux agents prs branches`
+### `yaran agents prs branches`
 
-List every branch an agent's worktree has been on, the one checked out now first and the rest newest first, with the names each had before a rename and its pull requests, then the pull requests that are on none of them: the ones you attached, and any dux found on a branch not listed.
+List every branch an agent's worktree has been on, the one checked out now first and the rest newest first, with the names each had before a rename and its pull requests, then the pull requests that are on none of them: the ones you attached, and any yaran found on a branch not listed.
 
 ```text
-dux agents prs branches [OPTIONS] <AGENT>
+yaran agents prs branches [OPTIONS] <AGENT>
 ```
 
 | Argument | Description |
@@ -761,26 +761,26 @@ dux agents prs branches [OPTIONS] <AGENT>
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-## `dux terminals`
+## `yaran terminals`
 
 Terminals, project-owned, agent-owned and standalone.
 
 ```text
-dux terminals [OPTIONS] <COMMAND>
+yaran terminals [OPTIONS] <COMMAND>
 ```
 
-- [`dux terminals ls`](#dux-terminals-ls): List terminals.
-- [`dux terminals add`](#dux-terminals-add): Open a terminal and print its id last.
-- [`dux terminals rm`](#dux-terminals-rm): Close a terminal.
+- [`yaran terminals ls`](#yaran-terminals-ls): List terminals.
+- [`yaran terminals add`](#yaran-terminals-add): Open a terminal and print its id last.
+- [`yaran terminals rm`](#yaran-terminals-rm): Close a terminal.
 
-### `dux terminals ls`
+### `yaran terminals ls`
 
 Also: `list`
 
 List terminals.
 
 ```text
-dux terminals ls [OPTIONS]
+yaran terminals ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -788,12 +788,12 @@ dux terminals ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux terminals add`
+### `yaran terminals add`
 
 Open a terminal and print its id last.
 
 ```text
-dux terminals add [OPTIONS]
+yaran terminals add [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -804,14 +804,14 @@ dux terminals add [OPTIONS]
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux terminals rm`
+### `yaran terminals rm`
 
 Also: `remove`
 
 Close a terminal.
 
 ```text
-dux terminals rm [OPTIONS] <TERMINAL>
+yaran terminals rm [OPTIONS] <TERMINAL>
 ```
 
 | Argument | Description |
@@ -825,27 +825,27 @@ dux terminals rm [OPTIONS] <TERMINAL>
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 | `--dangerously-ignore-connected` |  | Go ahead even though someone is attached. |
 
-## `dux macros`
+## `yaran macros`
 
 Macros from config.toml.
 
 ```text
-dux macros [OPTIONS] <COMMAND>
+yaran macros [OPTIONS] <COMMAND>
 ```
 
-- [`dux macros ls`](#dux-macros-ls): List the macros.
-- [`dux macros show`](#dux-macros-show): Show one macro by name.
-- [`dux macros add`](#dux-macros-add): Add a macro, or replace the one with that name.
-- [`dux macros rm`](#dux-macros-rm): Remove a macro.
+- [`yaran macros ls`](#yaran-macros-ls): List the macros.
+- [`yaran macros show`](#yaran-macros-show): Show one macro by name.
+- [`yaran macros add`](#yaran-macros-add): Add a macro, or replace the one with that name.
+- [`yaran macros rm`](#yaran-macros-rm): Remove a macro.
 
-### `dux macros ls`
+### `yaran macros ls`
 
 Also: `list`
 
 List the macros.
 
 ```text
-dux macros ls [OPTIONS]
+yaran macros ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -853,24 +853,24 @@ dux macros ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux macros show`
+### `yaran macros show`
 
 Show one macro by name.
 
 ```text
-dux macros show [OPTIONS] <NAME>
+yaran macros show [OPTIONS] <NAME>
 ```
 
 | Argument | Description |
 |---|---|
-| `<NAME>` | Required. The macro's name, as `dux macros ls` lists it. |
+| `<NAME>` | Required. The macro's name, as `yaran macros ls` lists it. |
 
-### `dux macros add`
+### `yaran macros add`
 
 Add a macro, or replace the one with that name.
 
 ```text
-dux macros add [OPTIONS] <NAME> <TEXT>
+yaran macros add [OPTIONS] <NAME> <TEXT>
 ```
 
 | Argument | Description |
@@ -885,19 +885,19 @@ dux macros add [OPTIONS] <NAME> <TEXT>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux macros rm`
+### `yaran macros rm`
 
 Also: `remove`
 
 Remove a macro.
 
 ```text
-dux macros rm [OPTIONS] <NAME>
+yaran macros rm [OPTIONS] <NAME>
 ```
 
 | Argument | Description |
 |---|---|
-| `<NAME>` | Required. The macro's name, as `dux macros ls` lists it. |
+| `<NAME>` | Required. The macro's name, as `yaran macros ls` lists it. |
 
 | Flag | Value | Description |
 |---|---|---|
@@ -905,25 +905,25 @@ dux macros rm [OPTIONS] <NAME>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-## `dux providers`
+## `yaran providers`
 
 Providers from config.toml.
 
 ```text
-dux providers [OPTIONS] <COMMAND>
+yaran providers [OPTIONS] <COMMAND>
 ```
 
-- [`dux providers ls`](#dux-providers-ls): List the providers, built-in and your own.
-- [`dux providers show`](#dux-providers-show): Show one provider and the command it runs.
+- [`yaran providers ls`](#yaran-providers-ls): List the providers, built-in and your own.
+- [`yaran providers show`](#yaran-providers-show): Show one provider and the command it runs.
 
-### `dux providers ls`
+### `yaran providers ls`
 
 Also: `list`
 
 List the providers, built-in and your own.
 
 ```text
-dux providers ls [OPTIONS]
+yaran providers ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -931,36 +931,36 @@ dux providers ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux providers show`
+### `yaran providers show`
 
 Show one provider and the command it runs.
 
 ```text
-dux providers show [OPTIONS] <NAME>
+yaran providers show [OPTIONS] <NAME>
 ```
 
 | Argument | Description |
 |---|---|
-| `<NAME>` | Required. The provider's name, as `dux providers ls` lists it. |
+| `<NAME>` | Required. The provider's name, as `yaran providers ls` lists it. |
 
-## `dux keys`
+## `yaran keys`
 
 Keybindings from config.toml.
 
 ```text
-dux keys [OPTIONS] <COMMAND>
+yaran keys [OPTIONS] <COMMAND>
 ```
 
-- [`dux keys ls`](#dux-keys-ls): List every action the terminal UI binds and the keys it uses, yours or the default.
+- [`yaran keys ls`](#yaran-keys-ls): List every action the terminal UI binds and the keys it uses, yours or the default.
 
-### `dux keys ls`
+### `yaran keys ls`
 
 Also: `list`
 
 List every action the terminal UI binds and the keys it uses, yours or the default.
 
 ```text
-dux keys ls [OPTIONS]
+yaran keys ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -968,24 +968,24 @@ dux keys ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-## `dux themes`
+## `yaran themes`
 
-Themes dux can load.
+Themes yaran can load.
 
 ```text
-dux themes [OPTIONS] <COMMAND>
+yaran themes [OPTIONS] <COMMAND>
 ```
 
-- [`dux themes ls`](#dux-themes-ls): List the themes dux can load, marking the one ui.theme names.
+- [`yaran themes ls`](#yaran-themes-ls): List the themes yaran can load, marking the one ui.theme names.
 
-### `dux themes ls`
+### `yaran themes ls`
 
 Also: `list`
 
-List the themes dux can load, marking the one ui.theme names.
+List the themes yaran can load, marking the one ui.theme names.
 
 ```text
-dux themes ls [OPTIONS]
+yaran themes ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -993,26 +993,26 @@ dux themes ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-## `dux env`
+## `yaran env`
 
 The global environment from config.toml.
 
 ```text
-dux env [OPTIONS] <COMMAND>
+yaran env [OPTIONS] <COMMAND>
 ```
 
-- [`dux env ls`](#dux-env-ls): List the variables.
-- [`dux env set`](#dux-env-set): Set a variable; the value is asked for, or read from stdin.
-- [`dux env rm`](#dux-env-rm): Remove a variable.
+- [`yaran env ls`](#yaran-env-ls): List the variables.
+- [`yaran env set`](#yaran-env-set): Set a variable; the value is asked for, or read from stdin.
+- [`yaran env rm`](#yaran-env-rm): Remove a variable.
 
-### `dux env ls`
+### `yaran env ls`
 
 Also: `list`
 
 List the variables.
 
 ```text
-dux env ls [OPTIONS]
+yaran env ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -1021,12 +1021,12 @@ dux env ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux env set`
+### `yaran env set`
 
 Set a variable; the value is asked for, or read from stdin.
 
 ```text
-dux env set [OPTIONS] <NAME>
+yaran env set [OPTIONS] <NAME>
 ```
 
 | Argument | Description |
@@ -1040,19 +1040,19 @@ dux env set [OPTIONS] <NAME>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-### `dux env rm`
+### `yaran env rm`
 
 Also: `remove`
 
 Remove a variable.
 
 ```text
-dux env rm [OPTIONS] <NAME>
+yaran env rm [OPTIONS] <NAME>
 ```
 
 | Argument | Description |
 |---|---|
-| `<NAME>` | Required. The variable's name, as `dux env ls` lists it. |
+| `<NAME>` | Required. The variable's name, as `yaran env ls` lists it. |
 
 | Flag | Value | Description |
 |---|---|---|
@@ -1060,46 +1060,46 @@ dux env rm [OPTIONS] <NAME>
 | `--no-wait` |  | Print the operation id and return without waiting for the change. |
 | `--wait-timeout` | `<SECONDS>` | Wait at most this many seconds for the change to finish (at most a day). Not with `--no-wait`. |
 
-## `dux remote`
+## `yaran remote`
 
-Saved remote duxes and the sign-ins for them.
+Saved remote yaranes and the sign-ins for them.
 
 ```text
-dux remote [OPTIONS] <COMMAND>
+yaran remote [OPTIONS] <COMMAND>
 ```
 
-- [`dux remote add`](#dux-remote-add): Save a remote under a name.
-- [`dux remote ls`](#dux-remote-ls): List saved remotes.
-- [`dux remote rm`](#dux-remote-rm): Forget a saved remote.
-- [`dux remote default`](#dux-remote-default): Choose, or with `--unset` clear, the remote used when none is named.
-- [`dux remote login`](#dux-remote-login): Sign in to a remote (the selected one when no name is given).
-- [`dux remote logout`](#dux-remote-logout): Sign out of a remote (the selected one when no name is given).
+- [`yaran remote add`](#yaran-remote-add): Save a remote under a name.
+- [`yaran remote ls`](#yaran-remote-ls): List saved remotes.
+- [`yaran remote rm`](#yaran-remote-rm): Forget a saved remote.
+- [`yaran remote default`](#yaran-remote-default): Choose, or with `--unset` clear, the remote used when none is named.
+- [`yaran remote login`](#yaran-remote-login): Sign in to a remote (the selected one when no name is given).
+- [`yaran remote logout`](#yaran-remote-logout): Sign out of a remote (the selected one when no name is given).
 
-### `dux remote add`
+### `yaran remote add`
 
 Save a remote under a name.
 
 ```text
-dux remote add [OPTIONS] <NAME> <URL>
+yaran remote add [OPTIONS] <NAME> <URL>
 ```
 
 | Argument | Description |
 |---|---|
 | `<NAME>` | Required. The name to save the remote under, used with `--remote`. |
-| `<URL>` | Required. The address of the remote dux's web UI, for example `https://box.tailnet-name.ts.net`. |
+| `<URL>` | Required. The address of the remote yaran's web UI, for example `https://box.tailnet-name.ts.net`. |
 
 | Flag | Value | Description |
 |---|---|---|
 | `--insecure` |  | Allow plain http:// to an address that is neither this machine nor a Tailscale address. The password then crosses the network unencrypted, and every login says so. |
 
-### `dux remote ls`
+### `yaran remote ls`
 
 Also: `list`
 
 List saved remotes.
 
 ```text
-dux remote ls [OPTIONS]
+yaran remote ls [OPTIONS]
 ```
 
 | Flag | Value | Description |
@@ -1107,42 +1107,42 @@ dux remote ls [OPTIONS]
 | `--format` | `<FORMAT>` | How to print the list: `table` to read, `json` for a script. One of `table`, `json`. Default: `table`. |
 | `-q`, `--quiet` |  | Print only the ids, one per line. |
 
-### `dux remote rm`
+### `yaran remote rm`
 
 Also: `remove`
 
 Forget a saved remote.
 
 ```text
-dux remote rm [OPTIONS] <NAME>
+yaran remote rm [OPTIONS] <NAME>
 ```
 
 | Argument | Description |
 |---|---|
-| `<NAME>` | Required. The saved remote's name, as `dux remote ls` lists it. |
+| `<NAME>` | Required. The saved remote's name, as `yaran remote ls` lists it. |
 
-### `dux remote default`
+### `yaran remote default`
 
 Choose, or with `--unset` clear, the remote used when none is named.
 
 ```text
-dux remote default [OPTIONS] [NAME]
+yaran remote default [OPTIONS] [NAME]
 ```
 
 | Argument | Description |
 |---|---|
-| `<NAME>` | Optional. The saved remote's name, as `dux remote ls` lists it. Needed unless `--unset` is given. |
+| `<NAME>` | Optional. The saved remote's name, as `yaran remote ls` lists it. Needed unless `--unset` is given. |
 
 | Flag | Value | Description |
 |---|---|---|
 | `--unset` |  | Clear the default remote. Not with a name. |
 
-### `dux remote login`
+### `yaran remote login`
 
 Sign in to a remote (the selected one when no name is given).
 
 ```text
-dux remote login [OPTIONS] [NAME]
+yaran remote login [OPTIONS] [NAME]
 ```
 
 | Argument | Description |
@@ -1153,34 +1153,34 @@ dux remote login [OPTIONS] [NAME]
 |---|---|---|
 | `--stdin` |  | Read the password from standard input instead of asking for it. |
 
-### `dux remote logout`
+### `yaran remote logout`
 
 Sign out of a remote (the selected one when no name is given).
 
 ```text
-dux remote logout [OPTIONS] [NAME]
+yaran remote logout [OPTIONS] [NAME]
 ```
 
 | Argument | Description |
 |---|---|
 | `<NAME>` | Optional. The saved remote's name (the selected one when left out). |
 
-## `dux operations`
+## `yaran operations`
 
 Look up a change that was started earlier.
 
 ```text
-dux operations [OPTIONS] <COMMAND>
+yaran operations [OPTIONS] <COMMAND>
 ```
 
-- [`dux operations show`](#dux-operations-show): Show where a change stands.
+- [`yaran operations show`](#yaran-operations-show): Show where a change stands.
 
-### `dux operations show`
+### `yaran operations show`
 
 Show where a change stands.
 
 ```text
-dux operations show [OPTIONS] <ID>
+yaran operations show [OPTIONS] <ID>
 ```
 
 | Argument | Description |

@@ -9,7 +9,7 @@ module.exports = async ({ createAgent, palette, sleep, waitFor }) => {
   await sleep(4000)
 }
 
-// The port the crumb names. Config, because the crumb reports what dux bound
+// The port the crumb names. Config, because the crumb reports what yaran bound
 // rather than anything a journey can type at it.
 module.exports.config = (text) => text.replace(/^port = \d+$/m, "port = 3890")
 

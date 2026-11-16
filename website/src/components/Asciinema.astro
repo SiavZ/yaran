@@ -4,7 +4,7 @@ interface Props {
   title?: string;
 }
 
-const { castId = "IvqL89rXvwCzvSxQ", title = "dux in action" } = Astro.props;
+const { castId = "IvqL89rXvwCzvSxQ", title = "yaran in action" } = Astro.props;
 const link = `https://asciinema.org/a/${castId}`;
 const scriptSrc = `https://asciinema.org/a/${castId}.js`;
 const scriptId = `asciicast-${castId}`;
@@ -62,7 +62,7 @@ const scriptId = `asciicast-${castId}`;
               injects its player, so an unreachable or blocked asciinema.org
               leaves a real frame rather than an empty box. */}
           <a
-            id="dux-demo-fallback"
+            id="yaran-demo-fallback"
             href={link}
             target="_blank"
             rel="noopener"
@@ -125,7 +125,7 @@ const scriptId = `asciicast-${castId}`;
   <script is:inline>
     (function () {
       var box = document.querySelector(".asciinema-embed");
-      var fb = document.getElementById("dux-demo-fallback");
+      var fb = document.getElementById("yaran-demo-fallback");
       if (!box || !fb) return;
       var tries = 0;
       var poll = setInterval(function () {

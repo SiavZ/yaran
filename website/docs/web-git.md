@@ -27,7 +27,7 @@ Each group heading, and the pane's own header, adds up the line counts of the ro
 - **New, untracked files** are counted line by line whatever `.gitattributes` says.
 
 > [!NOTE]
-> Git has never seen untracked files, so dux counts their lines by reading each file, and it does that for the first **two thousand** untracked files in a worktree. Any beyond that are still listed, in full, with their status. They just carry no line counts and are left out of the sums, the same way an empty file already looks.
+> Git has never seen untracked files, so yaran counts their lines by reading each file, and it does that for the first **two thousand** untracked files in a worktree. Any beyond that are still listed, in full, with their status. They just carry no line counts and are left out of the sums, the same way an empty file already looks.
 
 Status icons are the same ones the editor's file tree uses, each with a tooltip spelling it out:
 
@@ -47,8 +47,8 @@ A folder with nothing tracked inside it, like a freshly installed `node_modules`
 - Files your `.gitignore` hides are not counted.
 - Stage it whole and it stays one row in **Staged**, for as long as everything in it is newly added and no file inside it is still untracked. A repository left out of the stage does not count against this. Stage only part of it and the staged files are listed one by one.
 - Every count of changed files, the group badges included, counts the files *inside* a folder, not one for the folder.
-- A git repository of its own inside a folder is counted apart, as in `3 files and 1 nested repository`. A folder that is itself a repository says "nested repository" instead of a count, because dux does not look inside it.
-- A bare repository is different: to git it is a folder of ordinary files, so dux counts and stages it as files, the way `git add` would. Discarding a folder keeps any bare repository inside it, and the dialog names it.
+- A git repository of its own inside a folder is counted apart, as in `3 files and 1 nested repository`. A folder that is itself a repository says "nested repository" instead of a count, because yaran does not look inside it.
+- A bare repository is different: to git it is a folder of ordinary files, so yaran counts and stages it as files, the way `git add` would. Discarding a folder keeps any bare repository inside it, and the dialog names it.
 
 **Opening a folder.** A folder row has no diff to open. Click its name to expand it and list what is inside, one level at a time; click again to fold it back up.
 
@@ -73,7 +73,7 @@ A folder with nothing tracked inside it, like a freshly installed `node_modules`
 **Staging and unstaging a folder.** A folder row's own `⋯` menu stages or unstages the whole folder at once.
 
 - Staging stages its files and leaves out any repository of its own, or worktree of this repository, inside it, so none of them is recorded as a link.
-- dux tells you what it left out, and the folder's staged row says so too, as in `5 files · 1 nested repository not staged`.
+- yaran tells you what it left out, and the folder's staged row says so too, as in `5 files · 1 nested repository not staged`.
 - A folder that holds nothing but repositories has nothing to stage, so it offers no stage.
 
 **Discarding a folder** asks first, the same confirmation a file gets.
@@ -81,7 +81,7 @@ A folder with nothing tracked inside it, like a freshly installed `node_modules`
 - Discarding an untracked folder deletes the untracked files it counted. Files your `.gitignore` hides stay, and so does any repository of its own inside it; the dialog says so.
 - A folder that holds nothing but repositories of their own has nothing to delete, so it offers no discard.
 - A folder that is a worktree of this same repository is left to the worktree manager and offers no discard either.
-- A folder or repository is **never deleted while something lives in it**: another agent's worktree or a standalone agent's folder, a dux project's repository, an operation dux is running there, something dux started that is still running there, or a terminal whose shell is standing in it. The discard is refused and says which, and nothing is deleted.
+- A folder or repository is **never deleted while something lives in it**: another agent's worktree or a standalone agent's folder, a yaran project's repository, an operation yaran is running there, something yaran started that is still running there, or a terminal whose shell is standing in it. The discard is refused and says which, and nothing is deleted.
 
 Discarding a deleted tracked file restores it from the last commit, unless a folder now stands where the file was. Then the discard is refused, because restoring the file would delete that folder and everything in it. Move or delete the folder yourself first if that is what you mean.
 
@@ -121,12 +121,12 @@ Discarding a selection confirms first, and the dialog counts the two outcomes se
 
 Clicking a row still opens its diff; only the checkbox selects. On a phone the diff, and **Edit** below, open in the standalone editor in the same browser tab, and Back returns to the Changes screen. For a single file, hover a row for its `⋯` menu:
 
-- **Stage** and **Unstage** move a file between the two groups. The row jumps to its new group as soon as dux confirms.
+- **Stage** and **Unstage** move a file between the two groups. The row jumps to its new group as soon as yaran confirms.
 - **Edit** opens the file in the editor (hidden for deleted files).
 - **Discard…** throws away a file's uncommitted changes. It only shows up on **unstaged** rows: unstage a file first if you want to discard it.
 
 > [!CAUTION]
-> **Discard is destructive**, so it always confirms first, and the dialog says which case applies. An untracked file is **permanently deleted from disk**. A tracked file is **restored to its last committed state**. dux checks the file's live state at the moment you confirm.
+> **Discard is destructive**, so it always confirms first, and the dialog says which case applies. An untracked file is **permanently deleted from disk**. A tracked file is **restored to its last committed state**. yaran checks the file's live state at the moment you confirm.
 
 ## Commit, push, pull
 
@@ -144,7 +144,7 @@ The changes pane's header carries three controls: an **Open editor** button that
 
 **The header stays in every state the pane can be in:** while the changes load, when they fail to, and when the pane has nothing to show because a standalone agent's folder has no repository or an agent's directory is gone.
 
-- **Commit…** and **Refresh changes** stay in the menu greyed out, with a line at the top saying why. They come back on their own once the folder holds a repository again; there is nothing to press, because dux looks at the folder again within about ten seconds while the agent is selected.
+- **Commit…** and **Refresh changes** stay in the menu greyed out, with a line at the top saying why. They come back on their own once the folder holds a repository again; there is nothing to press, because yaran looks at the folder again within about ten seconds while the agent is selected.
 - **Push** and **Pull** are greyed out the same way when a managed agent's working copy is gone. A [standalone agent](/docs/creating-agents) never has them, so they are absent from its menu rather than greyed out.
 - **Hide Changes pane** and the **Open editor** and **New terminal** buttons keep working, except that both buttons are greyed out too when the directory itself is gone.
 
@@ -155,7 +155,7 @@ The changes pane's header carries three controls: an **Open editor** button that
 > GitHub and GitHub Enterprise hosts `gh` is signed in to. Commit, push and pull work with any
 > host git can reach.
 
-An agent can have several pull requests: the ones dux finds on every branch its worktree
+An agent can have several pull requests: the ones yaran finds on every branch its worktree
 has been on, plus any you attach yourself. The banner is a one-line strip that shows one of them at a
 time: its number, its state and its title, color-coded (open is green, draft is gray,
 merged is purple, closed is red). Clicking the strip opens that pull request in a new tab.
@@ -196,7 +196,7 @@ has:
 
 - **Open on GitHub**.
 - **Move to top**, **Move up** and **Move down**.
-- **Hide**, for a pull request dux found, or **Detach**, for one you attached. Neither asks
+- **Hide**, for a pull request yaran found, or **Detach**, for one you attached. Neither asks
   for confirmation, because neither loses anything: see [Hiding and
   detaching](#hiding-and-detaching).
 
@@ -221,7 +221,7 @@ Ctrl-n goes to the agent, where shells and most CLIs use it for their history.
 
 ### Attaching a PR by hand
 
-dux finds the pull requests on the agent's branches itself. When one lives somewhere it
+yaran finds the pull requests on the agent's branches itself. When one lives somewhere it
 does not look (a fork, another repository entirely, or a head branch that no longer
 matches), attach it: **Attach pull request…** at the bottom of the Pull requests dialog, or
 the attach key in the terminal UI's picker. The field takes a full PR URL, `owner/repo#123`,
@@ -237,13 +237,13 @@ and the terminal UI alike, and marks the ones you attached as manually attached.
 
 Every pull request in the list can be taken out of it, one at a time:
 
-- **Hide** is for a pull request dux found. It leaves the banner and the list for a
-  **Hidden** section at the bottom of the dialog, and dux never brings it back by itself.
+- **Hide** is for a pull request yaran found. It leaves the banner and the list for a
+  **Hidden** section at the bottom of the dialog, and yaran never brings it back by itself.
   **Show again** there puts it back in the place it had.
 - **Detach** is for one you attached. It goes from the agent; attach it again whenever you
-  like. One dux had also found stays, as found, and can then be hidden.
+  like. One yaran had also found stays, as found, and can then be hidden.
 
-A pull request dux has found is never dropped by dux itself: a branch nobody pushes to any
+A pull request yaran has found is never dropped by yaran itself: a branch nobody pushes to any
 more keeps its pull request until you hide it.
 
 Attaching needs GitHub integration and a signed-in `gh`; hiding, showing again and
@@ -256,7 +256,7 @@ The **Sort** control beside the dialog's two views has two settings:
 
 - **Automatic**, the default: open first, then drafts, then merged, then closed, the
   newest first within each.
-- **Manual**: your own order, with the pull requests dux finds later going after the ones
+- **Manual**: your own order, with the pull requests yaran finds later going after the ones
   you placed, in automatic order among themselves.
 
 Dragging a row by its grip, or **Move to top**, **Move up** or **Move down** in its ⋯,
@@ -268,10 +268,10 @@ as you left it. A hidden pull request keeps its slot and returns to it when show
 ### Branches
 
 The dialog's **Branches** view lists every branch the agent's worktree has had checked
-out, the current one first and the rest newest first, each with when dux first saw it, the
+out, the current one first and the rest newest first, each with when yaran first saw it, the
 names it had before a rename, and the pull requests found on it. Every other pull request
 the agent has is listed below the branches, so none is missing from the view: one you
-attached, one dux found on a branch the list leaves out, such as the default branch
+attached, one yaran found on a branch the list leaves out, such as the default branch
 after the worktree moved off it, and one found in another repository before the worktree's
 remote changed, even on a branch of the same name. The terminal UI puts them under **On no branch listed
 here**.
@@ -281,12 +281,12 @@ here**.
 - **What is tracked:** every branch in that list. The branch checked out now is asked
   about on every poll and the earlier ones take turns; see
   [How PR status stays fresh](/docs/creating-agents#how-pr-status-stays-fresh).
-- **When history starts:** when dux first saw the worktree on a branch. A branch it was on
-  before dux was watching is not in the list.
+- **When history starts:** when yaran first saw the worktree on a branch. A branch it was on
+  before yaran was watching is not in the list.
 - **The project's default branch** (usually `main`) is listed and tracked only while the
-  worktree is on it. Once the worktree moves off it, it leaves the list and dux stops
+  worktree is on it. Once the worktree moves off it, it leaves the list and yaran stops
   looking for pull requests on it, because its pull requests are everybody's, not the
-  agent's; one dux already found there stays in the agent's list.
+  agent's; one yaran already found there stays in the agent's list.
 
 > [!NOTE]
 > The first start of this version moves every agent's pull request into the new list. If
@@ -298,26 +298,26 @@ here**.
 
 There is no file watcher behind the Changes pane.
 
-The pane updates the moment dux itself changes a file: a stage, an unstage, a discard, a commit, a file saved in the editor, and a file you drop onto a pane once it lands somewhere git is watching.
+The pane updates the moment yaran itself changes a file: a stage, an unstage, a discard, a commit, a file saved in the editor, and a file you drop onto a pane once it lands somewhere git is watching.
 
 Everything else is noticed within a couple of seconds while any agent or terminal is running, and within ten seconds when none is: an agent writing files in its worktree just as much as a file you delete from a companion terminal.
 
 > [!IMPORTANT]
-> A change dux did not make is never invisible, it is just up to ten seconds late. **Refresh changes** in the header menu skips that wait and says what it found. The terminal UI has the same action as its `refresh-changes` command.
+> A change yaran did not make is never invisible, it is just up to ten seconds late. **Refresh changes** in the header menu skips that wait and says what it found. The terminal UI has the same action as its `refresh-changes` command.
 
-If a git operation collides with a lock, dux keeps retrying, so a single blip usually clears itself. If it does not, you get a "Couldn't load changes" card with a Refresh button, and a warning toast once the failures persist, which says dux cannot list the changed files right now and points you to `dux.log` for the details. The toast goes away by itself as soon as git answers again, with no message in its place: the list filling back in is the news. A commit you make in the browser is an ordinary commit, visible everywhere.
+If a git operation collides with a lock, yaran keeps retrying, so a single blip usually clears itself. If it does not, you get a "Couldn't load changes" card with a Refresh button, and a warning toast once the failures persist, which says yaran cannot list the changed files right now and points you to `yaran.log` for the details. The toast goes away by itself as soon as git answers again, with no message in its place: the list filling back in is the news. A commit you make in the browser is an ordinary commit, visible everywhere.
 
-dux also keeps checking which branch each agent is on, so a branch the agent switches to shows up in its row and header. If it cannot read the branch at all for a while (the folder stopped being a repository, or git will not run), a warning names the agent's folder and says the branch shown may be out of date. The details are in `dux.log`. That warning, too, goes away quietly once git answers again.
+yaran also keeps checking which branch each agent is on, so a branch the agent switches to shows up in its row and header. If it cannot read the branch at all for a while (the folder stopped being a repository, or git will not run), a warning names the agent's folder and says the branch shown may be out of date. The details are in `yaran.log`. That warning, too, goes away quietly once git answers again.
 
 ### No branch checked out
 
-An agent can leave its worktree with no branch checked out: a detached checkout, a rebase or a bisect in progress. That is an ordinary state, not an error, so nothing pops up about it. The Changes pane says so instead, in a strip at its top: **No branch checked out**, and the branch dux keeps showing for the agent, which is the one it was last on. The list of changes works as usual underneath.
+An agent can leave its worktree with no branch checked out: a detached checkout, a rebase or a bisect in progress. That is an ordinary state, not an error, so nothing pops up about it. The Changes pane says so instead, in a strip at its top: **No branch checked out**, and the branch yaran keeps showing for the agent, which is the one it was last on. The list of changes works as usual underneath.
 
 The strip goes away on its own once a branch is checked out again, within the branch check's interval (`branch_sync_interval` in `[ui]`, 30 seconds by default). The terminal UI shows the same notice as a box at the top of its changes list.
 
 ## When an agent deletes its own working copy
 
-An agent works inside a git worktree, and it can remove that worktree from inside it: merging its branch and then deleting the branch takes the directory with it. dux cannot stop that, so it says so instead. The Changes pane goes quiet with a sentence naming the directory that is gone, and the agent's row in the sidebar says **working copy missing** where it would normally name the project.
+An agent works inside a git worktree, and it can remove that worktree from inside it: merging its branch and then deleting the branch takes the directory with it. yaran cannot stop that, so it says so instead. The Changes pane goes quiet with a sentence naming the directory that is gone, and the agent's row in the sidebar says **working copy missing** where it would normally name the project.
 
 > [!IMPORTANT]
 > The agent's process, if it was still running, keeps running in a directory that no longer exists. Nothing it does from then on reaches your files.
@@ -330,22 +330,22 @@ An agent works inside a git worktree, and it can remove that worktree from insid
 
 Where the branch comes from:
 
-- If the branch is still in the repository, dux checks it out again and the agent's commits are exactly where it left them.
-- If the branch is gone locally but still on the remote, dux creates it again from `origin/<branch>`, holding everything that had been pushed.
-- If it is gone everywhere, dux creates it again from the project's source branch, and the commits that branch held are not coming back.
+- If the branch is still in the repository, yaran checks it out again and the agent's commits are exactly where it left them.
+- If the branch is gone locally but still on the remote, yaran creates it again from `origin/<branch>`, holding everything that had been pushed.
+- If it is gone everywhere, yaran creates it again from the project's source branch, and the commits that branch held are not coming back.
 
 The confirmation spells out all three cases, and the message afterwards names the one that actually happened.
 
-**If the agent is still running**, you can recreate anyway; what happens next is the CLI's own answer. dux tells the CLIs apart by the command a provider runs, not by the provider's name, so a provider of your own whose command is `claude` counts as Claude.
+**If the agent is still running**, you can recreate anyway; what happens next is the CLI's own answer. yaran tells the CLIs apart by the command a provider runs, not by the provider's name, so a provider of your own whose command is `claude` counts as Claude.
 
-- **Claude** never notices. A running Claude tab carries on in the recreated folder with its conversation intact. dux treats **Grok** the same way, which it has not measured separately.
+- **Claude** never notices. A running Claude tab carries on in the recreated folder with its conversation intact. yaran treats **Grok** the same way, which it has not measured separately.
 - **Codex** cannot follow the folder. It answers every turn with an invalid-directory error from the moment the folder goes, and stays stuck after the recreate until it is restarted.
 - **OpenCode**, and any other CLI that can pick its conversation back up, gets the same cautious treatment as Codex.
 - **Copilot**, and any CLI that cannot pick a conversation back up, is never restarted, because that would lose its conversation. The confirmation says it is left running. If it cannot follow the folder, stop and start that tab yourself.
 
 **The restart box.** For the cautious CLIs, the confirmation has a **Restart the Codex tab so it continues in the new copy** box, ticked by default and naming the CLIs it would restart. Leave it ticked and, once the working copy is back:
 
-1. dux asks those tabs to shut down.
+1. yaran asks those tabs to shut down.
 2. It gives them the configured shutdown wait, and closes any that are still there.
 3. It starts each one again so it picks its conversation back up in the recreated folder.
 
@@ -356,7 +356,7 @@ A few rules apply:
 - Restarting stops tabs, so if someone else is connected to one of them, the confirmation names them first, the same way stopping a tab does.
 - Nothing is restarted if the recreate fails, and nothing at all when the box is unticked.
 
-**While a tab waits to be restarted**, starting it yourself is refused with a message saying dux is restarting it. Stopping or closing that tab, stopping the agent, or deleting it means it is not started again. A tab that only started after you confirmed is left running, and the message says so.
+**While a tab waits to be restarted**, starting it yourself is refused with a message saying yaran is restarting it. Stopping or closing that tab, stopping the agent, or deleting it means it is not started again. A tab that only started after you confirmed is left running, and the message says so.
 
 **The message afterwards** waits until every restarted tab has actually started and, for one picking its conversation back up, until it has shown it did. Then it says which continued, which started fresh (including one whose conversation could not be picked back up), which were stopped, and which could not be started and why.
 

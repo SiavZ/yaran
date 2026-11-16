@@ -1,0 +1,7322 @@
+//! The SQLite session database (sessions.sqlite3): projects, agent sessions,
+//! tabs and pull-request associations, with its migrations.
+
+use std::collections::{BTreeMap, HashMap};
+
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::config::ProjectConfig;
+use crate::model::{AgentSession, AgentTab, ProviderKind, SessionStatus};
+use crate::text::count_of;
+
+/// A stored PR association loaded from the database.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredPr {
+    /// The agent session the pull request is associated with.
+    pub session_id: String,
+    /// The pull request's number.
+    pub pr_number: u64,
+    /// The GitHub host it lives on.
+    pub host: String,
+    /// The repository, as `owner/name`.
+    pub owner_repo: String,
+    /// The pull request's state as last seen.
+    pub state: String,
+    /// The pull request's title.
+    pub title: String,
+    /// The pull request's web address.
+    pub url: String,
+}
+
+/// How [`SessionStore::seed_pr_for_tests`] associates a pull request.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug)]
+pub enum SeededPr {
+    /// Found by the sync on one of the agent's branches.
+    Found,
+    /// Attached by the user.
+    Attached,
+}
+
+/// The `app_state` key holding the last yaran version whose first-load screen was
+/// shown. One key, one meaning; see [`SessionStore::last_seen_version`].
+const LAST_SEEN_VERSION_KEY: &str = "last_seen_version";
+
+/// The `app_state` key holding this yaran's instance id; see
+/// [`SessionStore::instance_id`].
+const INSTANCE_ID_KEY: &str = "instance_id";
+
+/// The `app_state` key recording that the one-time tab position migration ran.
+const TAB_POSITIONS_KEY: &str = "tab_positions_renumbered";
+
+/// The open session database: the one connection yaran reads and writes `sessions.sqlite3` through.
+#[derive(Debug)]
+pub struct SessionStore {
+    conn: Connection,
+}
+
+/// SQLite names its journal sidecars by APPENDING to the database's file name,
+/// so `sessions.sqlite3` gets `sessions.sqlite3-wal`. That is a suffix on the
+/// whole name, not a new extension, which is why this appends to the OS string
+/// rather than going through `set_extension`.
+fn sidecar_path(db: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = db.as_os_str().to_os_string();
+    name.push(suffix);
+    std::path::PathBuf::from(name)
+}
+
+/// A write transaction that takes the database's write lock when it begins.
+/// A deferred one starts as a read and is refused outright (SQLite's
+/// `SQLITE_BUSY_SNAPSHOT`, which no busy timeout waits out) when another
+/// connection, the process registry's writer among them, commits in between.
+fn immediate_tx(conn: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+}
+
+fn encode_identities(identities: &[crate::process_sessions::ProcessIdentity]) -> String {
+    identities
+        .iter()
+        .map(|identity| format!("{}:{}:{}", identity.pid, identity.start_time, identity.boot))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_identities(text: &str) -> Vec<crate::process_sessions::ProcessIdentity> {
+    text.split(',')
+        .filter_map(|entry| {
+            let mut fields = entry.split(':');
+            let pid = fields.next()?.parse().ok()?;
+            let start_time = fields.next()?.parse().ok()?;
+            // No boot recorded: void, as an identity from another boot is.
+            let boot = fields
+                .next()
+                .and_then(|boot| boot.parse().ok())
+                .unwrap_or(0);
+            Some(crate::process_sessions::ProcessIdentity {
+                pid,
+                start_time,
+                boot,
+            })
+        })
+        .collect()
+}
+
+/// A left-over folder's kept branches as stored: one line per branch, its
+/// commit (`-` when none was recorded), its provenance (`-` when the worktree
+/// manager kept it) and its name. A refname holds neither a line break nor a
+/// space, and neither does a commit id or a provenance word.
+fn encode_kept_branches(branches: &[crate::git::KeptBranch]) -> String {
+    branches
+        .iter()
+        .map(|kept| {
+            format!(
+                "{} {} {}",
+                kept.oid.as_deref().unwrap_or("-"),
+                kept.provenance
+                    .map_or("-", |provenance| provenance.as_str()),
+                kept.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// [`encode_kept_branches`] read back. A line written before branches carried
+/// their own provenance (`<commit> <name>`) takes the record's.
+fn decode_kept_branches(
+    stored: &str,
+    record_provenance: Option<crate::model::BranchProvenance>,
+) -> Vec<crate::git::KeptBranch> {
+    stored
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, ' ');
+            let (oid, second, third) = (fields.next()?, fields.next()?, fields.next());
+            let (provenance, name) = match third {
+                Some(name) => (
+                    (second != "-").then(|| crate::model::BranchProvenance::from_str(second)),
+                    name,
+                ),
+                None => (record_provenance, second),
+            };
+            Some(crate::git::KeptBranch {
+                name: name.to_string(),
+                oid: (oid != "-").then(|| oid.to_string()),
+                provenance,
+            })
+        })
+        .collect()
+}
+
+/// A `u64` (a device or inode number) as SQLite's signed integer, bit for bit,
+/// so the whole range round-trips.
+fn stored_u64(value: u64) -> i64 {
+    i64::from_ne_bytes(value.to_ne_bytes())
+}
+
+/// A worktree removal the user asked for that yaran has not finished yet, kept
+/// in the database so a quit or a crash in the middle of it does not leave a
+/// worktree and a branch behind that no agent owns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingWorktreeRemoval {
+    pub session_id: String,
+    /// The agent's name at the time, for the status that reports it.
+    pub label: String,
+    pub project_path: String,
+    pub managed: crate::model::ManagedWorkspace,
+    /// What the removal does with the agent's branches, decided when the
+    /// delete was admitted.
+    pub branches: crate::branch_history::BranchPlan,
+    /// The sessions the agent's processes ran in, so a later start can end
+    /// whatever of them outlived yaran.
+    pub process_sessions: Vec<crate::process_sessions::ProcessSession>,
+    /// The registry slice of the folder, kept current while the removal waits:
+    /// every session registered in it with its owner's kind, and what was
+    /// recorded running in each. Rebuilt into a registry at the next start.
+    pub process_registry: crate::process_sessions::RegistrySnapshot,
+    /// What was running in them when the delete began, by identity: a later
+    /// start acts on a leaderless session only through these.
+    pub(crate) process_snapshot: Vec<crate::process_sessions::ProcessIdentity>,
+}
+
+/// Whether `agent_sessions.initial_branch` appeared in this open, which is when
+/// the one-time title freeze runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitialBranchColumn {
+    /// The column was just added.
+    JustAdded,
+    /// The column was already there.
+    AlreadyThere,
+}
+
+impl SessionStore {
+    /// Opens the database at `path`, tightens its files to owner-only, and brings its schema up to
+    /// date.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be opened, the connection cannot be configured, or a migration
+    /// fails.
+    pub fn open(path: &std::path::Path) -> Result<Self> {
+        let conn =
+            Connection::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        // The engine keeps one connection open for the lifetime of the process
+        // while background workers open their own to the same file. WAL lets a
+        // writer and readers proceed without blocking each other, and a busy
+        // timeout turns the rare writer/writer overlap into a short wait-and-retry
+        // instead of an immediate `SQLITE_BUSY` failure (the default timeout is 0).
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // `journal_mode` returns the resulting mode as a row, so use a statement
+        // that tolerates it (a `:memory:` DB stays in "memory" mode, a harmless
+        // no-op). `execute_batch` ignores the returned row.
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        // The database mirrors the same per-project `env` map that made
+        // `config.toml` 0600, so it gets the same mode. SQLite creates the file
+        // (and, after the WAL pragma, its `-wal`/`-shm` sidecars) itself at the
+        // umask default and offers no API to choose their mode, so the only
+        // thing yaran can do here is tighten afterwards. The sidecars can also be
+        // recreated at any later point, which is why the owner-only CONFIG
+        // DIRECTORY, not this, is what actually closes the gap; see
+        // `crate::file_modes`. Tightening runs on every open so a database left
+        // 0644 by an older installation is corrected. A failure is not fatal:
+        // an unwritable mode must not stop yaran from reading its own sessions.
+        for path in [
+            path.to_path_buf(),
+            sidecar_path(path, "-wal"),
+            sidecar_path(path, "-shm"),
+        ] {
+            crate::file_modes::restrict_to_owner_best_effort(&path, "session database");
+        }
+        let store = Self { conn };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    /// Open a second connection to a database this process has already
+    /// opened, for anything that reads or writes it after start-up (a worker,
+    /// a reload, the process-session writer). Unlike
+    /// [`Self::open`] it runs none of the start-up migrations or repairs:
+    /// those belong to the moment the database is first opened, and run again
+    /// against a live database they act on rows other code is in the middle of
+    /// using (a repair adopting a tab as an agent's first tab, say).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database cannot be opened.
+    pub fn open_live(path: &std::path::Path) -> Result<Self> {
+        let conn =
+            Connection::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(Self { conn })
+    }
+
+    fn migrate(&self) -> Result<()> {
+        self.migrate_projects_and_sessions_tables()?;
+        self.migrate_session_identity_columns()?;
+        self.migrate_session_state_columns()?;
+        self.migrate_pull_request_tables()?;
+        self.migrate_housekeeping_tables()?;
+        self.migrate_branch_history()?;
+        self.migrate_session_pull_requests()?;
+        // The slot-tab passes run last: they write `agent_tabs` rows, so the
+        // table has to exist, and a failure in any of them aborts the open. A
+        // workspace whose first tabs are unaddressable is worse than a startup
+        // that says why it stopped.
+        self.sweep_orphan_agent_tabs()?;
+        self.sweep_orphan_minted_branch_renames()?;
+        self.sweep_orphan_branch_history()?;
+        self.sweep_orphan_pull_request_rows()?;
+        self.backfill_slot_tabs()?;
+        self.heal_slot_tab_pointers()?;
+        self.renumber_tab_positions()?;
+        Ok(())
+    }
+
+    /// The `agent_sessions` and `projects` tables, and the project columns added since.
+    fn migrate_projects_and_sessions_tables(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r"
+            create table if not exists agent_sessions (
+                id text primary key,
+                project_id text not null,
+                provider text not null,
+                source_branch text not null,
+                branch_name text not null,
+                initial_branch text not null default '',
+                branch_provenance text not null default 'created',
+                worktree_path text not null,
+                title text,
+                project_path text,
+                status text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+            ",
+        )?;
+        self.conn.execute_batch(
+            r"
+            create table if not exists projects (
+                id text primary key,
+                path text not null unique,
+                name text,
+                default_provider text,
+                leading_branch text,
+                auto_reopen_agents integer,
+                startup_command text,
+                env text not null default '{}',
+                sort_order integer not null default 0,
+                created_at text not null,
+                updated_at text not null
+            );
+            ",
+        )?;
+        ensure_column(&self.conn, "projects", "name", "text")?;
+        ensure_column(&self.conn, "projects", "default_provider", "text")?;
+        ensure_column(&self.conn, "projects", "leading_branch", "text")?;
+        ensure_column(&self.conn, "projects", "auto_reopen_agents", "integer")?;
+        ensure_column(&self.conn, "projects", "startup_command", "text")?;
+        ensure_column(&self.conn, "projects", "env", "text not null default '{}'")?;
+        ensure_column(
+            &self.conn,
+            "projects",
+            "sort_order",
+            "integer not null default 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "projects",
+            "created_at",
+            "text not null default ''",
+        )?;
+        ensure_column(
+            &self.conn,
+            "projects",
+            "updated_at",
+            "text not null default ''",
+        )?;
+        Ok(())
+    }
+
+    /// The agent columns that say what an agent is: its name, its birth branch, where
+    /// its branch came from and which kind of workspace it has, with the one-time
+    /// backfills they need.
+    fn migrate_session_identity_columns(&self) -> Result<()> {
+        ensure_column(&self.conn, "agent_sessions", "title", "text")?;
+        // The immutable branch an agent was created on. Additive column with a
+        // '' default so old rows and inserts by an older binary still succeed.
+        //
+        // The ALTER runs in AUTOCOMMIT (on `&self.conn`), NOT inside the backfill
+        // transaction below, so the duplicate-column tolerance in `ensure_column`
+        // works: two connections opening at first-boot-after-upgrade can race the
+        // ALTER, and the loser sees SQLite's "duplicate column name" error (which
+        // `is_duplicate_column_error` swallows as `Ok(false)`). Wrapping the ALTER
+        // in a transaction instead would make the loser raise SQLITE_BUSY_SNAPSHOT,
+        // which that classifier does NOT match, hard-failing `open()`.
+        let initial_branch_added = ensure_column(
+            &self.conn,
+            "agent_sessions",
+            "initial_branch",
+            "text not null default ''",
+        )?;
+        // Where the agent's branch came from, deciding whether a delete may
+        // force-delete it. Additive column, same autocommit ALTER rationale as
+        // `initial_branch` above.
+        //
+        // The default is 'created' for existing rows on purpose: it preserves
+        // exactly today's behavior for every agent that predates the column.
+        // Defaulting to a kept variant instead would silently stop branch
+        // cleanup for every existing agent, resurrecting the "create foo,
+        // delete foo, recreate foo -> branch already exists" leak, and the true
+        // provenance of an old row is unknowable anyway. No backfill beyond the
+        // default is needed or possible.
+        ensure_column(
+            &self.conn,
+            "agent_sessions",
+            "branch_provenance",
+            "text not null default 'created'",
+        )?;
+        // WHICH SHAPE THIS ROW IS: a managed working copy yaran owns, or a
+        // folder the user already had. Additive column, same autocommit ALTER
+        // rationale as `initial_branch` above.
+        //
+        // The default is 'managed' for existing rows because every row that
+        // predates this column IS one: there was no other kind of agent. No
+        // backfill beyond the default is needed or possible.
+        //
+        // This column is read FIRST, before any git column is believed,
+        // because a standalone row stores empty text under `project_id`,
+        // `branch_name`, `source_branch`, `initial_branch` and
+        // `worktree_path` (they are NOT NULL, or predate this feature). Read
+        // in the other order those empties become facts: a branch named "", a
+        // worktree path of "" that a delete path would try to remove.
+        ensure_column(
+            &self.conn,
+            "agent_sessions",
+            "workspace_kind",
+            "text not null default 'managed'",
+        )?;
+        // The folder a standalone agent runs in. NULL for a managed row, which
+        // is the honest spelling: there is no folder, as opposed to an empty
+        // one.
+        ensure_column(&self.conn, "agent_sessions", "folder_path", "text")?;
+        // Only the backfill UPDATEs run in a transaction so a crash mid-backfill
+        // rolls them back and the step is retried cleanly on the next boot (the
+        // idempotent/ungated portion below self-heals a partially-applied run).
+        // Capture the one-time freeze count and log it ONLY after the commit
+        // succeeds, so the success line can never claim a migration that a commit
+        // failure actually rolled back.
+        let frozen_titles = self.backfill_initial_branches(if initial_branch_added {
+            InitialBranchColumn::JustAdded
+        } else {
+            InitialBranchColumn::AlreadyThere
+        })?;
+        if let Some(frozen) = frozen_titles {
+            crate::logger::info(&format!(
+                "one-time migration: froze the title of {}",
+                count_of(frozen, "legacy session")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Freeze the birth branch of every managed row still lacking one and, the first
+    /// time `initial_branch` appears, the title of every legacy auto-named agent, in
+    /// one transaction. Answers how many titles were frozen, when that ran.
+    fn backfill_initial_branches(&self, column: InitialBranchColumn) -> Result<Option<usize>> {
+        let tx = immediate_tx(&self.conn)?;
+        // IDEMPOTENT, UNGATED backfill: freeze the birth branch for any row
+        // that still lacks one. The WHERE clause is self-limiting, since new
+        // rows always record a genuine `initial_branch` at creation, so this
+        // is a no-op once healed and still repairs rows stranded by a crash
+        // mid-migration or a downgrade-then-upgrade window. The true original
+        // may already be lost to prior drift, so the current branch is frozen
+        // as the recorded initial.
+        //
+        // Gated on the KIND column: a standalone row has an empty
+        // `initial_branch` and an empty `branch_name` permanently by design,
+        // so the assignment would be a no-op today. The gate keeps it from
+        // ever starting to matter for folder rows, which have no branch
+        // identity to heal.
+        tx.execute(
+            "update agent_sessions set initial_branch = branch_name \
+             where workspace_kind = 'managed' \
+               and (initial_branch = '' or initial_branch is null)",
+            [],
+        )?;
+        // ONE-TIME backfill, gated on the FIRST appearance of the
+        // `initial_branch` column so it runs exactly once, mirroring the gated
+        // `sort_order` backfill below. `migrate()` runs on every `open()`,
+        // which happens on every startup and every background
+        // project-persistence or config-reload, and an unconditional `title`
+        // backfill would re-freeze the intentionally-NULL `title` of every
+        // auto-named agent on each open, pinning it so the display can no
+        // longer track the branch. `title IS NULL` is a legitimate ongoing
+        // state for auto-named agents, so this must never re-run.
+        //
+        // The asymmetry is deliberate: legacy pet-named agents present at the
+        // one-time upgrade get their current name frozen into `title` here, so
+        // their display never drifts with the branch again, while agents
+        // auto-named afterwards keep `title` NULL and track `branch_name`,
+        // with drift shown through `initial_branch`.
+        let frozen = if column == InitialBranchColumn::JustAdded {
+            //
+            // Gated on the kind column for the same reason as the backfill
+            // above: freezing a standalone row's empty branch name into its
+            // title would leave the row with no label at all. A standalone
+            // agent always has a title anyway (creation enforces one), so
+            // this arm has nothing to do for one.
+            Some(tx.execute(
+                "update agent_sessions set title = branch_name \
+                 where workspace_kind = 'managed' and title is null",
+                [],
+            )?)
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(frozen)
+    }
+
+    /// The agent columns for its runtime state: started providers, auto-reopen,
+    /// display order, the remembered tab and the session-slot pointer.
+    fn migrate_session_state_columns(&self) -> Result<()> {
+        ensure_column(&self.conn, "agent_sessions", "project_path", "text")?;
+        ensure_column(
+            &self.conn,
+            "agent_sessions",
+            "started_providers",
+            "text not null default '[]'",
+        )?;
+        ensure_column(
+            &self.conn,
+            "agent_sessions",
+            "desired_running",
+            "integer not null default 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "agent_sessions",
+            "auto_reopen_enabled",
+            "integer not null default 1",
+        )?;
+        // Persisted display order for agent sessions. The ALTER runs in AUTOCOMMIT
+        // (same duplicate-column-tolerance rationale as `initial_branch` above);
+        // the backfill numbers positions GLOBALLY (agents are one flat list) from
+        // the legacy `updated_at DESC` order so the visible order is preserved
+        // exactly across the upgrade, and it runs inside its own transaction (see
+        // `backfill_session_sort_order`).
+        //
+        // Retryable: the backfill runs whenever two or more sessions share a
+        // position (`session_sort_order_needs_backfill`), which covers a column
+        // just added to a table of several sessions and one a prior crash
+        // stranded in the gap between the (autocommitted) ALTER and the
+        // backfill. Gating on `ensure_column` alone would pin a crash-stranded
+        // table at sort_order=0 forever, since the next boot sees the column
+        // present and skips the backfill.
+        ensure_column(
+            &self.conn,
+            "agent_sessions",
+            "sort_order",
+            "integer not null default 0",
+        )?;
+        self.backfill_session_sort_order()?;
+        // Per-agent remembered focused tab (derived runtime/UI state, never config).
+        // Additive, NULL default = "no memory" = falls back to the session-slot tab.
+        // Deliberately OMITTED from `upsert_session`'s SET/INSERT lists (same rationale
+        // as `sort_order`): a dedicated setter owns it so status/config churn can't reset it.
+        ensure_column(&self.conn, "agent_sessions", "last_focused_tab", "text")?;
+        // Which `agent_tabs` row currently occupies this agent's session slot.
+        // Every tab is a row, so this is a pointer rather than a synthesized
+        // identity, and moving it is what promotes a sibling into the slot.
+        //
+        // NULL means "predates the pointer, not migrated yet", and only while
+        // `migrate()` runs: `backfill_slot_tabs` closes that window on every
+        // open and `heal_slot_tab_pointers` closes the other one (a pointer
+        // naming a row that is gone). After `migrate()` returns, a session with
+        // no usable pointer is a bug, not a state the read path tolerates.
+        //
+        // Both passes run after `create table if not exists agent_tabs` further
+        // down, because they write rows into it.
+        ensure_column(&self.conn, "agent_sessions", "slot_tab_id", "text")?;
+        Ok(())
+    }
+
+    /// The pull request tables: detected, pinned and suppressed, and branch renames.
+    fn migrate_pull_request_tables(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r"
+            create table if not exists session_prs (
+                session_id text not null,
+                pr_number integer not null,
+                host text not null default 'github.com',
+                owner_repo text not null,
+                state text not null default 'OPEN',
+                primary key (session_id, pr_number),
+                foreign key (session_id) references agent_sessions(id) on delete cascade
+            );
+            ",
+        )?;
+        ensure_column(
+            &self.conn,
+            "session_prs",
+            "host",
+            "text not null default 'github.com'",
+        )?;
+        ensure_column(
+            &self.conn,
+            "session_prs",
+            "state",
+            "text not null default 'OPEN'",
+        )?;
+        ensure_column(
+            &self.conn,
+            "session_prs",
+            "title",
+            "text not null default ''",
+        )?;
+        ensure_column(&self.conn, "session_prs", "url", "text not null default ''")?;
+        // A manually attached ("pinned") pull request, one row per session,
+        // mirroring `session_prs`'s columns. The FK is declared for parity with
+        // `session_prs`, but the connection never enables `PRAGMA foreign_keys`,
+        // so the cascade does not fire; `delete_session` and
+        // `remove_project_records` delete these rows explicitly. The cached
+        // state/title/url make a restart render the pin instantly, before the
+        // first sync cycle refreshes them. Derived runtime state, so it lives
+        // here and never in portable config.
+        self.conn.execute_batch(
+            r"
+            create table if not exists session_pr_overrides (
+                session_id text primary key
+                    references agent_sessions(id) on delete cascade,
+                host       text not null,
+                owner_repo text not null,
+                pr_number  integer not null,
+                state      text not null default 'OPEN',
+                title      text not null default '',
+                url        text not null default ''
+            );
+            ",
+        )?;
+        // A session whose pull-request autodetection the user switched off by
+        // detaching. One row per session, presence is the whole meaning, so the
+        // table has a single column. Durable on purpose: a detach is a user
+        // decision and a restart must not quietly resume detection. Like
+        // `session_pr_overrides` the FK is declared for parity only (the
+        // connection never enables `PRAGMA foreign_keys`), so `delete_session`
+        // and `remove_project_records` delete these rows explicitly. Derived
+        // runtime state, so it lives here and never in portable config.
+        self.conn.execute_batch(
+            r"
+            create table if not exists session_pr_suppressions (
+                session_id text primary key
+                    references agent_sessions(id) on delete cascade
+            );
+            ",
+        )?;
+        // The name the branch yaran minted for an agent has now, recorded when an
+        // explicit rename moves it. An agent whose branch differs from the one it
+        // was born on has either renamed its own branch or drifted onto another
+        // one, and only this row tells the two apart after a restart. Deleted
+        // explicitly with the session, like the tables above.
+        self.conn.execute_batch(
+            r"
+            create table if not exists session_minted_branch_renames (
+                session_id text primary key
+                    references agent_sessions(id) on delete cascade,
+                branch_name text not null
+            );
+            ",
+        )?;
+        Ok(())
+    }
+
+    /// The housekeeping tables: the changes revision, tabs, app state, pending removals and the process registry.
+    fn migrate_housekeeping_tables(&self) -> Result<()> {
+        // Per-session monotonic changed-files revision counter (server mode).
+        // Separate from the session record so it is purely housekeeping: a single
+        // chokepoint that hands out a strictly-increasing `rev` per session,
+        // persisted so it survives restarts (never resets to a lower value). The
+        // row is removed when the session is deleted (see `delete_session`).
+        self.conn.execute_batch(
+            r"
+            create table if not exists changes_rev (
+                session_id text primary key,
+                rev integer not null
+            );
+            ",
+        )?;
+        // One row per provider tab, the agent's FIRST tab included: the
+        // session-slot tab is a row like any other, named by
+        // `agent_sessions.slot_tab_id`. Rows are removed when the owning session
+        // (or its project) is deleted (see
+        // `delete_session`/`remove_project_records`).
+        self.conn.execute_batch(
+            r"
+            create table if not exists agent_tabs (
+                id text primary key,
+                session_id text not null,
+                provider text not null,
+                sort_order integer not null default 0,
+                created_at text not null
+            );
+            create index if not exists idx_agent_tabs_session on agent_tabs(session_id);
+            ",
+        )?;
+        // Small key/value bag for whole-app derived state that belongs to no
+        // session and no project, and that must be SHARED by the TUI and the
+        // web (see `last_seen_version`: dismissing the what's-new screen in one
+        // surface dismisses it in the other). Additive and backward compatible:
+        // existing databases start with zero rows. Keep it deliberately small:
+        // per-entity state belongs in its own purpose-built table, exactly like
+        // `changes_rev`.
+        self.conn.execute_batch(
+            r"
+            create table if not exists app_state (
+                key text primary key,
+                value text not null
+            );
+            ",
+        )?;
+        // A worktree removal the user asked for and yaran has not finished: the
+        // agent's record is already gone when the removal starts (it waits for
+        // the agent's processes), so a quit or a crash in between would
+        // otherwise leave a worktree and a branch that no agent owns and
+        // nothing remembers to remove. The next start finishes what is here.
+        // Additive: existing databases start with zero rows.
+        self.conn.execute_batch(
+            r"
+            create table if not exists pending_worktree_removals (
+                session_id text primary key,
+                label text not null,
+                project_id text not null,
+                project_path text not null,
+                worktree_path text not null,
+                source_branch text not null,
+                branch_name text not null,
+                initial_branch text not null,
+                branch_provenance text not null,
+                delete_branch integer,
+                process_sessions text not null default '',
+                process_snapshot text not null default '',
+                process_registry text not null default '',
+                created_at text not null
+            );
+            ",
+        )?;
+        // What was running in those sessions when the delete began, by
+        // identity: the only evidence a later start may act on for a session
+        // whose leader is gone.
+        ensure_column(
+            &self.conn,
+            "pending_worktree_removals",
+            "process_snapshot",
+            "text not null default ''",
+        )?;
+        // The registry slice the removal depends on, owner kinds included (see
+        // `crate::process_sessions::RegistrySnapshot`).
+        ensure_column(
+            &self.conn,
+            "pending_worktree_removals",
+            "process_registry",
+            "text not null default ''",
+        )?;
+        // What the removal does with the agent's branches, decided when the
+        // delete was admitted (see `crate::branch_history::BranchPlan`). Empty
+        // on a row an older yaran wrote, which keeps its `delete_branch` answer.
+        ensure_column(
+            &self.conn,
+            "pending_worktree_removals",
+            "branch_plan",
+            "text not null default ''",
+        )?;
+        // A worktree folder a delete could not finish (git let go of the
+        // worktree, something kept writing into the folder), with the branches
+        // kept because of it and the folder's identity, so the worktree
+        // manager can list it and offer a confirmed delete. Derived runtime
+        // state; additive: existing databases start with zero rows.
+        self.conn.execute_batch(
+            r"
+            create table if not exists leftover_worktree_folders (
+                path text primary key,
+                project_id text not null,
+                branches text not null default '',
+                branch_provenance text,
+                dev integer not null,
+                ino integer not null,
+                birth_ns integer,
+                created_at text not null
+            );
+            ",
+        )?;
+        // The folder's birth time, where the filesystem keeps one, so a new
+        // folder that reuses the inode is not taken for the old one.
+        ensure_column(
+            &self.conn,
+            "leftover_worktree_folders",
+            "birth_ns",
+            "integer",
+        )?;
+        // The process sessions yaran started, kept across restarts (see
+        // `crate::process_sessions::AgentProcessRegistry::attach_store`): one
+        // row holding the whole registry, replaced atomically on every change.
+        self.conn.execute_batch(
+            r"
+            create table if not exists process_registry (
+                id integer primary key check (id = 1),
+                body text not null
+            );
+            ",
+        )?;
+        Ok(())
+    }
+
+    /// Drop any `agent_tabs` row whose owning session is gone.
+    ///
+    /// Belt-and-suspenders for rows an older binary (which predates the cascade,
+    /// and the table) could have left behind when deleting a session. It runs
+    /// here rather than in a reader so it happens exactly once per open, ahead of
+    /// the two repair passes below, which both reason about "the session's tabs".
+    fn sweep_orphan_agent_tabs(&self) -> Result<()> {
+        self.conn
+            .execute(
+                "delete from agent_tabs where session_id not in (select id from agent_sessions)",
+                [],
+            )
+            .context("failed to sweep tab rows whose agent no longer exists")?;
+        Ok(())
+    }
+
+    /// Drop any minted-branch rename row whose session is gone.
+    ///
+    /// A binary older than the table deletes sessions without knowing it is
+    /// there, so a row it leaves behind would hand a later session reusing the
+    /// id an age guard that was never its own. Swept once per open.
+    fn sweep_orphan_minted_branch_renames(&self) -> Result<()> {
+        self.conn
+            .execute(
+                "delete from session_minted_branch_renames \
+                 where session_id not in (select id from agent_sessions)",
+                [],
+            )
+            .context("failed to sweep branch rename rows whose agent no longer exists")?;
+        Ok(())
+    }
+
+    /// Drop any branch-history row whose session is gone, for the same reason
+    /// as [`Self::sweep_orphan_minted_branch_renames`].
+    fn sweep_orphan_branch_history(&self) -> Result<()> {
+        self.conn
+            .execute(
+                "delete from session_branch_history \
+                 where session_id not in (select id from agent_sessions)",
+                [],
+            )
+            .context("failed to sweep branch history rows whose agent no longer exists")?;
+        Ok(())
+    }
+
+    /// Drop the pull-request rows, preferences and former branch names whose
+    /// session is gone, for the same reason as
+    /// [`Self::sweep_orphan_minted_branch_renames`].
+    fn sweep_orphan_pull_request_rows(&self) -> Result<()> {
+        for table in [
+            "session_pull_requests",
+            "session_pr_prefs",
+            "session_branch_former_names",
+        ] {
+            self.conn
+                .execute(
+                    &format!(
+                        "delete from {table} \
+                         where session_id not in (select id from agent_sessions)"
+                    ),
+                    [],
+                )
+                .with_context(|| {
+                    format!("failed to sweep {table} rows whose agent no longer exists")
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Every pull request each agent has (`session_pull_requests`), each
+    /// agent's sort preference (`session_pr_prefs`) and the names a rename
+    /// moved a branch away from (`session_branch_former_names`): derived
+    /// runtime state, never config.
+    ///
+    /// The tables are detected, created and filled in ONE transaction, and
+    /// only the open that creates the rows table fills them, so the
+    /// one-pull-request tables they replace are imported once. Those are
+    /// left exactly as they were: a downgrade reads them as it left them, and
+    /// nothing it writes there is imported again, since that would bring back
+    /// pull requests the user detached here.
+    ///
+    /// Host and repository compare without regard to case, as GitHub does,
+    /// while keeping the case GitHub reported for display.
+    fn migrate_session_pull_requests(&self) -> Result<()> {
+        let tx = immediate_tx(&self.conn).context("failed to start the pull request migration")?;
+        let exists: bool = tx.query_row(
+            "select exists(select 1 from sqlite_master \
+             where type = 'table' and name = 'session_pull_requests')",
+            [],
+            |row| row.get(0),
+        )?;
+        // Created on every open, so a database that has the rows table without
+        // these still gets them; only the import is tied to the rows table.
+        tx.execute_batch(
+            r"
+            create table if not exists session_pr_prefs (
+                session_id text primary key,
+                sort_mode text not null default 'automatic',
+                hide_created_before text
+            );
+            create table if not exists session_branch_former_names (
+                session_id text not null,
+                branch_name text not null,
+                former_name text not null,
+                renamed_at text not null,
+                primary key (session_id, branch_name, former_name)
+            );
+            ",
+        )?;
+        if !exists {
+            tx.execute_batch(
+                r"
+                create table session_pull_requests (
+                    session_id text not null,
+                    host text not null collate nocase,
+                    owner_repo text not null collate nocase,
+                    pr_number integer not null,
+                    state text not null,
+                    is_draft integer not null default 0,
+                    title text not null default '',
+                    url text not null default '',
+                    head_branch text,
+                    found integer not null default 0,
+                    attached integer not null default 0,
+                    hidden integer not null default 0,
+                    manual_slot integer,
+                    gh_created_at text,
+                    gh_updated_at text,
+                    gh_closed_at text,
+                    gh_merged_at text,
+                    first_recorded_at text not null,
+                    last_refreshed_at text,
+                    primary key (session_id, host, owner_repo, pr_number)
+                );
+                ",
+            )?;
+            let now = Utc::now().to_rfc3339();
+            // Every pull request yaran ever associated, including ones on a
+            // branch whose remote ref is gone, which discovery could no longer
+            // find. Its first refresh fills in the branch, the draft flag and
+            // the times.
+            tx.execute(
+                "insert or ignore into session_pull_requests \
+                 (session_id, host, owner_repo, pr_number, state, title, url, found, \
+                  first_recorded_at) \
+                 select session_id, host, owner_repo, pr_number, state, title, url, 1, ?1 \
+                 from session_prs",
+                params![now],
+            )?;
+            tx.execute(
+                "insert into session_pull_requests \
+                 (session_id, host, owner_repo, pr_number, state, title, url, attached, \
+                  first_recorded_at) \
+                 select session_id, host, owner_repo, pr_number, state, title, url, 1, ?1 \
+                 from session_pr_overrides where true \
+                 on conflict(session_id, host, owner_repo, pr_number) do update set \
+                 attached = 1, state = excluded.state, title = excluded.title, \
+                 url = excluded.url",
+                params![now],
+            )?;
+            // An agent whose detection was switched off keeps what it had out
+            // of sight, and anything found later that GitHub opened before now.
+            tx.execute(
+                "update session_pull_requests set hidden = 1 \
+                 where found = 1 \
+                   and session_id in (select session_id from session_pr_suppressions)",
+                [],
+            )?;
+            tx.execute(
+                "insert or ignore into session_pr_prefs (session_id, hide_created_before) \
+                 select session_id, ?1 from session_pr_suppressions",
+                params![now],
+            )?;
+        }
+        tx.commit()
+            .context("failed to commit the pull request migration")?;
+        Ok(())
+    }
+
+    /// Every branch each agent's worktree has been on (see
+    /// [`crate::branch_history`]): derived runtime state, never config.
+    ///
+    /// The table is detected, created and seeded in ONE transaction, so two
+    /// processes opening the file together cannot both seed it. The seed runs
+    /// only in the open that creates it: `initial_branch` never changes, so
+    /// seeding again would bring back a name a yaran rename already replaced.
+    ///
+    /// A seeded birth row carries no identity (a legacy row): the database
+    /// cannot tell a genuine `initial_branch` from one an older backfill
+    /// froze from whatever branch the agent was on, so a legacy birth row
+    /// counts as yaran's only while the agent's worktree is still on it. An
+    /// agent yaran renamed and that then switched branches before this table
+    /// existed has lost the rename record, so its renamed birth branch cannot
+    /// be recovered as yaran's, and is kept.
+    fn migrate_branch_history(&self) -> Result<()> {
+        let tx =
+            immediate_tx(&self.conn).context("failed to start the branch history migration")?;
+        let exists: bool = tx.query_row(
+            "select exists(select 1 from sqlite_master \
+             where type = 'table' and name = 'session_branch_history')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            tx.execute_batch(
+                r"
+                create table session_branch_history (
+                    session_id text not null,
+                    branch_name text not null,
+                    born_here integer not null default 0,
+                    identity_unix integer,
+                    identity_oid text,
+                    tip_oid text,
+                    first_seen_at text not null,
+                    primary key (session_id, branch_name)
+                );
+                ",
+            )?;
+            let now = Utc::now().to_rfc3339();
+            // The birth row, under the name a yaran rename gave it.
+            tx.execute(
+                "insert or ignore into session_branch_history \
+                 (session_id, branch_name, born_here, first_seen_at) \
+                 select s.id, coalesce(r.branch_name, s.initial_branch), 1, ?1 \
+                 from agent_sessions s \
+                 left join session_minted_branch_renames r on r.session_id = s.id \
+                 where s.workspace_kind = 'managed' \
+                   and coalesce(r.branch_name, s.initial_branch) <> ''",
+                params![now],
+            )?;
+            tx.execute(
+                "insert or ignore into session_branch_history \
+                 (session_id, branch_name, born_here, first_seen_at) \
+                 select id, branch_name, 0, ?1 from agent_sessions \
+                 where workspace_kind = 'managed' and branch_name <> ''",
+                params![now],
+            )?;
+            Self::seed_branch_tips(&tx)?;
+        }
+        tx.commit()
+            .context("failed to commit the branch history migration")?;
+        Ok(())
+    }
+
+    /// Where each seeded row's branch points now, read from git once while the
+    /// table is created, so a later check can tell whether the branch under
+    /// the name has moved off it. A row git cannot answer for keeps no tip.
+    fn seed_branch_tips(conn: &Connection) -> Result<()> {
+        let rows: Vec<(String, String, String, String)> = {
+            let mut stmt = conn.prepare(
+                "select h.session_id, h.branch_name, s.worktree_path, \
+                 coalesce(s.project_path, '') \
+                 from session_branch_history h join agent_sessions s on s.id = h.session_id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (session_id, name, worktree, project) in rows {
+            let tip = [worktree, project]
+                .iter()
+                .filter(|dir| !dir.is_empty() && std::path::Path::new(dir).is_dir())
+                .find_map(|dir| {
+                    crate::git::resolve_branch_oid(std::path::Path::new(dir), &name)
+                        .ok()
+                        .flatten()
+                });
+            if let Some(tip) = tip {
+                conn.execute(
+                    "update session_branch_history set tip_oid = ?3 \
+                     where session_id = ?1 and branch_name = ?2",
+                    params![session_id, name, tip],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Record branches an agent's worktree has been on. A name already
+    /// recorded keeps its row.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub(crate) fn record_branches_seen(
+        &self,
+        session_id: &str,
+        seen: &[crate::branch_history::SeenBranch],
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let tx = immediate_tx(&self.conn)?;
+        for seen in seen.iter().filter(|seen| !seen.name.is_empty()) {
+            let unix = seen.identity.as_ref().map(|identity| identity.unix);
+            let oid = seen.identity.as_ref().map(|identity| identity.oid.as_str());
+            tx.execute(
+                "insert or ignore into session_branch_history \
+                 (session_id, branch_name, born_here, identity_unix, identity_oid, tip_oid, \
+                  first_seen_at) values (?1, ?2, 0, ?3, ?4, ?5, ?6)",
+                params![session_id, seen.name, unix, oid, seen.tip, now],
+            )?;
+            // Where it points now, but only while it is the branch recorded
+            // under the name: a different branch never moves the recorded tip.
+            // A row with no identity is moved only by a sighting with none
+            // either (one carrying a creation entry is the name made again)
+            // whose tip the caller checked descends from the one recorded (it
+            // sends none otherwise).
+            tx.execute(
+                "update session_branch_history set tip_oid = ?5 \
+                 where session_id = ?1 and branch_name = ?2 and ?5 is not null \
+                   and ((identity_oid is null and ?4 is null) \
+                        or (identity_oid = ?4 and identity_unix = ?3))",
+                params![session_id, seen.name, unix, oid, seen.tip],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record `name` as the agent's birth branch, with the identity of the ref
+    /// yaran made (`None` when it could not be read), replacing any earlier
+    /// birth row.
+    fn set_birth_branch_in(
+        conn: &Connection,
+        session_id: &str,
+        name: &str,
+        seen: Option<&crate::branch_history::SeenBranch>,
+    ) -> Result<()> {
+        let identity = seen.and_then(|seen| seen.identity.as_ref());
+        let tip = seen.and_then(|seen| seen.tip.as_deref());
+        conn.execute(
+            "update session_branch_history set born_here = 0, identity_unix = null, \
+             identity_oid = null where session_id = ?1 and born_here = 1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "insert into session_branch_history \
+             (session_id, branch_name, born_here, identity_unix, identity_oid, tip_oid, \
+              first_seen_at) values (?1, ?2, 1, ?3, ?4, ?5, ?6) \
+             on conflict(session_id, branch_name) do update set born_here = 1, \
+             identity_unix = excluded.identity_unix, \
+             identity_oid = excluded.identity_oid, \
+             tip_oid = excluded.tip_oid",
+            params![
+                session_id,
+                name,
+                identity.map(|identity| identity.unix),
+                identity.map(|identity| identity.oid.as_str()),
+                tip,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Record the identity of a legacy birth row (one recorded with none),
+    /// read while the agent's worktree is on that branch. A row that already
+    /// has one keeps it.
+    pub(crate) fn fill_birth_identity(
+        &self,
+        session_id: &str,
+        name: &str,
+        identity: &crate::branch_history::BranchIdentity,
+    ) -> Result<()> {
+        self.conn.execute(
+            "update session_branch_history set identity_unix = ?3, identity_oid = ?4 \
+             where session_id = ?1 and branch_name = ?2 and born_here = 1 \
+               and identity_oid is null",
+            params![session_id, name, identity.unix, identity.oid],
+        )?;
+        Ok(())
+    }
+
+    /// A yaran rename moved `old` to `new`: the row follows it, birth flag and
+    /// identity included, because `git branch -m` keeps the branch's reflog.
+    pub(crate) fn rename_history_branch(
+        &self,
+        session_id: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<()> {
+        type Row = (bool, Option<i64>, Option<String>, Option<String>, String);
+        let tx = immediate_tx(&self.conn)?;
+        let row: Option<Row> = tx
+            .query_row(
+                "select born_here, identity_unix, identity_oid, tip_oid, first_seen_at \
+                 from session_branch_history where session_id = ?1 and branch_name = ?2",
+                params![session_id, old],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((born_here, unix, oid, tip, first_seen_at)) = row {
+            tx.execute(
+                "delete from session_branch_history where session_id = ?1 and branch_name = ?2",
+                params![session_id, old],
+            )?;
+            tx.execute(
+                "insert into session_branch_history \
+                 (session_id, branch_name, born_here, identity_unix, identity_oid, tip_oid, \
+                  first_seen_at) values (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 on conflict(session_id, branch_name) do update set \
+                 born_here = max(born_here, excluded.born_here), \
+                 identity_unix = coalesce(excluded.identity_unix, identity_unix), \
+                 identity_oid = coalesce(excluded.identity_oid, identity_oid), \
+                 tip_oid = coalesce(excluded.tip_oid, tip_oid)",
+                params![session_id, new, born_here, unix, oid, tip, first_seen_at],
+            )?;
+        } else {
+            tx.execute(
+                "insert or ignore into session_branch_history \
+                 (session_id, branch_name, born_here, first_seen_at) values (?1, ?2, 0, ?3)",
+                params![session_id, new, Utc::now().to_rfc3339()],
+            )?;
+        }
+        // The branch keeps every name it has had, because GitHub keeps the
+        // remote branch under the name it was pushed with. Written in this
+        // transaction so a crash cannot leave the renamed branch blind to it.
+        tx.execute(
+            "update or ignore session_branch_former_names set branch_name = ?3 \
+             where session_id = ?1 and branch_name = ?2",
+            params![session_id, old, new],
+        )?;
+        tx.execute(
+            "delete from session_branch_former_names where session_id = ?1 and branch_name = ?2",
+            params![session_id, old],
+        )?;
+        tx.execute(
+            "insert or ignore into session_branch_former_names \
+             (session_id, branch_name, former_name, renamed_at) values (?1, ?2, ?3, ?4)",
+            params![session_id, new, old, Utc::now().to_rfc3339()],
+        )?;
+        // Renamed back to a name it once had: that name is current, not former.
+        tx.execute(
+            "delete from session_branch_former_names \
+             where session_id = ?1 and branch_name = former_name",
+            params![session_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every branch recorded for an agent, the birth branch first.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_branch_history(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::branch_history::BranchHistoryEntry>> {
+        Ok(self
+            .load_branch_histories(Some(session_id))?
+            .remove(session_id)
+            .unwrap_or_default())
+    }
+
+    /// Every agent's branch list, by session id, each the birth branch first.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_all_branch_histories(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<crate::branch_history::BranchHistoryEntry>>>
+    {
+        self.load_branch_histories(None)
+    }
+
+    /// The branch lists of one agent, or of every agent for `None`.
+    fn load_branch_histories(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, Vec<crate::branch_history::BranchHistoryEntry>>>
+    {
+        let mut former: std::collections::HashMap<(String, String), Vec<String>> =
+            std::collections::HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "select session_id, branch_name, former_name from session_branch_former_names \
+                 where ?1 is null or session_id = ?1 order by renamed_at, former_name",
+            )?;
+            let rows = stmt.query_map(params![session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (session, branch, name) = row?;
+                former.entry((session, branch)).or_default().push(name);
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "select session_id, branch_name, born_here, identity_unix, identity_oid, tip_oid, \
+             first_seen_at from session_branch_history where ?1 is null or session_id = ?1 \
+             order by session_id, born_here desc, first_seen_at, branch_name",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            let unix: Option<i64> = row.get(3)?;
+            let oid: Option<String> = row.get(4)?;
+            let first_seen_at: String = row.get(6)?;
+            let session: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            Ok((
+                session,
+                crate::branch_history::BranchHistoryEntry {
+                    name,
+                    born_here: row.get(2)?,
+                    identity: unix
+                        .zip(oid)
+                        .map(|(unix, oid)| crate::branch_history::BranchIdentity { unix, oid }),
+                    tip: row.get(5)?,
+                    first_seen_at: parse_time(&first_seen_at),
+                    former_names: Vec::new(),
+                },
+            ))
+        })?;
+        let mut histories: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (session, mut entry) = row.context("failed to read an agent's branch history")?;
+            entry.former_names = former
+                .remove(&(session.clone(), entry.name.clone()))
+                .unwrap_or_default();
+            histories.entry(session).or_default().push(entry);
+        }
+        Ok(histories)
+    }
+
+    /// Give every session that predates the slot pointer a real first-tab row,
+    /// in one transaction.
+    ///
+    /// A pre-pointer session's first tab has no row of its own, so one is MINTED
+    /// rather than adopted from the session's existing tabs: adopting one would
+    /// silently turn tab 2 into tab 1 and lose a tab.
+    ///
+    /// The minted row sits one below the session's current minimum `sort_order`,
+    /// so the first tab leads the strip it joins; [`Self::renumber_tab_positions`]
+    /// then turns every session's positions into `0..n`.
+    ///
+    /// Idempotent: a session with a pointer is not touched.
+    fn backfill_slot_tabs(&self) -> Result<()> {
+        // The work list is read inside the write transaction: another
+        // connection opening the same file may be migrating it right now, and
+        // a list read before its commit would mint a second first tab.
+        let tx = immediate_tx(&self.conn).context("failed to start the slot tab migration")?;
+        let pending: Vec<(String, String, String)> = {
+            let mut stmt = tx.prepare(
+                "select id, provider, created_at from agent_sessions \
+                 where slot_tab_id is null or trim(slot_tab_id) = ''",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?))
+            })?;
+            let mut pending = Vec::new();
+            for row in rows {
+                pending.push(row?);
+            }
+            pending
+        };
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let count = pending.len();
+        for (session_id, provider, created_at) in pending {
+            let tab_id = uuid::Uuid::new_v4().to_string();
+            // One below whatever the session's existing tabs start at, so the
+            // minted first tab leads the strip and every extra tab keeps the
+            // position it had.
+            let sort_order: i64 = tx.query_row(
+                "select coalesce(min(sort_order), 1) - 1 from agent_tabs where session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            tx.execute(
+                "insert into agent_tabs (id, session_id, provider, sort_order, created_at) \
+                 values (?1, ?2, ?3, ?4, ?5)",
+                params![tab_id, session_id, provider, sort_order, created_at],
+            )
+            .with_context(|| format!("failed to mint the slot tab row for session {session_id}"))?;
+            tx.execute(
+                "update agent_sessions set slot_tab_id = ?2 where id = ?1",
+                params![session_id, tab_id],
+            )
+            .with_context(|| format!("failed to record the slot tab for session {session_id}"))?;
+        }
+        tx.commit()
+            .context("failed to commit the slot tab migration")?;
+        crate::logger::info(&format!(
+            "one-time migration: gave {} a stored first tab",
+            count_of(count, "session")
+        ));
+        Ok(())
+    }
+
+    /// Turn every session's tab `sort_order` values into the positions
+    /// `0..n`, in the order the strip showed before positions existed (the slot
+    /// tab first, then the rest by [`crate::model::tab_display_order`]), so every
+    /// agent's strip looks the same after the upgrade and no two tabs share one.
+    ///
+    /// Runs once per database, recorded in `app_state`: a strip the user has
+    /// reordered can have its slot tab anywhere, and a pass that put the slot
+    /// first again on every open would undo that. Closing a tab leaves a gap in
+    /// the positions, which order the same as a gap-free run, so nothing needs to
+    /// compact them.
+    fn renumber_tab_positions(&self) -> Result<()> {
+        // Read inside the write transaction, like the other passes, because
+        // another connection may be migrating the same file right now.
+        let tx = immediate_tx(&self.conn).context("failed to start the tab position migration")?;
+        let done: Option<String> = tx
+            .query_row(
+                "select value from app_state where key = ?1",
+                params![TAB_POSITIONS_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if done.is_some() {
+            return Ok(());
+        }
+        let slots: HashMap<String, String> = {
+            let mut stmt = tx.prepare(
+                "select id, slot_tab_id from agent_sessions \
+                 where slot_tab_id is not null",
+            )?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            let mut slots = HashMap::new();
+            for row in rows {
+                let (session, slot): (String, String) = row?;
+                slots.insert(session, slot);
+            }
+            slots
+        };
+        let tabs: Vec<AgentTab> = {
+            let mut stmt = tx.prepare(
+                "select id, session_id, provider, sort_order, created_at from agent_tabs",
+            )?;
+            let rows = stmt.query_map([], read_agent_tab)?;
+            let mut tabs = Vec::new();
+            for row in rows {
+                tabs.push(row?);
+            }
+            tabs
+        };
+        let mut by_session: HashMap<&str, Vec<&AgentTab>> = HashMap::new();
+        for tab in &tabs {
+            by_session
+                .entry(tab.session_id.as_str())
+                .or_default()
+                .push(tab);
+        }
+        for (session_id, mut strip) in by_session {
+            let slot = slots.get(session_id).map(String::as_str);
+            strip.sort_by(|a, b| {
+                (Some(b.id.as_str()) == slot)
+                    .cmp(&(Some(a.id.as_str()) == slot))
+                    .then_with(|| crate::model::tab_display_order(a, b))
+            });
+            for (position, tab) in strip.iter().enumerate() {
+                tx.execute(
+                    "update agent_tabs set sort_order = ?2 where id = ?1",
+                    params![tab.id, i64::try_from(position).unwrap_or(i64::MAX)],
+                )
+                .with_context(|| format!("failed to renumber the tabs of session {session_id}"))?;
+            }
+        }
+        tx.execute(
+            "insert into app_state(key, value) values(?1, '1')",
+            params![TAB_POSITIONS_KEY],
+        )?;
+        tx.commit()
+            .context("failed to commit the tab position migration")?;
+        Ok(())
+    }
+
+    /// Rewrite one session's tab positions to `0..n` in the order of
+    /// `ordered_tab_ids`, in ONE transaction: a reorder that lands half-way would
+    /// leave two tabs sharing a position.
+    ///
+    /// Every id must be a tab of `session_id`; one that is not rolls the whole
+    /// write back.
+    pub(crate) fn set_tab_positions(
+        &self,
+        session_id: &str,
+        ordered_tab_ids: &[String],
+    ) -> Result<()> {
+        let tx = immediate_tx(&self.conn).context("failed to start reordering the agent's tabs")?;
+        for (position, tab_id) in ordered_tab_ids.iter().enumerate() {
+            let changed = tx.execute(
+                "update agent_tabs set sort_order = ?3 where id = ?1 and session_id = ?2",
+                params![
+                    tab_id,
+                    session_id,
+                    i64::try_from(position).unwrap_or(i64::MAX)
+                ],
+            )?;
+            if changed == 0 {
+                anyhow::bail!(
+                    "tab {tab_id} is not a tab of agent {session_id}, so it cannot be placed"
+                );
+            }
+        }
+        tx.commit()
+            .context("failed to commit the agent's new tab order")?;
+        Ok(())
+    }
+
+    /// Each session's slot tab position, by session id. The engine keeps the
+    /// extras' positions on their rows in memory and the slot tab's beside them,
+    /// because the slot tab has no entry in that map.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_slot_tab_positions(&self) -> Result<HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare(
+            "select t.session_id, t.sort_order \
+             from agent_tabs t join agent_sessions s on s.id = t.session_id \
+             where t.id = s.slot_tab_id",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut positions = HashMap::new();
+        for row in rows {
+            let (session, position): (String, i64) = row?;
+            positions.insert(session, position);
+        }
+        Ok(positions)
+    }
+
+    /// When each session's slot tab was created, in milliseconds since the epoch,
+    /// by session id. Duplicate provider labels are numbered by creation, and the
+    /// slot tab's row is not in the engine's extras map.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_slot_tab_created_ms(&self) -> Result<HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare(
+            "select t.session_id, t.created_at \
+             from agent_tabs t join agent_sessions s on s.id = t.session_id \
+             where t.id = s.slot_tab_id",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?;
+        let mut created = HashMap::new();
+        for row in rows {
+            let (session, at): (String, String) = row?;
+            if let Some(at) = parse_time(&at) {
+                created.insert(session, at.timestamp_millis());
+            }
+        }
+        Ok(created)
+    }
+
+    /// Repair a slot pointer that names no tab of its own session, out loud.
+    ///
+    /// "No tab of its own session" covers a row that is gone AND a row belonging
+    /// to another agent: a cross-session pointer would otherwise resolve, and one
+    /// agent's slot would be a tab living in another's strip.
+    ///
+    /// Distinct from [`Self::backfill_slot_tabs`] on purpose. An EMPTY pointer
+    /// (NULL or blank, spelled the same way in both passes) means "not migrated
+    /// yet" and mints a first tab; a DANGLING one means the row it named is gone,
+    /// and the honest repair is the session's oldest surviving tab, which the
+    /// user is already looking at. Only a session with no tabs left mints.
+    fn heal_slot_tab_pointers(&self) -> Result<()> {
+        // Read inside the write transaction, as the backfill's list is.
+        let tx = immediate_tx(&self.conn).context("failed to start the slot tab repair")?;
+        let dangling: Vec<(String, String, String, String)> = {
+            let mut stmt = tx.prepare(
+                "select s.id, s.slot_tab_id, s.provider, s.created_at from agent_sessions s \
+                 where s.slot_tab_id is not null and trim(s.slot_tab_id) <> '' \
+                   and not exists (select 1 from agent_tabs t \
+                                   where t.id = s.slot_tab_id and t.session_id = s.id)",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            let mut dangling = Vec::new();
+            for row in rows {
+                dangling.push(row?);
+            }
+            dangling
+        };
+        if dangling.is_empty() {
+            return Ok(());
+        }
+        for (session_id, stale, provider, created_at) in dangling {
+            let oldest: Option<(String, String)> = tx
+                .query_row(
+                    "select id, provider from agent_tabs where session_id = ?1 \
+                     order by sort_order, created_at limit 1",
+                    params![session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let (tab_id, how) = if let Some((id, adopted_provider)) = oldest {
+                // `agent_sessions.provider` mirrors the SLOT tab's provider
+                // and is what a launch reads, so the mirror has to move with
+                // the slot. Leaving it behind would relaunch the vanished
+                // tab's provider in the adopted tab's PTY.
+                tx.execute(
+                    "update agent_sessions set provider = ?2 where id = ?1",
+                    params![session_id, adopted_provider],
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to move the provider mirror to the adopted slot tab \
+                         for session {session_id}"
+                    )
+                })?;
+                (id, "its oldest surviving tab")
+            } else {
+                let tab_id = uuid::Uuid::new_v4().to_string();
+                tx.execute(
+                    "insert into agent_tabs (id, session_id, provider, sort_order, created_at) \
+                     values (?1, ?2, ?3, 0, ?4)",
+                    params![tab_id, session_id, provider, created_at],
+                )
+                .with_context(|| {
+                    format!("failed to mint a replacement slot tab for session {session_id}")
+                })?;
+                (tab_id, "a freshly minted tab")
+            };
+            tx.execute(
+                "update agent_sessions set slot_tab_id = ?2 where id = ?1",
+                params![session_id, tab_id],
+            )
+            .with_context(|| format!("failed to repair the slot tab for session {session_id}"))?;
+            crate::logger::warn(&format!(
+                "agent {session_id} pointed at a first tab ({stale}) that no longer exists; \
+                 gave the slot to {how} ({tab_id})"
+            ));
+        }
+        tx.commit()
+            .context("failed to commit the slot tab repair")?;
+        Ok(())
+    }
+
+    /// Read one [`app_state`](Self::set_app_state) value.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn app_state(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("select value from app_state where key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        Ok(match rows.next()? {
+            Some(row) => Some(row.get(0)?),
+            None => None,
+        })
+    }
+
+    /// Write one app-wide value, replacing any previous value for the key.
+    pub(crate) fn set_app_state(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "insert into app_state(key, value) values(?1, ?2) \
+             on conflict(key) do update set value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// The yaran version whose first-load screen the user last saw, or `None` when
+    /// yaran has never shown one (the very first launch).
+    ///
+    /// Derived UI state, so it lives here and never in portable config. Shared
+    /// by both surfaces on purpose: see [`crate::first_load`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn last_seen_version(&self) -> Result<Option<String>> {
+        self.app_state(LAST_SEEN_VERSION_KEY)
+    }
+
+    /// Record `version` as seen, so its what's-new screen does not reappear.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn set_last_seen_version(&self, version: &str) -> Result<()> {
+        self.set_app_state(LAST_SEEN_VERSION_KEY, version)
+    }
+
+    /// This yaran's instance id: random, minted the first time it is asked for
+    /// and kept for as long as this database is. A client that remembers it
+    /// can tell a restart of the same yaran from a different yaran answering at
+    /// the same address.
+    ///
+    /// A consistency check only: it is public and anyone can repeat it, so no
+    /// auth, trust, ownership or ban decision may ever read it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write or read fails.
+    pub fn instance_id(&self) -> Result<String> {
+        // Insert-if-absent then read, so two connections minting at once both
+        // read the one that won.
+        self.conn.execute(
+            "insert into app_state(key, value) values(?1, ?2) on conflict(key) do nothing",
+            params![INSTANCE_ID_KEY, uuid::Uuid::new_v4().to_string()],
+        )?;
+        self.app_state(INSTANCE_ID_KEY)?
+            .context("the instance id was not stored")
+    }
+
+    /// Insert a new extra tab row.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails, a duplicate tab id included.
+    pub fn insert_agent_tab(&self, tab: &AgentTab) -> Result<()> {
+        self.conn.execute(
+            "insert into agent_tabs (id, session_id, provider, sort_order, created_at) \
+             values (?1, ?2, ?3, ?4, ?5)",
+            params![
+                tab.id,
+                tab.session_id,
+                tab.provider.as_str(),
+                tab.sort_order,
+                tab.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Remember a worktree removal the user asked for, until it has finished.
+    /// Replaces an earlier row for the same agent.
+    pub(crate) fn insert_pending_worktree_removal(
+        &self,
+        row: &PendingWorktreeRemoval,
+    ) -> Result<()> {
+        let managed = &row.managed;
+        let sessions = row
+            .process_sessions
+            .iter()
+            .map(|session| format!("{}:{}:{}", session.sid, session.started_at, session.boot))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.conn
+            .execute(
+                "insert or replace into pending_worktree_removals \
+                 (session_id, label, project_id, project_path, worktree_path, source_branch, \
+                  branch_name, initial_branch, branch_provenance, delete_branch, \
+                  process_sessions, process_snapshot, process_registry, created_at, branch_plan) \
+                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    row.session_id,
+                    row.label,
+                    managed.project_id,
+                    row.project_path,
+                    managed.worktree_path,
+                    managed.source_branch,
+                    managed.branch_name,
+                    managed.initial_branch,
+                    managed.branch_provenance.as_str(),
+                    // What a yaran that predates plans reads if it finishes this
+                    // removal: its own answer, never NULL (which it would
+                    // read as "decide by provenance").
+                    Some(row.branches.old_rule_answer(managed)),
+                    sessions,
+                    encode_identities(&row.process_snapshot),
+                    serde_json::to_string(&row.process_registry)
+                        .context("failed to encode a pending removal's processes")?,
+                    Utc::now().to_rfc3339(),
+                    row.branches.encode()?,
+                ],
+            )
+            .context("failed to record a pending worktree removal")?;
+        Ok(())
+    }
+
+    /// Record what was running in a pending removal's sessions when its delete
+    /// began, by identity.
+    pub(crate) fn set_pending_removal_snapshot(
+        &self,
+        session_id: &str,
+        snapshot: &[crate::process_sessions::ProcessIdentity],
+    ) -> Result<()> {
+        // One read-modify-write, in one transaction: the snapshot thread and
+        // a leader-exit hook can update the same row from their own
+        // connections at the same moment.
+        self.immediate(|_| {
+            // A union with what is already recorded: survivors written into the
+            // row before this snapshot landed must not be lost.
+            for mut row in self.load_pending_worktree_removals()? {
+                if row.session_id != session_id {
+                    continue;
+                }
+                for identity in snapshot {
+                    if !row.process_snapshot.contains(identity) {
+                        row.process_snapshot.push(*identity);
+                    }
+                }
+                self.update_pending_removal_evidence(&row)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Replace the saved process registry with `stored`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the registry cannot be encoded or the database write fails.
+    pub fn replace_process_registry(
+        &self,
+        stored: &[crate::process_sessions::StoredSession],
+    ) -> Result<()> {
+        let body =
+            serde_json::to_string(stored).context("failed to encode the process registry")?;
+        self.conn
+            .execute(
+                "insert into process_registry (id, body) values (1, ?1) \
+                 on conflict(id) do update set body = excluded.body",
+                params![body],
+            )
+            .context("failed to save the process registry")?;
+        Ok(())
+    }
+
+    /// The saved process registry; empty when none was saved or it cannot
+    /// be read.
+    pub(crate) fn load_process_registry(
+        &self,
+    ) -> Result<Vec<crate::process_sessions::StoredSession>> {
+        let body: Option<String> = self
+            .conn
+            .query_row(
+                "select body from process_registry where id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(body
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .unwrap_or_default())
+    }
+
+    /// The saved process registry, where a body that does not parse is an error
+    /// rather than the empty registry [`Self::load_process_registry`] answers.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails or the saved body does not parse.
+    pub fn load_process_registry_strict(
+        &self,
+    ) -> Result<Vec<crate::process_sessions::StoredSession>> {
+        let body: Option<String> = self
+            .conn
+            .query_row(
+                "select body from process_registry where id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match body {
+            None => Ok(Vec::new()),
+            Some(body) => serde_json::from_str(&body)
+                .context("the saved process registry is not valid JSON of the expected shape"),
+        }
+    }
+
+    /// Run `f` inside one `BEGIN IMMEDIATE` transaction: a read-modify-write
+    /// of a pending row that another connection (the snapshot thread, a
+    /// leader-exit hook) may be updating at the same moment.
+    /// The transaction rolls back when it is dropped uncommitted, so an
+    /// error, a panic in `f` or a failed COMMIT leaves no transaction open.
+    fn immediate<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let tx = immediate_tx(&self.conn)?;
+        let value = f(self)?;
+        tx.commit()?;
+        Ok(value)
+    }
+
+    /// Merge `snapshot` into the registry slice of pending removal `session_id`.
+    pub(crate) fn merge_pending_removal_registry(
+        &self,
+        session_id: &str,
+        snapshot: &crate::process_sessions::RegistrySnapshot,
+    ) -> Result<()> {
+        // One read-modify-write, in one transaction: the snapshot thread and
+        // a leader-exit hook can update the same row from their own
+        // connections at the same moment.
+        self.immediate(|_| {
+            for row in self.load_pending_worktree_removals()? {
+                if row.session_id != session_id {
+                    continue;
+                }
+                let mut merged = row.process_registry.clone();
+                merged.merge(snapshot);
+                // The sessions to end follow the slice: every session in it that
+                // is not a standalone agent's, and never one that is.
+                let mut row = row;
+                for entry in &merged.entries {
+                    if entry.standalone {
+                        row.process_sessions
+                            .retain(|session| *session != entry.session);
+                    } else if !row.process_sessions.contains(&entry.session) {
+                        row.process_sessions.push(entry.session);
+                    }
+                }
+                // And so does what was recorded running in them.
+                for (session, identities) in &merged.survivors {
+                    let standalone = merged
+                        .entries
+                        .iter()
+                        .any(|entry| entry.session == *session && entry.standalone);
+                    if standalone {
+                        continue;
+                    }
+                    for identity in identities {
+                        if !row.process_snapshot.contains(identity) {
+                            row.process_snapshot.push(*identity);
+                        }
+                    }
+                }
+                self.update_pending_removal_evidence(&row)?;
+                self.conn
+                    .execute(
+                        "update pending_worktree_removals set process_registry = ?2 \
+                     where session_id = ?1",
+                        params![
+                            session_id,
+                            serde_json::to_string(&merged)
+                                .context("failed to encode a pending removal's processes")?
+                        ],
+                    )
+                    .context("failed to keep a pending removal current")?;
+            }
+            Ok(())
+        })
+    }
+
+    fn update_pending_removal_evidence(&self, row: &PendingWorktreeRemoval) -> Result<()> {
+        let sessions = row
+            .process_sessions
+            .iter()
+            .map(|session| format!("{}:{}:{}", session.sid, session.started_at, session.boot))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.conn
+            .execute(
+                "update pending_worktree_removals set process_sessions = ?2, \
+                 process_snapshot = ?3 where session_id = ?1",
+                params![
+                    row.session_id,
+                    sessions,
+                    encode_identities(&row.process_snapshot)
+                ],
+            )
+            .context("failed to record evidence into a pending removal")?;
+        Ok(())
+    }
+
+    /// Follow a branch rename into a pending removal, so the removal a later
+    /// start finishes deletes the branch by the name it has now.
+    pub(crate) fn rename_pending_removal_branch(
+        &self,
+        session_id: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<()> {
+        // One read-modify-write, in one transaction: the snapshot thread and
+        // a leader-exit hook can update the same row from their own
+        // connections at the same moment.
+        self.immediate(|_| {
+            self.conn
+                .execute(
+                    "update pending_worktree_removals set \
+                 branch_name = case when branch_name = ?2 then ?3 else branch_name end, \
+                 initial_branch = case when initial_branch = ?2 then ?3 else initial_branch end \
+                 where session_id = ?1",
+                    params![session_id, old, new],
+                )
+                .context("failed to follow a branch rename into a pending removal")?;
+            let stored: Option<String> = self
+                .conn
+                .query_row(
+                    "select branch_plan from pending_worktree_removals where session_id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(stored) = stored.filter(|stored| !stored.is_empty())
+                && let Ok(plan) = crate::branch_history::BranchPlan::decode(&stored)
+            {
+                let renamed = plan.renamed(|name| {
+                    if name == old {
+                        new.to_string()
+                    } else {
+                        name.to_string()
+                    }
+                });
+                self.conn.execute(
+                    "update pending_worktree_removals set branch_plan = ?2 where session_id = ?1",
+                    params![session_id, renamed.encode()?],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Remember a worktree folder a delete left behind, replacing an earlier
+    /// row for the same path. Written only while its project exists, in the
+    /// same statement, so a removal that finishes after its project was
+    /// removed records nothing. `false` when nothing was written.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write fails.
+    pub fn record_leftover_folder(
+        &self,
+        record: &crate::leftover_folders::LeftoverFolderRecord,
+    ) -> Result<bool> {
+        let branches = encode_kept_branches(&record.branches);
+        let identity = &record.identity;
+        let written = self
+            .conn
+            .execute(
+                "insert or replace into leftover_worktree_folders \
+                 (path, project_id, branches, branch_provenance, dev, ino, birth_ns, created_at) \
+                 select ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 \
+                 where exists (select 1 from projects where id = ?2)",
+                params![
+                    record.path,
+                    record.project_id,
+                    branches,
+                    record.provenance.map(|p| p.as_str()),
+                    stored_u64(identity.dev),
+                    stored_u64(identity.ino),
+                    identity.birth_ns,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .context("failed to record a left-over worktree folder")?;
+        Ok(written > 0)
+    }
+
+    /// The left-over folders recorded for `project_id`, by path.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the read fails.
+    pub(crate) fn load_leftover_folders(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<crate::leftover_folders::LeftoverFolderRecord>> {
+        self.leftover_folders_where("where project_id = ?1", params![project_id])
+    }
+
+    /// Every left-over folder recorded, whatever its project: what a factory
+    /// reset reads to delete the branches yaran kept with them.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the read fails.
+    pub fn load_all_leftover_folders(
+        &self,
+    ) -> Result<Vec<crate::leftover_folders::LeftoverFolderRecord>> {
+        self.leftover_folders_where("", params![])
+    }
+
+    fn leftover_folders_where(
+        &self,
+        filter: &str,
+        args: &[&dyn rusqlite::ToSql],
+    ) -> Result<Vec<crate::leftover_folders::LeftoverFolderRecord>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "select path, project_id, branches, branch_provenance, dev, ino, birth_ns \
+             from leftover_worktree_folders {filter} order by path"
+        ))?;
+        let rows = stmt.query_map(args, |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (path, project_id, branches, provenance, dev, ino, birth_ns) = row?;
+            Ok(crate::leftover_folders::LeftoverFolderRecord {
+                path,
+                project_id,
+                branches: decode_kept_branches(
+                    &branches,
+                    provenance
+                        .as_deref()
+                        .map(crate::model::BranchProvenance::from_str),
+                ),
+                provenance: provenance
+                    .as_deref()
+                    .map(crate::model::BranchProvenance::from_str),
+                identity: crate::leftover_folders::FolderIdentity {
+                    dev: u64::from_ne_bytes(dev.to_ne_bytes()),
+                    ino: u64::from_ne_bytes(ino.to_ne_bytes()),
+                    birth_ns,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .context("failed to read left-over worktree folders")
+    }
+
+    /// Keep only `branches` on the left-over record at `path`, while the row
+    /// is the one for the folder with this identity: what is left to do once
+    /// a delete has acted on the rest.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write fails.
+    pub(crate) fn keep_only_leftover_branches(
+        &self,
+        path: &str,
+        identity: &crate::leftover_folders::FolderIdentity,
+        branches: &[crate::git::KeptBranch],
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "update leftover_worktree_folders set branches = ?5 \
+                 where path = ?1 and dev = ?2 and ino = ?3 and birth_ns is ?4",
+                params![
+                    path,
+                    stored_u64(identity.dev),
+                    stored_u64(identity.ino),
+                    identity.birth_ns,
+                    encode_kept_branches(branches),
+                ],
+            )
+            .context("failed to keep a left-over folder's branches")?;
+        Ok(())
+    }
+
+    /// Forget the left-over folder at `path`, only while the row is the one
+    /// for the folder with this identity: a listing that saw an older record
+    /// cannot delete a newer one for the same path.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write fails.
+    pub(crate) fn delete_leftover_folder(
+        &self,
+        path: &str,
+        identity: &crate::leftover_folders::FolderIdentity,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "delete from leftover_worktree_folders \
+                 where path = ?1 and dev = ?2 and ino = ?3 and birth_ns is ?4",
+                params![
+                    path,
+                    stored_u64(identity.dev),
+                    stored_u64(identity.ino),
+                    identity.birth_ns
+                ],
+            )
+            .context("failed to forget a left-over worktree folder")?;
+        Ok(())
+    }
+
+    /// Forget a pending worktree removal, finished one way or the other.
+    pub(crate) fn delete_pending_worktree_removal(&self, session_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "delete from pending_worktree_removals where session_id = ?1",
+                params![session_id],
+            )
+            .context("failed to clear a pending worktree removal")?;
+        Ok(())
+    }
+
+    /// Every worktree removal still waiting to be finished, oldest first.
+    pub(crate) fn load_pending_worktree_removals(&self) -> Result<Vec<PendingWorktreeRemoval>> {
+        let mut stmt = self.conn.prepare(
+            "select session_id, label, project_id, project_path, worktree_path, source_branch, \
+             branch_name, initial_branch, branch_provenance, delete_branch, process_sessions, \
+             process_snapshot, process_registry, branch_plan from pending_worktree_removals \
+             order by created_at",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let sessions: String = row.get(10)?;
+            let managed = crate::model::ManagedWorkspace {
+                project_id: row.get(2)?,
+                project_path: None,
+                worktree_path: row.get(4)?,
+                source_branch: row.get(5)?,
+                branch_name: row.get(6)?,
+                initial_branch: row.get(7)?,
+                branch_provenance: crate::model::BranchProvenance::from_str(
+                    &row.get::<_, String>(8)?,
+                ),
+            };
+            let stored_plan: String = row.get(13)?;
+            // A row an older yaran wrote has no plan, only its one answer. A
+            // plan that cannot be read deletes nothing rather than guess.
+            let branches = if stored_plan.is_empty() {
+                crate::branch_history::BranchPlan::legacy(&managed, None, row.get(9)?)
+            } else {
+                crate::branch_history::BranchPlan::decode(&stored_plan).unwrap_or_default()
+            };
+            Ok(PendingWorktreeRemoval {
+                session_id: row.get(0)?,
+                label: row.get(1)?,
+                project_path: row.get(3)?,
+                managed,
+                branches,
+                process_sessions: sessions
+                    .split(',')
+                    .filter_map(|entry| {
+                        let mut fields = entry.split(':');
+                        Some(crate::process_sessions::ProcessSession {
+                            sid: fields.next()?.parse().ok()?,
+                            started_at: fields.next()?.parse().ok()?,
+                            // A row written before boots were recorded names
+                            // no boot, and is void rather than trusted.
+                            boot: fields
+                                .next()
+                                .and_then(|boot| boot.parse().ok())
+                                .unwrap_or(0),
+                        })
+                    })
+                    .collect(),
+                process_snapshot: decode_identities(&row.get::<_, String>(11)?),
+                // An unreadable or empty slice is an empty one: what it would
+                // have protected or ended is then only what the other two
+                // columns say, which never includes a standalone agent's.
+                process_registry: serde_json::from_str(&row.get::<_, String>(12)?)
+                    .unwrap_or_default(),
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read pending worktree removals")
+    }
+
+    /// Remove a single extra tab row (closing an extra tab).
+    pub(crate) fn delete_agent_tab(&self, tab_id: &str) -> Result<()> {
+        let affected = self
+            .conn
+            .execute("delete from agent_tabs where id = ?1", params![tab_id])?;
+        if affected == 0 {
+            crate::logger::warn(&format!(
+                "delete_agent_tab affected no rows for {tab_id}: the in-memory tab map and \
+                 SQLite may have diverged",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Load every tab, the slot tab included, ordered so a session's tabs come
+    /// out in a stable creation order. A plain reader: orphan rows are swept once
+    /// per open by [`Self::sweep_orphan_agent_tabs`], not on every read.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_agent_tabs(&self) -> Result<Vec<AgentTab>> {
+        let mut stmt = self.conn.prepare(
+            "select id, session_id, provider, sort_order, created_at \
+             from agent_tabs order by session_id, sort_order, created_at",
+        )?;
+        let rows = stmt.query_map([], read_agent_tab)?;
+        let mut tabs = Vec::new();
+        for row in rows {
+            tabs.push(row?);
+        }
+        Ok(tabs)
+    }
+
+    /// Every tab EXCEPT the one currently occupying its session's slot.
+    ///
+    /// The engine's in-memory `agent_tabs` map holds the extras; the slot tab is
+    /// reached through the session record's pointer, which is also the mirror of
+    /// its provider (see [`Self::set_slot_provider`]). Sessions and tabs are
+    /// joined, so an orphan row cannot come back out even if
+    /// [`Self::sweep_orphan_agent_tabs`] has not run.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_extra_agent_tabs(&self) -> Result<Vec<AgentTab>> {
+        let mut stmt = self.conn.prepare(
+            "select t.id, t.session_id, t.provider, t.sort_order, t.created_at \
+             from agent_tabs t join agent_sessions s on s.id = t.session_id \
+             where s.slot_tab_id is null or t.id <> s.slot_tab_id \
+             order by t.session_id, t.sort_order, t.created_at",
+        )?;
+        let rows = stmt.query_map([], read_agent_tab)?;
+        let mut tabs = Vec::new();
+        for row in rows {
+            tabs.push(row?);
+        }
+        Ok(tabs)
+    }
+
+    /// Retarget the provider of the tab occupying a session's slot, and the
+    /// session's own `provider` column with it.
+    ///
+    /// `agent_sessions.provider` is a MIRROR of the slot tab's provider, kept
+    /// because every read path in both surfaces asks the session for it. This is
+    /// the one place a RETARGET writes either value, so a retarget cannot leave
+    /// them disagreeing. It is not the only writer of the mirror: `upsert_session`
+    /// stores whatever the in-memory session carries, and the migration's adopt
+    /// repair moves the mirror when the slot moves.
+    pub(crate) fn set_slot_provider(
+        &self,
+        session_id: &str,
+        provider: &str,
+        updated_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let tx =
+            immediate_tx(&self.conn).context("failed to start retargeting the agent's provider")?;
+        tx.execute(
+            "update agent_tabs set provider = ?2 where id = \
+             (select slot_tab_id from agent_sessions where id = ?1)",
+            params![session_id, provider],
+        )?;
+        tx.execute(
+            "update agent_sessions set provider = ?2, updated_at = ?3 where id = ?1",
+            params![session_id, provider, updated_at.to_rfc3339()],
+        )?;
+        tx.commit()
+            .context("failed to commit the agent's new provider")?;
+        Ok(())
+    }
+
+    /// Move a session's slot to one of its other tabs and delete the tab that
+    /// was in the slot, in ONE transaction.
+    ///
+    /// The pointer names the successor, the session's `provider` mirror follows
+    /// the promoted tab (the mirror's rule is "whatever the slot tab runs"), and
+    /// the departing row goes away. All three or none: a pointer that moves
+    /// alone leaves a tab in the strip whose PTY is being torn down, and a
+    /// deletion alone leaves the agent naming a row that no longer exists.
+    ///
+    /// The promoted row keeps its `sort_order`: it changes role, not place, so the
+    /// survivors do not move.
+    ///
+    /// Refuses when `new_slot_tab_id` is not a tab of `session_id` (absent rows
+    /// included), because a pointer at a foreign or absent row is the one state
+    /// no later read can recover from.
+    ///
+    /// The focus memory is normalized in the same statement, because the slot
+    /// tab is represented there as ABSENCE (see
+    /// [`crate::model::AgentSession::last_focused_tab`]): a memory naming either
+    /// tab becomes NULL, so a restart cannot read one this promotion invalidated.
+    pub(crate) fn promote_tab_to_slot(
+        &self,
+        session_id: &str,
+        new_slot_tab_id: &str,
+        old_slot_tab_id: &str,
+        provider: &str,
+        updated_at: DateTime<Utc>,
+    ) -> Result<()> {
+        if new_slot_tab_id == old_slot_tab_id {
+            anyhow::bail!(
+                "tab {new_slot_tab_id} cannot be promoted over itself: it is already the slot tab \
+                 of agent {session_id}"
+            );
+        }
+        let tx = immediate_tx(&self.conn)
+            .context("failed to start promoting a tab into the agent's slot")?;
+        let owner: Option<String> = tx
+            .query_row(
+                "select session_id from agent_tabs where id = ?1",
+                params![new_slot_tab_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to read the promoted tab's owning agent")?;
+        match owner.as_deref() {
+            Some(owner) if owner == session_id => {}
+            Some(other) => anyhow::bail!(
+                "tab {new_slot_tab_id} belongs to agent {other}, not {session_id}, so it cannot \
+                 take its slot"
+            ),
+            None => anyhow::bail!("unknown tab {new_slot_tab_id}: it cannot take a slot"),
+        }
+        let sessions_updated = tx
+            .execute(
+                "update agent_sessions set slot_tab_id = ?2, provider = ?3, updated_at = ?4, \
+                 last_focused_tab = case when last_focused_tab in (?2, ?5) then null \
+                 else last_focused_tab end \
+                 where id = ?1",
+                params![
+                    session_id,
+                    new_slot_tab_id,
+                    provider,
+                    updated_at.to_rfc3339(),
+                    old_slot_tab_id,
+                ],
+            )
+            .context("failed to point the agent at its new slot tab")?;
+        if sessions_updated == 0 {
+            anyhow::bail!("unknown agent {session_id}: its slot cannot be moved");
+        }
+        let removed = tx
+            .execute(
+                "delete from agent_tabs where id = ?1 and session_id = ?2",
+                params![old_slot_tab_id, session_id],
+            )
+            .context("failed to delete the tab that was in the agent's slot")?;
+        if removed == 0 {
+            crate::logger::warn(&format!(
+                "promote_tab_to_slot found no row for the outgoing slot tab {old_slot_tab_id} of \
+                 agent {session_id}: the in-memory tab map and SQLite may have diverged",
+            ));
+        }
+        tx.commit()
+            .context("failed to commit the agent's new slot tab")?;
+        Ok(())
+    }
+
+    /// Retarget an extra tab's provider (effective on its next launch).
+    pub(crate) fn update_agent_tab_provider(&self, tab_id: &str, provider: &str) -> Result<()> {
+        let affected = self.conn.execute(
+            "update agent_tabs set provider = ?2 where id = ?1",
+            params![tab_id, provider],
+        )?;
+        if affected == 0 {
+            crate::logger::warn(&format!(
+                "update_agent_tab_provider affected no rows for {tab_id}: the in-memory tab map \
+                 and SQLite may have diverged",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The largest position among a session's tabs, if any, used to append a new
+    /// tab after the existing ones.
+    pub(crate) fn max_tab_sort_order(&self, session_id: &str) -> Result<Option<i64>> {
+        let value: Option<i64> = self.conn.query_row(
+            "select max(sort_order) from agent_tabs where session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(value)
+    }
+
+    /// How many tabs one session has, the slot tab included: every tab is a
+    /// row, so this is the number the per-agent cap is compared against directly.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn count_agent_tabs(&self, session_id: &str) -> Result<i64> {
+        let count: i64 = self.conn.query_row(
+            "select count(*) from agent_tabs where session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Atomically bump and return the next changed-files revision for `session_id`.
+    ///
+    /// First call for a session returns `1`; each subsequent call returns the
+    /// previous value plus one. Implemented as a single upsert with `RETURNING`
+    /// (supported by the bundled SQLite in `rusqlite`) so it is the one chokepoint
+    /// that guarantees a strictly-increasing, persisted `rev` per session, the
+    /// ordering/dedup token web clients apply to changed-files GETs and events.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn next_changes_rev(&self, session_id: &str) -> rusqlite::Result<u64> {
+        let rev: i64 = self.conn.query_row(
+            "insert into changes_rev(session_id, rev) values(?1, 1) \
+             on conflict(session_id) do update set rev = rev + 1 returning rev",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(rev.cast_unsigned())
+    }
+
+    /// Insert or update a project. If a project with the same path already
+    /// exists under a different id, keep the existing id so sessions remain
+    /// attached and refresh the editable metadata.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read or write fails.
+    pub fn upsert_project(&self, project: &ProjectConfig) -> Result<()> {
+        let sort_order = self.next_project_sort_order()?;
+        self.upsert_project_at(project, sort_order)
+    }
+
+    /// Inserts or updates a project at `sort_order`, keeping the id of a project already stored at
+    /// the same path.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn upsert_project_at(&self, project: &ProjectConfig, sort_order: i64) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let updated = self.conn.execute(
+            r"
+            update projects
+            set path = ?2,
+                name = ?3,
+                default_provider = ?4,
+                leading_branch = ?5,
+                auto_reopen_agents = ?6,
+                startup_command = ?7,
+                env = ?8,
+                sort_order = ?9,
+                updated_at = ?10
+            where id = ?1
+            ",
+            params![
+                project.id,
+                project.path,
+                project.name,
+                project.default_provider,
+                project.leading_branch,
+                project.auto_reopen_agents,
+                project.startup_command,
+                serialize_project_env(&project.env),
+                sort_order,
+                now,
+            ],
+        )?;
+        if updated > 0 {
+            return Ok(());
+        }
+
+        self.conn.execute(
+            r"
+            insert into projects
+                (id, path, name, default_provider, leading_branch, auto_reopen_agents, startup_command, env, sort_order, created_at, updated_at)
+            values
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+            on conflict(path) do update set
+                name=excluded.name,
+                default_provider=excluded.default_provider,
+                leading_branch=excluded.leading_branch,
+                auto_reopen_agents=excluded.auto_reopen_agents,
+                startup_command=excluded.startup_command,
+                env=excluded.env,
+                sort_order=excluded.sort_order,
+                updated_at=excluded.updated_at
+            ",
+            params![
+                project.id,
+                project.path,
+                project.name,
+                project.default_provider,
+                project.leading_branch,
+                project.auto_reopen_agents,
+                project.startup_command,
+                serialize_project_env(&project.env),
+                sort_order,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn next_project_sort_order(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "select coalesce(max(sort_order) + 1, 0) from projects",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed to compute next project sort order")
+    }
+
+    /// Every stored project, in sort order.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_projects(&self) -> Result<Vec<ProjectConfig>> {
+        let mut stmt = self.conn.prepare(
+            r"
+            select id, path, name, default_provider, leading_branch, auto_reopen_agents, startup_command, env
+            from projects
+            order by sort_order, name collate nocase, path collate nocase
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ProjectConfig {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
+                default_provider: row.get(3)?,
+                leading_branch: row.get(4)?,
+                auto_reopen_agents: row.get(5)?,
+                startup_command: row.get(6)?,
+                env: deserialize_project_env(row.get::<_, String>(7)?.as_str()),
+            })
+        })?;
+
+        let mut projects = Vec::new();
+        for row in rows {
+            projects.push(row?);
+        }
+        Ok(projects)
+    }
+
+    /// Map of project id -> `created_at` timestamp from the `projects` table.
+    /// Kept separate from [`SessionStore::load_projects`] because `created_at` is
+    /// persisted/runtime state, not portable `ProjectConfig`: surfacing it does
+    /// not pollute the config representation that gets written back to disk.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails; a timestamp that does not parse is left out.
+    pub fn load_project_created_ats(
+        &self,
+    ) -> Result<std::collections::HashMap<String, DateTime<Utc>>> {
+        let mut stmt = self.conn.prepare("select id, created_at from projects")?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let created_at: String = row.get(1)?;
+            Ok((id, created_at))
+        })?;
+
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (id, created_at) = row?;
+            if let Some(parsed) = parse_time(&created_at) {
+                map.insert(id, parsed);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Sets or clears a project's default provider.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn update_project_default_provider(
+        &self,
+        project_id: &str,
+        default_provider: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            r"
+            update projects
+            set default_provider = ?2,
+                updated_at = ?3
+            where id = ?1
+            ",
+            params![project_id, default_provider, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Record the branch a project's new worktrees start from. SQLite only: the
+    /// base is derived state and config never carries it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails or no project with `project_id` is
+    /// stored.
+    pub fn update_project_leading_branch(&self, project_id: &str, branch: &str) -> Result<()> {
+        let updated = self.conn.execute(
+            r"
+            update projects
+            set leading_branch = ?2,
+                updated_at = ?3
+            where id = ?1
+            ",
+            params![project_id, branch, Utc::now().to_rfc3339()],
+        )?;
+        // A write that matched no row saved nothing, and must not read as saved.
+        if updated == 0 {
+            anyhow::bail!("no project with id \"{project_id}\" is stored");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn update_project_auto_reopen(
+        &self,
+        project_id: &str,
+        auto_reopen_agents: Option<bool>,
+    ) -> Result<()> {
+        self.conn.execute(
+            r"
+            update projects
+            set auto_reopen_agents = ?2,
+                updated_at = ?3
+            where id = ?1
+            ",
+            params![project_id, auto_reopen_agents, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn update_project_startup_command(
+        &self,
+        project_id: &str,
+        startup_command: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            r"
+            update projects
+            set startup_command = ?2,
+                updated_at = ?3
+            where id = ?1
+            ",
+            params![project_id, startup_command, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn update_project_env(
+        &self,
+        project_id: &str,
+        env: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        self.conn.execute(
+            r"
+            update projects
+            set env = ?2,
+                updated_at = ?3
+            where id = ?1
+            ",
+            params![
+                project_id,
+                serialize_project_env(env),
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_project(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("delete from projects where id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Remove a project and every record that belongs to it (each session's PR
+    /// rows, the session rows, and the `projects` row) in a single transaction,
+    /// returning the deleted session ids. Atomic: a failure leaves all rows
+    /// intact, so a removal can never half-delete a project (e.g. agents gone but
+    /// the project row surviving to reappear on restart). Deleting a project row
+    /// that does not exist (a ghost id) is a harmless no-op within the same
+    /// transaction.
+    /// EVERY statement below scopes on `workspace_kind = 'managed'` as well as
+    /// the project id, and that is not belt and braces. A standalone agent
+    /// stores EMPTY TEXT under `project_id` (the column is NOT NULL), so a
+    /// project whose id is the empty string would otherwise sweep up every
+    /// standalone agent the user has. The kind column, not the project id, is
+    /// what says who owns a row.
+    pub(crate) fn remove_project_records(&self, project_id: &str) -> Result<Vec<String>> {
+        let tx = immediate_tx(&self.conn)?;
+        let ids: Vec<String> = {
+            let mut stmt = tx.prepare("select id from agent_sessions where project_id = ?1 and workspace_kind = 'managed'")?;
+            let rows = stmt.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()?
+        };
+        tx.execute(
+            "delete from session_prs where session_id in \
+             (select id from agent_sessions where project_id = ?1 and workspace_kind = 'managed')",
+            params![project_id],
+        )?;
+        tx.execute(
+            "delete from session_pr_overrides where session_id in \
+             (select id from agent_sessions where project_id = ?1 and workspace_kind = 'managed')",
+            params![project_id],
+        )?;
+        tx.execute(
+            "delete from session_pr_suppressions where session_id in \
+             (select id from agent_sessions where project_id = ?1 and workspace_kind = 'managed')",
+            params![project_id],
+        )?;
+        tx.execute(
+            "delete from session_minted_branch_renames where session_id in \
+             (select id from agent_sessions where project_id = ?1 and workspace_kind = 'managed')",
+            params![project_id],
+        )?;
+        for table in [
+            "session_branch_history",
+            "session_pull_requests",
+            "session_pr_prefs",
+            "session_branch_former_names",
+        ] {
+            tx.execute(
+                &format!(
+                    "delete from {table} where session_id in \
+                     (select id from agent_sessions \
+                      where project_id = ?1 and workspace_kind = 'managed')"
+                ),
+                params![project_id],
+            )?;
+        }
+        // Drop the per-session changed-files rev counters BEFORE the sessions
+        // themselves (the subquery resolves the ids while the rows still exist),
+        // so a project removal cannot leave orphaned `changes_rev` rows behind.
+        tx.execute(
+            "delete from changes_rev where session_id in \
+             (select id from agent_sessions where project_id = ?1 and workspace_kind = 'managed')",
+            params![project_id],
+        )?;
+        // Drop the sessions' extra tabs BEFORE the sessions themselves (the
+        // subquery resolves the ids while the parent rows still exist), so a
+        // project removal cannot leave orphaned `agent_tabs` rows behind.
+        tx.execute(
+            "delete from agent_tabs where session_id in \
+             (select id from agent_sessions where project_id = ?1 and workspace_kind = 'managed')",
+            params![project_id],
+        )?;
+        tx.execute(
+            "delete from agent_sessions where project_id = ?1 and workspace_kind = 'managed'",
+            params![project_id],
+        )?;
+        // A left-over folder is listed by its project's worktree manager, which
+        // goes with the project.
+        tx.execute(
+            "delete from leftover_worktree_folders where project_id = ?1",
+            params![project_id],
+        )?;
+        tx.execute("delete from projects where id = ?1", params![project_id])?;
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    /// Every agent's pull requests, by session id.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_agent_prs(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<crate::model::AgentPr>>> {
+        let mut stmt = self.conn.prepare(
+            r"
+            select session_id, host, owner_repo, pr_number, state, is_draft, title, url,
+                   head_branch, found, attached, hidden, manual_slot, gh_created_at,
+                   gh_updated_at, gh_closed_at, gh_merged_at, first_recorded_at,
+                   last_refreshed_at
+            from session_pull_requests
+            order by session_id, first_recorded_at, host, owner_repo, pr_number
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let host: String = row.get(1)?;
+            let owner_repo: String = row.get(2)?;
+            let number = row.get::<_, i64>(3)?.cast_unsigned();
+            let state: String = row.get(4)?;
+            let is_draft: bool = row.get(5)?;
+            let time = |index: usize| -> rusqlite::Result<Option<DateTime<Utc>>> {
+                Ok(row
+                    .get::<_, Option<String>>(index)?
+                    .as_deref()
+                    .and_then(parse_time))
+            };
+            let first_recorded_at: String = row.get(17)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                state,
+                crate::model::AgentPr {
+                    url: normalize_pr_url(row.get(7)?, &host, &owner_repo, number),
+                    host,
+                    owner_repo,
+                    number,
+                    state: if is_draft {
+                        crate::model::PrState::Draft
+                    } else {
+                        crate::model::PrState::Open
+                    },
+                    title: row.get(6)?,
+                    head_branch: row.get(8)?,
+                    found: row.get(9)?,
+                    attached: row.get(10)?,
+                    hidden: row.get(11)?,
+                    manual_slot: row
+                        .get::<_, Option<i64>>(12)?
+                        .and_then(|slot| u32::try_from(slot).ok()),
+                    gh_created_at: time(13)?,
+                    gh_updated_at: time(14)?,
+                    gh_closed_at: time(15)?,
+                    gh_merged_at: time(16)?,
+                    first_recorded_at: parse_time(&first_recorded_at).unwrap_or_default(),
+                    last_refreshed_at: time(18)?,
+                },
+            ))
+        })?;
+        let mut result: std::collections::HashMap<String, Vec<crate::model::AgentPr>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (session_id, state, mut pr) = row?;
+            // A state this build does not know is skipped rather than guessed.
+            pr.state = match state.as_str() {
+                "OPEN" => pr.state,
+                "MERGED" => crate::model::PrState::Merged,
+                "CLOSED" => crate::model::PrState::Closed,
+                _ => continue,
+            };
+            result.entry(session_id).or_default().push(pr);
+        }
+        Ok(result)
+    }
+
+    /// One agent's pull requests.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_agent_prs_of(&self, session_id: &str) -> Result<Vec<crate::model::AgentPr>> {
+        Ok(self
+            .load_agent_prs()?
+            .remove(session_id)
+            .unwrap_or_default())
+    }
+
+    fn write_agent_pr(
+        conn: &Connection,
+        session_id: &str,
+        pr: &crate::model::AgentPr,
+        write: PrRowWrite,
+    ) -> Result<()> {
+        let time = |at: Option<DateTime<Utc>>| at.map(|at| at.to_rfc3339());
+        let user_flags = match write {
+            PrRowWrite::Exact => {
+                "found = excluded.found, attached = excluded.attached, \
+                 hidden = excluded.hidden, manual_slot = excluded.manual_slot,"
+            }
+            PrRowWrite::Refresh => "found = found or excluded.found,",
+        };
+        conn.execute(
+            &format!(
+                r"
+            insert into session_pull_requests
+                (session_id, host, owner_repo, pr_number, state, is_draft, title, url,
+                 head_branch, found, attached, hidden, manual_slot, gh_created_at,
+                 gh_updated_at, gh_closed_at, gh_merged_at, first_recorded_at,
+                 last_refreshed_at)
+            values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                    ?17, ?18, ?19)
+            on conflict(session_id, host, owner_repo, pr_number) do update set
+                host = excluded.host,
+                owner_repo = excluded.owner_repo,
+                state = excluded.state,
+                is_draft = excluded.is_draft,
+                title = excluded.title,
+                url = excluded.url,
+                head_branch = excluded.head_branch,
+                {user_flags}
+                gh_created_at = excluded.gh_created_at,
+                gh_updated_at = excluded.gh_updated_at,
+                gh_closed_at = excluded.gh_closed_at,
+                gh_merged_at = excluded.gh_merged_at,
+                last_refreshed_at = excluded.last_refreshed_at
+            "
+            ),
+            params![
+                session_id,
+                pr.host,
+                pr.owner_repo,
+                pr.number.cast_signed(),
+                pr.state.stored_text(),
+                pr.state == crate::model::PrState::Draft,
+                pr.title,
+                pr.url,
+                pr.head_branch,
+                pr.found,
+                pr.attached,
+                pr.hidden,
+                pr.manual_slot.map(i64::from),
+                time(pr.gh_created_at),
+                time(pr.gh_updated_at),
+                time(pr.gh_closed_at),
+                time(pr.gh_merged_at),
+                pr.first_recorded_at.to_rfc3339(),
+                time(pr.last_refreshed_at),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Insert one of an agent's pull requests, or refresh what GitHub says
+    /// about the row already there. A stored row keeps its first-recorded
+    /// time, whether it is attached or hidden and its manual slot, and stays
+    /// found once found: the caller may have built `pr` without having read
+    /// the stored row, and those are the user's to change, through
+    /// [`Self::replace_agent_prs`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn upsert_agent_pr(&self, session_id: &str, pr: &crate::model::AgentPr) -> Result<()> {
+        Self::write_agent_pr(&self.conn, session_id, pr, PrRowWrite::Refresh)
+    }
+
+    /// Make an agent's pull requests exactly `rows` and its preferences
+    /// `prefs`, in one transaction, so a failure leaves neither change behind.
+    /// Rows in a state this build cannot read are left as they are.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a database write fails; nothing is written then.
+    pub fn replace_agent_prs(
+        &self,
+        session_id: &str,
+        rows: &[crate::model::AgentPr],
+        prefs: &crate::model::PrPrefs,
+    ) -> Result<()> {
+        let tx = immediate_tx(&self.conn)?;
+        // Only the states `load_agent_prs` reads: a row a newer yaran wrote in a
+        // state this build skips was never in `rows`, so it is not this
+        // build's to remove.
+        tx.execute(
+            "delete from session_pull_requests \
+             where session_id = ?1 and state in ('OPEN', 'MERGED', 'CLOSED')",
+            params![session_id],
+        )?;
+        for row in rows {
+            Self::write_agent_pr(&tx, session_id, row, PrRowWrite::Exact)?;
+        }
+        tx.execute(
+            "insert into session_pr_prefs (session_id, sort_mode, hide_created_before) \
+             values (?1, ?2, ?3) on conflict(session_id) do update set \
+             sort_mode = excluded.sort_mode, hide_created_before = excluded.hide_created_before",
+            params![
+                session_id,
+                prefs.sort_mode.stored_text(),
+                prefs.hide_created_before.map(|at| at.to_rfc3339()),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every agent's pull-request preferences, by session id. An agent with no
+    /// row has the defaults.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_pr_prefs(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::model::PrPrefs>> {
+        let mut stmt = self
+            .conn
+            .prepare("select session_id, sort_mode, hide_created_before from session_pr_prefs")?;
+        let rows = stmt.query_map([], |row| {
+            let mode: String = row.get(1)?;
+            let cutoff: Option<String> = row.get(2)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                crate::model::PrPrefs {
+                    sort_mode: crate::pr_list::PrSortMode::from_stored(&mode),
+                    hide_created_before: cutoff.as_deref().and_then(parse_time),
+                },
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()
+            .context("failed to read the pull-request preferences")
+    }
+
+    /// Record that an explicit rename moved the branch yaran minted for a session
+    /// to `branch_name`.
+    pub(crate) fn set_minted_branch_rename(
+        &self,
+        session_id: &str,
+        branch_name: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "insert into session_minted_branch_renames (session_id, branch_name) values (?1, ?2) \
+             on conflict(session_id) do update set branch_name = excluded.branch_name",
+            params![session_id, branch_name],
+        )?;
+        Ok(())
+    }
+
+    /// Forget that a session's branch is the one yaran minted under a new name:
+    /// the agent is on some other branch now.
+    pub(crate) fn delete_minted_branch_rename(&self, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "delete from session_minted_branch_renames where session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// The branch an explicit rename moved `session_id`'s minted branch to, if
+    /// one did.
+    pub(crate) fn load_minted_branch_rename(&self, session_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "select branch_name from session_minted_branch_renames where session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// Every `(session_id, branch_name)` an explicit rename moved a minted
+    /// branch to.
+    pub(crate) fn load_minted_branch_renames(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("select session_id, branch_name from session_minted_branch_renames")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// Persist a brand-new agent: its session row, its first tab's
+    /// `agent_tabs` row, and the pointer between them, in ONE transaction.
+    ///
+    /// Every tab is a row, so a session and its first tab are created together
+    /// or not at all: a session row with no slot tab names a PTY address nothing
+    /// resolves, and a tab row with no session is an orphan the next load sweeps
+    /// away. The slot row sits at position 0, and every extra tab is appended
+    /// after the highest position, so the first tab leads a new strip.
+    ///
+    /// Existing sessions keep going through [`Self::upsert_session`], which is
+    /// the hot path status churn takes and which never touches `agent_tabs`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the transaction cannot start, a write fails or the commit fails; nothing is
+    /// written then.
+    pub fn create_session(&self, session: &AgentSession) -> Result<()> {
+        self.create_session_with_birth(session, None)
+    }
+
+    /// [`Self::create_session`], recording the identity of the branch yaran
+    /// made for a managed agent (see [`crate::branch_history::BranchIdentity`])
+    /// in the same transaction as the agent's birth-branch row. `None` records
+    /// the birth row without one, which then counts as yaran's only while the
+    /// agent's worktree is on it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the transaction cannot start, a write fails or the commit fails; nothing is
+    /// written then.
+    pub(crate) fn create_session_with_birth(
+        &self,
+        session: &AgentSession,
+        birth_identity: Option<&crate::branch_history::SeenBranch>,
+    ) -> Result<()> {
+        let tx = immediate_tx(&self.conn).context("failed to start creating the agent")?;
+        tx.execute(
+            "insert into agent_tabs (id, session_id, provider, sort_order, created_at) \
+             values (?1, ?2, ?3, 0, ?4)",
+            params![
+                session.slot_tab_id,
+                session.id,
+                session.provider.as_str(),
+                session.created_at.to_rfc3339(),
+            ],
+        )
+        .with_context(|| format!("failed to write the first tab of agent {}", session.id))?;
+        Self::upsert_session_in(&tx, session)?;
+        if let Some(managed) = session.workspace.as_managed()
+            && !managed.initial_branch.is_empty()
+        {
+            Self::set_birth_branch_in(&tx, &session.id, &managed.initial_branch, birth_identity)
+                .with_context(|| format!("failed to record the branch of agent {}", session.id))?;
+        }
+        tx.commit().context("failed to commit the new agent")?;
+        Ok(())
+    }
+
+    /// Inserts or updates an agent session row.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn upsert_session(&self, session: &AgentSession) -> Result<()> {
+        Self::upsert_session_in(&self.conn, session)
+    }
+
+    /// Record that yaran minted this agent's branch itself, after recreating a
+    /// working copy whose branch was gone from the repository too.
+    ///
+    /// The ONE exception to `branch_provenance` being insert-only, and named
+    /// for exactly that case so no other caller can reach for it. The rule
+    /// exists so a re-upsert cannot turn a user's pre-existing `develop` into a
+    /// branch yaran believes it owns; here yaran really did create the branch, from
+    /// the project's source branch, seconds ago, and the lineage the old
+    /// provenance described no longer exists anywhere. Leaving the row alone
+    /// would have a later delete treat a branch yaran minted as the user's and
+    /// leave it behind.
+    ///
+    /// `initial_branch` moves with it for the same reason: the agent was born
+    /// again on this branch, so the drift the old value described is gone.
+    pub(crate) fn record_branch_minted_by_recreate(
+        &self,
+        session_id: &str,
+        branch_name: &str,
+    ) -> Result<()> {
+        let tx = immediate_tx(&self.conn)?;
+        let updated = tx
+            .execute(
+                "update agent_sessions set branch_provenance = ?2, initial_branch = ?3 \
+                 where id = ?1 and workspace_kind = 'managed'",
+                params![
+                    session_id,
+                    crate::model::BranchProvenance::CreatedByYaran.as_str(),
+                    branch_name,
+                ],
+            )
+            .with_context(|| {
+                format!("failed to record the recreated branch of agent {session_id}")
+            })?;
+        // The birth row moves with it. Its identity is left to the branch-sync
+        // poller, which reads it while the recreated worktree is on the branch.
+        if updated > 0 {
+            Self::set_birth_branch_in(&tx, session_id, branch_name, None)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The body of [`Self::upsert_session`], parameterized over the connection so
+    /// [`Self::create_session`] can run it inside its transaction.
+    fn upsert_session_in(conn: &Connection, session: &AgentSession) -> Result<()> {
+        // Flatten the workspace into the row's columns ONCE, here, so no SQL
+        // below reaches into the enum. A folder row writes empty text into the
+        // git columns (`project_id` is NOT NULL, and the rest predate the
+        // workspace split); `workspace_kind` is what tells the read path not to
+        // believe them. See the column's migration comment.
+        let managed = session.workspace.as_managed();
+        let workspace_kind = session.workspace.kind().as_str();
+        let folder_path = session.workspace.folder_path();
+        let project_id = managed.map_or_default(|m| m.project_id.as_str());
+        let project_path = managed.and_then(|m| m.project_path.as_deref());
+        let source_branch = managed.map_or_default(|m| m.source_branch.as_str());
+        let branch_name = managed.map_or_default(|m| m.branch_name.as_str());
+        let initial_branch = managed.map_or_default(|m| m.initial_branch.as_str());
+        let worktree_path = managed.map_or_default(|m| m.worktree_path.as_str());
+        let branch_provenance = managed.map_or("unknown", |m| m.branch_provenance.as_str());
+        // UPDATE first: existing sessions are re-upserted constantly (status
+        // changes, provider starts), and that hot path must not pay the
+        // min(sort_order) placement query below. Three columns are therefore
+        // INSERT-but-not-SET:
+        //
+        // - `sort_order`, so a re-upsert never disturbs the user's chosen order.
+        // - `branch_provenance`, decided once at creation: an UPDATE that could
+        //   rewrite it could turn a user's pre-existing `develop` into a branch
+        //   yaran believes it owns and force-deletes.
+        // - `slot_tab_id`, which is identity: written by `create_session` and
+        //   afterwards only by the migration's repair passes, the only code that
+        //   knows whether a session still needs its first tab MINTED or has a live
+        //   tab to ADOPT. The read path hands a pre-pointer row the session's own
+        //   id as a stand-in, so a re-upsert would store that stand-in as a real
+        //   pointer and the next open would adopt tab 2 instead of minting tab 1.
+        //
+        // `initial_branch` IS in the SET list; its immutability is engine
+        // discipline rather than a schema guarantee, so do not follow it here.
+        let updated = conn.execute(
+            r"
+            update agent_sessions set
+                project_path=?2,
+                provider=?3,
+                source_branch=?4,
+                branch_name=?5,
+                worktree_path=?6,
+                title=?7,
+                started_providers=?8,
+                desired_running=?9,
+                auto_reopen_enabled=?10,
+                status=?11,
+                updated_at=?12,
+                initial_branch=?13,
+                workspace_kind=?14,
+                folder_path=?15
+            where id = ?1
+            ",
+            params![
+                session.id,
+                project_path,
+                session.provider.as_str(),
+                source_branch,
+                branch_name,
+                worktree_path,
+                session.title,
+                serialize_started_providers(&session.started_providers),
+                session.desired_running,
+                session.auto_reopen_enabled,
+                session.status.as_str(),
+                session.updated_at.to_rfc3339(),
+                initial_branch,
+                workspace_kind,
+                folder_path,
+            ],
+        )?;
+        if updated > 0 {
+            return Ok(());
+        }
+        // A brand-new session lands at the TOP of the one global order (agents
+        // are a single flat list, whatever project each belongs to): one
+        // position above the current minimum over EVERY row. Negative values
+        // are fine; positions are relative, only their ordering matters. The
+        // minimum over the session's own project would share a position with
+        // another project's agent and land mid-list. The engine is
+        // single-threaded over this connection, so the UPDATE-miss → INSERT
+        // sequence cannot race.
+        let new_sort_order = min_session_sort_order_overall_in(conn)?.unwrap_or(1) - 1;
+        conn.execute(
+            r"
+            insert into agent_sessions
+                (id, project_id, project_path, provider, source_branch, branch_name, worktree_path, title, started_providers, desired_running, auto_reopen_enabled, status, sort_order, created_at, updated_at, initial_branch, branch_provenance, workspace_kind, folder_path, slot_tab_id)
+            values
+                (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            ",
+            params![
+                session.id,
+                project_id,
+                project_path,
+                session.provider.as_str(),
+                source_branch,
+                branch_name,
+                worktree_path,
+                session.title,
+                serialize_started_providers(&session.started_providers),
+                session.desired_running,
+                session.auto_reopen_enabled,
+                session.status.as_str(),
+                new_sort_order,
+                session.created_at.to_rfc3339(),
+                session.updated_at.to_rfc3339(),
+                initial_branch,
+                branch_provenance,
+                workspace_kind,
+                folder_path,
+                session.slot_tab_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The smallest `sort_order` assigned to ANY session, or `None` when there
+    /// are none: the top of the one global list, where a new agent is placed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn min_session_sort_order_overall(&self) -> Result<Option<i64>> {
+        min_session_sort_order_overall_in(&self.conn)
+    }
+
+    /// Assign a GLOBAL `sort_order` of `0..n` to `ordered_ids`, in that order,
+    /// across every session regardless of project. This is the flat-model ordering:
+    /// agents are one independent list, so a drag persists a single global
+    /// permutation (not a per-project one). Not project-scoped, so it can move an
+    /// agent anywhere in the list. It is "dumb": strict
+    /// validation that `ordered_ids` is the complete session set lives in the
+    /// engine. `updated_at` is deliberately untouched (preserves recency sorting).
+    pub(crate) fn set_global_session_order(&self, ordered_ids: &[String]) -> Result<()> {
+        let tx = immediate_tx(&self.conn)?;
+        {
+            let mut stmt = tx.prepare("update agent_sessions set sort_order = ?1 where id = ?2")?;
+            for (position, id) in ordered_ids.iter().enumerate() {
+                stmt.execute(params![crate::numeric::usize_to_i64_wrapping(position), id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Assign positions `0..n` to exactly `ordered_ids`, in that order, over the
+    /// `projects.sort_order` column. Single transaction. Like
+    /// [`Self::set_global_session_order`], validation that `ordered_ids` is the complete set
+    /// of known projects lives in `Engine::apply`, not here.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the transaction fails; no position changes then.
+    pub fn reorder_projects(&self, ordered_ids: &[String]) -> Result<()> {
+        let tx = immediate_tx(&self.conn)?;
+        {
+            let mut stmt = tx.prepare("update projects set sort_order = ?1 where id = ?2")?;
+            for (position, id) in ordered_ids.iter().enumerate() {
+                stmt.execute(params![crate::numeric::usize_to_i64_wrapping(position), id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// True when two or more sessions share a `sort_order`, which the flat
+    /// model's one global order never produces in steady state: an insert
+    /// lands one below the overall minimum and a reorder assigns distinct
+    /// `0..n` over every session. A shared value is therefore the fingerprint
+    /// of a fresh (all-zero) column whose backfill a crash stranded between the
+    /// autocommitted ALTER and the backfill, or of a legacy per-project
+    /// numbering that must be globalized. Used to make the one-time backfill
+    /// retryable; once positions are globally distinct it never re-runs.
+    fn session_sort_order_needs_backfill(conn: &Connection) -> Result<bool> {
+        let has_duplicates: bool = conn.query_row(
+            "select exists( \
+                 select 1 from agent_sessions \
+                 group by sort_order \
+                 having count(*) > 1 \
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(has_duplicates)
+    }
+
+    /// One-time backfill run when sessions share a `sort_order` (the column
+    /// first added to an existing `agent_sessions` table, or a stranded
+    /// half-migration); a no-op otherwise. Numbers ALL sessions `0,1,2,…` in
+    /// one global sequence (agents are a single flat list) following the legacy
+    /// `updated_at DESC` order, so the visible order is preserved exactly after
+    /// the upgrade.
+    ///
+    /// The check and the read happen inside the write transaction: another
+    /// connection opening the same file may reorder or backfill meanwhile, and
+    /// an order read before its commit would overwrite what it wrote.
+    fn backfill_session_sort_order(&self) -> Result<()> {
+        let tx = immediate_tx(&self.conn)?;
+        if !Self::session_sort_order_needs_backfill(&tx)? {
+            return Ok(());
+        }
+        // Assign a GLOBAL 0..n order (flat model: agents are one independent list).
+        // Order by the CURRENT effective order (`sort_order asc, updated_at desc`,
+        // the same order `load_sessions` uses) so this is non-destructive: a legacy
+        // per-project arrangement is frozen into a sensible global sequence rather
+        // than reshuffled, and a fresh (all-zero) table falls back to most-recent
+        // first. Runs once; afterwards the values are globally distinct.
+        let ids: Vec<String> = tx
+            .prepare("select id from agent_sessions order by sort_order asc, updated_at desc")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        {
+            let mut update =
+                tx.prepare("update agent_sessions set sort_order = ?1 where id = ?2")?;
+            for (position, id) in ids.iter().enumerate() {
+                update.execute(params![crate::numeric::usize_to_i64_wrapping(position), id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every stored agent session.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database read fails.
+    pub fn load_sessions(&self) -> Result<Vec<AgentSession>> {
+        let mut stmt = self.conn.prepare(
+            r"
+            select id, project_id, provider, source_branch, branch_name, worktree_path, title, project_path, started_providers, desired_running, auto_reopen_enabled, status, created_at, updated_at, initial_branch, last_focused_tab, branch_provenance, workspace_kind, folder_path, slot_tab_id
+            from agent_sessions
+            order by sort_order asc, updated_at desc
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let started_providers: String = row.get(8)?;
+            let created_at: String = row.get(12)?;
+            let updated_at: String = row.get(13)?;
+            // THE KIND COLUMN IS READ FIRST, before any git column is
+            // believed. A folder row stores empty text in all of them, and
+            // reading them in the other order would turn those empties into
+            // facts about a branch, a project and a worktree that do not exist.
+            let kind = crate::model::AgentWorkspaceKind::from_str(
+                row.get::<_, String>(17).unwrap_or_default().as_str(),
+            );
+            let workspace = match kind {
+                crate::model::AgentWorkspaceKind::Managed => {
+                    // A managed row's working copy is where its provider is
+                    // spawned, where git runs and what deletion may remove, so
+                    // an empty one is not an agent yaran can load either. The
+                    // strictness mirrors the folder arm below, and the
+                    // population is the same one: `from_str` reads an unknown
+                    // workspace kind as MANAGED, so a row written by a newer yaran
+                    // (or edited by hand) whose real shape has no worktree lands
+                    // here with every git column empty. Admitted, it would
+                    // enrol in branch sync with an empty branch and render as a
+                    // nameless row. Skipped, loudly, instead.
+                    let worktree_path: String = row.get(5)?;
+                    if worktree_path.trim().is_empty() {
+                        let id: String = row.get(0)?;
+                        crate::logger::error(&format!(
+                            "skipping session {id}: it is recorded as running in a working copy \
+                             yaran manages but the row names no worktree, so there is no directory \
+                             to run it in"
+                        ));
+                        return Ok(None);
+                    }
+                    crate::model::AgentWorkspace::Managed(crate::model::ManagedWorkspace {
+                        project_id: row.get::<_, String>(1).unwrap_or_default(),
+                        project_path: row.get(7)?,
+                        source_branch: row.get(3)?,
+                        branch_name: row.get(4)?,
+                        initial_branch: row.get(14)?,
+                        branch_provenance: crate::model::BranchProvenance::from_str(
+                            row.get::<_, String>(16)?.as_str(),
+                        ),
+                        worktree_path,
+                    })
+                }
+                crate::model::AgentWorkspaceKind::Folder => {
+                    // A folder row's whole identity is its path, so a NULL or
+                    // empty one is not an agent yaran can load. It is UNREACHABLE
+                    // from anything yaran writes; the population it exists for is
+                    // the same one the kind column itself exists for, a row from
+                    // a newer yaran or a hand-edited database. The row is skipped,
+                    // loudly, rather than admitted as an agent whose directory
+                    // is "": that empty string is what a PTY would be spawned
+                    // in, and what `Path::new("").exists()` would be asked
+                    // about.
+                    let folder_path = row
+                        .get::<_, Option<String>>(18)?
+                        .filter(|path| !path.trim().is_empty());
+                    let Some(folder_path) = folder_path else {
+                        let id: String = row.get(0)?;
+                        crate::logger::error(&format!(
+                            "skipping session {id}: it is recorded as running in a folder \
+                             but the row names no folder, so there is no directory to run it in"
+                        ));
+                        return Ok(None);
+                    };
+                    crate::model::AgentWorkspace::Folder(crate::model::FolderWorkspace {
+                        folder_path,
+                    })
+                }
+            };
+            Ok(Some(AgentSession {
+                id: row.get(0)?,
+                // `migrate()` has already run by the time anything reads, so a
+                // usable pointer is guaranteed. The fallback is defence for a
+                // row written by a build that is not this one; it restores the
+                // pre-pivot identity rather than inventing an unaddressable id.
+                slot_tab_id: row
+                    .get::<_, Option<String>>(19)?
+                    .filter(|id| !id.trim().is_empty())
+                    .unwrap_or_else(|| row.get::<_, String>(0).unwrap_or_default()),
+                provider: crate::model::ProviderKind::from_str(row.get::<_, String>(2)?.as_str()),
+                workspace,
+                title: row.get(6)?,
+                started_providers: parse_started_providers(&started_providers),
+                desired_running: row.get(9)?,
+                auto_reopen_enabled: row.get(10)?,
+                status: SessionStatus::from_str(row.get::<_, String>(11)?.as_str()),
+                created_at: parse_time(&created_at).unwrap_or_else(Utc::now),
+                updated_at: parse_time(&updated_at).unwrap_or_else(Utc::now),
+                last_focused_tab: row.get(15)?,
+            }))
+        })?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            // `None` is a row this loader deliberately refused; the reason was
+            // logged where it was decided.
+            if let Some(session) = row? {
+                sessions.push(session);
+            }
+        }
+        Ok(sessions)
+    }
+
+    /// Test builds only: run `sql` on this connection, to put the database in
+    /// a state no public method produces (a value a read cannot take, a
+    /// trigger that refuses a write).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the statements fail.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn run_sql_for_tests(&self, sql: &str) {
+        self.conn
+            .execute_batch(sql)
+            .expect("run the test's statements");
+    }
+
+    /// Test builds only: make every later session delete fail, as a database
+    /// that refuses a write would.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the sessions table cannot be renamed aside.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_session_deletes_for_tests(&self) {
+        // The table a delete names is moved out of its way, so the delete
+        // fails whether or not the session has a row.
+        self.conn
+            .execute_batch("alter table agent_sessions rename to agent_sessions_refused_by_a_test")
+            .expect("move the sessions table aside");
+    }
+
+    /// Deletes a session and every row that depends on it, in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the transaction fails; nothing is deleted then.
+    pub fn delete_session(&self, id: &str) -> Result<()> {
+        // Delete the session and all of its dependent rows atomically. These
+        // tables declare ON DELETE CASCADE FKs to `agent_sessions`, but the
+        // connection never enables `PRAGMA foreign_keys`, so those cascades do
+        // not fire. Delete the rows explicitly. Wrapped in a transaction so a
+        // mid-sequence failure leaves either all of the session's rows or none,
+        // never a half-deleted session (e.g. tabs gone but the session surviving).
+        let tx = immediate_tx(&self.conn)?;
+        tx.execute("delete from session_prs where session_id = ?1", params![id])?;
+        tx.execute(
+            "delete from session_pr_overrides where session_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "delete from session_pr_suppressions where session_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "delete from session_minted_branch_renames where session_id = ?1",
+            params![id],
+        )?;
+        for table in [
+            "session_branch_history",
+            "session_pull_requests",
+            "session_pr_prefs",
+            "session_branch_former_names",
+        ] {
+            tx.execute(
+                &format!("delete from {table} where session_id = ?1"),
+                params![id],
+            )?;
+        }
+        // Drop the per-session changed-files revision counter too, so a deleted
+        // session leaves no housekeeping rows behind.
+        tx.execute("delete from changes_rev where session_id = ?1", params![id])?;
+        // Drop every tab the session owns, its slot tab included.
+        tx.execute("delete from agent_tabs where session_id = ?1", params![id])?;
+        tx.execute("delete from agent_sessions where id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records whether an agent should be running, for startup auto-reopen.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn set_desired_running(
+        &self,
+        id: &str,
+        desired: crate::model::DesiredRunning,
+    ) -> Result<()> {
+        self.conn.execute(
+            "update agent_sessions set desired_running = ?2, updated_at = ?3 where id = ?1",
+            params![id, desired.is_running(), Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Persist the remembered last-focused tab for a session. `None` clears the
+    /// memory (resolves to the session-slot tab). Deliberately its own tiny
+    /// setter, mirroring [`Self::set_auto_reopen_enabled`], rather than folded
+    /// into `upsert_session`. See the field doc comment on
+    /// [`crate::model::AgentSession::last_focused_tab`] for why. `updated_at` is
+    /// intentionally NOT touched: a focus change is not a content change, and
+    /// touching it would perturb "sort by most recently updated" ordering.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn set_last_focused_tab(&self, id: &str, tab_id: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "update agent_sessions set last_focused_tab = ?2 where id = ?1",
+            params![id, tab_id],
+        )?;
+        Ok(())
+    }
+
+    /// [`Self::set_last_focused_tab`] for a write that may land after the
+    /// tabs changed: `tab_id` is remembered only while it is still one of the
+    /// session's extra tabs, so a promotion that made it the slot tab (and so
+    /// forgot the memory) is not undone. `None` always clears.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database write fails.
+    pub fn remember_focused_extra_tab(&self, id: &str, tab_id: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "update agent_sessions set last_focused_tab = ?2 where id = ?1 and ( \
+                 ?2 is null or ( \
+                     ?2 is not coalesce(slot_tab_id, '') \
+                     and exists (select 1 from agent_tabs where id = ?2 and session_id = ?1)))",
+            params![id, tab_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_auto_reopen_enabled(
+        &self,
+        id: &str,
+        auto_reopen: crate::model::AutoReopen,
+    ) -> Result<()> {
+        let enabled = auto_reopen == crate::model::AutoReopen::Enabled;
+        self.conn.execute(
+            "update agent_sessions set auto_reopen_enabled = ?2, updated_at = ?3 where id = ?1",
+            params![id, enabled, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Test-only fault injection: drops the `agent_sessions` table so the
+    /// next session-write call (upsert/delete/set_*) returns an error.
+    /// Used to verify DB-first failure semantics in the engine.
+    #[cfg(test)]
+    pub(crate) fn break_sessions_table_for_test(&self) -> Result<()> {
+        self.conn
+            .execute_batch("drop table if exists agent_sessions;")?;
+        Ok(())
+    }
+
+    /// Test builds only: store `pr` as a pull request the sync found for its
+    /// session, or as one attached to it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the state is not one yaran stores, or the write fails.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_pr_for_tests(&self, pr: &StoredPr, how: SeededPr) {
+        let info = crate::gh::reconstruct_pr_from_stored(pr).expect("a state yaran stores");
+        let key = crate::model::PrKey::new(pr.host.clone(), pr.owner_repo.clone(), pr.pr_number);
+        let mut row = self
+            .load_agent_prs()
+            .expect("read the pull requests")
+            .remove(&pr.session_id)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|row| row.is(&key))
+            .unwrap_or_else(|| {
+                let mut row = crate::model::AgentPr::found(&info, Utc::now());
+                row.found = false;
+                row
+            });
+        row.refresh_from(&info);
+        match how {
+            SeededPr::Found => row.found = true,
+            SeededPr::Attached => row.attached = true,
+        }
+        self.upsert_agent_pr(&pr.session_id, &row)
+            .expect("store the pull request");
+    }
+
+    /// Test builds only: every pull request attached to an agent, in the
+    /// shape the sync reads.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the read fails.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn attached_prs_for_tests(&self) -> Vec<StoredPr> {
+        let mut attached: Vec<StoredPr> = self
+            .load_agent_prs()
+            .expect("read the pull requests")
+            .into_iter()
+            .flat_map(|(id, rows)| {
+                rows.into_iter()
+                    .filter(|row| row.attached)
+                    .map(move |row| row.to_stored(&id))
+            })
+            .collect();
+        attached.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        attached
+    }
+
+    /// Test builds only: each agent's highest-numbered found pull request, in
+    /// the shape the sync reads.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the read fails.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn latest_found_prs_for_tests(&self) -> Vec<StoredPr> {
+        let mut latest: Vec<StoredPr> = self
+            .load_agent_prs()
+            .expect("read the pull requests")
+            .into_iter()
+            .filter_map(|(id, rows)| {
+                rows.into_iter()
+                    .filter(|row| row.found)
+                    .max_by_key(|row| row.number)
+                    .map(|row| row.to_stored(&id))
+            })
+            .collect();
+        latest.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        latest
+    }
+
+    /// Test builds only: switch an agent's pull-request detection off the way
+    /// a detach does, its found pull requests put out of sight.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a read or the write fails.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_detached_for_tests(&self, session_id: &str) {
+        let rows: Vec<crate::model::AgentPr> = self
+            .load_agent_prs()
+            .expect("read the pull requests")
+            .remove(session_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mut row| {
+                row.hidden = row.found;
+                row
+            })
+            .collect();
+        let mut prefs = self
+            .load_pr_prefs()
+            .expect("read the preferences")
+            .remove(session_id)
+            .unwrap_or_default();
+        prefs.hide_created_before = Some(Utc::now());
+        self.replace_agent_prs(session_id, &rows, &prefs)
+            .expect("store the detach");
+    }
+
+    /// Test builds only: the agents whose pull-request detection is switched
+    /// off.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the read fails.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn detached_sessions_for_tests(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .load_pr_prefs()
+            .expect("read the preferences")
+            .into_iter()
+            .filter(|(_, prefs)| prefs.hide_created_before.is_some())
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Test-only fault injection: drops the `session_pr_prefs` table so the
+    /// next preferences read or write returns an error.
+    #[cfg(test)]
+    pub(crate) fn break_pr_prefs_table_for_test(&self) -> Result<()> {
+        self.conn
+            .execute_batch("drop table if exists session_pr_prefs;")?;
+        Ok(())
+    }
+
+    /// Test-only: puts back the table [`Self::break_pr_prefs_table_for_test`]
+    /// dropped, empty.
+    #[cfg(test)]
+    pub(crate) fn restore_pr_prefs_table_for_test(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "create table if not exists session_pr_prefs (session_id text primary key, \
+             sort_mode text not null default 'automatic', hide_created_before text);",
+        )?;
+        Ok(())
+    }
+}
+
+fn parse_time(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn serialize_project_env(env: &BTreeMap<String, String>) -> String {
+    serde_json::to_string(env).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn deserialize_project_env(value: &str) -> BTreeMap<String, String> {
+    serde_json::from_str::<BTreeMap<String, String>>(value).unwrap_or_default()
+}
+
+fn serialize_started_providers(started_providers: &[String]) -> String {
+    serde_json::to_string(started_providers).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn parse_started_providers(value: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(value).unwrap_or_default()
+}
+
+pub(crate) fn fallback_pr_url(host: &str, owner_repo: &str, pr_number: u64) -> String {
+    let host = if host.trim().is_empty() {
+        "github.com"
+    } else {
+        host
+    };
+    format!("https://{host}/{owner_repo}/pull/{pr_number}")
+}
+
+fn normalize_pr_url(url: String, host: &str, owner_repo: &str, pr_number: u64) -> String {
+    if url.trim().is_empty() {
+        fallback_pr_url(host, owner_repo, pr_number)
+    } else {
+        url
+    }
+}
+
+/// Opens an in-memory session store for tests.
+#[cfg(test)]
+fn test_store() -> SessionStore {
+    SessionStore::open(std::path::Path::new(":memory:")).unwrap()
+}
+
+/// Builds a minimal `AgentSession` with the given id, `created_at`, and `updated_at`.
+#[cfg(test)]
+fn test_session(
+    id: &str,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+) -> crate::model::AgentSession {
+    crate::model::AgentSession {
+        id: id.to_string(),
+        slot_tab_id: format!("{id}-slot"),
+        provider: crate::model::ProviderKind::new("claude"),
+        title: None,
+        started_providers: Vec::new(),
+        desired_running: false,
+        auto_reopen_enabled: true,
+        status: SessionStatus::Active,
+        created_at,
+        updated_at,
+        last_focused_tab: None,
+        workspace: crate::model::AgentWorkspace::Managed(crate::model::ManagedWorkspace {
+            project_id: "proj".to_string(),
+            project_path: None,
+            source_branch: "main".to_string(),
+            branch_name: format!("branch-{id}"),
+            initial_branch: format!("branch-{id}"),
+            branch_provenance: crate::model::BranchProvenance::CreatedByYaran,
+            worktree_path: format!("/tmp/{id}"),
+        }),
+    }
+}
+
+/// Like [`test_session`] but lets the caller pick the project id, for tests
+/// that exercise per-project ordering across multiple projects.
+#[cfg(test)]
+fn test_session_in(
+    id: &str,
+    project_id: &str,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+) -> crate::model::AgentSession {
+    let mut session = test_session(id, created_at, updated_at);
+    session
+        .workspace
+        .as_managed_mut()
+        .expect("test_session builds a managed agent")
+        .project_id = project_id.to_string();
+    session
+}
+
+/// Builds an extra-tab row owned by `session_id`.
+#[cfg(test)]
+fn test_tab(id: &str, session_id: &str, sort_order: i64) -> crate::model::AgentTab {
+    crate::model::AgentTab {
+        id: id.to_string(),
+        session_id: session_id.to_string(),
+        provider: crate::model::ProviderKind::new("codex"),
+        sort_order,
+        created_at: Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{AgentWorkspace, FolderWorkspace};
+    use chrono::Duration;
+
+    fn history_names(store: &SessionStore, id: &str) -> Vec<(String, bool)> {
+        store
+            .load_branch_history(id)
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.name, entry.born_here))
+            .collect()
+    }
+
+    /// An agent that predates the branch list starts with the two branches
+    /// yaran already knew, the birth one under the name a yaran rename gave it,
+    /// and the seed runs once: a later open does not bring a renamed-away
+    /// name back.
+    #[test]
+    fn the_branch_list_is_seeded_once_from_what_an_agent_already_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sessions.sqlite3");
+        let store = SessionStore::open(&path).unwrap();
+        let now = Utc::now();
+        let mut drifted = test_session("s1", now, now);
+        drifted.workspace.as_managed_mut().unwrap().branch_name = "moved".to_string();
+        store.upsert_session(&drifted).unwrap();
+        let mut renamed = test_session("s2", now, now);
+        renamed.workspace.as_managed_mut().unwrap().branch_name = "renamed".to_string();
+        store.upsert_session(&renamed).unwrap();
+        store.set_minted_branch_rename("s2", "renamed").unwrap();
+        store
+            .conn
+            .execute_batch("drop table session_branch_history")
+            .unwrap();
+        drop(store);
+
+        let store = SessionStore::open(&path).unwrap();
+        assert_eq!(
+            history_names(&store, "s1"),
+            vec![
+                ("branch-s1".to_string(), true),
+                ("moved".to_string(), false)
+            ]
+        );
+        assert_eq!(
+            history_names(&store, "s2"),
+            vec![("renamed".to_string(), true)]
+        );
+        assert!(
+            store.load_branch_history("s1").unwrap()[0]
+                .identity
+                .is_none(),
+            "a seeded birth row cannot vouch for the ref under its name"
+        );
+        store
+            .conn
+            .execute(
+                "delete from session_branch_history where session_id = 's1'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = SessionStore::open(&path).unwrap();
+        assert_eq!(history_names(&store, "s1"), Vec::new(), "not seeded again");
+    }
+
+    /// A yaran rename renames the row in place, birth flag and identity with it.
+    #[test]
+    fn a_yaran_rename_renames_the_branch_list_entry_in_place() {
+        let store = test_store();
+        let now = Utc::now();
+        let session = test_session("s1", now, now);
+        let identity = crate::branch_history::BranchIdentity {
+            unix: 42,
+            oid: "a".repeat(40),
+        };
+        store
+            .create_session_with_birth(
+                &session,
+                Some(&crate::branch_history::SeenBranch {
+                    name: "branch-s1".to_string(),
+                    identity: Some(identity.clone()),
+                    tip: Some("b".repeat(40)),
+                }),
+            )
+            .unwrap();
+        store
+            .record_branches_seen(
+                "s1",
+                &[crate::branch_history::SeenBranch {
+                    name: "other".to_string(),
+                    identity: None,
+                    tip: None,
+                }],
+            )
+            .unwrap();
+        store
+            .rename_history_branch("s1", "branch-s1", "branch-new")
+            .unwrap();
+        let history = store.load_branch_history("s1").unwrap();
+        assert_eq!(history.len(), 2, "{history:?}");
+        assert_eq!(history[0].name, "branch-new");
+        assert!(history[0].born_here);
+        assert_eq!(history[0].identity.as_ref(), Some(&identity));
+        assert!(history[0].first_seen_at.is_some(), "{history:?}");
+        assert_eq!(history[0].former_names, vec!["branch-s1".to_string()]);
+        // A second rename keeps both earlier names, and a drift onto another
+        // branch gives that branch none.
+        store
+            .rename_history_branch("s1", "branch-new", "branch-c")
+            .unwrap();
+        store
+            .record_branches_seen(
+                "s1",
+                &[crate::branch_history::SeenBranch {
+                    name: "drifted".to_string(),
+                    identity: None,
+                    tip: None,
+                }],
+            )
+            .unwrap();
+        let history = store.load_branch_history("s1").unwrap();
+        let former = |name: &str| {
+            let mut names = history
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap()
+                .former_names
+                .clone();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            former("branch-c"),
+            vec!["branch-new".to_string(), "branch-s1".to_string()]
+        );
+        assert_eq!(former("drifted"), Vec::<String>::new());
+        store.delete_session("s1").unwrap();
+        assert_eq!(store.load_branch_history("s1").unwrap(), Vec::new());
+    }
+
+    /// A row recorded with no identity follows an identity-less sighting, but
+    /// one carrying a creation entry is the name made again and never moves
+    /// the recorded tip.
+    #[test]
+    fn a_recreated_name_does_not_move_an_identity_less_rows_tip() {
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .create_session_with_birth(&test_session("s1", now, now), None)
+            .unwrap();
+        let seen = |identity, tip: &str| crate::branch_history::SeenBranch {
+            name: "spike".to_string(),
+            identity,
+            tip: Some(tip.to_string()),
+        };
+        let tip = || {
+            store
+                .load_branch_history("s1")
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.name == "spike")
+                .and_then(|entry| entry.tip)
+        };
+        store
+            .record_branches_seen("s1", &[seen(None, &"a".repeat(40))])
+            .unwrap();
+        store
+            .record_branches_seen("s1", &[seen(None, &"b".repeat(40))])
+            .unwrap();
+        assert_eq!(tip(), Some("b".repeat(40)));
+        let made_again = crate::branch_history::BranchIdentity {
+            unix: 42,
+            oid: "c".repeat(40),
+        };
+        store
+            .record_branches_seen("s1", &[seen(Some(made_again), &"d".repeat(40))])
+            .unwrap();
+        assert_eq!(tip(), Some("b".repeat(40)));
+    }
+
+    #[test]
+    fn a_panic_inside_an_immediate_transaction_leaves_no_transaction_open() {
+        let store = test_store();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<()> = store.immediate(|_| panic!("the closure panicked"));
+        }));
+        assert!(outcome.is_err());
+        assert!(store.conn.is_autocommit());
+    }
+
+    /// A kept branch stored before branches carried their own provenance
+    /// takes its record's; one stored since keeps its own.
+    #[test]
+    fn kept_branches_read_their_own_provenance_or_their_records() {
+        let decoded = decode_kept_branches(
+            "abc feat\ndef attached old\n- - lost",
+            Some(crate::model::BranchProvenance::CreatedByYaran),
+        );
+        assert_eq!(
+            decoded
+                .iter()
+                .map(|kept| (kept.name.as_str(), kept.oid.as_deref(), kept.provenance))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "feat",
+                    Some("abc"),
+                    Some(crate::model::BranchProvenance::CreatedByYaran)
+                ),
+                (
+                    "old",
+                    Some("def"),
+                    Some(crate::model::BranchProvenance::AttachedExisting)
+                ),
+                ("lost", None, None),
+            ]
+        );
+        assert_eq!(
+            decode_kept_branches(&encode_kept_branches(&decoded), None),
+            decoded
+        );
+    }
+
+    #[test]
+    fn a_pending_worktree_removal_round_trips_until_it_is_cleared() {
+        let store = SessionStore::open(std::path::Path::new(":memory:")).expect("store");
+        let row = PendingWorktreeRemoval {
+            session_id: "a1".to_string(),
+            label: "feat".to_string(),
+            project_path: "/repo".to_string(),
+            managed: crate::model::ManagedWorkspace {
+                project_id: "p1".to_string(),
+                project_path: None,
+                source_branch: "main".to_string(),
+                branch_name: "feat".to_string(),
+                initial_branch: "feat-0".to_string(),
+                branch_provenance: crate::model::BranchProvenance::AttachedExisting,
+                worktree_path: "/wt/feat".to_string(),
+            },
+            branches: crate::branch_history::BranchPlan::default(),
+            process_sessions: vec![
+                crate::process_sessions::ProcessSession {
+                    sid: 41,
+                    started_at: 1_700_000_000,
+                    boot: 7,
+                },
+                crate::process_sessions::ProcessSession {
+                    sid: 42,
+                    started_at: 1_700_000_001,
+                    boot: 7,
+                },
+            ],
+            process_snapshot: vec![crate::process_sessions::ProcessIdentity {
+                pid: 43,
+                start_time: 1_700_000_002,
+                boot: crate::process_sessions::current_boot(),
+            }],
+            process_registry: crate::process_sessions::RegistrySnapshot {
+                entries: vec![crate::process_sessions::RegistryEntry {
+                    session: crate::process_sessions::ProcessSession {
+                        sid: 44,
+                        started_at: 1_700_000_003,
+                        boot: 7,
+                    },
+                    folder: std::path::PathBuf::from("/wt/feat/frontend"),
+                    standalone: true,
+                }],
+                survivors: Vec::new(),
+            },
+        };
+        store.insert_pending_worktree_removal(&row).expect("insert");
+        assert_eq!(
+            store.load_pending_worktree_removals().unwrap(),
+            vec![row.clone()]
+        );
+        store
+            .rename_pending_removal_branch("a1", "feat", "feat-renamed")
+            .expect("rename");
+        let loaded = store.load_pending_worktree_removals().unwrap();
+        assert_eq!(loaded[0].managed.branch_name, "feat-renamed");
+        assert_eq!(
+            loaded[0].managed.initial_branch, "feat-0",
+            "only the renamed one moves"
+        );
+        store.delete_pending_worktree_removal("a1").expect("delete");
+        assert_eq!(
+            store.load_pending_worktree_removals().unwrap(),
+            Vec::<PendingWorktreeRemoval>::new()
+        );
+    }
+
+    fn standalone_session(id: &str, folder: &str) -> AgentSession {
+        let now = Utc::now();
+        AgentSession {
+            id: id.to_string(),
+            slot_tab_id: format!("{id}-slot"),
+            provider: crate::model::ProviderKind::new("claude"),
+            workspace: AgentWorkspace::Folder(FolderWorkspace {
+                folder_path: folder.to_string(),
+            }),
+            title: Some(format!("{id} title")),
+            started_providers: Vec::new(),
+            desired_running: true,
+            auto_reopen_enabled: true,
+            status: SessionStatus::Active,
+            created_at: now,
+            updated_at: now,
+            last_focused_tab: None,
+        }
+    }
+
+    fn sample_project_row(id: &str, path: &str) -> ProjectConfig {
+        ProjectConfig {
+            id: id.to_string(),
+            path: path.to_string(),
+            name: Some(id.to_string()),
+            default_provider: None,
+            leading_branch: None,
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: BTreeMap::default(),
+        }
+    }
+
+    fn temp_store() -> (tempfile::TempDir, SessionStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::open(&dir.path().join("sessions.sqlite3")).unwrap();
+        (dir, store)
+    }
+
+    /// The row's git columns hold empty text for a standalone agent (the
+    /// schema's `project_id` is NOT NULL and the rest predate this feature), so
+    /// the load path must decide the SHAPE off the kind column BEFORE any git
+    /// field is believed. If it did not, the empties would come back as facts:
+    /// a branch named "", a project id that matches nothing, and a worktree
+    /// path of "" that some delete path would try to remove.
+    #[test]
+    fn a_standalone_row_round_trips_as_a_folder_and_never_as_empty_git_fields() {
+        let (_dir, store) = temp_store();
+        store
+            .upsert_session(&standalone_session("sa1", "/home/someone/notes"))
+            .unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let session = loaded.iter().find(|s| s.id == "sa1").expect("row");
+        assert_eq!(session.folder_path(), Some("/home/someone/notes"));
+        assert_eq!(session.branch_name(), None);
+        assert_eq!(session.project_id(), None);
+        assert_eq!(session.managed_worktree(), None);
+        assert_eq!(session.branch_provenance(), None);
+        assert_eq!(session.directory(), "/home/someone/notes");
+    }
+
+    /// The git COLUMNS of a standalone row are empty on disk, read straight from
+    /// the database rather than through the accessors.
+    ///
+    /// The accessors answer `None` for a folder workspace unconditionally, so
+    /// asserting through them would pass even if the writer had put a real
+    /// branch name in the row. This reads the raw values, because "the row holds
+    /// no branch identity" is the claim.
+    #[test]
+    fn a_standalone_rows_git_columns_are_empty_on_disk() {
+        let (dir, store) = temp_store();
+        store
+            .upsert_session(&standalone_session("sa1", "/home/someone/notes"))
+            .unwrap();
+        drop(store);
+
+        let conn = Connection::open(dir.path().join("sessions.sqlite3")).unwrap();
+        let (kind, project_id, branch, initial, source, worktree, folder): (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "select workspace_kind, project_id, branch_name, initial_branch, \
+                 source_branch, worktree_path, folder_path from agent_sessions where id = 'sa1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(kind, "folder");
+        assert_eq!(folder.as_deref(), Some("/home/someone/notes"));
+        assert_eq!(project_id, "");
+        assert_eq!(branch, "");
+        assert_eq!(initial.unwrap_or_default(), "");
+        assert_eq!(source, "");
+        assert_eq!(worktree, "");
+    }
+
+    /// A folder row that names no folder is not an agent yaran can load, so it is
+    /// skipped rather than admitted with a directory of "" that a PTY would be
+    /// spawned in. Only reachable from a row a newer yaran or a person wrote.
+    #[test]
+    fn a_folder_row_with_no_folder_is_refused_rather_than_loaded_empty() {
+        let (_dir, store) = temp_store();
+        store
+            .upsert_session(&standalone_session("sa1", "/home/someone/notes"))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "update agent_sessions set folder_path = null where id = 'sa1'",
+                [],
+            )
+            .unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert!(
+            loaded.iter().all(|s| s.id != "sa1"),
+            "a row with no directory to run in must not load as an agent"
+        );
+
+        // An empty string is the same fact spelled differently.
+        store
+            .conn
+            .execute(
+                "update agent_sessions set folder_path = '' where id = 'sa1'",
+                [],
+            )
+            .unwrap();
+        assert!(store.load_sessions().unwrap().iter().all(|s| s.id != "sa1"));
+    }
+
+    /// The same strictness from the other side: a MANAGED row that names no
+    /// worktree is skipped too.
+    ///
+    /// It is reachable the same way the folder arm's refusal is, and by one more
+    /// door: an unknown `workspace_kind` reads as managed on purpose, so a row
+    /// whose real shape this build has never heard of arrives here with every
+    /// git column empty. Loaded, it would enrol in branch sync with an empty
+    /// branch and render as a nameless row pointing at "".
+    #[test]
+    fn a_managed_row_with_no_worktree_is_refused_rather_than_loaded_empty() {
+        let (_dir, store) = temp_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in("m1", "p1", now, now))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "update agent_sessions set worktree_path = '' where id = 'm1'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            store.load_sessions().unwrap().iter().all(|s| s.id != "m1"),
+            "a managed row with no worktree must not load as an agent"
+        );
+
+        // And through the other door: a kind this build cannot classify reads as
+        // managed, and such a row has no worktree either.
+        store
+            .conn
+            .execute(
+                "update agent_sessions set workspace_kind = 'something-newer' where id = 'm1'",
+                [],
+            )
+            .unwrap();
+        assert!(store.load_sessions().unwrap().iter().all(|s| s.id != "m1"));
+    }
+
+    /// A new standalone agent lands at the TOP of the list.
+    ///
+    /// Its row stores an empty project id, so taking the minimum over "its
+    /// project" would only place it above the other standalone agents, which in
+    /// a flat, globally ordered list means somewhere in the middle.
+    #[test]
+    fn a_new_standalone_agent_lands_above_every_other_agent() {
+        let (_dir, store) = temp_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in("a", "p1", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("b", "p2", now, now))
+            .unwrap();
+        let top_before = store.min_session_sort_order_overall().unwrap().unwrap();
+
+        store
+            .upsert_session(&standalone_session("sa1", "/home/someone/notes"))
+            .unwrap();
+        let placed: i64 = store
+            .conn
+            .query_row(
+                "select sort_order from agent_sessions where id = 'sa1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            placed < top_before,
+            "a new standalone agent goes above every other agent, got {placed} against {top_before}"
+        );
+    }
+
+    /// A new managed agent lands at the top of the one global list too, never
+    /// merely the top of its own project, which would share a position with
+    /// another project's agent.
+    #[test]
+    fn a_new_managed_agent_lands_above_every_other_agent() {
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in("a", "p1", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("b", "p2", now, now))
+            .unwrap();
+        store
+            .set_global_session_order(&["b".into(), "a".into()])
+            .unwrap();
+
+        store
+            .upsert_session(&test_session_in("c", "p1", now, now))
+            .unwrap();
+
+        let positions: Vec<(String, i64)> = store
+            .conn
+            .prepare("select id, sort_order from agent_sessions order by sort_order")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            positions,
+            vec![
+                ("c".to_string(), -1),
+                ("b".to_string(), 0),
+                ("a".to_string(), 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_update_of_a_standalone_row_keeps_it_a_folder() {
+        let (_dir, store) = temp_store();
+        let mut session = standalone_session("sa1", "/home/someone/notes");
+        store.upsert_session(&session).unwrap();
+        session.title = Some("renamed".to_string());
+        store.upsert_session(&session).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let session = loaded.iter().find(|s| s.id == "sa1").expect("row");
+        assert_eq!(session.title.as_deref(), Some("renamed"));
+        assert_eq!(session.folder_path(), Some("/home/someone/notes"));
+        assert_eq!(session.branch_name(), None);
+    }
+
+    /// The self-healing backfill freezes an empty `initial_branch` to
+    /// `branch_name`. What this pins is the OUTCOME for a standalone row: it
+    /// comes back through `migrate()` with no branch identity invented for it.
+    ///
+    /// It deliberately does not claim to prove the kind gate is load-bearing,
+    /// because it is not: a folder row has `branch_name` empty too, so the
+    /// assignment would be '' to '' with or without the gate. The gate is there
+    /// so a future change to either side (a default branch name, a non-empty
+    /// placeholder) cannot start writing a branch onto an agent that has none,
+    /// and this test is what would notice if one did.
+    #[test]
+    fn the_initial_branch_healing_never_touches_a_standalone_row() {
+        let (_dir, store) = temp_store();
+        store
+            .upsert_session(&standalone_session("sa1", "/home/someone/notes"))
+            .unwrap();
+        store.migrate().unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let session = loaded.iter().find(|s| s.id == "sa1").expect("row");
+        assert_eq!(session.branch_name(), None);
+        assert_eq!(session.initial_branch(), None);
+    }
+
+    /// The one-time title freeze writes `title = branch_name` for NULL titles,
+    /// and it must skip a folder row: freezing an empty branch name into a title
+    /// would leave the row with no label at all.
+    ///
+    /// Built on a store where the freeze REALLY RUNS. The arm is gated on
+    /// `initial_branch` being added by this very migration, which `temp_store`
+    /// (already migrated) never triggers, so a test written against that fixture
+    /// would pass with the gate deleted. Here the table is created with the kind
+    /// and folder columns but WITHOUT `initial_branch`, so migrating adds it and
+    /// the one-time freeze fires with a standalone row present.
+    #[test]
+    fn the_title_freeze_never_gives_a_standalone_row_an_empty_name() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r"
+            create table agent_sessions (
+                id text primary key,
+                project_id text not null,
+                provider text not null,
+                source_branch text not null,
+                branch_name text not null,
+                worktree_path text not null,
+                title text,
+                project_path text,
+                status text not null,
+                created_at text not null,
+                updated_at text not null,
+                workspace_kind text not null default 'managed',
+                folder_path text
+            );
+            ",
+        )
+        .unwrap();
+        // A folder row and a managed row side by side, both with a NULL title.
+        conn.execute(
+            "insert into agent_sessions (id, project_id, provider, source_branch, \
+             branch_name, worktree_path, title, project_path, status, created_at, \
+             updated_at, workspace_kind, folder_path) values \
+             ('sa1', '', 'claude', '', '', '', null, null, 'detached', '2026-01-01T00:00:00Z', \
+             '2026-01-01T00:00:00Z', 'folder', '/home/someone/notes')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into agent_sessions (id, project_id, provider, source_branch, \
+             branch_name, worktree_path, title, project_path, status, created_at, \
+             updated_at, workspace_kind, folder_path) values \
+             ('s1', 'p1', 'claude', 'main', 'feat', '/tmp/wt', null, null, 'detached', \
+             '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'managed', null)",
+            [],
+        )
+        .unwrap();
+        let store = SessionStore { conn };
+        store.migrate().unwrap();
+
+        // Proof the freeze really ran in this fixture: the managed row's NULL
+        // title was frozen to its branch name. Without this the assertions below
+        // would hold for a migration that did nothing at all.
+        let loaded = store.load_sessions().unwrap();
+        let managed = loaded.iter().find(|s| s.id == "s1").expect("managed row");
+        assert_eq!(managed.title.as_deref(), Some("feat"));
+
+        let session = loaded.iter().find(|s| s.id == "sa1").expect("row");
+        assert_eq!(
+            session.title, None,
+            "a frozen empty branch name would leave the row with no label at all"
+        );
+        assert_ne!(session.display_label(), "");
+    }
+
+    /// A standalone row stores empty text under `project_id` (the column is NOT
+    /// NULL). `remove_project_records` scopes by a project-id subquery, so an
+    /// empty id can never match a real project's cascade. Pinned anyway,
+    /// because this is the difference between removing one project and
+    /// mass-deleting every standalone agent the user has.
+    #[test]
+    fn removing_a_project_never_cascades_into_standalone_agents() {
+        let (_dir, store) = temp_store();
+        store
+            .upsert_project(&sample_project_row("p1", "/tmp/p1"))
+            .unwrap();
+        store
+            .upsert_session(&standalone_session("sa1", "/home/someone/notes"))
+            .unwrap();
+
+        store.remove_project_records("p1").unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert!(
+            loaded.iter().any(|s| s.id == "sa1"),
+            "a standalone agent belongs to no project and must survive every project removal"
+        );
+    }
+
+    /// And the pathological spelling of the same thing: a project whose id is
+    /// literally the empty string must not sweep up the standalone rows whose
+    /// stored project id is also empty.
+    #[test]
+    fn even_a_project_with_an_empty_id_cannot_cascade_into_standalone_agents() {
+        let (_dir, store) = temp_store();
+        store
+            .upsert_session(&standalone_session("sa1", "/home/someone/notes"))
+            .unwrap();
+        store.set_minted_branch_rename("sa1", "kept").unwrap();
+        seed_every_pr_table(&store, "sa1");
+
+        store.remove_project_records("").unwrap();
+
+        for table in PR_TABLES {
+            assert_eq!(rows_for(&store, table, "sa1"), 1, "{table}");
+        }
+
+        let loaded = store.load_sessions().unwrap();
+        assert!(
+            loaded.iter().any(|s| s.id == "sa1"),
+            "the kind column, not the project id, is what says who owns a row"
+        );
+        assert_eq!(
+            store.load_minted_branch_renames().unwrap(),
+            vec![("sa1".to_string(), "kept".to_string())]
+        );
+    }
+
+    /// The database mirrors the same per-project `env` map that made
+    /// `config.toml` `0600`, and SQLite's `-wal`/`-shm` sidecars carry the same
+    /// content.
+    ///
+    /// On a FIRST open the sidecars do not yet exist when the tightening loop
+    /// runs, so the loop cannot be what makes them owner-only: SQLite creates
+    /// them afterwards and they INHERIT the database file's mode. The loop
+    /// entries are load-bearing in the reopen test below, not here. Every
+    /// metadata read is unwrapped: a sidecar that is not there must fail the
+    /// test, not pass silently.
+    #[test]
+    fn sidecars_created_after_the_open_inherit_the_databases_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.sqlite3");
+        let store = SessionStore::open(&db).unwrap();
+        // Force a WAL write so the sidecars definitely exist.
+        store
+            .conn
+            .execute_batch("create table if not exists probe (x);")
+            .unwrap();
+
+        for path in [
+            db.clone(),
+            sidecar_path(&db, "-wal"),
+            sidecar_path(&db, "-shm"),
+        ] {
+            let meta = std::fs::metadata(&path)
+                .unwrap_or_else(|e| panic!("{} must exist to be checked: {e}", path.display()));
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "{} should not be group/world readable, got {mode:o}",
+                path.display()
+            );
+        }
+    }
+
+    /// This is what the `-wal`/`-shm` entries in the tightening loop are FOR: a
+    /// sidecar that already exists at a loose mode when yaran opens the database,
+    /// as an older installation would have left it. The sidecars only exist
+    /// while a connection is open (SQLite removes them when the last one
+    /// closes), so the first store is held open across the second open.
+    #[test]
+    fn open_tightens_sidecars_left_world_readable_by_an_older_install() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.sqlite3");
+        let holder = SessionStore::open(&db).unwrap();
+        holder
+            .conn
+            .execute_batch("create table if not exists probe (x);")
+            .unwrap();
+
+        let wal = sidecar_path(&db, "-wal");
+        let shm = sidecar_path(&db, "-shm");
+        for path in [&wal, &shm] {
+            assert!(path.exists(), "{} must exist for this test", path.display());
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let _second = SessionStore::open(&db).unwrap();
+
+        for path in [&wal, &shm] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o600,
+                "{} should have been tightened on open, got {mode:o}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn open_tightens_a_database_left_world_readable_by_an_older_install() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.sqlite3");
+        drop(SessionStore::open(&db).unwrap());
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let _store = SessionStore::open(&db).unwrap();
+        let mode = std::fs::metadata(&db).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
+    }
+
+    #[test]
+    fn agent_tabs_table_is_idempotent_and_empty_on_fresh_db() {
+        let store = test_store();
+        // migrate() ran in open(); a second migrate is a no-op.
+        store.migrate().unwrap();
+        assert!(store.load_agent_tabs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_tab_crud_round_trips() {
+        let store = test_store();
+        let now = Utc::now();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+        store.insert_agent_tab(&test_tab("t1", "s1", 1)).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 2)).unwrap();
+
+        let loaded = store.load_agent_tabs().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "t1");
+        assert_eq!(loaded[0].provider.as_str(), "codex");
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 2);
+        assert_eq!(store.max_tab_sort_order("s1").unwrap(), Some(2));
+        assert_eq!(store.max_tab_sort_order("nope").unwrap(), None);
+
+        store.update_agent_tab_provider("t1", "claude").unwrap();
+        assert_eq!(
+            store.load_agent_tabs().unwrap()[0].provider.as_str(),
+            "claude"
+        );
+
+        store.delete_agent_tab("t1").unwrap();
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 1);
+    }
+
+    #[test]
+    fn delete_session_removes_its_agent_tabs_rows() {
+        let store = test_store();
+        let now = Utc::now();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+        store.upsert_session(&test_session("s2", now, now)).unwrap();
+        store.insert_agent_tab(&test_tab("t1", "s1", 1)).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s2", 1)).unwrap();
+
+        store.delete_session("s1").unwrap();
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 0);
+        // A sibling session's tabs are untouched.
+        assert_eq!(store.count_agent_tabs("s2").unwrap(), 1);
+    }
+
+    #[test]
+    fn remove_project_records_removes_all_its_sessions_tabs() {
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in("s1", "projA", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("s2", "projB", now, now))
+            .unwrap();
+        store.insert_agent_tab(&test_tab("t1", "s1", 1)).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s2", 1)).unwrap();
+
+        store.remove_project_records("projA").unwrap();
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 0);
+        assert_eq!(store.count_agent_tabs("s2").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_sweeps_orphan_tabs_with_no_session() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store.insert_agent_tab(&test_tab("t1", "s1", 1)).unwrap();
+        // A row whose session was removed by an older binary that didn't cascade.
+        store
+            .insert_agent_tab(&test_tab("orphan", "gone", 1))
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        let loaded: Vec<String> = store
+            .load_agent_tabs()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(loaded, vec!["slot-1".to_string(), "t1".to_string()]);
+    }
+
+    /// A binary older than the minted-rename table deletes a session with
+    /// foreign keys off: the session goes and its rename row stays. The next
+    /// open of a binary that knows the table sweeps it, so a later session
+    /// reusing the id cannot inherit an age guard that was never its own.
+    #[test]
+    fn reopening_after_a_downgrade_sweeps_minted_renames_with_no_session() {
+        let (dir, store) = temp_store();
+        let now = Utc::now();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+        store.upsert_session(&test_session("s2", now, now)).unwrap();
+        store.set_minted_branch_rename("s1", "gone").unwrap();
+        store.set_minted_branch_rename("s2", "kept").unwrap();
+        store
+            .conn
+            .execute_batch(
+                "pragma foreign_keys = off; delete from agent_sessions where id = 's1'; \
+                 pragma foreign_keys = on;",
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = SessionStore::open(&dir.path().join("sessions.sqlite3")).unwrap();
+
+        assert_eq!(
+            reopened.load_minted_branch_renames().unwrap(),
+            vec![("s2".to_string(), "kept".to_string())]
+        );
+    }
+
+    #[test]
+    fn load_agent_tabs_is_a_plain_reader_and_sweeps_nothing() {
+        let store = test_store();
+        store
+            .insert_agent_tab(&test_tab("orphan", "gone", 1))
+            .unwrap();
+
+        let loaded = store.load_agent_tabs().unwrap();
+
+        assert_eq!(
+            loaded.len(),
+            1,
+            "the sweep belongs to migrate(), so a read must not delete rows"
+        );
+    }
+
+    /// A session row shaped the way this branch's dev databases are: a real
+    /// session with no `slot_tab_id` pointer and no first-tab row, because the
+    /// slot tab was synthesized from the session record rather than stored.
+    fn pre_pivot_session(store: &SessionStore, id: &str, provider: &str) {
+        let now = Utc::now();
+        let mut session = test_session(id, now, now);
+        session.provider = crate::model::ProviderKind::new(provider);
+        store.upsert_session(&session).unwrap();
+        store
+            .conn
+            .execute(
+                "update agent_sessions set slot_tab_id = null where id = ?1",
+                params![id],
+            )
+            .unwrap();
+    }
+
+    fn slot_pointer(store: &SessionStore, id: &str) -> Option<String> {
+        store
+            .conn
+            .query_row(
+                "select slot_tab_id from agent_sessions where id = ?1",
+                params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn create_session_writes_the_session_its_slot_tab_row_and_the_pointer_at_once() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        session.provider = crate::model::ProviderKind::new("codex");
+        store.create_session(&session).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].slot_tab_id, "slot-1");
+        let tabs = store.load_agent_tabs().unwrap();
+        assert_eq!(tabs.len(), 1, "the first tab is a row like any other");
+        assert_eq!(tabs[0].id, "slot-1");
+        assert_eq!(tabs[0].session_id, "s1");
+        assert_eq!(tabs[0].provider.as_str(), "codex");
+    }
+
+    #[test]
+    fn create_session_writes_nothing_at_all_when_the_slot_tab_row_cannot_be_written() {
+        let store = test_store();
+        let now = Utc::now();
+        // Somebody else already holds this tab id, so the slot row's INSERT
+        // fails. The session row must not survive on its own: a session with no
+        // slot tab is exactly the half-created state the transaction exists to
+        // prevent.
+        store
+            .upsert_session(&test_session("other", now, now))
+            .unwrap();
+        store
+            .insert_agent_tab(&test_tab("slot-1", "other", 1))
+            .unwrap();
+
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        assert!(store.create_session(&session).is_err());
+        assert!(
+            store.load_sessions().unwrap().iter().all(|s| s.id != "s1"),
+            "the session row must roll back with the slot tab row"
+        );
+    }
+
+    #[test]
+    fn create_session_places_the_slot_row_before_every_tab_added_later() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        let next = store.max_tab_sort_order("s1").unwrap().unwrap_or(0) + 1;
+        store.insert_agent_tab(&test_tab("t2", "s1", next)).unwrap();
+
+        let ids: Vec<String> = store
+            .load_agent_tabs()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, vec!["slot-1".to_string(), "t2".to_string()]);
+    }
+
+    #[test]
+    fn migration_mints_a_slot_tab_row_for_a_session_that_predates_the_pointer() {
+        let store = test_store();
+        pre_pivot_session(&store, "s1", "codex");
+        assert_eq!(slot_pointer(&store, "s1"), None);
+
+        store.migrate().unwrap();
+
+        let pointer = slot_pointer(&store, "s1").expect("the migration sets the pointer");
+        assert_ne!(
+            pointer, "s1",
+            "the slot tab gets a generated id, not the session id"
+        );
+        let tabs = store.load_agent_tabs().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].id, pointer);
+        assert_eq!(
+            tabs[0].provider.as_str(),
+            "codex",
+            "the minted row carries the provider the session was running"
+        );
+    }
+
+    #[test]
+    fn migration_keeps_every_existing_extra_tab_after_the_minted_first_row() {
+        let store = test_store();
+        pre_pivot_session(&store, "s1", "claude");
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+        store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
+
+        store.migrate().unwrap();
+
+        let pointer = slot_pointer(&store, "s1").unwrap();
+        let ids: Vec<String> = store
+            .load_agent_tabs()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, vec![pointer, "t2".to_string(), "t3".to_string()]);
+    }
+
+    fn positions(store: &SessionStore, session: &str) -> Vec<(String, i64)> {
+        let mut tabs: Vec<_> = store
+            .load_agent_tabs()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.session_id == session)
+            .map(|t| (t.id, t.sort_order))
+            .collect();
+        tabs.sort_by_key(|(_, position)| *position);
+        tabs
+    }
+
+    #[test]
+    fn position_migration_renumbers_each_strip_in_the_order_it_showed_before() {
+        let store = test_store();
+        let now = Utc::now();
+        // A strip whose slot row kept a high stamp after a past promotion, and
+        // whose extras carry gaps: the slot tab still showed first.
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store
+            .conn
+            .execute(
+                "update agent_tabs set sort_order = 9 where id = 'slot-1'",
+                [],
+            )
+            .unwrap();
+        store.insert_agent_tab(&test_tab("t3", "s1", 7)).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 2)).unwrap();
+        let mut other = test_session("s2", now, now);
+        other.slot_tab_id = "slot-2".to_string();
+        store.create_session(&other).unwrap();
+        store.insert_agent_tab(&test_tab("u2", "s2", 1)).unwrap();
+        store
+            .conn
+            .execute(
+                "delete from app_state where key = ?1",
+                params![TAB_POSITIONS_KEY],
+            )
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        assert_eq!(
+            positions(&store, "s1"),
+            vec![
+                ("slot-1".to_string(), 0),
+                ("t2".to_string(), 1),
+                ("t3".to_string(), 2)
+            ]
+        );
+        assert_eq!(
+            positions(&store, "s2"),
+            vec![("slot-2".to_string(), 0), ("u2".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn position_migration_runs_once_so_a_hand_placed_slot_tab_stays_put() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+        store
+            .set_tab_positions("s1", &["t2".to_string(), "slot-1".to_string()])
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        assert_eq!(
+            positions(&store, "s1"),
+            vec![("t2".to_string(), 0), ("slot-1".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn set_tab_positions_writes_every_position_or_none() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+        let mut other = test_session("s2", now, now);
+        other.slot_tab_id = "slot-2".to_string();
+        store.create_session(&other).unwrap();
+
+        let err = store.set_tab_positions(
+            "s1",
+            &["t2".to_string(), "slot-1".to_string(), "slot-2".to_string()],
+        );
+
+        assert!(err.is_err(), "another agent's tab cannot be placed");
+        assert_eq!(
+            positions(&store, "s1"),
+            vec![("slot-1".to_string(), 0), ("t2".to_string(), 1)],
+            "the failed write rolled the earlier positions back"
+        );
+    }
+
+    #[test]
+    fn migration_is_a_no_op_on_a_second_run() {
+        let store = test_store();
+        pre_pivot_session(&store, "s1", "claude");
+        store.migrate().unwrap();
+        let pointer = slot_pointer(&store, "s1").unwrap();
+        let before = store.load_agent_tabs().unwrap();
+
+        store.migrate().unwrap();
+
+        assert_eq!(slot_pointer(&store, "s1").unwrap(), pointer);
+        let after = store.load_agent_tabs().unwrap();
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after[0].id, before[0].id);
+    }
+
+    #[test]
+    fn a_failed_slot_tab_migration_aborts_the_open_rather_than_half_migrating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.sqlite3");
+        {
+            let store = SessionStore::open(&path).unwrap();
+            pre_pivot_session(&store, "s1", "claude");
+            // A corrupted `agent_tabs` the minting INSERT cannot satisfy. The
+            // table already exists, so `create table if not exists` leaves it
+            // alone and the migration's INSERT is the thing that fails.
+            store
+                .conn
+                .execute_batch(
+                    "drop table agent_tabs; \
+                     create table agent_tabs ( \
+                        id text primary key, \
+                        session_id text not null, \
+                        provider text not null, \
+                        sort_order integer not null default 0, \
+                        created_at text not null, \
+                        unsatisfiable text not null \
+                     );",
+                )
+                .unwrap();
+        }
+
+        let Err(err) = SessionStore::open(&path) else {
+            panic!("a failed migration must stop startup")
+        };
+        assert!(
+            format!("{err:#}").contains("slot tab"),
+            "the failure must name what could not be migrated, got: {err:#}"
+        );
+        let conn = Connection::open(&path).unwrap();
+        let pointer: Option<String> = conn
+            .query_row(
+                "select slot_tab_id from agent_sessions where id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pointer, None, "a failed migration leaves nothing behind");
+    }
+
+    /// A worker's connection to the live database repairs nothing: the state
+    /// a start-up repair would act on is left for the code that owns it.
+    #[test]
+    fn a_live_open_runs_no_start_up_repair() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.sqlite3");
+        let store = SessionStore::open(&path).unwrap();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+        store.delete_agent_tab("slot-1").unwrap();
+
+        drop(SessionStore::open_live(&path).unwrap());
+
+        assert_eq!(slot_pointer(&store, "s1").as_deref(), Some("slot-1"));
+        assert_eq!(
+            store.count_agent_tabs("s1").unwrap(),
+            1,
+            "the extra tab stays an extra"
+        );
+    }
+
+    #[test]
+    fn migrate_heals_a_pointer_that_names_no_row_by_adopting_the_oldest_tab() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        session.provider = crate::model::ProviderKind::new("claude");
+        store.create_session(&session).unwrap();
+        // `test_tab` builds codex tabs, so the adopted tab's provider differs
+        // from the vanished slot tab's.
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+        store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
+        // The slot row vanished without the pointer moving with it.
+        store.delete_agent_tab("slot-1").unwrap();
+
+        store.migrate().unwrap();
+
+        assert_eq!(
+            slot_pointer(&store, "s1").as_deref(),
+            Some("t2"),
+            "the oldest surviving tab takes the slot"
+        );
+        assert_eq!(
+            store.load_sessions().unwrap()[0].provider.as_str(),
+            "codex",
+            "the session's provider mirror must follow the slot it now points at"
+        );
+    }
+
+    #[test]
+    fn migrate_treats_a_blank_pointer_the_same_as_a_missing_one_and_mints() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+        // A hand-edited row, or one written by a build that spelled "no pointer
+        // yet" as the empty string.
+        store
+            .conn
+            .execute(
+                "update agent_sessions set slot_tab_id = '' where id = 's1'",
+                [],
+            )
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        let pointer = slot_pointer(&store, "s1").expect("healed");
+        assert!(
+            pointer != "t2" && pointer != "slot-1",
+            "a blank pointer means unmigrated, so a fresh first tab is minted \
+             rather than tab 2 being adopted, got {pointer}"
+        );
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 3);
+    }
+
+    #[test]
+    fn migrate_treats_a_pointer_at_another_sessions_tab_as_dangling() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut first = test_session("s1", now, now);
+        first.slot_tab_id = "slot-1".to_string();
+        store.create_session(&first).unwrap();
+        let mut second = test_session("s2", now, now);
+        second.slot_tab_id = "slot-2".to_string();
+        store.create_session(&second).unwrap();
+        // s1's slot now names a tab that lives in s2's strip.
+        store
+            .conn
+            .execute(
+                "update agent_sessions set slot_tab_id = 'slot-2' where id = 's1'",
+                [],
+            )
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        assert_eq!(
+            slot_pointer(&store, "s1").as_deref(),
+            Some("slot-1"),
+            "a pointer into another agent's tabs is dangling, so s1 adopts its \
+             own oldest tab"
+        );
+        assert_eq!(
+            slot_pointer(&store, "s2").as_deref(),
+            Some("slot-2"),
+            "the other agent is untouched"
+        );
+    }
+
+    #[test]
+    fn upserting_a_pre_pivot_session_still_leaves_its_first_tab_to_be_minted() {
+        let store = test_store();
+        pre_pivot_session(&store, "s1", "claude");
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+        store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
+
+        // The commonest write there is: load the agent, then re-upsert it on a
+        // status change. The loaded record carries the read path's stand-in
+        // pointer; storing it would turn "not migrated" into "dangling".
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded.len(), 1);
+        store.upsert_session(&loaded[0]).unwrap();
+
+        store.migrate().unwrap();
+
+        assert_eq!(
+            store.count_agent_tabs("s1").unwrap(),
+            3,
+            "the agent's first tab must be minted, leaving its three tabs intact"
+        );
+        let pointer = slot_pointer(&store, "s1").expect("migrated");
+        assert!(
+            pointer != "t2" && pointer != "t3" && pointer != "s1",
+            "the minted tab takes the slot, not an existing tab, got {pointer}"
+        );
+    }
+
+    #[test]
+    fn migrate_heals_a_dangling_pointer_with_no_tabs_left_by_minting_one() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        session.provider = crate::model::ProviderKind::new("codex");
+        store.create_session(&session).unwrap();
+        store.delete_agent_tab("slot-1").unwrap();
+
+        store.migrate().unwrap();
+
+        let pointer = slot_pointer(&store, "s1").expect("healed");
+        assert_ne!(pointer, "slot-1");
+        let tabs = store.load_agent_tabs().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].id, pointer);
+        assert_eq!(tabs[0].provider.as_str(), "codex");
+    }
+
+    /// Two connections opening the same database on the first boot after an
+    /// upgrade: the second holds the write lock having already given `s1` its
+    /// first tab, and commits only after the first had time to look. The one
+    /// that waited must see what the other wrote rather than mint a second
+    /// first tab.
+    #[test]
+    fn a_slot_tab_backfill_waiting_on_another_connection_mints_nothing_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.sqlite3");
+        let store = SessionStore::open(&path).unwrap();
+        pre_pivot_session(&store, "s1", "claude");
+        let other = Connection::open(&path).unwrap();
+        let tx = immediate_tx(&other).unwrap();
+        tx.execute(
+            "insert into agent_tabs (id, session_id, provider, sort_order, created_at) \
+             values ('other-tab', 's1', 'claude', 0, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        tx.execute(
+            "update agent_sessions set slot_tab_id = 'other-tab' where id = 's1'",
+            [],
+        )
+        .unwrap();
+
+        let waiting = std::thread::spawn(move || {
+            store.backfill_slot_tabs().unwrap();
+            store
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        tx.commit().unwrap();
+        let store = waiting.join().unwrap();
+
+        let tabs: i64 = store
+            .conn
+            .query_row(
+                "select count(*) from agent_tabs where session_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tabs, 1);
+    }
+
+    #[test]
+    fn deleting_a_session_removes_its_slot_tab_row_with_the_rest() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+
+        store.delete_session("s1").unwrap();
+
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 0);
+        assert!(store.load_agent_tabs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_slot_provider_moves_the_row_and_the_session_mirror_together() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        session.provider = crate::model::ProviderKind::new("claude");
+        store.create_session(&session).unwrap();
+
+        store.set_slot_provider("s1", "codex", Utc::now()).unwrap();
+
+        assert_eq!(store.load_sessions().unwrap()[0].provider.as_str(), "codex");
+        assert_eq!(
+            store.load_agent_tabs().unwrap()[0].provider.as_str(),
+            "codex"
+        );
+    }
+
+    /// The shape every promotion test starts from: an agent whose slot tab is
+    /// `slot-1` and which has one extra tab, `t2`.
+    fn session_with_one_extra_tab(store: &SessionStore) {
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        session.provider = crate::model::ProviderKind::new("claude");
+        store.create_session(&session).unwrap();
+        let mut extra = test_tab("t2", "s1", 1);
+        extra.provider = crate::model::ProviderKind::new("codex");
+        store.insert_agent_tab(&extra).unwrap();
+    }
+
+    #[test]
+    fn promote_tab_to_slot_moves_the_pointer_the_mirror_and_the_old_row_at_once() {
+        let store = test_store();
+        session_with_one_extra_tab(&store);
+
+        store
+            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+            .unwrap();
+
+        let session = store.load_sessions().unwrap().remove(0);
+        assert_eq!(session.slot_tab_id, "t2", "the pointer names the successor");
+        assert_eq!(
+            session.provider.as_str(),
+            "codex",
+            "the session's provider mirrors the promoted tab's"
+        );
+        let tabs = store.load_agent_tabs().unwrap();
+        assert_eq!(
+            tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec!["t2"],
+            "the closed slot tab's row is gone and the promoted row survives"
+        );
+    }
+
+    #[test]
+    fn promote_tab_to_slot_restores_the_same_shape_on_reload() {
+        // The invariant a restart depends on: after a promotion the store reads
+        // back with the promoted tab in the slot and NOT among the extras, and
+        // the cap counts each surviving tab exactly once.
+        let store = test_store();
+        session_with_one_extra_tab(&store);
+        store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
+
+        store
+            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+            .unwrap();
+
+        assert_eq!(store.load_sessions().unwrap()[0].slot_tab_id, "t2");
+        let extras: Vec<String> = store
+            .load_extra_agent_tabs()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(
+            extras,
+            vec!["t3".to_string()],
+            "the promoted tab is the slot, so it is not an extra as well"
+        );
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 2);
+    }
+
+    #[test]
+    fn promote_tab_to_slot_forgets_a_focus_memory_the_promotion_invalidated() {
+        // The slot tab is represented in the focus memory as absence, so a
+        // memory naming the promoted tab must not survive the promotion; one
+        // naming the departing tab must not survive its deletion either.
+        for remembered in ["t2", "slot-1"] {
+            let store = test_store();
+            session_with_one_extra_tab(&store);
+            store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
+            store.set_last_focused_tab("s1", Some(remembered)).unwrap();
+
+            store
+                .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+                .unwrap();
+
+            assert_eq!(
+                store.load_sessions().unwrap()[0].last_focused_tab,
+                None,
+                "a memory of {remembered} cannot outlive this promotion"
+            );
+        }
+
+        // A memory of an untouched sibling is left exactly as it was.
+        let store = test_store();
+        session_with_one_extra_tab(&store);
+        store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
+        store.set_last_focused_tab("s1", Some("t3")).unwrap();
+        store
+            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+            .unwrap();
+        assert_eq!(
+            store.load_sessions().unwrap()[0].last_focused_tab,
+            Some("t3".to_string())
+        );
+    }
+
+    #[test]
+    fn promote_tab_to_slot_refuses_a_tab_belonging_to_another_agent() {
+        let store = test_store();
+        session_with_one_extra_tab(&store);
+        let now = Utc::now();
+        let mut other = test_session("s2", now, now);
+        other.slot_tab_id = "s2-slot".to_string();
+        store.create_session(&other).unwrap();
+        store
+            .insert_agent_tab(&test_tab("foreign", "s2", 1))
+            .unwrap();
+
+        assert!(
+            store
+                .promote_tab_to_slot("s1", "foreign", "slot-1", "codex", Utc::now())
+                .is_err()
+        );
+
+        let session = store.load_sessions().unwrap();
+        let s1 = session.iter().find(|s| s.id == "s1").unwrap();
+        assert_eq!(s1.slot_tab_id, "slot-1", "the pointer must not have moved");
+        assert_eq!(s1.provider.as_str(), "claude", "nor the mirror");
+        assert_eq!(
+            store.count_agent_tabs("s1").unwrap(),
+            2,
+            "nor may the old slot row have been deleted"
+        );
+    }
+
+    #[test]
+    fn promote_tab_to_slot_refuses_a_tab_that_does_not_exist() {
+        let store = test_store();
+        session_with_one_extra_tab(&store);
+
+        assert!(
+            store
+                .promote_tab_to_slot("s1", "ghost", "slot-1", "codex", Utc::now())
+                .is_err()
+        );
+        assert_eq!(store.load_sessions().unwrap()[0].slot_tab_id, "slot-1");
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 2);
+    }
+
+    #[test]
+    fn promote_tab_to_slot_rolls_the_pointer_back_when_the_old_row_cannot_be_deleted() {
+        // Atomicity under storage failure: the pointer move and the old row's
+        // deletion are one transaction, so a failure on the second half must not
+        // leave the agent pointing at a tab whose predecessor is still a row.
+        // A trigger injects the failure deterministically, which is the only way
+        // to fail a DELETE that would otherwise always succeed.
+        let store = test_store();
+        session_with_one_extra_tab(&store);
+        store
+            .conn
+            .execute_batch(
+                "create trigger refuse_tab_delete before delete on agent_tabs \
+                 begin select raise(abort, 'no deletes today'); end",
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+                .is_err()
+        );
+
+        let session = store.load_sessions().unwrap().remove(0);
+        assert_eq!(session.slot_tab_id, "slot-1");
+        assert_eq!(session.provider.as_str(), "claude");
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 2);
+    }
+
+    #[test]
+    fn count_agent_tabs_counts_the_slot_row_too_and_extras_omit_it() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("s1", now, now);
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store.insert_agent_tab(&test_tab("t2", "s1", 1)).unwrap();
+
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 2);
+        let extras: Vec<String> = store
+            .load_extra_agent_tabs()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(extras, vec!["t2".to_string()]);
+    }
+
+    #[test]
+    fn last_seen_version_round_trips_through_a_real_database_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+
+        // A brand new database has never seen a version: that is what makes the
+        // very first launch show the welcome screen.
+        {
+            let store = SessionStore::open(&db).unwrap();
+            assert_eq!(store.last_seen_version().unwrap(), None);
+            store.set_last_seen_version("v0.6.0").unwrap();
+            assert_eq!(
+                store.last_seen_version().unwrap(),
+                Some("v0.6.0".to_string())
+            );
+            // Setting it again replaces rather than duplicating (upsert on the key).
+            store.set_last_seen_version("v0.7.0").unwrap();
+            assert_eq!(
+                store.last_seen_version().unwrap(),
+                Some("v0.7.0".to_string())
+            );
+        }
+
+        // Reopening the SAME file keeps the value: dismissing on one surface is
+        // remembered by the other, and across restarts.
+        {
+            let store = SessionStore::open(&db).unwrap();
+            assert_eq!(
+                store.last_seen_version().unwrap(),
+                Some("v0.7.0".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn the_instance_id_is_kept_by_its_database_and_differs_between_databases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+        let first = SessionStore::open(&db).unwrap().instance_id().unwrap();
+        let reopened = SessionStore::open(&db).unwrap().instance_id().unwrap();
+        assert_eq!(first, reopened, "a restart must report the same yaran");
+        let other = tmp.path().join("other.sqlite3");
+        let elsewhere = SessionStore::open(&other).unwrap().instance_id().unwrap();
+        assert_ne!(first, elsewhere, "another database is another yaran");
+    }
+
+    #[test]
+    fn app_state_is_a_generic_key_value_table() {
+        let store = test_store();
+        assert_eq!(store.app_state("nope").unwrap(), None);
+        store.set_app_state("k", "v").unwrap();
+        store.set_app_state("other", "w").unwrap();
+        assert_eq!(store.app_state("k").unwrap(), Some("v".to_string()));
+        assert_eq!(store.app_state("other").unwrap(), Some("w".to_string()));
+        // Keys are independent and values are replaced in place.
+        store.set_app_state("k", "v2").unwrap();
+        assert_eq!(store.app_state("k").unwrap(), Some("v2".to_string()));
+        assert_eq!(store.app_state("other").unwrap(), Some("w".to_string()));
+    }
+
+    #[test]
+    fn migrate_is_idempotent_for_app_state() {
+        // `migrate()` runs on every open; a second open must not fail or wipe
+        // the row (there is no migration-versioning table in this project).
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+        SessionStore::open(&db)
+            .unwrap()
+            .set_app_state("k", "v")
+            .unwrap();
+        let store = SessionStore::open(&db).unwrap();
+        assert_eq!(store.app_state("k").unwrap(), Some("v".to_string()));
+    }
+
+    /// An agent's pull request as the sync would first record it.
+    fn agent_pr(owner_repo: &str, number: u64) -> crate::model::AgentPr {
+        crate::model::AgentPr::found(
+            &crate::model::PrInfo {
+                number,
+                title: format!("PR {number}"),
+                host: "github.com".to_string(),
+                owner_repo: owner_repo.to_string(),
+                url: format!("https://github.com/{owner_repo}/pull/{number}"),
+                ..crate::model::PrInfo::default()
+            },
+            Utc::now(),
+        )
+    }
+
+    /// How many rows `table` holds for `session_id`.
+    fn rows_for(store: &SessionStore, table: &str, session_id: &str) -> i64 {
+        store
+            .conn
+            .query_row(
+                &format!("select count(*) from {table} where session_id = ?1"),
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Give `session_id` a row in every table that holds pull-request state,
+    /// the one-pull-request tables an older yaran wrote included.
+    fn seed_every_pr_table(store: &SessionStore, session_id: &str) {
+        store
+            .replace_agent_prs(
+                session_id,
+                &[agent_pr("o/r", 7)],
+                &crate::model::PrPrefs {
+                    sort_mode: crate::pr_list::PrSortMode::Manual,
+                    hide_created_before: None,
+                },
+            )
+            .unwrap();
+        store
+            .conn
+            .execute_batch(&format!(
+                "insert into session_prs (session_id, pr_number, owner_repo) \
+                 values ('{session_id}', 7, 'o/r'); \
+                 insert into session_pr_overrides (session_id, host, owner_repo, pr_number) \
+                 values ('{session_id}', 'github.com', 'o/r', 7); \
+                 insert into session_pr_suppressions (session_id) values ('{session_id}'); \
+                 insert into session_branch_former_names \
+                 (session_id, branch_name, former_name, renamed_at) \
+                 values ('{session_id}', 'now', 'before', '2026-01-01T00:00:00Z');"
+            ))
+            .unwrap();
+    }
+
+    const PR_TABLES: [&str; 6] = [
+        "session_pull_requests",
+        "session_pr_prefs",
+        "session_branch_former_names",
+        "session_prs",
+        "session_pr_overrides",
+        "session_pr_suppressions",
+    ];
+
+    #[test]
+    fn next_changes_rev_increments_and_persists_across_reopen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+
+        // First run: the counter starts at 1 and strictly increases per session,
+        // independently per session id.
+        {
+            let store = SessionStore::open(&db).unwrap();
+            assert_eq!(store.next_changes_rev("s1").unwrap(), 1);
+            assert_eq!(store.next_changes_rev("s1").unwrap(), 2);
+            assert_eq!(store.next_changes_rev("s1").unwrap(), 3);
+            // A different session has its own independent counter.
+            assert_eq!(store.next_changes_rev("s2").unwrap(), 1);
+        }
+
+        // Reopen the SAME database file: the counter continues from its last
+        // value rather than resetting (persisted, monotonic across restarts).
+        {
+            let store = SessionStore::open(&db).unwrap();
+            assert_eq!(store.next_changes_rev("s1").unwrap(), 4);
+            assert_eq!(store.next_changes_rev("s2").unwrap(), 2);
+        }
+    }
+
+    #[test]
+    fn delete_session_removes_its_changes_rev_row() {
+        let store = test_store();
+        let now = Utc::now();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+        assert_eq!(store.next_changes_rev("s1").unwrap(), 1);
+        assert_eq!(store.next_changes_rev("s1").unwrap(), 2);
+
+        store.delete_session("s1").unwrap();
+
+        // The counter row was dropped, so a fresh session reusing the id starts
+        // back at 1 rather than continuing the deleted session's sequence.
+        assert_eq!(store.next_changes_rev("s1").unwrap(), 1);
+    }
+
+    #[test]
+    fn delete_session_also_removes_its_pull_request_rows() {
+        let store = test_store();
+        let now = Utc::now();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+        store.upsert_session(&test_session("s2", now, now)).unwrap();
+        seed_every_pr_table(&store, "s1");
+        seed_every_pr_table(&store, "s2");
+        store.set_minted_branch_rename("s1", "renamed").unwrap();
+
+        store.delete_session("s1").unwrap();
+
+        // The declared FK cascades never fire (PRAGMA foreign_keys is off), so
+        // the explicit deletes are what keep a later session reusing the id
+        // from inheriting pull requests, a detach or names it never had.
+        for table in PR_TABLES {
+            assert_eq!(rows_for(&store, table, "s1"), 0, "{table}");
+            assert_eq!(rows_for(&store, table, "s2"), 1, "{table} of another agent");
+        }
+        assert_eq!(
+            store.load_minted_branch_renames().unwrap(),
+            Vec::<(String, String)>::new()
+        );
+    }
+
+    #[test]
+    fn a_minted_branch_rename_is_read_for_its_own_session_only() {
+        let store = test_store();
+        let now = Utc::now();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+        store.upsert_session(&test_session("s2", now, now)).unwrap();
+        store.set_minted_branch_rename("s1", "renamed-1").unwrap();
+        store.set_minted_branch_rename("s2", "renamed-2").unwrap();
+
+        assert_eq!(
+            store.load_minted_branch_rename("s2").unwrap().as_deref(),
+            Some("renamed-2")
+        );
+        assert_eq!(store.load_minted_branch_rename("s3").unwrap(), None);
+    }
+
+    #[test]
+    fn remove_project_records_clears_project_sessions_and_prs_atomically() {
+        let store = test_store();
+        let now = Utc::now();
+        let p1 = ProjectConfig {
+            id: "p1".to_string(),
+            path: "/tmp/p1".to_string(),
+            name: Some("p1".to_string()),
+            default_provider: None,
+            leading_branch: None,
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: BTreeMap::new(),
+        };
+        let p2 = ProjectConfig {
+            id: "p2".to_string(),
+            path: "/tmp/p2".to_string(),
+            name: Some("p2".to_string()),
+            default_provider: None,
+            leading_branch: None,
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: BTreeMap::new(),
+        };
+        store.upsert_project(&p1).unwrap();
+        store.upsert_project(&p2).unwrap();
+        store
+            .upsert_session(&test_session_in("a", "p1", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("b", "p1", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("c", "p2", now, now))
+            .unwrap();
+        // Pull-request state for one of p1's sessions and for p2's, so the
+        // removal is proven to drop exactly its own project's rows.
+        seed_every_pr_table(&store, "a");
+        seed_every_pr_table(&store, "c");
+        store.set_minted_branch_rename("b", "renamed-b").unwrap();
+        store.set_minted_branch_rename("c", "renamed-c").unwrap();
+        // Advance a changed-files rev for one of p1's sessions so there is a
+        // `changes_rev` row to prove the bulk removal drops it too.
+        assert_eq!(store.next_changes_rev("a").unwrap(), 1);
+        assert_eq!(store.next_changes_rev("a").unwrap(), 2);
+
+        let removed = store.remove_project_records("p1").unwrap();
+
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"a".to_string()));
+        assert!(removed.contains(&"b".to_string()));
+        // Only p2's session survives; p1's sessions AND their PR rows are gone.
+        let remaining: Vec<String> = store
+            .load_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(remaining, vec!["c".to_string()]);
+        for table in PR_TABLES {
+            assert_eq!(rows_for(&store, table, "a"), 0, "{table}");
+            assert_eq!(
+                rows_for(&store, table, "c"),
+                1,
+                "{table} of the other project"
+            );
+        }
+        assert_eq!(
+            store.load_minted_branch_renames().unwrap(),
+            vec![("c".to_string(), "renamed-c".to_string())]
+        );
+        // The project row itself is deleted in the same transaction: only p2
+        // remains, so a removal cannot leave a row that reappears on restart.
+        let project_ids: Vec<String> = store
+            .load_projects()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(project_ids, vec!["p2".to_string()]);
+        // The deleted session's changes_rev row is gone: a fresh session reusing
+        // the id starts back at 1 rather than continuing the deleted sequence.
+        assert_eq!(store.next_changes_rev("a").unwrap(), 1);
+    }
+
+    #[test]
+    fn new_sessions_land_at_top_of_their_project() {
+        let store = test_store();
+        let now = Utc::now();
+
+        // Insert three sessions into the same project. Each new insert takes the
+        // top slot (sort_order = current min - 1), so the load order is the
+        // reverse of the insertion order regardless of updated_at.
+        let s1 = test_session("a", now - Duration::hours(3), now - Duration::hours(3));
+        let s2 = test_session("b", now - Duration::hours(2), now - Duration::hours(1));
+        let s3 = test_session("c", now - Duration::hours(1), now - Duration::hours(2));
+
+        store.upsert_session(&s1).unwrap();
+        store.upsert_session(&s2).unwrap();
+        store.upsert_session(&s3).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();
+
+        // Most recently inserted (c) is at the top, then b, then a.
+        assert_eq!(ids, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn upsert_existing_session_preserves_sort_order() {
+        let store = test_store();
+        let now = Utc::now();
+
+        let s1 = test_session("a", now - Duration::hours(2), now - Duration::hours(2));
+        let s2 = test_session("b", now - Duration::hours(1), now - Duration::hours(1));
+
+        store.upsert_session(&s1).unwrap();
+        store.upsert_session(&s2).unwrap();
+
+        // After two inserts the order is b (top), a. Re-upserting an existing
+        // session must NOT touch its sort_order (the on-conflict set omits it).
+        store.upsert_session(&s1).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn started_providers_round_trip() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("started", now, now);
+        session.started_providers = vec!["claude".to_string(), "codex".to_string()];
+
+        store.upsert_session(&session).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].started_providers,
+            vec!["claude".to_string(), "codex".to_string()]
+        );
+    }
+    #[test]
+    fn projects_round_trip_all_project_fields() {
+        let store = test_store();
+        let project = ProjectConfig {
+            id: "project-1".to_string(),
+            path: "$CODE/yaran".to_string(),
+            name: Some("yaran".to_string()),
+            default_provider: Some("codex".to_string()),
+            leading_branch: Some("main".to_string()),
+            auto_reopen_agents: Some(false),
+            startup_command: Some("npm install".to_string()),
+            env: BTreeMap::from([("EDITOR".to_string(), "true".to_string())]),
+        };
+
+        store.upsert_project(&project).unwrap();
+
+        let loaded = store.load_projects().unwrap();
+        assert_eq!(loaded, vec![project]);
+    }
+
+    #[test]
+    fn updating_a_project_base_rewrites_only_that_field() {
+        let store = test_store();
+        let project = ProjectConfig {
+            id: "project-1".to_string(),
+            path: "/repo".to_string(),
+            name: Some("yaran".to_string()),
+            default_provider: Some("codex".to_string()),
+            leading_branch: Some("feature".to_string()),
+            auto_reopen_agents: Some(false),
+            startup_command: Some("npm install".to_string()),
+            env: BTreeMap::from([("EDITOR".to_string(), "true".to_string())]),
+        };
+        store.upsert_project(&project).unwrap();
+
+        store
+            .update_project_leading_branch("project-1", "main")
+            .unwrap();
+
+        let loaded = store.load_projects().unwrap();
+        assert_eq!(
+            loaded,
+            vec![ProjectConfig {
+                leading_branch: Some("main".to_string()),
+                ..project
+            }]
+        );
+    }
+
+    #[test]
+    fn updating_the_base_of_a_project_that_is_not_there_is_an_error() {
+        let store = test_store();
+
+        let err = store
+            .update_project_leading_branch("no-such-project", "main")
+            .expect_err("a write that touched nothing must not read as saved");
+
+        assert!(format!("{err:#}").contains("no-such-project"), "{err:#}");
+    }
+
+    #[test]
+    fn project_path_conflict_keeps_existing_id() {
+        let store = test_store();
+        store
+            .upsert_project(&ProjectConfig {
+                id: "stable-id".to_string(),
+                path: "/repo".to_string(),
+                name: Some("old".to_string()),
+                default_provider: None,
+                leading_branch: Some("main".to_string()),
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::default(),
+            })
+            .unwrap();
+
+        store
+            .upsert_project(&ProjectConfig {
+                id: "new-id".to_string(),
+                path: "/repo".to_string(),
+                name: Some("new".to_string()),
+                default_provider: Some("claude".to_string()),
+                leading_branch: Some("trunk".to_string()),
+                auto_reopen_agents: Some(false),
+                startup_command: Some("echo setup".to_string()),
+                env: BTreeMap::from([("API_KEY".to_string(), "${FOO_API_KEY}".to_string())]),
+            })
+            .unwrap();
+
+        let loaded = store.load_projects().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "stable-id");
+        assert_eq!(loaded[0].name.as_deref(), Some("new"));
+        assert_eq!(loaded[0].default_provider.as_deref(), Some("claude"));
+        assert_eq!(loaded[0].leading_branch.as_deref(), Some("trunk"));
+        assert_eq!(loaded[0].auto_reopen_agents, Some(false));
+        assert_eq!(loaded[0].startup_command.as_deref(), Some("echo setup"));
+        assert_eq!(
+            loaded[0].env.get("API_KEY").map(String::as_str),
+            Some("${FOO_API_KEY}")
+        );
+    }
+
+    #[test]
+    fn auto_reopen_fields_round_trip() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut session = test_session("auto", now, now);
+        session.desired_running = true;
+        session.auto_reopen_enabled = false;
+
+        store.upsert_session(&session).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].desired_running);
+        assert!(!loaded[0].auto_reopen_enabled);
+
+        store
+            .set_auto_reopen_enabled("auto", crate::model::AutoReopen::Enabled)
+            .unwrap();
+        store
+            .set_desired_running("auto", crate::model::DesiredRunning::Stopped)
+            .unwrap();
+        let loaded = store.load_sessions().unwrap();
+        assert!(!loaded[0].desired_running);
+        assert!(loaded[0].auto_reopen_enabled);
+    }
+
+    #[test]
+    fn last_focused_tab_is_null_on_a_fresh_row_and_round_trips_through_the_setter() {
+        let store = test_store();
+        let now = Utc::now();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+
+        // Fresh row: NULL, i.e. "no memory recorded".
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded[0].last_focused_tab, None);
+
+        store.set_last_focused_tab("s1", Some("t1")).unwrap();
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded[0].last_focused_tab.as_deref(), Some("t1"));
+
+        // Setting None clears it back to NULL.
+        store.set_last_focused_tab("s1", None).unwrap();
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded[0].last_focused_tab, None);
+    }
+
+    #[test]
+    fn last_focused_tab_survives_upsert_session_status_churn() {
+        // Locks in the "omit from SET/INSERT lists" decision: re-upserting an
+        // existing session (simulating a status change or config-reload churn)
+        // must never clobber a previously remembered focused tab, exactly like
+        // `sort_order`.
+        let store = test_store();
+        let now = Utc::now();
+        let session = test_session("s1", now, now);
+        store.upsert_session(&session).unwrap();
+        store.set_last_focused_tab("s1", Some("t1")).unwrap();
+
+        // Re-upsert with an unrelated field changed, like a status transition.
+        let mut churned = session;
+        churned.status = SessionStatus::Detached;
+        churned.updated_at = Utc::now();
+        store.upsert_session(&churned).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded[0].last_focused_tab.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn last_focused_tab_column_migration_is_idempotent() {
+        let store = test_store();
+        // migrate() ran in open(); a second migrate is a no-op and the column
+        // stays present and nullable.
+        store.migrate().unwrap();
+        store
+            .upsert_session(&test_session("s1", Utc::now(), Utc::now()))
+            .unwrap();
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].last_focused_tab, None);
+    }
+
+    #[test]
+    fn auto_reopen_fields_migrate_from_old_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r"
+            create table agent_sessions (
+                id text primary key,
+                project_id text not null,
+                provider text not null,
+                source_branch text not null,
+                branch_name text not null,
+                worktree_path text not null,
+                title text,
+                project_path text,
+                status text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+            insert into agent_sessions (
+                id, project_id, provider, source_branch, branch_name,
+                worktree_path, title, project_path, status, created_at, updated_at
+            ) values (
+                'old', 'proj', 'claude', 'main', 'agent', '/tmp/agent',
+                null, null, 'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            );
+            ",
+        )
+        .unwrap();
+
+        let store = SessionStore { conn };
+        store.migrate().unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(!loaded[0].desired_running);
+        assert!(loaded[0].auto_reopen_enabled);
+    }
+
+    #[test]
+    fn initial_branch_round_trips_through_storage() {
+        let store = test_store();
+        let now = Utc::now();
+        let mut s = test_session("id1", now, now);
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_name = "renamed".into();
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .initial_branch = "born-on".into();
+        store.upsert_session(&s).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let got = loaded.iter().find(|s| s.id == "id1").expect("stored id1");
+        assert_eq!(
+            got.initial_branch().expect("managed test session"),
+            "born-on"
+        );
+        assert_eq!(got.branch_name().expect("managed test session"), "renamed");
+    }
+
+    #[test]
+    fn branch_provenance_round_trips_through_storage() {
+        let store = test_store();
+        let now = Utc::now();
+        let cases = [
+            ("created", crate::model::BranchProvenance::CreatedByYaran),
+            ("attached", crate::model::BranchProvenance::AttachedExisting),
+            ("adopted", crate::model::BranchProvenance::Adopted),
+        ];
+        for (id, provenance) in cases {
+            let mut s = test_session(id, now, now);
+            s.workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .branch_provenance = provenance;
+            store.upsert_session(&s).unwrap();
+        }
+
+        let loaded = store.load_sessions().unwrap();
+        for (id, provenance) in cases {
+            let got = loaded.iter().find(|s| s.id == id).expect("stored row");
+            assert_eq!(
+                got.branch_provenance().expect("managed test session"),
+                provenance
+            );
+        }
+    }
+
+    #[test]
+    fn branch_provenance_survives_a_re_upsert_of_an_existing_session() {
+        // Provenance is decided once, at creation. An UPDATE that could rewrite
+        // it is an UPDATE that could turn the user's pre-existing branch into
+        // one yaran believes it owns and force-deletes on the next delete, so the
+        // column is deliberately absent from `upsert_session`'s SET list.
+        let store = test_store();
+        let now = Utc::now();
+        let mut s = test_session("id1", now, now);
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_provenance = crate::model::BranchProvenance::AttachedExisting;
+        store.upsert_session(&s).unwrap();
+
+        // A later status-churn upsert claiming the branch is yaran's must not stick.
+        s.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_provenance = crate::model::BranchProvenance::CreatedByYaran;
+        s.status = SessionStatus::Detached;
+        store.upsert_session(&s).unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let got = loaded.iter().find(|s| s.id == "id1").expect("stored id1");
+        assert_eq!(
+            got.branch_provenance().expect("managed test session"),
+            crate::model::BranchProvenance::AttachedExisting,
+            "re-upserting a session must never rewrite its recorded provenance"
+        );
+        assert_eq!(
+            got.status,
+            SessionStatus::Detached,
+            "the rest still updates"
+        );
+    }
+
+    #[test]
+    fn legacy_rows_arrive_as_created_by_yaran() {
+        // The migration default preserves exactly today's behavior for agents
+        // that predate the column: their branches are still cleaned up.
+        let store = legacy_store_with_sessions(&[("feat-x", "p1", "2026-01-01T00:00:00Z")]);
+        let loaded = store.load_sessions().unwrap();
+        let s = loaded.iter().find(|s| s.id == "feat-x").expect("row");
+        assert_eq!(
+            s.branch_provenance().expect("managed test session"),
+            crate::model::BranchProvenance::CreatedByYaran
+        );
+    }
+
+    #[test]
+    fn adding_the_branch_provenance_column_twice_is_a_no_op() {
+        let store = test_store();
+        // `migrate()` runs on every open(); the second ALTER must be tolerated.
+        store.migrate().unwrap();
+        assert!(
+            !ensure_column(
+                &store.conn,
+                "agent_sessions",
+                "branch_provenance",
+                "text not null default 'created'"
+            )
+            .unwrap(),
+            "the column already exists, so ensure_column must report no change"
+        );
+    }
+
+    #[test]
+    fn an_unknown_provenance_value_is_not_treated_as_created() {
+        // A future binary may write a variant this one has never heard of.
+        // Guessing "yaran made it" would force-delete a branch on that guess.
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session("id1", now, now))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "update agent_sessions set branch_provenance = 'borrowed-from-the-future'",
+                [],
+            )
+            .unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        assert!(
+            !loaded[0].workspace.yaran_may_delete_branch(),
+            "an unrecognized provenance must keep the branch"
+        );
+    }
+
+    #[test]
+    fn migration_backfills_null_titles_from_branch_name() {
+        // A legacy row inserted the old way (title NULL) gets its title frozen to
+        // the current branch on open, so the displayed name can never drift.
+        let store = legacy_store_with_sessions(&[("feat-x", "p1", "2026-01-01T00:00:00Z")]);
+        let loaded = store.load_sessions().unwrap();
+        let s = loaded.iter().find(|s| s.id == "feat-x").expect("row");
+        // legacy_store_with_sessions sets branch_name == id.
+        assert_eq!(s.title.as_deref(), Some("feat-x"));
+    }
+
+    #[test]
+    fn migration_backfills_initial_branch_from_branch_name() {
+        // A legacy row predating the initial_branch column has it backfilled to
+        // the current branch (the best available birth branch).
+        let store = legacy_store_with_sessions(&[("feat-x", "p1", "2026-01-01T00:00:00Z")]);
+        let loaded = store.load_sessions().unwrap();
+        let s = loaded.iter().find(|s| s.id == "feat-x").expect("row");
+        assert_eq!(s.initial_branch().expect("managed test session"), "feat-x");
+    }
+
+    #[test]
+    fn second_migrate_does_not_freeze_a_null_title_inserted_after_upgrade() {
+        // Regression: the title/initial_branch backfills must run EXACTLY ONCE
+        // (when the initial_branch column is first added), not on every open().
+        // A store built by legacy_store_with_sessions has already migrated once,
+        // so the initial_branch column now exists. Insert a fresh auto-named
+        // agent (title NULL, intentionally, so its display tracks the branch),
+        // then migrate() again (simulating a later startup / config reload). The
+        // second migration must NOT re-run the backfill and freeze the NULL title.
+        let store = legacy_store_with_sessions(&[("feat-x", "p1", "2026-01-01T00:00:00Z")]);
+        let mut fresh = test_session("auto-named", Utc::now(), Utc::now());
+        fresh
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .project_id = "p1".into();
+        fresh
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .branch_name = "pet-name".into();
+        fresh.title = None;
+        store.upsert_session(&fresh).unwrap();
+
+        // A second open()/migrate() must be a no-op for the backfills.
+        store.migrate().unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let s = loaded.iter().find(|s| s.id == "auto-named").expect("row");
+        assert_eq!(
+            s.title, None,
+            "a NULL title inserted after the one-time upgrade must not be frozen"
+        );
+    }
+
+    #[test]
+    fn migrate_self_heals_a_stranded_empty_initial_branch() {
+        // A row left with initial_branch='' (e.g. stranded by a crash between the
+        // ALTER and the backfill, or a downgrade→re-upgrade window) must be
+        // self-healed by the idempotent, ungated backfill on the next migrate().
+        let store = legacy_store_with_sessions(&[("feat-x", "p1", "2026-01-01T00:00:00Z")]);
+        // Force the stranded state directly, bypassing normal inserts.
+        store
+            .conn
+            .execute(
+                "update agent_sessions set initial_branch = '' where id = 'feat-x'",
+                [],
+            )
+            .unwrap();
+
+        store.migrate().unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let s = loaded.iter().find(|s| s.id == "feat-x").expect("row");
+        assert_eq!(
+            s.initial_branch().expect("managed test session"),
+            "feat-x",
+            "an empty initial_branch must be self-healed to branch_name on migrate()"
+        );
+    }
+
+    #[test]
+    fn ensure_column_returns_false_when_column_already_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("create table t (id text primary key, extra text);")
+            .unwrap();
+        assert!(
+            !ensure_column(&conn, "t", "extra", "text").unwrap(),
+            "an existing column must report Ok(false)"
+        );
+        // And adding a genuinely new column reports Ok(true).
+        assert!(ensure_column(&conn, "t", "brand_new", "text").unwrap());
+    }
+
+    #[test]
+    fn duplicate_column_error_is_classified() {
+        // Exercise the concurrent-add tolerance path: a raw ALTER on an existing
+        // column raises SQLite's "duplicate column name" error, which
+        // ensure_column swallows as Ok(false).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("create table t (id text primary key, extra text);")
+            .unwrap();
+        let err = conn
+            .execute("alter table t add column extra text", [])
+            .unwrap_err();
+        assert!(
+            is_duplicate_column_error(&err),
+            "expected a duplicate-column classification, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ensure_column_tolerates_column_added_by_another_connection() {
+        // Cross-connection duplicate-column tolerance (the real-world race the
+        // autocommit ALTER guards against): once one connection has committed
+        // the column, a SECOND connection's ensure_column must report Ok(false)
+        // and not error. This is the on-disk two-connection variant of the
+        // concurrent first-boot add.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("t.sqlite3");
+        let conn1 = Connection::open(&db).unwrap();
+        conn1
+            .execute_batch("create table t (id text primary key);")
+            .unwrap();
+        assert!(
+            ensure_column(&conn1, "t", "c", "text").unwrap(),
+            "first add"
+        );
+
+        let conn2 = Connection::open(&db).unwrap();
+        assert!(
+            !ensure_column(&conn2, "t", "c", "text").unwrap(),
+            "a second connection must tolerate the already-present column as Ok(false)"
+        );
+    }
+
+    #[test]
+    fn reopening_same_db_file_remigrates_cleanly() {
+        // With the initial_branch ALTER moved to autocommit,
+        // re-opening the same on-disk DB re-runs migrate() and every
+        // ensure_column hits already-present without hard-failing open().
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+        {
+            let _s = SessionStore::open(&db).unwrap();
+        }
+        // A second open() must succeed (no SQLITE_BUSY_SNAPSHOT / duplicate-column
+        // hard failure on the re-run migration).
+        let _s = SessionStore::open(&db).unwrap();
+    }
+
+    #[test]
+    fn migrate_reheals_stranded_all_zero_sort_order() {
+        // A crash between the (autocommitted) sort_order ALTER and
+        // its backfill strands every row at 0. The previous gating (only when
+        // ensure_column just added the column) skipped the backfill forever on
+        // the next boot. Now migrate() detects the stranded fingerprint (a
+        // project with 2+ sessions all at 0) and re-runs the backfill.
+        let store = legacy_store_with_sessions(&[
+            ("p1-old", "p1", "2026-01-01T00:00:00Z"),
+            ("p1-new", "p1", "2026-03-01T00:00:00Z"),
+        ]);
+        // Simulate the stranded half-migration: column present, all rows at 0.
+        store
+            .conn
+            .execute("update agent_sessions set sort_order = 0", [])
+            .unwrap();
+        assert!(
+            SessionStore::session_sort_order_needs_backfill(&store.conn).unwrap(),
+            "two same-project sessions both at 0 must read as stranded"
+        );
+
+        store.migrate().unwrap();
+
+        // The stored value changed (proving the backfill re-ran, not just the
+        // load-time all-zero fallback): older session sorts to position 1.
+        let so_old: i64 = store
+            .conn
+            .query_row(
+                "select sort_order from agent_sessions where id = 'p1-old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let so_new: i64 = store
+            .conn
+            .query_row(
+                "select sort_order from agent_sessions where id = 'p1-new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((so_new, so_old), (0, 1), "updated_at DESC → new=0, old=1");
+        // And once healed, the fingerprint no longer trips (no destructive re-run).
+        assert!(!SessionStore::session_sort_order_needs_backfill(&store.conn).unwrap());
+    }
+
+    /// A second connection reorders the agents and commits while this one is
+    /// waiting to backfill a stranded all-zero table. The backfill must judge
+    /// the table as it is once it holds the lock, and leave that reorder alone.
+    #[test]
+    fn a_position_backfill_waiting_on_another_connection_keeps_its_reorder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.sqlite3");
+        let store = SessionStore::open(&path).unwrap();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in("old", "p1", now, now - Duration::hours(2)))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("new", "p1", now, now - Duration::hours(1)))
+            .unwrap();
+        store
+            .conn
+            .execute("update agent_sessions set sort_order = 0", [])
+            .unwrap();
+        // Backfilled on its own, this table would be new=0, old=1.
+        let other = Connection::open(&path).unwrap();
+        let tx = immediate_tx(&other).unwrap();
+        tx.execute(
+            "update agent_sessions set sort_order = 0 where id = 'old'",
+            [],
+        )
+        .unwrap();
+        tx.execute(
+            "update agent_sessions set sort_order = 1 where id = 'new'",
+            [],
+        )
+        .unwrap();
+
+        let waiting = std::thread::spawn(move || {
+            store.backfill_session_sort_order().unwrap();
+            store
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        tx.commit().unwrap();
+        let store = waiting.join().unwrap();
+
+        let ids: Vec<String> = store
+            .load_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec!["old", "new"]);
+    }
+
+    #[test]
+    fn duplicate_sort_order_triggers_global_backfill_then_settles() {
+        // The flat model needs a GLOBAL total order. Two sessions in different
+        // projects both at sort_order 0 (legacy per-project numbering) is NOT a
+        // valid global order, so the backfill must run to give them distinct
+        // positions, then never re-run once globalized.
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in("solo-a", "pA", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("solo-b", "pB", now, now))
+            .unwrap();
+        store
+            .conn
+            .execute("update agent_sessions set sort_order = 0", [])
+            .unwrap();
+        assert!(
+            SessionStore::session_sort_order_needs_backfill(&store.conn).unwrap(),
+            "a shared sort_order is not a global total order"
+        );
+
+        store.backfill_session_sort_order().unwrap();
+        assert!(
+            !SessionStore::session_sort_order_needs_backfill(&store.conn).unwrap(),
+            "a globalized order is distinct and never re-runs"
+        );
+        let distinct: i64 = store
+            .conn
+            .query_row(
+                "select count(distinct sort_order) from agent_sessions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, 2, "every session gets a distinct global position");
+    }
+
+    #[test]
+    fn migration_never_overwrites_an_existing_non_null_title() {
+        // A legacy row that already carries a user-authored title must keep it
+        // through the one-time backfill (the `title IS NULL` guard protects it).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r"
+            create table agent_sessions (
+                id text primary key,
+                project_id text not null,
+                provider text not null,
+                source_branch text not null,
+                branch_name text not null,
+                worktree_path text not null,
+                title text,
+                project_path text,
+                status text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            r"
+            insert into agent_sessions (
+                id, project_id, provider, source_branch, branch_name,
+                worktree_path, title, project_path, status, created_at, updated_at
+            ) values ('id1', 'p1', 'claude', 'main', 'feat-x', '/tmp/x',
+                      'My Named Agent', null, 'detached',
+                      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+            ",
+            [],
+        )
+        .unwrap();
+        let store = SessionStore { conn };
+        store.migrate().unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        let s = loaded.iter().find(|s| s.id == "id1").expect("row");
+        assert_eq!(
+            s.title.as_deref(),
+            Some("My Named Agent"),
+            "an already-set title must never be overwritten by the backfill"
+        );
+    }
+
+    /// Builds a legacy `agent_sessions` table (no `sort_order` column) and seeds
+    /// it with rows so the migration's backfill has something to number.
+    fn legacy_store_with_sessions(rows: &[(&str, &str, &str)]) -> SessionStore {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r"
+            create table agent_sessions (
+                id text primary key,
+                project_id text not null,
+                provider text not null,
+                source_branch text not null,
+                branch_name text not null,
+                worktree_path text not null,
+                title text,
+                project_path text,
+                status text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+            ",
+        )
+        .unwrap();
+        for (id, project_id, updated_at) in rows {
+            conn.execute(
+                r"
+                insert into agent_sessions (
+                    id, project_id, provider, source_branch, branch_name,
+                    worktree_path, title, project_path, status, created_at, updated_at
+                ) values (?1, ?2, 'claude', 'main', ?1, '/tmp/x', null, null, 'detached', ?3, ?3)
+                ",
+                params![id, project_id, updated_at],
+            )
+            .unwrap();
+        }
+        let store = SessionStore { conn };
+        store.migrate().unwrap();
+        store
+    }
+
+    #[test]
+    fn migration_backfill_preserves_updated_at_desc_order_per_project() {
+        // Two projects, interleaved updated_at values. After backfill, each
+        // project's sessions must be numbered 0..n following updated_at DESC,
+        // and load_sessions (sort_order asc, updated_at desc) must reflect that.
+        let store = legacy_store_with_sessions(&[
+            ("p1-old", "p1", "2026-01-01T00:00:00Z"),
+            ("p1-new", "p1", "2026-03-01T00:00:00Z"),
+            ("p1-mid", "p1", "2026-02-01T00:00:00Z"),
+            ("p2-new", "p2", "2026-05-01T00:00:00Z"),
+            ("p2-old", "p2", "2026-04-01T00:00:00Z"),
+        ]);
+
+        let loaded = store.load_sessions().unwrap();
+        let ordered: Vec<(&str, &str)> = loaded
+            .iter()
+            .map(|s| (s.project_id().expect("managed test session"), s.id.as_str()))
+            .collect();
+
+        // Group the loaded ids by project and assert each project's internal
+        // order is updated_at DESC. (Cross-project interleaving in the global
+        // Vec is not meaningful: the UI groups by project.)
+        let p1: Vec<&str> = ordered
+            .iter()
+            .filter(|(p, _)| *p == "p1")
+            .map(|(_, id)| *id)
+            .collect();
+        let p2: Vec<&str> = ordered
+            .iter()
+            .filter(|(p, _)| *p == "p2")
+            .map(|(_, id)| *id)
+            .collect();
+        assert_eq!(p1, vec!["p1-new", "p1-mid", "p1-old"]);
+        assert_eq!(p2, vec!["p2-new", "p2-old"]);
+    }
+
+    #[test]
+    fn set_global_session_order_assigns_zero_to_n_positions() {
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in("a", "proj", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("b", "proj", now, now))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("c", "proj", now, now))
+            .unwrap();
+
+        // Reorder to a, b, c (explicitly) and confirm load order matches.
+        store
+            .set_global_session_order(&["a".into(), "b".into(), "c".into()])
+            .unwrap();
+        let ids: Vec<String> = store
+            .load_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+
+        // Reorder again to a different order; positions are reassigned 0..n.
+        store
+            .set_global_session_order(&["c".into(), "a".into(), "b".into()])
+            .unwrap();
+        let ids: Vec<String> = store
+            .load_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn set_global_session_order_does_not_touch_updated_at() {
+        let store = test_store();
+        let original = Utc::now() - chrono::Duration::hours(5);
+        store
+            .upsert_session(&test_session_in("a", "proj", original, original))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("b", "proj", original, original))
+            .unwrap();
+
+        store
+            .set_global_session_order(&["a".into(), "b".into()])
+            .unwrap();
+
+        let loaded = store.load_sessions().unwrap();
+        for session in loaded {
+            assert_eq!(
+                session.updated_at.timestamp(),
+                original.timestamp(),
+                "reorder must not bump updated_at for {}",
+                session.id
+            );
+        }
+    }
+
+    #[test]
+    fn reorder_projects_assigns_zero_to_n_positions() {
+        let store = test_store();
+        let mk = |id: &str| ProjectConfig {
+            id: id.to_string(),
+            path: format!("/repo/{id}"),
+            name: Some(id.to_string()),
+            default_provider: None,
+            leading_branch: Some("main".to_string()),
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: BTreeMap::default(),
+        };
+        store.upsert_project(&mk("a")).unwrap();
+        store.upsert_project(&mk("b")).unwrap();
+        store.upsert_project(&mk("c")).unwrap();
+
+        store
+            .reorder_projects(&["c".into(), "a".into(), "b".into()])
+            .unwrap();
+        let ids: Vec<String> = store
+            .load_projects()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn load_sessions_tie_break_falls_back_to_updated_at_desc() {
+        // Two sessions sharing the same sort_order tie-break by updated_at DESC.
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in(
+                "older",
+                "proj",
+                now,
+                now - Duration::hours(2),
+            ))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in(
+                "newer",
+                "proj",
+                now,
+                now - Duration::hours(1),
+            ))
+            .unwrap();
+        // Force both to the same sort_order so only the tie-break differs.
+        store
+            .conn
+            .execute("update agent_sessions set sort_order = 0", [])
+            .unwrap();
+
+        let ids: Vec<String> = store
+            .load_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec!["newer", "older"]);
+    }
+
+    #[test]
+    fn min_session_sort_order_overall_reports_top_position() {
+        let store = test_store();
+        let now = Utc::now();
+        assert_eq!(store.min_session_sort_order_overall().unwrap(), None);
+        store
+            .upsert_session(&test_session_in("a", "proj", now, now))
+            .unwrap(); // sort_order 0
+        store
+            .upsert_session(&test_session_in("b", "proj", now, now))
+            .unwrap(); // sort_order -1
+        assert_eq!(store.min_session_sort_order_overall().unwrap(), Some(-1));
+    }
+
+    #[test]
+    fn half_upgrade_all_zero_sort_orders_fall_back_to_legacy_order() {
+        // Simulates the crash window where the sort_order column was added but
+        // the one-time backfill never ran (on the next start `ensure_column`
+        // reports "already present", so the backfill is permanently skipped):
+        // every row ties at 0, and load_sessions must fall back to the legacy
+        // updated_at DESC order. New sessions must still land on top at -1,
+        // and the first explicit reorder self-heals positions to 0..n.
+        let store = test_store();
+        let now = Utc::now();
+        store
+            .upsert_session(&test_session_in(
+                "old",
+                "proj",
+                now - Duration::minutes(10),
+                now - Duration::minutes(10),
+            ))
+            .unwrap();
+        store
+            .upsert_session(&test_session_in("new", "proj", now, now))
+            .unwrap();
+        // Flatten every position to 0: the half-upgraded state.
+        store
+            .conn
+            .execute("update agent_sessions set sort_order = 0", [])
+            .unwrap();
+
+        let ids: Vec<String> = store
+            .load_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["new", "old"]); // updated_at DESC tie-break
+
+        store
+            .upsert_session(&test_session_in("fresh", "proj", now, now))
+            .unwrap();
+        let first = store.load_sessions().unwrap().remove(0);
+        assert_eq!(first.id, "fresh"); // -1 sorts above the zeros
+    }
+}
+
+#[cfg(test)]
+mod pr_tests {
+    use super::*;
+    use crate::model::{AgentPr, PrInfo, PrPrefs, PrState};
+
+    fn found(owner_repo: &str, number: u64, state: PrState) -> AgentPr {
+        AgentPr::found(
+            &PrInfo {
+                number,
+                state,
+                title: format!("PR {number}"),
+                host: "github.com".to_string(),
+                owner_repo: owner_repo.to_string(),
+                url: format!("https://github.com/{owner_repo}/pull/{number}"),
+                ..PrInfo::default()
+            },
+            Utc::now(),
+        )
+    }
+
+    #[test]
+    fn an_agents_pull_requests_and_preferences_round_trip_a_reopen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+        let now = Utc::now();
+        let mut draft = found("ada/widget", 77, PrState::Draft);
+        draft.head_branch = Some("feature".to_string());
+        draft.manual_slot = Some(2);
+        draft.gh_created_at = DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+            .ok()
+            .map(|at| at.with_timezone(&Utc));
+        let mut other_repo = found("bob/gadget", 77, PrState::Merged);
+        other_repo.attached = true;
+        other_repo.found = false;
+        let mut arranged = found("ada/widget", 78, PrState::Open);
+        arranged.attached = true;
+        arranged.found = false;
+        arranged.hidden = true;
+        arranged.manual_slot = Some(0);
+        let prefs = PrPrefs {
+            sort_mode: crate::pr_list::PrSortMode::Manual,
+            hide_created_before: None,
+        };
+        {
+            let store = SessionStore::open(&db).unwrap();
+            store.upsert_session(&test_session("s1", now, now)).unwrap();
+            // A row a newer yaran wrote, in a state this build does not know.
+            store.run_sql_for_tests(
+                "insert into session_pull_requests \
+                 (session_id, host, owner_repo, pr_number, state, first_recorded_at) \
+                 values ('s1', 'github.com', 'ada/widget', 90, 'QUEUED', \
+                         '2026-01-01T00:00:00+00:00');",
+            );
+            store
+                .replace_agent_prs(
+                    "s1",
+                    &[draft.clone(), other_repo.clone(), arranged.clone()],
+                    &prefs,
+                )
+                .unwrap();
+            // The same pull request spelled in another case is the same row.
+            let mut refreshed = draft.clone();
+            refreshed.owner_repo = "Ada/Widget".to_string();
+            refreshed.title = "Renamed".to_string();
+            store.upsert_agent_pr("s1", &refreshed).unwrap();
+            // The sync finding a pull request it had no row for in memory
+            // keeps what the user did with the stored one.
+            store
+                .upsert_agent_pr("s1", &found("ada/widget", 78, PrState::Open))
+                .unwrap();
+        }
+        let store = SessionStore::open(&db).unwrap();
+        let mut rows = store.load_agent_prs().unwrap().remove("s1").unwrap();
+        rows.sort_by_key(|row| (row.owner_repo.to_ascii_lowercase(), row.number));
+        assert_eq!(
+            rows.len(),
+            3,
+            "two #77 from different repositories and #78: {rows:?}"
+        );
+        assert_eq!(rows[0].state, PrState::Draft);
+        assert_eq!(rows[0].owner_repo, "Ada/Widget");
+        assert_eq!(rows[0].title, "Renamed");
+        assert_eq!(rows[0].head_branch.as_deref(), Some("feature"));
+        assert_eq!(rows[0].manual_slot, Some(2));
+        assert_eq!(rows[0].gh_created_at, draft.gh_created_at);
+        assert_eq!(rows[1].number, 78);
+        assert!(rows[1].found && rows[1].attached && rows[1].hidden);
+        assert_eq!(rows[1].manual_slot, Some(0));
+        assert_eq!(rows[2].state, PrState::Merged);
+        assert!(rows[2].attached && !rows[2].found);
+        assert_eq!(store.load_pr_prefs().unwrap().get("s1"), Some(&prefs));
+        let unknown: i64 = store
+            .conn
+            .query_row(
+                "select count(*) from session_pull_requests where pr_number = 90",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unknown, 1, "a row this build cannot read is left alone");
+    }
+
+    /// The database as an older yaran left it: the new tables are not there yet
+    /// and the one-pull-request tables hold `s1`'s two pull requests (one on a
+    /// branch whose remote ref is gone, which only this import still knows)
+    /// and a pin, and `s2`'s detach.
+    fn pre_upgrade_database() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+        let now = Utc::now();
+        let store = SessionStore::open(&db).unwrap();
+        store.upsert_session(&test_session("s1", now, now)).unwrap();
+        store.upsert_session(&test_session("s2", now, now)).unwrap();
+        store.run_sql_for_tests(
+            "drop table session_pull_requests; drop table session_pr_prefs; \
+             drop table session_branch_former_names; \
+             insert into session_prs (session_id, pr_number, host, owner_repo, state, title, url) \
+             values ('s1', 10, 'github.com', 'ada/widget', 'MERGED', 'Gone branch', 'u10'), \
+                    ('s1', 12, 'github.com', 'ada/widget', 'OPEN', 'Current', 'u12'), \
+                    ('s2', 5, 'github.com', 'ada/widget', 'OPEN', 'Detached', 'u5'); \
+             insert into session_pr_overrides \
+             (session_id, host, owner_repo, pr_number, state, title, url) \
+             values ('s1', 'github.com', 'Ada/Widget', 12, 'OPEN', 'Pinned', 'u12'); \
+             insert into session_pr_suppressions (session_id) values ('s2');",
+        );
+        drop(store);
+        (tmp, db)
+    }
+
+    fn summary(store: &SessionStore, id: &str) -> Vec<(u64, bool, bool, bool)> {
+        let mut rows: Vec<_> = store
+            .load_agent_prs()
+            .unwrap()
+            .remove(id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| (row.number, row.found, row.attached, row.hidden))
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    #[test]
+    fn the_one_pull_request_tables_are_imported_once_and_left_as_they_were() {
+        let (_tmp, db) = pre_upgrade_database();
+        let store = SessionStore::open(&db).unwrap();
+        // Both found rows, the pin merged into the one it names, and the
+        // detached agent's rows hidden with its cutoff set.
+        assert_eq!(
+            summary(&store, "s1"),
+            vec![(10, true, false, false), (12, true, true, false)]
+        );
+        assert_eq!(summary(&store, "s2"), vec![(5, true, false, true)]);
+        let prefs = store.load_pr_prefs().unwrap();
+        assert!(prefs.get("s2").unwrap().hide_created_before.is_some());
+        assert!(!prefs.contains_key("s1"));
+        let migrated = store.load_agent_prs().unwrap();
+        let rows_before = summary(&store, "s1");
+
+        // A second open is a no-op.
+        drop(store);
+        let store = SessionStore::open(&db).unwrap();
+        assert_eq!(store.load_agent_prs().unwrap(), migrated);
+
+        // Changes made here, then what an older yaran would write after a
+        // downgrade: reopening imports none of the latter.
+        let mut rows = migrated.get("s1").unwrap().clone();
+        rows.retain(|row| row.number == 12);
+        store
+            .replace_agent_prs("s1", &rows, &PrPrefs::default())
+            .unwrap();
+        store.run_sql_for_tests(
+            "insert into session_prs (session_id, pr_number, owner_repo) \
+             values ('s1', 99, 'ada/widget'); \
+             delete from session_pr_suppressions;",
+        );
+        drop(store);
+        let store = SessionStore::open(&db).unwrap();
+        assert_eq!(summary(&store, "s1"), vec![(12, true, true, false)]);
+        assert_ne!(summary(&store, "s1"), rows_before);
+        assert_eq!(summary(&store, "s2"), vec![(5, true, false, true)]);
+        let old_rows: i64 = store
+            .conn
+            .query_row("select count(*) from session_prs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(old_rows, 4, "the old table is left as it was written");
+
+        // The rows table without the other two, as a partly applied schema
+        // leaves it: opening creates them and imports nothing again.
+        store.run_sql_for_tests(
+            "drop table session_pr_prefs; drop table session_branch_former_names;",
+        );
+        drop(store);
+        let store = SessionStore::open(&db).unwrap();
+        assert!(store.load_pr_prefs().unwrap().is_empty());
+        store.load_branch_history("s1").unwrap();
+        assert_eq!(summary(&store, "s1"), vec![(12, true, true, false)]);
+    }
+}
+
+/// What writing a pull-request row over a stored one keeps.
+#[derive(Clone, Copy)]
+enum PrRowWrite {
+    /// The row becomes exactly what was written.
+    Exact,
+    /// What GitHub says is written; the user's flags and slot stay.
+    Refresh,
+}
+
+/// Read one `agent_tabs` row. Shared by every tab query so the slot tab and an
+/// extra tab can never be decoded differently.
+fn read_agent_tab(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTab> {
+    let created_at: String = row.get(4)?;
+    Ok(AgentTab {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        provider: ProviderKind::from_str(row.get::<_, String>(2)?.as_str()),
+        sort_order: row.get(3)?,
+        created_at: parse_time(&created_at).unwrap_or_else(Utc::now),
+    })
+}
+
+/// See [`SessionStore::min_session_sort_order_overall`]. Parameterized over the
+/// connection so the insert path can run inside `create_session`'s transaction.
+fn min_session_sort_order_overall_in(conn: &Connection) -> Result<Option<i64>> {
+    conn.query_row("select min(sort_order) from agent_sessions", [], |row| {
+        row.get::<_, Option<i64>>(0)
+    })
+    .context("failed to compute the overall min session sort order")
+}
+
+/// Adds `column` to `table` if it is missing. Returns `true` when the column
+/// was just added by this call, `false` when it already existed. Callers that
+/// need a one-time backfill of a newly-added column branch on the return value.
+fn ensure_column(conn: &Connection, table: &str, column: &str, sql_type: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
+    let existing = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if existing.iter().any(|name| name == column) {
+        return Ok(false);
+    }
+    match conn.execute(
+        &format!("alter table {table} add column {column} {sql_type}"),
+        [],
+    ) {
+        Ok(_) => Ok(true),
+        // Tolerate a concurrent add: two connections opening at first-boot-after
+        // -upgrade can both pass the pragma check above and race on the ALTER.
+        // The loser sees SQLite's "duplicate column name" error: the column is
+        // present, so treat it as already-existing (Ok(false)) instead of
+        // hard-failing open().
+        Err(e) if is_duplicate_column_error(&e) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// True when `err` is SQLite's "duplicate column name" error, raised when an
+/// `alter table ... add column` targets a column that already exists (e.g. a
+/// concurrent connection added it first).
+fn is_duplicate_column_error(err: &rusqlite::Error) -> bool {
+    err.to_string().to_lowercase().contains("duplicate column")
+}
+
+/// The store's write transactions take the write lock when they begin.
+#[cfg(test)]
+mod immediate_transaction_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// What every store write transaction does: begin, read, then write. The
+    /// `between` hook runs after the read and before the write, which is
+    /// where another connection's commit lands in the race.
+    fn read_then_write(
+        conn: &Connection,
+        begin: impl FnOnce(&Connection) -> rusqlite::Result<rusqlite::Transaction<'_>>,
+        between: impl FnOnce(),
+    ) -> rusqlite::Result<()> {
+        let tx = begin(conn)?;
+        let _rows: i64 = tx.query_row("select count(*) from t", [], |row| row.get(0))?;
+        between();
+        tx.execute("insert into t (who) values ('a')", [])?;
+        tx.commit()
+    }
+
+    /// Two connections to one WAL database, the way the engine's store and
+    /// the registry's writer thread share it.
+    fn two_connections() -> (tempfile::TempDir, Connection, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+        drop(SessionStore::open(&db).unwrap());
+        let a = Connection::open(&db).unwrap();
+        a.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        a.execute_batch("create table t (who text not null)")
+            .unwrap();
+        (tmp, a, db)
+    }
+
+    /// The bug, on purpose: a DEFERRED transaction reads, another connection
+    /// commits, and the write is refused at once with `SQLITE_BUSY_SNAPSHOT`
+    /// (517), however long the busy timeout.
+    #[test]
+    fn a_deferred_transaction_is_refused_when_another_connection_commits_in_between() {
+        let (_tmp, a, db) = two_connections();
+        let refused = read_then_write(
+            &a,
+            |conn| {
+                rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
+            },
+            || {
+                let b = Connection::open(&db).unwrap();
+                b.execute("insert into t (who) values ('b')", []).unwrap();
+            },
+        )
+        .expect_err("the deferred write is refused");
+        let rusqlite::Error::SqliteFailure(failure, _) = &refused else {
+            panic!("not a SQLite failure: {refused}");
+        };
+        assert_eq!(
+            failure.extended_code, 517,
+            "SQLITE_BUSY_SNAPSHOT: {refused}"
+        );
+    }
+
+    /// Set by the second connection's busy handler: it is waiting for the
+    /// write lock.
+    static B_IS_WAITING: AtomicBool = AtomicBool::new(false);
+
+    fn b_busy(_attempt: i32) -> bool {
+        B_IS_WAITING.store(true, Ordering::SeqCst);
+        std::thread::yield_now();
+        true
+    }
+
+    /// The fix: `immediate_tx` holds the write lock from its first statement,
+    /// so the other connection's write waits (its busy handler is seen
+    /// running) until this transaction commits, and both writes land, this
+    /// one first.
+    #[test]
+    fn an_immediate_transaction_makes_the_other_writer_wait_and_both_succeed() {
+        let (_tmp, a, db) = two_connections();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let b = std::cell::RefCell::new(None);
+        read_then_write(&a, immediate_tx, || {
+            let db = db.clone();
+            *b.borrow_mut() = Some(std::thread::spawn(move || {
+                let b = Connection::open(&db).unwrap();
+                b.busy_handler(Some(b_busy)).unwrap();
+                started_tx.send(()).unwrap();
+                b.execute("insert into t (who) values ('b')", [])
+            }));
+            started_rx.recv().unwrap();
+            // The other writer is blocked on this transaction's lock, and
+            // retrying, before this transaction writes.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !B_IS_WAITING.load(Ordering::SeqCst) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the other writer never had to wait"
+                );
+                std::thread::yield_now();
+            }
+        })
+        .expect("the immediate transaction's write succeeds");
+        let other = b.into_inner().unwrap().join().unwrap();
+        assert_eq!(other.expect("the other writer succeeds once it may"), 1);
+        let order: Vec<String> = a
+            .prepare("select who from t order by rowid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(order, vec!["a".to_string(), "b".to_string()]);
+    }
+}

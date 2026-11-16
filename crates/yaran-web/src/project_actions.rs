@@ -1,0 +1,1917 @@
+//! REST write verbs for projects, on the same pattern as
+//! [`crate::session_actions`]: each handler derives a per-connection
+//! [`StatusScope`] from the optional `X-Connection-Id` header and dispatches the
+//! matching [`WireCommand`] via [`EngineHandle::apply_wire_scoped`].
+//!
+//! Removing a project does not touch its checkout unless `?delete_worktrees=true`
+//! asks for the agents' worktrees too. The add route honors `Idempotency-Key`, and
+//! the settings PATCH is tri-state per field.
+//!
+//! The add answers `201 Created` with the project when it surfaces inside the
+//! await window, `422 Unprocessable Entity` with the worker's own message when
+//! the add op finals with an error first, and `202 Accepted` with
+//! [`crate::rest_common::Accepted`] when neither has happened by the end of the
+//! window, the same deferred contract the session create follows.
+
+use std::collections::BTreeMap;
+
+use axum::{
+    Json, Router,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::{patch, post},
+};
+use serde::{Deserialize, Serialize};
+
+use yaran_core::operations::OperationKind;
+use yaran_core::wire::WireCommand;
+
+use crate::engine_actor::ProjectSaveFailure;
+use crate::rest_common::{
+    Accepted, AwaitedCreate, CREATE_AWAIT_TIMEOUT, ForceConnectedQuery, OperationQuery,
+    await_new_project, create_failed, delete_operation_response, delete_wire_response,
+    dispatch_guarded, id_within_bound, idempotency_key, operation_accepted,
+    require_configured_provider, scope_from_headers,
+};
+use crate::server::AppState;
+
+/// The project-action routes. The literal `/reorder` segment is registered
+/// alongside `:id`; axum's matcher prefers static segments over `:id`. (The
+/// `GET /api/v1/projects` read lives in `workspace_routes`; axum merges the per-path
+/// method routers, so `POST` here coexists with it.)
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/projects", post(add_project))
+        .route("/api/v1/projects/reorder", post(reorder_projects))
+        .route(
+            "/api/v1/projects/{id}",
+            patch(patch_project).delete(remove_project),
+        )
+        .route("/api/v1/projects/{id}/pull", post(pull_project))
+        .route(
+            "/api/v1/projects/{id}/checkout-default",
+            post(checkout_default),
+        )
+        .route(
+            "/api/v1/projects/{id}/base-branch",
+            post(change_base_branch),
+        )
+}
+
+// ── Add ──────────────────────────────────────────────────────────────────────
+
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own optional key in the add-project request body; add_project_command resolves their precedence"
+)]
+#[derive(Deserialize)]
+struct AddProjectBody {
+    path: String,
+    /// Display name; empty derives it from the path's basename.
+    #[serde(default)]
+    name: String,
+    /// Check the repo's default branch out FIRST, then register it (mirrors the
+    /// TUI's "Check Out & Add"). Only valid when the repo is on a non-default
+    /// branch with a known default; the engine re-validates and rejects otherwise.
+    #[serde(default)]
+    checkout_default: bool,
+    /// Create an empty initial commit BEFORE registering, so a freshly
+    /// `git init`'d repo with an unborn HEAD can back worktrees. No-op (and
+    /// harmless) if the repo already has commits. The user opts in via the
+    /// add-project dialog after inspect reports `has_commits: false`.
+    #[serde(default)]
+    create_initial_commit: bool,
+    /// Adopt a plain (non-repo) folder: run `git init`, seed a starter
+    /// `.gitignore`, create an empty initial commit, then register. The user
+    /// opts in via the add-project dialog after inspect reports
+    /// `kind: "plain"`. The engine re-validates (the folder must not already
+    /// be, or sit inside, a repository).
+    #[serde(default)]
+    init_repo: bool,
+    /// Clone this address into `path` as a new project instead of adding a
+    /// folder, then start an agent there named `agent_name` (a random name when
+    /// it is blank; `random_name` is the dialog's checkbox). Outranks every
+    /// other flag.
+    #[serde(default)]
+    clone_url: Option<String>,
+    #[serde(default)]
+    agent_name: Option<String>,
+    #[serde(default)]
+    random_name: bool,
+    /// Create the agent from this pull request after cloning its repository.
+    /// The server builds the address itself, so `clone_url` is not needed and
+    /// is ignored; outranks every other flag.
+    #[serde(default)]
+    pull_request: Option<yaran_core::pr_reference::PullRequestCloneTarget>,
+    /// With `pull_request`: `path` already holds a checkout of the
+    /// repository, so add that folder as the project instead of cloning into
+    /// it. Refused without a `pull_request`.
+    #[serde(default)]
+    add_existing: bool,
+    /// With `pull_request`: the user agreed, before the clone or the add, to
+    /// the agent being made on a review copy, after being shown a warning
+    /// whose reason was `review_copy_reason`. The command line agrees with a
+    /// flag instead, which names no reason and sets `review_copy_by_flag`
+    /// when it does not agree.
+    #[serde(default)]
+    review_copy: bool,
+    #[serde(default)]
+    review_copy_reason: Option<String>,
+    /// The branch that warning said the copy would be made on. Without it the
+    /// agreement covers the reason under any name.
+    #[serde(default)]
+    review_copy_branch: Option<String>,
+    #[serde(default)]
+    review_copy_by_flag: bool,
+}
+
+/// Pick the add command the body's flags ask for.
+///
+/// A strict precedence ladder: a `pull_request` makes it a clone for a new agent
+/// from that pull request, and a non-empty `clone_url` makes it a clone,
+/// whatever else is set. Otherwise `init_repo` subsumes `create_initial_commit`, which
+/// outranks `checkout_default`, since an unborn repo has no default branch to check
+/// out. The engine validates the path, serializes per repo path and runs the commit
+/// on a worker, so no mutating git work runs on the async reactor and a failure
+/// surfaces through the keyed status stream.
+fn add_project_command(body: AddProjectBody) -> WireCommand {
+    let AddProjectBody {
+        path,
+        name,
+        checkout_default,
+        create_initial_commit,
+        init_repo,
+        clone_url,
+        agent_name,
+        random_name,
+        pull_request,
+        add_existing,
+        review_copy,
+        review_copy_reason,
+        review_copy_branch,
+        review_copy_by_flag,
+    } = body;
+    // `add_existing` without a pull request goes the same way, so the engine
+    // refuses it by name rather than the body quietly meaning an ordinary add.
+    if pull_request.is_some() || add_existing {
+        WireCommand::CloneProject {
+            url: clone_url.unwrap_or_default(),
+            path,
+            agent_name,
+            random_name,
+            pull_request,
+            add_existing,
+            review_copy: yaran_core::clone_project::UpfrontReviewCopy {
+                agreed: review_copy,
+                reason: review_copy_reason,
+                branch: review_copy_branch,
+                by_flag: review_copy_by_flag,
+            },
+        }
+    } else if let Some(url) = clone_url.filter(|url| !url.trim().is_empty()) {
+        WireCommand::CloneProject {
+            url,
+            path,
+            agent_name,
+            random_name,
+            pull_request: None,
+            add_existing: false,
+            review_copy: yaran_core::clone_project::UpfrontReviewCopy::default(),
+        }
+    } else if init_repo {
+        WireCommand::AddProjectInitRepo { path, name }
+    } else if create_initial_commit {
+        WireCommand::AddProjectCreateInitialCommit {
+            path,
+            name,
+            checked: None,
+        }
+    } else if checkout_default {
+        WireCommand::AddProjectCheckoutDefault {
+            path,
+            name,
+            checked: None,
+        }
+    } else {
+        WireCommand::AddProject {
+            path,
+            name,
+            checked: None,
+        }
+    }
+}
+
+/// Make an add's checks (git, the filesystem) on the blocking pool and attach
+/// what they read, so the engine thread runs none of them. A refusal is the
+/// same 400 with the same sentence the engine would have answered.
+async fn check_add_command(
+    cmd: WireCommand,
+    registered: Vec<String>,
+) -> Result<WireCommand, crate::rest_common::RouteRejection> {
+    let checked = tokio::task::spawn_blocking(move || -> anyhow::Result<WireCommand> {
+        use yaran_core::route_checks as checks;
+        Ok(match cmd {
+            WireCommand::AddProject { path, name, .. } => WireCommand::AddProject {
+                checked: Some(checks::check_add_project(&path, &registered)?),
+                path,
+                name,
+            },
+            WireCommand::AddProjectCheckoutDefault { path, name, .. } => {
+                WireCommand::AddProjectCheckoutDefault {
+                    checked: Some(checks::check_add_project_checkout_default(
+                        &path,
+                        &registered,
+                    )?),
+                    path,
+                    name,
+                }
+            }
+            WireCommand::AddProjectCreateInitialCommit { path, name, .. } => {
+                WireCommand::AddProjectCreateInitialCommit {
+                    checked: Some(checks::check_add_project_create_initial_commit(
+                        &path,
+                        &registered,
+                    )?),
+                    path,
+                    name,
+                }
+            }
+            other => other,
+        })
+    })
+    .await;
+    match checked {
+        Ok(Ok(cmd)) => Ok(cmd),
+        Ok(Err(refused)) => Err((StatusCode::BAD_REQUEST, refused.to_string())
+            .into_response()
+            .into()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("add-project check failed: {e}"),
+        )
+            .into_response()
+            .into()),
+    }
+}
+
+/// Parse the add body ourselves, the way the session create does, so a
+/// malformed or unknown shape is a clean 400. Axum's typed `Json` rejection is a
+/// 422, which on this route now means "the add was dispatched and failed"; two
+/// unrelated conditions sharing a code would leave a client unable to tell a
+/// typo from a git failure, and the browser suppresses one of them.
+fn parse_add_project_body(raw: serde_json::Value) -> Result<AddProjectBody, String> {
+    serde_json::from_value(raw).map_err(|error| format!("invalid add-project body: {error}"))
+}
+
+async fn add_project(
+    State(state): State<AppState>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+    Json(raw): Json<serde_json::Value>,
+) -> Response {
+    let body = match parse_add_project_body(raw) {
+        Ok(body) => body,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
+
+    // Idempotency replay: a key that already produced a still-present project
+    // returns it without adding another.
+    let key = idempotency_key(&headers);
+    if let Some(key) = &key
+        && let Some(prev_id) = state.idempotency.get(key)
+        && let Some(spine) = state.engine.spine().await
+        && let Some(project) = spine.projects.into_iter().find(|p| p.id == prev_id)
+    {
+        return (StatusCode::OK, Json(project)).into_response();
+    }
+
+    let (pre, registered): (std::collections::HashSet<String>, Vec<String>) =
+        match state.engine.spine().await {
+            Some(spine) => spine.projects.into_iter().map(|p| (p.id, p.path)).unzip(),
+            None => return engine_unavailable(),
+        };
+
+    let cmd = match check_add_command(add_project_command(body), registered).await {
+        Ok(cmd) => cmd,
+        Err(response) => return response.into_response(),
+    };
+
+    // A clone can take far longer than the create wait, so it answers as soon
+    // as it has started, with the operation to follow; a check that refused it
+    // is a 400 with its sentence.
+    if matches!(cmd, WireCommand::CloneProject { .. }) {
+        let scope = scope_from_headers(&headers, &state.connections);
+        if operation.asked() {
+            return match state
+                .engine
+                .apply_wire_operation(cmd, scope, OperationKind::ProjectAdd)
+                .await
+            {
+                Ok((_, op)) => operation_accepted(&op),
+                Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+            };
+        }
+        return match state
+            .engine
+            .apply_wire_recorded(cmd, scope, OperationKind::ProjectAdd)
+            .await
+        {
+            Ok(outcome) => (
+                StatusCode::ACCEPTED,
+                Json(Accepted {
+                    op_id: outcome.operation_id,
+                }),
+            )
+                .into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        };
+    }
+
+    // Followed as an operation: the record answers at once. A plain add has
+    // finished by then; the adds that run git first are still running.
+    if operation.asked() {
+        return match state
+            .engine
+            .apply_wire_operation(
+                cmd,
+                scope_from_headers(&headers, &state.connections),
+                OperationKind::ProjectAdd,
+            )
+            .await
+        {
+            Ok((_, op)) => operation_accepted(&op),
+            Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        };
+    }
+
+    let outcome = match state
+        .engine
+        .apply_wire_recorded(
+            cmd,
+            scope_from_headers(&headers, &state.connections),
+            OperationKind::ProjectAdd,
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+
+    // A direct add resolves synchronously (first poll wins); the worker-backed
+    // adds are what the poll and the op-watch are for.
+    // The op the wait watches is the worker-backed add's own, the same key
+    // its final arrives under on the events socket. The plain add resolves on the
+    // reactor and mints no keyed op, so there is nothing to watch and nothing to
+    // name; unlike the from-PR create, nothing hands off here.
+    let op_id = outcome.status.and_then(|s| s.key);
+    let window = state.create_await_timeout.unwrap_or(CREATE_AWAIT_TIMEOUT);
+    match await_new_project(&state.engine, &pre, op_id.as_deref(), window).await {
+        AwaitedCreate::Resolved(id) => created_project_response(&state, id, key).await,
+        AwaitedCreate::Failed(message) => create_failed(message),
+        // Still running at the end of the window: the deferred reply hands back
+        // the id to correlate on, or `op_id: null` for a keyless plain add rather
+        // than an id nothing would ever resolve (that path only reaches here if
+        // the project vanished between the add and the poll).
+        AwaitedCreate::Pending => (StatusCode::ACCEPTED, Json(Accepted { op_id })).into_response(),
+    }
+}
+
+/// Build the `201 Created` response for a resolved new project id: record the
+/// idempotency key (so a retry replays this project), set `Location`, and return
+/// the full project view when the spine still carries it, else the bare id.
+async fn created_project_response(state: &AppState, id: String, key: Option<String>) -> Response {
+    if let Some(key) = key {
+        state.idempotency.record(key, id.clone());
+    }
+    let location = format!("/api/v1/projects/{id}");
+    let body = match state.engine.spine().await {
+        Some(spine) => match spine.projects.into_iter().find(|p| p.id == id) {
+            Some(project) => Json(project).into_response(),
+            None => Json(CreatedRef { id }).into_response(),
+        },
+        None => Json(CreatedRef { id }).into_response(),
+    };
+    (StatusCode::CREATED, [(header::LOCATION, location)], body).into_response()
+}
+
+#[derive(Serialize)]
+struct CreatedRef {
+    id: String,
+}
+
+// ── Remove / Delete ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RemoveProjectQuery {
+    /// When true, also remove every agent's worktree from disk (routes to the
+    /// destructive `DeleteProject`). Defaults to false (keep the worktrees, plain
+    /// `RemoveProject`) so a missing query parameter never deletes user data.
+    #[serde(default)]
+    delete_worktrees: bool,
+}
+
+async fn remove_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<RemoveProjectQuery>,
+    Query(operation): Query<OperationQuery>,
+    Query(force): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
+    headers: HeaderMap,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_project();
+    }
+    if !project_exists(&state, &id).await {
+        return unknown_project();
+    }
+    // `delete_worktrees` selects the destructive variant, which cascades every
+    // agent's worktree off disk; the default keeps the worktrees.
+    let command = if q.delete_worktrees {
+        WireCommand::DeleteProject { project_id: id }
+    } else {
+        WireCommand::RemoveProject { project_id: id }
+    };
+    let result = match dispatch_guarded(
+        &state,
+        command,
+        &headers,
+        OperationKind::ProjectRemove,
+        &operation,
+        &force,
+        &client,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(refused) => return refused.into_response(),
+    };
+    if operation.asked() {
+        return delete_operation_response(result.and_then(super::rest_common::Guarded::followed));
+    }
+    delete_wire_response(result.map(|guarded| guarded.outcome))
+}
+
+// ── Patch (settings) ─────────────────────────────────────────────────────────
+
+/// Tri-state per-field project update: an absent field is untouched; a present
+/// `null` clears the value (back to its default); a present value sets it. `env`
+/// is a wholesale replace of the project's env map.
+#[derive(Deserialize)]
+struct PatchProjectBody {
+    #[serde(default)]
+    provider: Patch<String>,
+    #[serde(default)]
+    auto_reopen_agents: Patch<bool>,
+    #[serde(default)]
+    startup_command: Patch<String>,
+    #[serde(default)]
+    env: Option<BTreeMap<String, String>>,
+}
+
+/// One tri-state field of a PATCH body. An `Option<Option<T>>` cannot carry it:
+/// serde reads a present `null` into the outer `None`, the same as an absent
+/// field, so clearing a setting was silently ignored. An absent field is
+/// [`Patch::Untouched`] through `#[serde(default)]`; a present one is read
+/// here, where `null` is the only way to reach [`Patch::Clear`].
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Patch<T> {
+    #[default]
+    Untouched,
+    Clear,
+    Set(T),
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Patch<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            None => Self::Clear,
+            Some(value) => Self::Set(value),
+        })
+    }
+}
+
+impl<T> Patch<T> {
+    /// Whether the body named this field at all.
+    fn sent(&self) -> bool {
+        !matches!(self, Self::Untouched)
+    }
+
+    /// The value the command carries for a sent field: `None` clears it.
+    fn into_value(self) -> Option<T> {
+        match self {
+            Self::Set(value) => Some(value),
+            Self::Untouched | Self::Clear => None,
+        }
+    }
+}
+
+async fn patch_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<PatchProjectBody>,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_project();
+    }
+    if !project_exists(&state, &id).await {
+        return unknown_project();
+    }
+    let scope = scope_from_headers(&headers, &state.connections);
+
+    // Validate a provider before the independently applied fields so an invalid
+    // value cannot leave earlier fields partially committed.
+    if let Patch::Set(provider) = &body.provider
+        && let Err(rejection) = require_configured_provider(&state.engine, provider).await
+    {
+        return rejection.into_response();
+    }
+
+    // Each field is its own save, on the project-persistence worker the
+    // terminal UI saves the same settings through, in one order with every
+    // other project change; this waits for each to be written, and for
+    // config.toml to follow it, before sending the next and before answering,
+    // so a 200 means every field was written. They are not one transaction: a
+    // field that fails stops the rest, and the answer names the fields saved
+    // before it, which stay saved, and the ones not attempted.
+    let mut steps: Vec<(&'static str, WireCommand)> = Vec::new();
+    if body.provider.sent() {
+        steps.push((
+            "default provider",
+            WireCommand::UpdateProjectProvider {
+                project_id: id.clone(),
+                provider: body.provider.into_value(),
+            },
+        ));
+    }
+    if body.auto_reopen_agents.sent() {
+        steps.push((
+            "auto-reopen setting",
+            WireCommand::UpdateProjectAutoReopen {
+                project_id: id.clone(),
+                auto_reopen_agents: body.auto_reopen_agents.into_value(),
+            },
+        ));
+    }
+    if body.startup_command.sent() {
+        steps.push((
+            "startup command",
+            WireCommand::UpdateProjectStartupCommand {
+                project_id: id.clone(),
+                startup_command: body.startup_command.into_value(),
+            },
+        ));
+    }
+    if let Some(env) = body.env {
+        steps.push((
+            "environment",
+            WireCommand::UpdateProjectEnv {
+                project_id: id.clone(),
+                env,
+            },
+        ));
+    }
+
+    let settings: Vec<&'static str> = steps.iter().map(|(setting, _)| *setting).collect();
+    for (index, (_, command)) in steps.into_iter().enumerate() {
+        if let Err(failure) = state
+            .engine
+            .save_project_setting(command, scope.clone())
+            .await
+        {
+            // A field saved to the database but not to config.toml is the one
+            // 500 this route answers, so the browser can tell half-done from
+            // not done at all; an engine that stopped answering is the 503 a
+            // route answers for an unavailable engine, and nobody knows
+            // whether that field landed.
+            let (status, error) = match failure {
+                ProjectSaveFailure::NotSaved(error) => (StatusCode::BAD_REQUEST, error),
+                ProjectSaveFailure::HalfSaved(error) => (StatusCode::INTERNAL_SERVER_ERROR, error),
+                ProjectSaveFailure::NoAnswer => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    no_answer_message(settings[index]),
+                ),
+            };
+            let message = with_the_other_fields(error, &settings[..index], &settings[index + 1..]);
+            return (status, message).into_response();
+        }
+    }
+
+    StatusCode::OK.into_response()
+}
+
+/// The sentence for a field the server stopped answering about: it may
+/// already be on the worker, so it may or may not have been saved.
+fn no_answer_message(setting: &str) -> String {
+    format!(
+        "The server stopped answering before it said whether the {setting} was saved, so it \
+         may or may not have been. Reopen Project settings to check what is saved now."
+    )
+}
+
+/// A field's failure, followed by the fields the same PATCH saved before it
+/// and the ones after it that it never tried.
+fn with_the_other_fields(error: String, saved: &[&str], not_attempted: &[&str]) -> String {
+    let mut message = error;
+    if let Some(saved) = the_settings(saved) {
+        message = format!("{message} Already saved before that: {saved}.");
+    }
+    if let Some(not_attempted) = the_settings(not_attempted) {
+        message = format!("{message} Not attempted: {not_attempted}.");
+    }
+    message
+}
+
+/// `the a`, `the a and b`, `the a, b and c`; `None` for no settings.
+fn the_settings(settings: &[&str]) -> Option<String> {
+    match settings {
+        [] => None,
+        [one] => Some(format!("the {one}")),
+        [init @ .., last] => Some(format!("the {} and {last}", init.join(", "))),
+    }
+}
+
+// ── Reorder ──────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ReorderBody {
+    project_ids: Vec<String>,
+}
+
+async fn reorder_projects(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ReorderBody>,
+) -> Response {
+    match state
+        .engine
+        .apply_wire_scoped(
+            WireCommand::ReorderProjects {
+                project_ids: body.project_ids,
+            },
+            scope_from_headers(&headers, &state.connections),
+        )
+        .await
+    {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+// ── Pull / checkout-default ──────────────────────────────────────────────────
+
+async fn pull_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_project();
+    }
+    if !project_exists(&state, &id).await {
+        return unknown_project();
+    }
+    match state
+        .engine
+        .apply_wire_scoped(
+            WireCommand::PullProject { project_id: id },
+            scope_from_headers(&headers, &state.connections),
+        )
+        .await
+    {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+async fn checkout_default(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_project();
+    }
+    if !project_exists(&state, &id).await {
+        return unknown_project();
+    }
+    match state
+        .engine
+        .apply_wire_scoped(
+            WireCommand::CheckoutProjectDefaultBranch { project_id: id },
+            scope_from_headers(&headers, &state.connections),
+        )
+        .await
+    {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+/// Upper bound on a posted branch name before it reaches the engine. The real
+/// limit is the filesystem's; this only keeps an absurd body out of a toast.
+const MAX_BRANCH_LEN: usize = 1024;
+
+/// `POST /api/v1/projects/{id}/base-branch` body: the branch to switch the
+/// project folder to and make its base, as `GET .../branches` named it.
+#[derive(Deserialize)]
+struct ChangeBaseBranchBody {
+    branch: String,
+}
+
+/// "Change base branch": dispatches [`WireCommand::ChangeProjectBaseBranch`].
+///
+/// Answers `200` once the engine has taken the request (its busy, or a
+/// warning that another folder-switching operation is running, rides the
+/// status stream like every other project action), `400` with the engine's
+/// sentence for what it refuses outright (a folder it already knows is
+/// missing, an empty branch), and `404` for an unknown project. The switch's
+/// outcome is the op's final on the status stream.
+async fn change_base_branch(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ChangeBaseBranchBody>,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_project();
+    }
+    if body.branch.chars().count() > MAX_BRANCH_LEN {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "A branch name longer than {MAX_BRANCH_LEN} characters can't be a base branch. \
+                 Pick a branch from the list."
+            ),
+        )
+            .into_response();
+    }
+    if !project_exists(&state, &id).await {
+        return unknown_project();
+    }
+    match state
+        .engine
+        .apply_wire_scoped(
+            WireCommand::ChangeProjectBaseBranch {
+                project_id: id,
+                branch: body.branch,
+            },
+            scope_from_headers(&headers, &state.connections),
+        )
+        .await
+    {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+async fn project_exists(state: &AppState, id: &str) -> bool {
+    state
+        .engine
+        .spine()
+        .await
+        .is_some_and(|spine| spine.projects.iter().any(|p| p.id == id))
+}
+
+fn unknown_project() -> Response {
+    (StatusCode::NOT_FOUND, "unknown project").into_response()
+}
+
+fn engine_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the engine is unavailable; retry shortly",
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::path::Path;
+    use tower::ServiceExt;
+
+    use crate::test_support::router_no_auth;
+
+    /// The JSON body of `resp`.
+    async fn json_body(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Assert a change followed as an operation answered `202` with a
+    /// `Location` naming its record, and read that record until it has an
+    /// outcome.
+    async fn followed_outcome(
+        app: &axum::Router,
+        resp: axum::response::Response,
+    ) -> serde_json::Value {
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let accepted = json_body(resp).await;
+        assert_eq!(
+            location,
+            format!("/api/v1/operations/{}", accepted["id"].as_str().unwrap())
+        );
+        for _ in 0..10 {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{location}?wait_seconds=2"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), axum::http::StatusCode::OK);
+            let record = json_body(resp).await;
+            if record["state"] != "running" {
+                return record;
+            }
+        }
+        panic!("the operation at {location} never finished");
+    }
+
+    /// Init a repo with `git init` but NO commit (unborn HEAD).
+    fn init_repo_no_commit(dir: &Path) {
+        let run = |args: &[&str]| {
+            let ok = yaran_core::test_git::fixture_git()
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "Test"]);
+    }
+
+    /// An over-long branch is refused before anything else is looked at, with
+    /// a sentence naming the limit and what to do instead.
+    #[tokio::test]
+    async fn an_over_long_base_branch_is_refused_with_the_limit_named() {
+        let (_tmp, app) = router_no_auth();
+        let branch = "b".repeat(super::MAX_BRANCH_LEN + 1);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/projects/p1/base-branch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "branch": branch }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            "A branch name longer than 1024 characters can't be a base branch. Pick a branch \
+             from the list."
+        );
+    }
+
+    /// A plain add of `path`.
+    fn post_add(path: &str) -> Request<Body> {
+        post_add_body(path, "false")
+    }
+
+    /// An add of `path` that creates an empty initial commit first.
+    fn post_add_with_initial_commit(path: &str) -> Request<Body> {
+        post_add_body(path, "true")
+    }
+
+    fn post_add_body(path: &str, create_initial_commit: &str) -> Request<Body> {
+        let body = format!(
+            r#"{{"path":{},"create_initial_commit":{}}}"#,
+            serde_json::to_string(path).unwrap(),
+            create_initial_commit
+        );
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_with_create_initial_commit_flag_births_head_then_registers() {
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_no_commit(repo.path());
+        let path = repo.path().to_string_lossy().to_string();
+        assert!(!yaran_core::git::repo_has_commits(repo.path()));
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_with_initial_commit(&path))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::CREATED,
+            "add should succeed and create the project"
+        );
+        assert!(
+            yaran_core::git::repo_has_commits(repo.path()),
+            "the repo must have a commit after adding with create_initial_commit=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_add_of_unborn_repo_is_rejected_without_committing() {
+        // Fail closed: a plain add (no create_initial_commit flag) of a
+        // commit-less repo must be rejected by the engine, not silently
+        // registered, and must not fabricate a commit. Clients birth the repo
+        // via the create_initial_commit flag instead.
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_no_commit(repo.path());
+        let path = repo.path().to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app.oneshot(post_add(&path)).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            !yaran_core::git::repo_has_commits(repo.path()),
+            "a rejected plain add must not create a commit"
+        );
+    }
+
+    fn post_add_init_repo(path: &str) -> Request<Body> {
+        let body = format!(
+            r#"{{"path":{},"init_repo":true}}"#,
+            serde_json::to_string(path).unwrap()
+        );
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    /// One of the add body's precedence-ladder flags.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum AddFlag {
+        CheckoutDefault,
+        CreateInitialCommit,
+        InitRepo,
+    }
+
+    /// An add body for `/repo` with exactly `flags` set.
+    fn add_body(flags: &[AddFlag]) -> super::AddProjectBody {
+        super::AddProjectBody {
+            path: "/repo".to_string(),
+            name: String::new(),
+            checkout_default: flags.contains(&AddFlag::CheckoutDefault),
+            create_initial_commit: flags.contains(&AddFlag::CreateInitialCommit),
+            init_repo: flags.contains(&AddFlag::InitRepo),
+            clone_url: None,
+            agent_name: None,
+            random_name: false,
+            pull_request: None,
+            add_existing: false,
+            review_copy: false,
+            review_copy_reason: None,
+            review_copy_branch: None,
+            review_copy_by_flag: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_created_project_answers_with_its_location_body_and_idempotency_replay() {
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        // The real path: the project is stored by it, and macOS reaches the
+        // temp folder through a symlink.
+        let path = repo
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let keyed = |path: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/projects")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "k1")
+                .body(Body::from(format!(
+                    r#"{{"path":{}}}"#,
+                    serde_json::to_string(path).unwrap()
+                )))
+                .unwrap()
+        };
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app.clone().oneshot(keyed(&path)).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = json["id"].as_str().expect("created id").to_string();
+        assert_eq!(location, format!("/api/v1/projects/{id}"));
+        assert_eq!(
+            json["path"].as_str(),
+            Some(path.as_str()),
+            "the full project view is returned, not the bare id"
+        );
+
+        let resp = app.clone().oneshot(keyed(&path)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "a replayed key returns the recorded project"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["id"].as_str(), Some(id.as_str()));
+
+        // Followed as an operation, a plain add has already finished when the
+        // route answers, and its record names the project it added.
+        let other = tempfile::tempdir().unwrap();
+        init_repo_with_commit(other.path());
+        // The real path, as above.
+        let other_path = other
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/projects?operation=1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"path":{}}}"#,
+                        serde_json::to_string(&other_path).unwrap()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+        let record = json_body(resp).await;
+        assert_eq!(record["kind"], "project.add");
+        assert_eq!(record["state"], "succeeded");
+        let added = record["created"][0].as_str().expect("the added project");
+        let projects = json_body(
+            app.oneshot(
+                Request::builder()
+                    .uri("/api/v1/projects")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let listed = projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == added)
+            .expect("the record names a project the workspace lists");
+        assert_eq!(listed["path"].as_str(), Some(other_path.as_str()));
+    }
+
+    /// An add body that asks to clone `url`, with every other flag set too.
+    fn clone_body(url: &str) -> super::AddProjectBody {
+        super::AddProjectBody {
+            clone_url: Some(url.to_string()),
+            agent_name: Some("first".to_string()),
+            random_name: true,
+            ..add_body(&[
+                AddFlag::CheckoutDefault,
+                AddFlag::CreateInitialCommit,
+                AddFlag::InitRepo,
+            ])
+        }
+    }
+
+    #[test]
+    fn add_project_command_puts_a_clone_and_a_pull_request_first() {
+        use yaran_core::wire::WireCommand;
+        assert_eq!(
+            super::add_project_command(clone_body("https://example.com/r.git")),
+            WireCommand::CloneProject {
+                url: "https://example.com/r.git".to_string(),
+                path: "/repo".to_string(),
+                agent_name: Some("first".to_string()),
+                random_name: true,
+                pull_request: None,
+                add_existing: false,
+                review_copy: yaran_core::clone_project::UpfrontReviewCopy::default(),
+            }
+        );
+        // A pull request, or the add of a checkout for one, outranks a clone
+        // address and every other flag; an add with no pull request is still
+        // sent to the engine, which refuses it by name.
+        let target = yaran_core::pr_reference::PullRequestCloneTarget {
+            host: "github.com".to_string(),
+            owner_repo: "acme/widget".to_string(),
+            number: 7,
+        };
+        for (add_existing, pull_request) in [
+            (false, Some(target.clone())),
+            (true, Some(target.clone())),
+            (true, None),
+        ] {
+            assert_eq!(
+                super::add_project_command(super::AddProjectBody {
+                    pull_request: pull_request.clone(),
+                    add_existing,
+                    ..clone_body("https://example.com/r.git")
+                }),
+                WireCommand::CloneProject {
+                    url: "https://example.com/r.git".to_string(),
+                    path: "/repo".to_string(),
+                    agent_name: Some("first".to_string()),
+                    random_name: true,
+                    pull_request,
+                    add_existing,
+                    review_copy: yaran_core::clone_project::UpfrontReviewCopy::default(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn add_project_command_carries_the_review_copy_agreement() {
+        use yaran_core::wire::WireCommand;
+        // The agreement to a review copy a dialog gives before the clone rides
+        // the request: the reason it was shown is kept, and a command line's
+        // flag carries none.
+        let agreed = |fields: serde_json::Value| {
+            let mut body = serde_json::json!({
+                "path": "/repo",
+                "pull_request": { "host": "github.com", "owner_repo": "acme/widget", "number": 7 },
+            });
+            body.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            match super::add_project_command(super::parse_add_project_body(body).unwrap()) {
+                WireCommand::CloneProject { review_copy, .. } => review_copy,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            agreed(serde_json::json!({
+                "review_copy": true,
+                "review_copy_reason": "busy",
+                "review_copy_branch": "x-review",
+            })),
+            yaran_core::clone_project::UpfrontReviewCopy {
+                agreed: true,
+                reason: Some("busy".to_string()),
+                branch: Some("x-review".to_string()),
+                by_flag: false,
+            }
+        );
+        assert_eq!(
+            agreed(serde_json::json!({ "review_copy_by_flag": true })),
+            yaran_core::clone_project::UpfrontReviewCopy {
+                agreed: false,
+                reason: None,
+                branch: None,
+                by_flag: true,
+            }
+        );
+    }
+
+    #[test]
+    fn add_project_command_follows_the_flag_precedence_ladder() {
+        use yaran_core::wire::WireCommand;
+        assert!(matches!(
+            super::add_project_command(clone_body("  ")),
+            WireCommand::AddProjectInitRepo { .. }
+        ));
+        assert!(matches!(
+            super::add_project_command(add_body(&[
+                AddFlag::CheckoutDefault,
+                AddFlag::CreateInitialCommit,
+                AddFlag::InitRepo
+            ])),
+            WireCommand::AddProjectInitRepo { .. }
+        ));
+        assert!(matches!(
+            super::add_project_command(add_body(&[
+                AddFlag::CheckoutDefault,
+                AddFlag::CreateInitialCommit
+            ])),
+            WireCommand::AddProjectCreateInitialCommit { .. }
+        ));
+        assert!(matches!(
+            super::add_project_command(add_body(&[AddFlag::CheckoutDefault])),
+            WireCommand::AddProjectCheckoutDefault { .. }
+        ));
+        assert!(matches!(
+            super::add_project_command(add_body(&[])),
+            WireCommand::AddProject { .. }
+        ));
+    }
+
+    fn post_add_flags(path: &str, flags: &str) -> Request<Body> {
+        let body = format!(
+            r#"{{"path":{}{}}}"#,
+            serde_json::to_string(path).unwrap(),
+            flags
+        );
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    /// The add's checks run in the route, and a refusal is still the
+    /// synchronous 400 with the engine's own sentence, for each add flow and
+    /// whether or not the client follows the change.
+    #[tokio::test]
+    async fn an_add_of_a_folder_that_is_no_repository_is_refused_at_once() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().to_string_lossy().into_owned();
+        let canonical = std::fs::canonicalize(folder.path()).unwrap();
+        let expected = format!("\"{}\" is not a git repository.", canonical.display());
+        for (uri, flags) in [
+            ("/api/v1/projects", ""),
+            ("/api/v1/projects?operation=1", ""),
+            ("/api/v1/projects", r#","checkout_default":true"#),
+            ("/api/v1/projects", r#","create_initial_commit":true"#),
+        ] {
+            let (_tmp, app) = router_no_auth();
+            let mut request = post_add_flags(&path, flags);
+            *request.uri_mut() = uri.parse().unwrap();
+            let resp = app.oneshot(request).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::BAD_REQUEST,
+                "{uri}{flags}"
+            );
+            let sentence = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&sentence), expected, "{uri}{flags}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_malformed_add_body_is_a_400_not_a_422() {
+        // 422 on this route means an add that was dispatched and failed, and the
+        // browser suppresses that toast. A body it could not read must not
+        // borrow the same code.
+        let (_tmp, app) = router_no_auth();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":42}"#))
+            .unwrap();
+        let resp = app.oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn clone_url_then_init_repo_outrank_the_other_add_flags() {
+        // The precedence ladder: a plain folder sent with every flag set must be
+        // initialized as a repository, which only `init_repo` can do.
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_flags(
+                &path,
+                r#","init_repo":true,"create_initial_commit":true,"checkout_default":true"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        assert!(
+            folder.path().join(".git").exists(),
+            "init_repo must win and initialize the folder"
+        );
+
+        // A clone address outranks it in turn: the route answers at once with
+        // the clone's operation, and a check that refuses answers 400 with its
+        // sentence.
+        let (_tmp, app) = router_no_auth();
+        let dest = std::fs::canonicalize(folder.path()).unwrap().join("clone");
+        let flags = r#","clone_url":"/nowhere/remote.git","agent_name":"first","init_repo":true,"create_initial_commit":true,"checkout_default":true"#;
+        let resp = app
+            .clone()
+            .oneshot(post_add_flags(&dest.to_string_lossy(), flags))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+        let accepted = json_body(resp).await;
+        let op_id = accepted["op_id"]
+            .as_str()
+            .expect("the clone's operation id");
+        let record = json_body(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/v1/operations/{op_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(record["kind"], "project.add");
+        let resp = app
+            .oneshot(post_add_flags("relative/clone", flags))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        let sentence = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&sentence).contains("isn't an absolute path"),
+            "{sentence:?}"
+        );
+
+        // A pull request outranks the clone address and every other flag: the
+        // server takes the pull request path, which here refuses because
+        // GitHub integration is off, where a plain clone would have answered
+        // 202 for either body.
+        for flags in [
+            r#","clone_url":"/nowhere/remote.git","init_repo":true,"pull_request":{"host":"github.com","owner_repo":"acme/widget","number":7}"#,
+            r#","pull_request":{"host":"github.com","owner_repo":"acme/widget","number":7}"#,
+        ] {
+            let (_tmp, app) = router_no_auth();
+            let resp = app
+                .oneshot(post_add_flags(&dest.to_string_lossy(), flags))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::BAD_REQUEST,
+                "{flags}"
+            );
+            let sentence = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&sentence).contains("requires GitHub integration"),
+                "{flags}: {sentence:?}"
+            );
+        }
+    }
+
+    /// Body of the identity-free add, run by the parent test below in a CHILD
+    /// process because only the process environment reaches the git commands
+    /// the worker spawns.
+    #[tokio::test]
+    #[ignore = "helper process for add_with_init_repo_succeeds_with_no_git_identity"]
+    async fn add_init_repo_identity_free_child() {
+        let Ok(folder) = std::env::var("YARAN_TEST_INIT_REPO_FOLDER") else {
+            return;
+        };
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_flags(&folder, r#","init_repo":true"#))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        assert!(yaran_core::git::repo_has_commits(Path::new(&folder)));
+    }
+
+    #[tokio::test]
+    async fn add_with_init_repo_succeeds_with_no_git_identity() {
+        // The exact condition a clean CI runner boots in: no configured
+        // identity and no synthesizable one. Adopting a plain folder must still
+        // answer 201, because the commit it needs is yaran's own.
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+
+        // The env is hand-rolled rather than reusing yaran-core's
+        // `test_support::isolate_git_config`, which is `pub(crate)` to that
+        // crate. `user.useConfigOnly` rides in through `GIT_CONFIG_COUNT`,
+        // git's own env transport for `-c`, because the folder git is about to
+        // initialize has no config file to write it into yet; without it a
+        // dotted hostname would let git synthesize an address and the fallback
+        // would rightly never fire.
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "project_actions::tests::add_init_repo_identity_free_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("YARAN_TEST_INIT_REPO_FOLDER", folder.path())
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path().join("config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+            .env("GIT_CONFIG_VALUE_0", "true")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env_remove("GIT_COMMITTER_NAME")
+            .env_remove("GIT_COMMITTER_EMAIL")
+            .env_remove("EMAIL")
+            .env_remove("EMAIL_ADDRESS")
+            .output()
+            .expect("re-run the test binary");
+        assert!(
+            out.status.success(),
+            "the identity-free add must answer 201:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn create_initial_commit_outranks_checkout_default() {
+        // An unborn repo has no default branch to check out, so the birth flag
+        // must win over `checkout_default` when both arrive.
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_no_commit(repo.path());
+        let path = repo.path().to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_flags(
+                &path,
+                r#","create_initial_commit":true,"checkout_default":true"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        assert!(yaran_core::git::repo_has_commits(repo.path()));
+    }
+
+    #[tokio::test]
+    async fn add_with_init_repo_flag_rejects_subdirs_and_existing_repos() {
+        // Catches validation bypass at the HTTP boundary: `init_repo: true`
+        // must be refused for a repo subdirectory and for an existing repo
+        // root, with the engine's validation messages surfacing as 400s.
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_no_commit(repo.path());
+        let sub = repo.path().join("src");
+        std::fs::create_dir(&sub).unwrap();
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_init_repo(&sub.to_string_lossy()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            !sub.join(".git").exists(),
+            "no nested repository may have been created"
+        );
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_init_repo(&repo.path().to_string_lossy()))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "an existing repo root must not be re-initialized"
+        );
+    }
+
+    /// Init a repo with `git init` and one commit.
+    fn init_repo_with_commit(dir: &Path) {
+        init_repo_no_commit(dir);
+        let run = |args: &[&str]| {
+            let ok = yaran_core::test_git::fixture_git()
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["commit", "--allow-empty", "-q", "-m", "init"]);
+    }
+
+    fn commit_count(dir: &Path) -> String {
+        let out = yaran_core::test_git::fixture_git()
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn create_initial_commit_flag_on_already_born_repo_registers_without_a_second_commit() {
+        // Race: a commit landed between the client's inspect and this request.
+        // The flag must gracefully register the repo (no error, no extra commit),
+        // not hard-fail: it's a bootstrap no-op when there's nothing to bootstrap.
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let before = commit_count(repo.path());
+        let path = repo.path().to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_with_initial_commit(&path))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        assert_eq!(
+            commit_count(repo.path()),
+            before,
+            "a born repo must not gain a second commit"
+        );
+    }
+
+    /// PATCH a project's settings and assert the route took it.
+    async fn patch_settings(app: &axum::Router, id: &str, body: serde_json::Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/v1/projects/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK, "{body}");
+    }
+
+    /// Wait until the project's three scalar settings read `expected`, as the
+    /// projects listing reports them (`[provider, auto_reopen_agents,
+    /// startup_command]`); the save lands on a worker, after the PATCH answers.
+    async fn wait_for_settings(app: &axum::Router, id: &str, expected: serde_json::Value) {
+        let mut seen = serde_json::Value::Null;
+        for _ in 0..100 {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/projects")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let projects = json_body(resp).await;
+            let project = projects
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == id)
+                .expect("the project is listed")
+                .clone();
+            seen = serde_json::json!([
+                project["explicit_default_provider"],
+                project["auto_reopen_agents"],
+                project["startup_command"],
+            ]);
+            if seen == expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the settings never read {expected}; last seen {seen}");
+    }
+
+    /// Each scalar setting is tri-state on the wire: an absent field is left
+    /// alone, `null` clears it (what the web's Inherit and empty fields send),
+    /// and a value sets it.
+    #[tokio::test]
+    async fn a_project_patch_sets_clears_and_leaves_each_setting_alone() {
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let (_tmp, app) = router_no_auth();
+        let id = add_project_and_id(&app, &repo.path().to_string_lossy()).await;
+        wait_for_settings(&app, &id, serde_json::json!([null, null, null])).await;
+
+        patch_settings(
+            &app,
+            &id,
+            serde_json::json!({
+                "provider": "codex",
+                "auto_reopen_agents": false,
+                "startup_command": "make setup",
+            }),
+        )
+        .await;
+        wait_for_settings(&app, &id, serde_json::json!(["codex", false, "make setup"])).await;
+
+        patch_settings(&app, &id, serde_json::json!({ "startup_command": null })).await;
+        wait_for_settings(&app, &id, serde_json::json!(["codex", false, null])).await;
+
+        patch_settings(&app, &id, serde_json::json!({ "provider": null })).await;
+        wait_for_settings(&app, &id, serde_json::json!([null, false, null])).await;
+
+        patch_settings(&app, &id, serde_json::json!({ "auto_reopen_agents": null })).await;
+        wait_for_settings(&app, &id, serde_json::json!([null, null, null])).await;
+    }
+
+    /// Add a committed repo as a project through the same router and return its id.
+    async fn add_project_and_id(app: &axum::Router, path: &str) -> String {
+        let resp = app.clone().oneshot(post_add(path)).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        json["id"].as_str().expect("created id").to_string()
+    }
+
+    /// Remove project `id`, keeping its worktrees.
+    fn delete_project_req(id: &str) -> Request<Body> {
+        delete_project_at(format!("/api/v1/projects/{id}"))
+    }
+
+    /// Remove project `id` and its worktrees.
+    fn delete_project_and_worktrees_req(id: &str) -> Request<Body> {
+        delete_project_at(format!("/api/v1/projects/{id}?delete_worktrees=true"))
+    }
+
+    fn delete_project_at(uri: String) -> Request<Body> {
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn router_with_launching_project_session() -> (tempfile::TempDir, axum::Router) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = yaran_core::config::YaranPaths {
+            root: tmp.path().to_path_buf(),
+            config_path: tmp.path().join("config.toml"),
+            sessions_db_path: tmp.path().join("sessions.sqlite3"),
+            worktrees_root: tmp.path().join("worktrees"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        std::fs::write(
+            &paths.config_path,
+            format!(
+                "[[projects]]\nid = \"p1\"\npath = \"{}\"\nname = \"Project\"\n",
+                tmp.path().to_string_lossy()
+            ),
+        )
+        .unwrap();
+        let store = yaran_core::storage::SessionStore::open(&paths.sessions_db_path).unwrap();
+        let now = chrono::Utc::now();
+        store
+            .create_session(&yaran_core::model::AgentSession {
+                id: "s1".to_string(),
+                slot_tab_id: "s1-slot".to_string(),
+                provider: yaran_core::model::ProviderKind::new("claude"),
+                title: None,
+                started_providers: Vec::new(),
+                desired_running: false,
+                auto_reopen_enabled: false,
+                status: yaran_core::model::SessionStatus::Detached,
+                created_at: now,
+                updated_at: now,
+                last_focused_tab: None,
+                workspace: yaran_core::model::AgentWorkspace::Managed(
+                    yaran_core::model::ManagedWorkspace {
+                        project_id: "p1".to_string(),
+                        project_path: None,
+                        source_branch: "main".to_string(),
+                        branch_name: "feature".to_string(),
+                        initial_branch: "feature".to_string(),
+                        branch_provenance: yaran_core::model::BranchProvenance::CreatedByYaran,
+                        worktree_path: tmp.path().to_string_lossy().to_string(),
+                    },
+                ),
+            })
+            .unwrap();
+        drop(store);
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
+        engine.mark_in_flight(yaran_core::engine::InFlightKey::AgentLaunch(
+            engine
+                .slot_tab_id_of(yaran_core::ids::SessionIdRef::new("s1"))
+                .to_owned(),
+        ));
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        (tmp, crate::server::router(handle))
+    }
+
+    #[tokio::test]
+    async fn project_delete_reports_a_launch_refusal_as_conflict() {
+        let (_tmp, app) = router_with_launching_project_session();
+
+        let response = app
+            .oneshot(delete_project_and_worktrees_req("p1"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("still launching"));
+    }
+
+    #[tokio::test]
+    async fn delete_project_with_worktrees_flag_removes_the_project_and_keeps_the_source_checkout()
+    {
+        // The `?delete_worktrees=true` branch routes to `DeleteProject`, which
+        // removes the agents' worktrees but must NEVER touch the source checkout.
+        // With no agents there is nothing to remove, so this asserts the route is
+        // wired (204, project gone) and the safety property (source dir intact).
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let path = repo.path().to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let id = add_project_and_id(&app, &path).await;
+
+        let resp = app
+            .clone()
+            .oneshot(delete_project_and_worktrees_req(&id))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::NO_CONTENT);
+        assert!(
+            repo.path().join(".git").exists(),
+            "the source checkout must survive a project delete"
+        );
+
+        // Followed as an operation, the deletion's record finishes with its
+        // final and names the project it removed.
+        let other = tempfile::tempdir().unwrap();
+        init_repo_with_commit(other.path());
+        let other_id = add_project_and_id(&app, &other.path().to_string_lossy()).await;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/api/v1/projects/{other_id}?delete_worktrees=true&operation=1"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let record = followed_outcome(&app, resp).await;
+        assert_eq!(record["kind"], "project.remove");
+        assert_eq!(record["state"], "succeeded");
+        assert_eq!(record["removed"], serde_json::json!([other_id]));
+        assert!(
+            record["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Deleted project "),
+            "{record}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_record_kept_for_no_time_still_answers_its_change_whole() {
+        // With `operation_retention_seconds = 0` a finished record is forgotten
+        // the moment anything looks, so the reply has to carry the record as
+        // the change left it rather than read it back.
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let paths = yaran_core::config::YaranPaths {
+            root: tmp.path().to_path_buf(),
+            config_path: tmp.path().join("config.toml"),
+            sessions_db_path: tmp.path().join("sessions.sqlite3"),
+            worktrees_root: tmp.path().join("worktrees"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
+        engine.config.server.operation_retention_seconds = 0;
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/projects?operation=1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"path":{}}}"#,
+                        serde_json::to_string(&repo.path().to_string_lossy()).unwrap()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+        let record = json_body(resp).await;
+        assert_eq!(record["kind"], "project.add");
+        assert_eq!(record["state"], "succeeded");
+        assert_eq!(record["created"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn plain_delete_removes_the_project_and_keeps_worktrees() {
+        // The default DELETE (no flag) routes to `RemoveProject` and returns 204.
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let path = repo.path().to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let id = add_project_and_id(&app, &path).await;
+
+        let resp = app.clone().oneshot(delete_project_req(&id)).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::NO_CONTENT);
+        assert!(repo.path().join(".git").exists());
+
+        let other = tempfile::tempdir().unwrap();
+        init_repo_with_commit(other.path());
+        let other_id = add_project_and_id(&app, &other.path().to_string_lossy()).await;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/projects/{other_id}?operation=1"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let record = followed_outcome(&app, resp).await;
+        assert_eq!(record["state"], "succeeded");
+        assert_eq!(record["removed"], serde_json::json!([other_id]));
+    }
+
+    #[tokio::test]
+    async fn create_initial_commit_works_on_a_bare_repo_over_rest() {
+        let repo = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            assert!(
+                yaran_core::test_git::fixture_git()
+                    .args(args)
+                    .current_dir(repo.path())
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        run(&["init", "--bare", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        let path = repo.path().to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let resp = app
+            .oneshot(post_add_with_initial_commit(&path))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        assert!(yaran_core::git::repo_has_commits(repo.path()));
+    }
+}

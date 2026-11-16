@@ -1,6 +1,6 @@
 name: Journeys
 
-# The container journey suite (crates/dux-journeys): the real dux binary in
+# The container journey suite (crates/yaran-journeys): the real yaran binary in
 # Docker, driven over HTTP, WebSockets and a real browser, with nginx, Caddy and
 # a stand-in Tailscale where a journey needs them. Linux only: the binary built
 # here is mounted into a Linux container.
@@ -25,7 +25,7 @@ env:
   JOURNEY_FEATURES: auth
   # The image the harness uses instead of building its own: the cached build
   # step below produces it.
-  DUX_JOURNEY_IMAGE: dux-journeys:ci
+  YARAN_JOURNEY_IMAGE: yaran-journeys:ci
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -35,12 +35,12 @@ jobs:
     timeout-minutes: 45
     steps:
       # The journeys need the web UI in the binary (a browser journey loads it),
-      # and DUX_DISABLE_UI_BUILD would leave a notice page there instead. Same
+      # and YARAN_DISABLE_UI_BUILD would leave a notice page there instead. Same
       # guard as test.yml, inline because this workflow has a single job.
       - name: Fail if the frontend-build escape hatch is set
         run: |
-          if [ -n "${DUX_DISABLE_UI_BUILD:-}" ]; then
-            echo "DUX_DISABLE_UI_BUILD is set; the journeys need the web UI in the binary." >&2
+          if [ -n "${YARAN_DISABLE_UI_BUILD:-}" ]; then
+            echo "YARAN_DISABLE_UI_BUILD is set; the journeys need the web UI in the binary." >&2
             exit 1
           fi
 
@@ -56,7 +56,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: crates/dux-web/web/package-lock.json
+          cache-dependency-path: crates/yaran-web/web/package-lock.json
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -66,8 +66,8 @@ jobs:
 
       # The binary the containers mount, in the `journeys` profile (optimized,
       # but incremental and parallel: release's LTO build takes minutes).
-      - name: Build the dux binary
-        run: cargo build --profile journeys --bin dux
+      - name: Build the yaran binary
+        run: cargo build --profile journeys --bin yaran
 
       # The third-party images (the journey image's base, nginx, Caddy), pinned
       # by digest in the one file the harness reads too; how to move one forward
@@ -88,11 +88,11 @@ jobs:
             BASE_IMAGE=${{ env.JOURNEY_BASE_IMAGE }}
             AGENT_CLIS=0
             JOURNEY_TOOLS=1
-          labels: dux-journeys=1
-          tags: ${{ env.DUX_JOURNEY_IMAGE }}
+          labels: yaran-journeys=1
+          tags: ${{ env.YARAN_JOURNEY_IMAGE }}
           load: true
-          cache-from: type=gha,scope=dux-journeys
-          cache-to: type=gha,mode=max,scope=dux-journeys
+          cache-from: type=gha,scope=yaran-journeys
+          cache-to: type=gha,mode=max,scope=yaran-journeys
 
       # Pulled up front so a registry hiccup fails here, by name, rather than
       # inside whichever journey happens to start the first proxy.
@@ -104,18 +104,18 @@ jobs:
       # The repository's clippy gate lints this crate too (see its Cargo.toml);
       # this step lints it on its own, with every journey compiled.
       - name: Lint the journeys
-        run: cargo clippy -p dux-journeys --all-targets --features auth -- -D warnings
+        run: cargo clippy -p yaran-journeys --all-targets --features auth -- -D warnings
 
       - name: Build the journeys
-        run: cargo test -p dux-journeys --features "$JOURNEY_FEATURES" --no-run
+        run: cargo test -p yaran-journeys --features "$JOURNEY_FEATURES" --no-run
 
       - name: Run the journeys
-        run: cargo test -p dux-journeys --features "$JOURNEY_FEATURES" -- --test-threads=2
+        run: cargo test -p yaran-journeys --features "$JOURNEY_FEATURES" -- --test-threads=2
 
       # Every journey removes its containers when it ends; this is the backstop
       # for a run that was cancelled or killed mid-journey.
       - name: Remove anything a journey left behind
         if: always()
         run: |
-          docker ps -aq --filter label=dux-journeys=1 | xargs -r docker rm -f
-          docker network ls -q --filter label=dux-journeys=1 | xargs -r docker network rm
+          docker ps -aq --filter label=yaran-journeys=1 | xargs -r docker rm -f
+          docker network ls -q --filter label=yaran-journeys=1 | xargs -r docker network rm

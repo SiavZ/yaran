@@ -5,32 +5,32 @@ group: Getting started
 order: 2
 ---
 
-dux follows one rule above all others: **the config file is the documentation.** Every
+yaran follows one rule above all others: **the config file is the documentation.** Every
 setting is configurable, and every setting is commented inline. You should never have to
 leave `config.toml` to understand what an option does.
 
 ## Where it lives
 
-dux writes a fully annotated `config.toml` the first time it launches:
+yaran writes a fully annotated `config.toml` the first time it launches:
 
-- **Linux:** `$XDG_CONFIG_HOME/dux/config.toml`, or `~/.config/dux/config.toml` when
+- **Linux:** `$XDG_CONFIG_HOME/yaran/config.toml`, or `~/.config/yaran/config.toml` when
   `XDG_CONFIG_HOME` is not set
-- **macOS:** `~/.dux/config.toml`
+- **macOS:** `~/.yaran/config.toml`
 
-Set the `DUX_HOME` environment variable to keep everything somewhere else. It must be an
+Set the `YARAN_HOME` environment variable to keep everything somewhere else. It must be an
 absolute path, and it replaces the whole config directory: the config, the session
 database, the logs, your themes and your saved remotes all live there.
 
 Themes are preselected, keybindings are ready to remap, and the default providers are
 already wired in. Open it, read the comments, change what you like.
 
-The remotes the [command line](/docs/command-line#another-machines-dux) can talk to, and
+The remotes the [command line](/docs/command-line#another-machines-yaran) can talk to, and
 its sign-ins to them, are kept beside it in `remotes.toml`, readable only by you. They
 never go in `config.toml`.
 
 > [!TIP]
 > Each provider block carries its own settings, including `web_dragdrop_paste`, which
-> decides what a dropped or pasted file's path looks like in that agent's prompt. dux
+> decides what a dropped or pasted file's path looks like in that agent's prompt. yaran
 > ships a measured value for every CLI it knows, so you do not normally set it. See
 > [Custom agents and providers](/docs/custom-agents) for the anatomy of a provider block
 > and [Dropping and pasting files onto an agent](/docs/dropping-files) for which CLI wants
@@ -40,37 +40,37 @@ never go in `config.toml`.
 
 A handful of subcommands handle the file without you hunting for it:
 
-- `dux config path` prints the absolute path to the active config file.
-- `dux config get <setting>` prints one setting's value (`--show` prints one that can
+- `yaran config path` prints the absolute path to the active config file.
+- `yaran config get <setting>` prints one setting's value (`--show` prints one that can
   hold secrets).
-- `dux config set <setting> <value>` changes one setting and has a running dux reload it,
+- `yaran config set <setting> <value>` changes one setting and has a running yaran reload it,
   then says whether the reload worked. For a secret, leave the value out to be asked for
   it, or pipe it in with `--stdin`.
-- `dux config diff` shows what you have changed from the defaults.
-- `dux config regenerate` previews the latest canonical template, so you can see new
+- `yaran config diff` shows what you have changed from the defaults.
+- `yaran config regenerate` previews the latest canonical template, so you can see new
   options after an upgrade. Add `--yes` to overwrite the file with it.
-- `dux config restore-docs` puts the explanatory comments back into a config that lost
+- `yaran config restore-docs` puts the explanatory comments back into a config that lost
   them, keeping every value exactly as it is.
-- `dux config reset` starts you over. Both forms refuse while another dux is running:
-  - `dux config reset` removes the config, the log, the server log with its rotated copies
+- `yaran config reset` starts you over. Both forms refuse while another yaran is running:
+  - `yaran config reset` removes the config, the log, the server log with its rotated copies
     and your saved remotes. It **keeps your agents and worktrees**.
-  - `dux config reset --all` is the full factory reset: all of that, plus the session
-    database and every worktree dux made. It keeps one thing, the note that you have
+  - `yaran config reset --all` is the full factory reset: all of that, plus the session
+    database and every worktree yaran made. It keeps one thing, the note that you have
     already seen the welcome screen, so the next start does not greet you as a stranger.
-    Browser tabs and saved remotes that knew it treat the reset dux as a different one.
+    Browser tabs and saved remotes that knew it treat the reset yaran as a different one.
     See the warning below.
 
-Every flag of every `dux config` subcommand is in the
-[command line reference](/docs/cli-reference#dux-config).
+Every flag of every `yaran config` subcommand is in the
+[command line reference](/docs/cli-reference#yaran-config).
 
 Hand-edits are preserved across saves: your comments and ordering survive.
 
-`dux config` always works on this machine's file. When the command line has a remote
-selected, through `DUX_REMOTE` or a default remote, it refuses rather than let you think
-you changed the other machine; `dux --local config …` goes ahead.
+`yaran config` always works on this machine's file. When the command line has a remote
+selected, through `YARAN_REMOTE` or a default remote, it refuses rather than let you think
+you changed the other machine; `yaran --local config …` goes ahead.
 
 > [!CAUTION]
-> `dux config regenerate --yes` replaces `config.toml` with fresh defaults and **keeps no
+> `yaran config regenerate --yes` replaces `config.toml` with fresh defaults and **keeps no
 > backup**. Your projects, macros, keybindings and web password go with it. Preview first
 > without `--yes`, or use `restore-docs` if all you want is the comments back (it writes a
 > backup before it changes anything).
@@ -80,26 +80,26 @@ you changed the other machine; `dux --local config …` goes ahead.
 A setting is named by its table and key, joined with dots:
 
 ```bash
-dux config get server.port               # 3890
-dux config set server.port 4000
-dux config set ui.theme "catppuccin_mocha"
-dux config set server.allowed_hosts '["dux.example.com", "box.example.com"]'
-dux config set providers.claude.command claude
+yaran config get server.port               # 3890
+yaran config set server.port 4000
+yaran config set ui.theme "catppuccin_mocha"
+yaran config set server.allowed_hosts '["yaran.example.com", "box.example.com"]'
+yaran config set providers.claude.command claude
 ```
 
 #### What `get` prints
 
-- **What the file says**, or, when the file leaves the setting out, **the value dux
+- **What the file says**, or, when the file leaves the setting out, **the value yaran
   actually uses**. A note on stderr says which, so a script capturing the value gets the
   value alone.
-- **What dux uses, when that differs from the file.** A log level dux does not know runs
+- **What yaran uses, when that differs from the file.** A log level yaran does not know runs
   as `info`, a value past its ceiling runs at the ceiling, and a `0` that means "default"
-  runs as the default. `get` prints what dux uses, and the note names what the file says
+  runs as the default. `get` prints what yaran uses, and the note names what the file says
   and why.
 - **A provider without a command** reads as an empty command, and `get` says that provider
   cannot start.
 - **A broken file** still works with `get`, which is how you look at the broken part. It
-  prints what the file says and names the problem that keeps dux from working out the
+  prints what the file says and names the problem that keeps yaran from working out the
   value it would use.
 - **Secrets stay hidden.** `get` on `env`, an `env.<NAME>` value or `projects` says whether
   it is set, and prints the value only when you add `--show`.
@@ -112,13 +112,13 @@ array. **Only that one line of the file changes; every comment stays.**
 
 `set` refuses, and writes nothing, when the value would:
 
-- **Add a problem dux would refuse to start with.** A host name where `server.host` needs
-  an IP address, or an environment variable name dux does not accept. The message is the
+- **Add a problem yaran would refuse to start with.** A host name where `server.host` needs
+  an IP address, or an environment variable name yaran does not accept. The message is the
   one a start gives.
-- **Be changed by dux when it loads the file.** One it would drop, put back to its default
+- **Be changed by yaran when it loads the file.** One it would drop, put back to its default
   or hold at a limit: a terminal font size past its range, a `gh` re-check interval below
   its floor, a theme the terminal UI has no built-in or file for, or a provider changed
-  back into a retired stock block dux removes. The refusal names the value dux would use
+  back into a retired stock block yaran removes. The refusal names the value yaran would use
   instead.
 - **Break a rule across `[server.auth]`.** Those settings are checked against the rest of
   the section as the file has it, so a `minimum_password_length` that does not fit your
@@ -130,8 +130,8 @@ Some files are already broken before you start:
   taken, and `set` says it stays at its default until that problem is fixed.
 - **A broken `[server.auth]` section.** `set` still fixes it one setting at a time: a change
   is refused only if it adds a problem, and after each change `set` lists what is still
-  wrong, since dux will not start until all of it is fixed.
-- **A value of the wrong type** (a word where a number goes). `dux server` uses that
+  wrong, since yaran will not start until all of it is fixed.
+- **A value of the wrong type** (a word where a number goes). `yaran server` uses that
   setting's default and starts; the terminal UI will not start until it is fixed. `get` and
   `set` say so in those words, and `get` says the value in use cannot be worked out until
   then.
@@ -146,14 +146,14 @@ Some files are already broken before you start:
   `set providers.<name>.command` first. `set` refuses anything that would leave a provider
   without a command.
 - **Environment variables** are `env.<NAME>`, and their values are treated as secrets,
-  since that is where API tokens live. `dux config set env.GITHUB_TOKEN` asks for the value
+  since that is where API tokens live. `yaran config set env.GITHUB_TOKEN` asks for the value
   without echoing it (or reads it, up to 1 MiB, from a pipe with `--stdin`), never takes it
   as an argument, and reports only that the value was updated.
 - **The web password** is `server.auth.password`, a setting with no line of its own: `set`
   asks for it (or reads `--stdin`), checks it against your minimums, and stores only its
   hash. See [the web password](#the-web-password-serverauth).
 - **A value that starts with two dashes** goes after `--`, which ends the flags:
-  `dux config set server.title -- "--staging--"`. A single dash, as in a negative number,
+  `yaran config set server.title -- "--staging--"`. A single dash, as in a negative number,
   needs nothing.
 - **A misspelled setting** is refused with the closest real one. The message repeats only
   the part of the name that exists, never what you typed after it, in case that was a value
@@ -165,75 +165,75 @@ Some files are already broken before you start:
 
 - **What `set` cannot write.** `[[projects]]`, `[keys]` and `[macros]` are read with `get`
   but not written with `set`, because each has rules of its own. Edit them in the file, or
-  use dux itself. A key whose own name contains a dot cannot be named this way either; edit
+  use yaran itself. A key whose own name contains a dot cannot be named this way either; edit
   the file for that one.
 
 #### What happens after `set` writes
 
-`set` asks the dux running on this machine to reload its config and waits for the answer.
+`set` asks the yaran running on this machine to reload its config and waits for the answer.
 It then says which of these happened:
 
 - **The reload applied.** The new settings are in force. If a changed setting is only read
-  when dux starts or when a server binds, the same message says so and what to restart.
+  when yaran starts or when a server binds, the same message says so and what to restart.
 - **The reload was refused.** The change is saved in `config.toml` but not in force, and
-  the message gives the reason. The running dux keeps its previous settings. `set` exits
-  with status **1**. Fix the file and reload again, or use the reload command in dux.
+  the message gives the reason. The running yaran keeps its previous settings. `set` exits
+  with status **1**. Fix the file and reload again, or use the reload command in yaran.
 - **The reload applied, but one step failed.** The new settings are in force, the message
   names the step and says to fix it and reload again, and `set` exits with status **1**.
   The same goes when the change also started, stopped or moved a listener (the background
   web server, the Tailscale address) and that could not be done: `set` waits for the
   listener to answer, and the message names what it refused or why it failed.
-- **dux is not running.** Nothing was asked. `set` prints "dux is not running, so the
+- **yaran is not running.** Nothing was asked. `set` prints "yaran is not running, so the
   change applies the next time it starts." and exits with status **0**.
-- **dux is running but could not be asked.** The change is saved, and `set` prints "The
-  change is saved, but the running dux was not asked to reload it:" followed by why (for
-  example that dux is running without a control socket, is still starting, or does not
-  answer on it). dux keeps its current settings until you reload it from the app or restart
+- **yaran is running but could not be asked.** The change is saved, and `set` prints "The
+  change is saved, but the running yaran was not asked to reload it:" followed by why (for
+  example that yaran is running without a control socket, is still starting, or does not
+  answer on it). yaran keeps its current settings until you reload it from the app or restart
   it. Exit status **0**.
-- **dux did not answer in time.** `set` waits up to `[cli] wait_timeout_seconds` (10
-  minutes by default). If none comes it prints "The change is saved, but the running dux
+- **yaran did not answer in time.** `set` waits up to `[cli] wait_timeout_seconds` (10
+  minutes by default). If none comes it prints "The change is saved, but the running yaran
   has not said whether the reload worked, so its outcome is unknown:" followed by the
   operation it was following, which keeps running and can be looked up later with
-  `dux operations show`. Exit status **6**, the command line's code for an outcome that is
+  `yaran operations show`. Exit status **6**, the command line's code for an outcome that is
   not known.
 
-The running dux also reports how the reload went in its status line, in the web UI's
-notifications and in `dux.log`; two `set`s in quick succession are both picked up.
+The running yaran also reports how the reload went in its status line, in the web UI's
+notifications and in `yaran.log`; two `set`s in quick succession are both picked up.
 
-#### Edits made while dux runs
+#### Edits made while yaran runs
 
-Hand-edits and `set` survive dux's own saves. A save dux makes from its own settings only
-writes the settings that changed inside dux since it last read or saved the file, keeping
+Hand-edits and `set` survive yaran's own saves. A save yaran makes from its own settings only
+writes the settings that changed inside yaran since it last read or saved the file, keeping
 the comments around them.
 
 - **Your edit stays as you left it** across any number of saves, unless you then change
-  that same setting inside dux before it reloads. The same goes for each field of a project.
-- **A project you add by hand stays** when dux adds one of its own. A project written
-  without an id is given one the first time dux saves.
-- **A setting new in this version of dux** is written in with its current value, and so is
-  one you deleted from the file, once dux has reloaded it.
+  that same setting inside yaran before it reloads. The same goes for each field of a project.
+- **A project you add by hand stays** when yaran adds one of its own. A project written
+  without an id is given one the first time yaran saves.
+- **A setting new in this version of yaran** is written in with its current value, and so is
+  one you deleted from the file, once yaran has reloaded it.
 - **`[server.auth]` changes only on purpose:** an explicit `set`, a password change, or a
-  block after failed logins. Never because dux saved its other settings.
+  block after failed logins. Never because yaran saved its other settings.
 
 > [!TIP]
-> After editing `config.toml` by hand, you can ask a running dux to reload it without
+> After editing `config.toml` by hand, you can ask a running yaran to reload it without
 > touching the app: `kill -USR1 <pid>`. The PID is the first line of `dux.lock`, next to the config.
 
 ### Factory reset in detail
 
 > [!WARNING]
-> A factory reset (`dux config reset --all`) deletes every worktree dux made, **uncommitted
-> work included**. It is all or nothing, and it refuses to run while another dux is running.
+> A factory reset (`yaran config reset --all`) deletes every worktree yaran made, **uncommitted
+> work included**. It is all or nothing, and it refuses to run while another yaran is running.
 
 Here is what the reset does, in order:
 
-1. **It stops what dux started** in those worktrees (a startup command's dev server, or a
+1. **It stops what yaran started** in those worktrees (a startup command's dev server, or a
    job a terminal left working in one), giving each the same grace period as a delete
    before forcing it. That includes everything a standalone agent started, wherever it
    works.
-2. **It looks once more.** If anything dux started still runs, or any program of yours is
-   working in a folder the reset would delete (one dux never started included), it stops.
-   It also stops if dux cannot tell, because it cannot read the database, the list of what
+2. **It looks once more.** If anything yaran started still runs, or any program of yours is
+   working in a folder the reset would delete (one yaran never started included), it stops.
+   It also stops if yaran cannot tell, because it cannot read the database, the list of what
    it started, or the process list. When it stops, it says why, lists each program and its
    folder, and exits with status 1. Stop what is listed and run it again.
 3. **Only then does it delete.**
@@ -246,15 +246,15 @@ Some things to know:
   the database and the config, lists what it removed and what failed, and exits with status
   1. Fix that and run it again.
 - **A folder a standalone agent runs in is never removed.**
-- **Branches kept with a left-over folder go too,** when dux created them and they still
+- **Branches kept with a left-over folder go too,** when yaran created them and they still
   point where they did when the folder was left behind. A branch that existed before its
   agent is kept, as a delete keeps it.
 - **The welcome screen stays dismissed.** The reset keeps the record that you have seen it.
 
-### What `dux config diff` shows, and what it holds back
+### What `yaran config diff` shows, and what it holds back
 
 The summary compares your file as written against the built-in defaults, so it reports
-what you typed rather than what dux normalizes it into: no clamping of out-of-range
+what you typed rather than what yaran normalizes it into: no clamping of out-of-range
 numbers, and no default provider block quietly folded in. A setting added in a new release
 turns up in your diff the day it ships, with no list for anyone to maintain.
 
@@ -274,18 +274,18 @@ Everything else is shown as `setting: default -> yours`, with long values cut of
 characters.
 
 > [!CAUTION]
-> The plain summary is safe to paste into a bug report. **`dux config diff --raw` is
+> The plain summary is safe to paste into a bug report. **`yaran config diff --raw` is
 > not.** It prints a unified diff of your entire config, including every value in your
 > `[env]` table verbatim. Redact it before you share it anywhere.
 
 ### Getting the comments back
 
 Ordinary saves preserve comments rather than adding them, so a `config.toml` that never
-had any stays bare forever. `dux config restore-docs` fixes that:
+had any stays bare forever. `yaran config restore-docs` fixes that:
 
 ```bash
-dux config restore-docs        # preview: shows a diff, changes nothing
-dux config restore-docs --yes  # apply
+yaran config restore-docs        # preview: shows a diff, changes nothing
+yaran config restore-docs --yes  # apply
 ```
 
 It is careful with your data:
@@ -293,16 +293,16 @@ It is careful with your data:
 - Every value survives: projects and their ids, macros with multi-line bodies, provider
   commands and their arguments, and environment values.
 - Applying it writes a timestamped backup first and prints where it went.
-- Settings dux does not recognize are kept as they are, not quietly deleted, and are
+- Settings yaran does not recognize are kept as they are, not quietly deleted, and are
   listed in the output.
-- A few sections dux genuinely no longer reads are removed, and the removal is reported.
+- A few sections yaran genuinely no longer reads are removed, and the removal is reported.
 - If the file cannot be parsed, the command refuses and changes nothing rather than
   falling back to defaults, which would throw your settings away.
 
-The preview holds back sensitive values, and `dux config regenerate` previews the same way:
+The preview holds back sensitive values, and `yaran config regenerate` previews the same way:
 
 - **Shown by name only, as `(not shown)`:** an `[env]` value, a project's values, the web
-  UI's `password_hash` and `blocked_addresses`, a key binding dux cannot read, and anything
+  UI's `password_hash` and `blocked_addresses`, a key binding yaran cannot read, and anything
   below a setting it does not recognize.
 - **Hidden entirely:** comments inside `[env]` and `[projects]`, including one at the end
   of a header line.
@@ -318,9 +318,9 @@ it, and what it does and does not protect against are in
 [The web password](/docs/web-login); this is the reference.
 
 ```bash
-dux config set server.auth.password                                 # asks twice, rates it as you type
-printf '%s\n' "$PW" | dux config set server.auth.password --stdin   # for scripts
-dux config set server.auth.password_hash ""                         # remove the password
+yaran config set server.auth.password                                 # asks twice, rates it as you type
+printf '%s\n' "$PW" | yaran config set server.auth.password --stdin   # for scripts
+yaran config set server.auth.password_hash ""                         # remove the password
 ```
 
 `server.auth.password` is the one setting `set` never takes as an argument, where shell
@@ -337,14 +337,14 @@ history and the process list would keep it.
 - **Changing or clearing it signs every browser out.**
 
 > [!NOTE]
-> While the file has a password setting where dux does not read it (a
+> While the file has a password setting where yaran does not read it (a
 > `minimum-password-length` spelled with dashes, say), setting a password is refused until
-> that is fixed: dux cannot tell which minimum you meant.
+> that is fixed: yaran cannot tell which minimum you meant.
 
 > [!IMPORTANT]
-> dux reads the password only from `[server.auth]`. A `password_hash` anywhere else, or a
-> table with a near-miss name such as `[server.auht]` or `[server.Auth]`, stops dux from
-> starting (and a running dux keeps its settings on reload) instead of letting it run
+> yaran reads the password only from `[server.auth]`. A `password_hash` anywhere else, or a
+> table with a near-miss name such as `[server.auht]` or `[server.Auth]`, stops yaran from
+> starting (and a running yaran keeps its settings on reload) instead of letting it run
 > without the password you meant to set. The message names where the key is and where it
 > belongs.
 
@@ -354,7 +354,7 @@ history and the process list would keep it.
 | `require` | `"network"` | Who is asked: `"network"` (everyone but this machine and your tailnet), `"tailnet"` (everyone but this machine) or `"everywhere"`. Use `"everywhere"` behind a reverse proxy. |
 | `minimum_password_length` | `12` | The fewest characters a new password may have. |
 | `minimum_password_score` | `2` | The lowest strength a new password may have, from 0 (weak) to 4 (excellent). |
-| `session_idle_seconds` | `60` | How long a browser stays signed in with nothing happening. An open dux tab counts. At least 1. |
+| `session_idle_seconds` | `60` | How long a browser stays signed in with nothing happening. An open yaran tab counts. At least 1. |
 | `cli_token_idle_days` | `30` | Days a command-line sign-in survives unused. The command line keeps its sign-in between commands, so daily use never asks for the password again. A password change signs every one out. At least 1. |
 | `max_failed_logins` | `5` | Failed sign-ins one address may make before it is blocked. `0` never blocks (the slow-down still applies). See below. |
 | `blocked_addresses` | `[]` | Addresses and CIDR ranges refused outright, password or not. See below. |
@@ -367,8 +367,8 @@ history and the process list would keep it.
 | `max_concurrent_password_checks` | `2` | Password checks run at once. Each costs about 19 MiB and some CPU on purpose, so this bounds what a flood of attempts costs. At least 1. |
 | `password_check_queue` | `8` | Sign-ins that may wait for a free check; more are told to try again shortly. |
 | `max_password_bytes` | `1024` | The longest password accepted, in bytes, from 1 to 65536 and no smaller than `minimum_password_length`. |
-| `max_tracked_addresses` | `10000` | Addresses whose failed sign-ins dux remembers at once; the stalest is forgotten first. At least 1. |
-| `max_blocked_addresses` | `1000` | How many entries `blocked_addresses` may hold, your own included, before dux stops adding to it. Entries you add yourself are never refused. |
+| `max_tracked_addresses` | `10000` | Addresses whose failed sign-ins yaran remembers at once; the stalest is forgotten first. At least 1. |
+| `max_blocked_addresses` | `1000` | How many entries `blocked_addresses` may hold, your own included, before yaran stops adding to it. Entries you add yourself are never refused. |
 
 Every one of them applies on a reload, with no restart.
 
@@ -377,7 +377,7 @@ Every one of them applies on a reload, with no restart.
 Three of those rows need more than a cell.
 
 **`max_failed_logins`** counts failed sign-ins from one address, each within
-`failed_login_window_seconds` of the one before. At the limit, dux adds the address to
+`failed_login_window_seconds` of the one before. At the limit, yaran adds the address to
 `blocked_addresses`.
 
 - An IPv6 client on the network is also counted by its /64. When the addresses of one /64
@@ -385,8 +385,8 @@ Three of those rows need more than a cell.
   as one range.
 - That range is never added for this machine's own network, link-local `fe80::` addresses,
   your tailnet or IPv4. Those are counted one address at a time.
-- Only an address dux can verify is added: a direct connection, or one through your
-  `tailscale serve`. Behind another proxy dux keeps slowing the sign-ins down, and its log
+- Only an address yaran can verify is added: a direct connection, or one through your
+  `tailscale serve`. Behind another proxy yaran keeps slowing the sign-ins down, and its log
   names the address for you to add by hand.
 
 **`blocked_addresses`** is yours to edit.
@@ -394,9 +394,9 @@ Three of those rows need more than a cell.
 - A request matches when any address it names does, forwarding headers included.
 - Loopback and this machine's own addresses never match: the part of an entry covering them
   is accepted, warned about and ignored, and the rest of a range still applies.
-- dux adds single addresses, or an IPv6 /64 as one range that replaces the addresses of it
+- yaran adds single addresses, or an IPv6 /64 as one range that replaces the addresses of it
   already listed.
-- Past `max_blocked_addresses`, a new automatic block holds until dux restarts.
+- Past `max_blocked_addresses`, a new automatic block holds until yaran restarts.
 
 **`max_failed_logins_per_minute`** is counted in separate groups, so a flood from a less
 trusted group never slows a more trusted one:
@@ -406,43 +406,43 @@ trusted group never slows a more trusted one:
 - a browser on this machine using one of its own non-loopback addresses.
 
 Your tailnet devices and this machine on `localhost` are slowed one address at a time while
-dux can tell who they are. Otherwise sign-ins on `localhost` share one count of their own,
+yaran can tell who they are. Otherwise sign-ins on `localhost` share one count of their own,
 direct tailnet devices share the network's, and `tailscale serve` visitors share the
 internet's. Visitors through a `tailscale serve` TCP forward look exactly like this machine
 and share its count.
 
 **`cookie_secure`** decides whether the sign-in cookie is marked Secure.
 
-- `"auto"` marks it when dux knows the browser used HTTPS: a `tailscale serve` HTTPS route
+- `"auto"` marks it when yaran knows the browser used HTTPS: a `tailscale serve` HTTPS route
   or a Tailscale Funnel.
-- `"always"` also tells dux browsers reach it over HTTPS, so the sign-in page drops its
+- `"always"` also tells yaran browsers reach it over HTTPS, so the sign-in page drops its
   plain-HTTP warning.
 
 > [!IMPORTANT]
-> A mistake in `[server.auth]` is never read as "no password". Any of these stops dux from
+> A mistake in `[server.auth]` is never read as "no password". Any of these stops yaran from
 > starting, with a message naming the file and the problem, and a reload while it runs
 > changes nothing until the file is fixed:
 >
 > - a misspelled key, or a value of the wrong type;
-> - a `password_hash` dux will not use;
+> - a `password_hash` yaran will not use;
 > - a password setting written outside `[server.auth]` (`require` directly under `[server]`,
 >   a `password-hash` under any spelling, a `[server.authentication]` table);
-> - a plaintext `password` anywhere in the file (dux keeps only the hash);
+> - a plaintext `password` anywhere in the file (yaran keeps only the hash);
 > - a `config.toml` that is not valid TOML at all.
 
-When the section is invalid, `dux config get` and `dux config set` keep working, so you can
+When the section is invalid, `yaran config get` and `yaran config set` keep working, so you can
 inspect and repair it from the command line. When the file is not valid TOML, they refuse
-it too; fix the line the error names by hand. `dux config set` itself refuses any value
+it too; fix the line the error names by hand. `yaran config set` itself refuses any value
 that would leave the section invalid.
 
-If the file goes missing or empty while dux runs:
+If the file goes missing or empty while yaran runs:
 
 - **Deleted:** a reload is refused and the running settings, password included, stay until
-  the file is back. `dux config set` refuses to write a fresh file then too, and points you
+  the file is back. `yaran config set` refuses to write a fresh file then too, and points you
   at Recover config.
 - **Empty** (an editor leaves it so for a moment mid-save): the reload is refused the same
   way. Reload again once the save finishes.
-- **Emptied on purpose:** `dux config regenerate --yes` writes a fresh commented config,
+- **Emptied on purpose:** `yaran config regenerate --yes` writes a fresh commented config,
   with no password, and a reload then picks it up. It says so when the config it replaces
   had a password.
 
@@ -451,53 +451,53 @@ If the file goes missing or empty while dux runs:
 ```toml
 [logging]
 level      = "info"    # error, warn, info or debug
-path       = ""        # empty means dux.log in the config directory
+path       = ""        # empty means yaran.log in the config directory
 max_bytes  = 10485760  # rotate once the log reaches 10 MiB; 0 never rotates
 keep       = 5         # how many rotated copies to keep
 compress   = true      # gzip the rotated copies
 ```
 
-dux rotates its own log by size, so you do not need logrotate or a cron for it. When the
+yaran rotates its own log by size, so you do not need logrotate or a cron for it. When the
 log is about to pass `max_bytes`:
 
-1. `dux.log` is renamed to `dux.log.1`, and `dux.log.1` to `dux.log.2`, and so on.
+1. `yaran.log` is renamed to `yaran.log.1`, and `yaran.log.1` to `yaran.log.2`, and so on.
 2. Anything past `keep` is deleted.
-3. A fresh `dux.log` starts.
+3. A fresh `yaran.log` starts.
 
 With `compress = true` the rotated copies are gzipped in the background and named
-`dux.log.1.gz`, `dux.log.2.gz` and so on; read one with `zcat` or `gunzip -c`.
+`yaran.log.1.gz`, `yaran.log.2.gz` and so on; read one with `zcat` or `gunzip -c`.
 
 - **`keep = 0`** rotates and throws the old log away.
 - **`max_bytes = 0`** never rotates at all.
-- **Rotation is by size, and only when dux writes a line.** There is no daily or weekly
-  schedule, and an idle dux never touches the files.
+- **Rotation is by size, and only when yaran writes a line.** There is no daily or weekly
+  schedule, and an idle yaran never touches the files.
 - **A line is always written whole,** so the file stops just short of `max_bytes`. A single
   line longer than the whole limit is still written and briefly goes over.
 - **`keep` above 1000 is clamped,** with a note in the log.
 - **A log already far bigger than `max_bytes`** (after an upgrade, say) is rotated on the
-  first line dux writes.
+  first line yaran writes.
 
 The server has a log of its own, `server.log`, with the same rotation settings under
 `[server]`: see [the server's own log](/docs/server-mode#the-servers-own-log).
 
 About `path`:
 
-- If it points at a symlink, dux follows it once at startup: the live log and its rotated
+- If it points at a symlink, yaran follows it once at startup: the live log and its rotated
   copies all live beside the file the link points at, and the link itself is left alone.
-- It may not point at a file dux keeps for itself: `config.toml`, the sessions database
+- It may not point at a file yaran keeps for itself: `config.toml`, the sessions database
   (with its `-wal` and `-shm` files), `dux.lock`, `remotes.toml` or the control socket,
-  however the path reaches it. dux refuses to start, and a reload is refused, naming the
+  however the path reaches it. yaran refuses to start, and a reload is refused, naming the
   setting.
 
 > [!TIP]
-> `tail -F ~/.config/dux/dux.log` (note the capital F) follows the log across a
+> `tail -F ~/.config/yaran/yaran.log` (note the capital F) follows the log across a
 > rotation. Plain `tail -f` keeps watching the rotated copy and goes quiet.
 
 | Key | When it takes effect |
 |---|---|
 | `level` | On a config reload. Turn `debug` on while something is misbehaving and back off again without restarting. |
 | `path` | At startup only. The log file is opened once, so a new path needs a restart. |
-| `max_bytes`, `keep`, `compress` | On a config reload, applied at the next line dux writes. |
+| `max_bytes`, `keep`, `compress` | On a config reload, applied at the next line yaran writes. |
 
 ## How long a command waits (`[cli]`)
 
@@ -506,10 +506,10 @@ About `path`:
 wait_timeout_seconds = 600  # 10 minutes
 ```
 
-A change made from the `dux` command line waits until it has really finished before the
+A change made from the `yaran` command line waits until it has really finished before the
 command ends. `wait_timeout_seconds` is how long it waits. Past that, the command stops
 waiting and says the outcome is unknown, naming the change's id so
-`dux operations show <id>` can look it up later. The change itself keeps running either way.
+`yaran operations show <id>` can look it up later. The change itself keeps running either way.
 
 - `--wait-timeout <seconds>` sets a different wait for one command.
 - `--no-wait` returns at once with the id.
@@ -524,9 +524,9 @@ waiting and says the outcome is unknown, naming the change's id so
 clone_stall_seconds = 300  # 5 minutes
 ```
 
-When dux [clones a repository](/docs/creating-agents#cloning-a-repository) for a new
+When yaran [clones a repository](/docs/creating-agents#cloning-a-repository) for a new
 project, there is no limit on how long
-the whole clone takes: a big repository is slow, not stuck. What dux watches
+the whole clone takes: a big repository is slow, not stuck. What yaran watches
 instead is git's progress. A clone that prints nothing for `clone_stall_seconds`
 is stopped, and the message says so. Raise it for a remote that takes a long time
 to start sending. Values below 1 count as 1. It takes effect for the next clone.
@@ -538,7 +538,7 @@ to start sending. Values below 1 count as 1. It takes effect for the next clone.
 network_timeout_seconds = 600  # 10 minutes
 ```
 
-A push, a pull's fetch, a pull request fetch and an `ls-remote` that dux runs for you
+A push, a pull's fetch, a pull request fetch and an `ls-remote` that yaran runs for you
 are stopped once they have run for `network_timeout_seconds` in all, and the message
 says so. None of them can ask for anything on a terminal, so this catches a remote or a
 credential helper that stopped answering. An askpass program you configured
@@ -554,7 +554,7 @@ credential helper that stopped answering. An askpass program you configured
 status_clear_seconds = 6
 ```
 
-Messages about what dux just did clear themselves, and `status_clear_seconds` is the
+Messages about what yaran just did clear themselves, and `status_clear_seconds` is the
 window they are timed by:
 
 - **A success or a note** stays for one window.
@@ -575,7 +575,7 @@ spinner: the work keeps going, and its result still shows up when it lands.
 The web shows the same messages as toasts with their own close button; see
 [Messages](/docs/web-workspace#messages).
 
-## How much dux asks GitHub about earlier branches (`[ui]`)
+## How much yaran asks GitHub about earlier branches (`[ui]`)
 
 ```toml
 [ui]
@@ -583,7 +583,7 @@ pr_history_branches_per_cycle = 8
 pr_settled_recheck_seconds = 43200
 ```
 
-dux keeps track of the pull requests of every branch an agent's worktree has been on, not
+yaran keeps track of the pull requests of every branch an agent's worktree has been on, not
 just the one it is on now. The branch it is on now is asked about on every pull-request
 poll; the earlier ones take turns:
 
@@ -596,7 +596,7 @@ poll; the earlier ones take turns:
   exited, wait before they are asked about again. The default is 12 hours; the value is held to between 30 seconds
   and 604800 seconds (7 days).
 
-A pull request dux has found stays on the agent until you hide or detach it: a branch
+A pull request yaran has found stays on the agent until you hide or detach it: a branch
 nobody pushes to any more never takes its pull request away. How often the poll itself
 runs is set by `pr_poll_interval_seconds`; see
 [How PR status stays fresh](/docs/creating-agents#how-pr-status-stays-fresh).
@@ -622,28 +622,28 @@ env  = { EDITOR = "true", API_KEY = "${FOO_KEY}" }
 ### Keeping secrets out of `[env]`
 
 Anything you type literally into `[env]`, or a project's `env`, is exactly that: a
-literal. It sits in `config.toml` on disk, it shows up in `dux config diff --raw`, and it
+literal. It sits in `config.toml` on disk, it shows up in `yaran config diff --raw`, and it
 travels with the file into your dotfiles repo. Two ways to avoid that:
 
-**Write nothing at all.** Every agent and terminal dux spawns inherits dux's own
-environment, so a variable already exported in the shell you launched dux from is already
+**Write nothing at all.** Every agent and terminal yaran spawns inherits yaran's own
+environment, so a variable already exported in the shell you launched yaran from is already
 there. If `ANTHROPIC_API_KEY` comes out of your shell profile or a secrets agent, your
-provider CLI finds it without `[env]` mentioning it. Use `[env]` for what dux has to add
+provider CLI finds it without `[env]` mentioning it. Use `[env]` for what yaran has to add
 or override.
 
 **When you do need an entry, reference the variable instead of pasting the value.**
 
 ```toml
 [env]
-API_KEY = "${FOO_KEY}"   # resolved from the environment dux itself was launched in
+API_KEY = "${FOO_KEY}"   # resolved from the environment yaran itself was launched in
 ```
 
 Three details that matter:
 
-- The lookup happens in dux's environment, not the agent's shell, so the variable must be
-  exported *before* dux starts. Launch dux from a shell where it is set, or from a
+- The lookup happens in yaran's environment, not the agent's shell, so the variable must be
+  exported *before* yaran starts. Launch yaran from a shell where it is set, or from a
   wrapper that sources your secrets first.
-- If the variable is not set, dux does not fail and does not blank the value. It leaves
+- If the variable is not set, yaran does not fail and does not blank the value. It leaves
   the text alone, and the agent receives the literal string `${FOO_KEY}`. When a tool
   complains about a nonsense credential, check this first.
 - `~` is not expanded in an env *value*. Tilde works in a project `path`; for a
@@ -652,12 +652,12 @@ Three details that matter:
 > [!WARNING]
 > None of this is encryption. It keeps the secret out of the file, which is the part that
 > gets committed, pasted into issues and synced between machines. The value still reaches
-> every agent and terminal dux spawns, and dux is a trusted-access tool with no per-user
+> every agent and terminal yaran spawns, and yaran is a trusted-access tool with no per-user
 > isolation.
 
 ## Keybindings
 
-Every keybinding dux uses is configurable under `[keys]`, and the in-app help overlay is
+Every keybinding yaran uses is configurable under `[keys]`, and the in-app help overlay is
 the authoritative reference for what is currently bound. Bindings are arrays, so an
 action can answer to more than one key:
 
@@ -671,19 +671,19 @@ Modifier and control-key parsing is case-insensitive: `Ctrl-g`, `ctrl-g`, and `C
 mean the same thing. Letter keys are lowercased, so bind an uppercase letter as its
 shifted form, such as `shift-p`.
 
-Two actions bound to one key in the same place stop dux from starting, and the message
+Two actions bound to one key in the same place stop yaran from starting, and the message
 names both. The exception is an action that gained its default key after your `[keys]`
 was written, such as `cycle_terminal_layout` (the terminal UI's layout key, `Ctrl-t` by
 default): when your file already gives that key to another action, the newer action starts
 unbound instead, and the terminal UI's status line says so at startup and how to bind it.
 A pane action given a key that a global action already holds is not refused,
-because global keys are answered first: dux starts, the pane action never runs on that
-key, and `dux.log` gets a warning naming both actions.
+because global keys are answered first: yaran starts, the pane action never runs on that
+key, and `yaran.log` gets a warning naming both actions.
 
 > [!IMPORTANT]
-> While you type into an agent in the windowed pane, any chord bound here belongs to dux
-> and never reaches the agent. Rebinding dux's side is how you free a chord the agent
-> needs. The `input-debugging` palette command shows what dux receives for each keypress:
+> While you type into an agent in the windowed pane, any chord bound here belongs to yaran
+> and never reaches the agent. Rebinding yaran's side is how you free a chord the agent
+> needs. The `input-debugging` palette command shows what yaran receives for each keypress:
 > the key and the bytes your terminal sent for it, so two chords that arrive alike show
 > alike.
 > Full story in [Introduction](/docs/introduction#the-three-panes).
@@ -700,7 +700,7 @@ windowed pane instead, and to an agent's docked terminal while you type into it;
 whichever way it is set.
 
 Rather than memorizing hotkeys, reach most actions through the terminal UI's command
-palette. It is the fastest way to discover what dux can do.
+palette. It is the fastest way to discover what yaran can do.
 
 The palette matches on names and descriptions. Exact phrase matches lead the list, and
 anything that matched only loosely follows them, so a half-remembered phrase still finds
@@ -719,29 +719,29 @@ path = "$HOME/projects/web-app"
 name = "web-app"
 startup_command = """
 npm install
-ln -sfn "$DUX_PROJECT_PATH/.env.local" .env
+ln -sfn "$YARAN_PROJECT_PATH/.env.local" .env
 """
 ```
 
 The shell that runs it is itself configurable under `[startup_command_terminal]`. For the
-full treatment (per-project and global `env`, the `DUX_*` variables dux injects, and the
+full treatment (per-project and global `env`, the `YARAN_*` variables yaran injects, and the
 startup shell), see
 [Startup commands & environment variables](/docs/startup-commands).
 
 ## Naming a web instance (title + favicon)
 
-Running several dux servers? Two web-only settings under `[server]` tell their browser
+Running several yaran servers? Two web-only settings under `[server]` tell their browser
 tabs apart:
 
 ```toml
 [server]
-title   = "dux (prod)"   # the browser tab title and the in-app wordmark
+title   = "yaran (prod)"   # the browser tab title and the in-app wordmark
 favicon = "blue"         # recolors the duck favicon for this instance
 ```
 
 `title` drives both the browser tab title and the brand wordmark. The tab title names where
-the tab is first and ends with the instance name, so `fix-login — dux (prod)` for an agent and
-`main.rs · fix-login · Editor — dux (prod)` for a file in the editor, with a `●` in front of
+the tab is first and ends with the instance name, so `fix-login — yaran (prod)` for an agent and
+`main.rs · fix-login · Editor — yaran (prod)` for a file in the editor, with a `●` in front of
 the file name while it has unsaved changes. The most specific part leads because browsers cut
 long tab titles off at the end. `favicon` is empty by
 default (the original yellow duck); set it to one of the curated tints: `violet`, `blue`,
@@ -770,20 +770,20 @@ the uploads with it.
 > [!IMPORTANT]
 > `upload_directory` must be a relative path with no `..` in it. An absolute, traversing,
 > empty or otherwise unusable value (control characters, or longer than the system's path
-> limit) falls back to `.dux/uploads` and says so once in `dux.log`.
+> limit) falls back to `.dux/uploads` and says so once in `yaran.log`.
 
 `upload_write_gitignore` keeps a `.gitignore` containing a single `*` in that folder,
 which ignores everything in it including itself, so your screenshots never turn up as
-untracked files. dux rewrites it on every upload, so the file comes back if you delete it
+untracked files. yaran rewrites it on every upload, so the file comes back if you delete it
 or if the folder was created while the setting was off. Set it to `false` if you intend
 to commit what you drop or paste.
 
-dux never edits a `.gitignore` you already have there,
+yaran never edits a `.gitignore` you already have there,
 and never writes to `.git/info/exclude`, which in a linked worktree would change what git
 ignores in every other worktree at once.
 
 `upload_pasted_text_chars` is the point at which text you PASTE into an agent stops being
-typed at the prompt and becomes a document: dux saves it as a `.txt` file in the folder
+typed at the prompt and becomes a document: yaran saves it as a `.txt` file in the folder
 above and pastes that file's path, which costs the agent's context window far less than a
 wall of text.
 
@@ -793,7 +793,7 @@ CHARACTERS, so a paste in Japanese is measured the way an English one is.
 
 Set it to `0` to always paste text as text, or press `Ctrl+Shift+v` (`Cmd+Shift+v` on a
 Mac) to bypass it for one paste. Values between 1 and 199, or above 100000, are clamped
-with one warning in `dux.log`.
+with one warning in `yaran.log`.
 
 Dropping or pasting onto a **terminal** is unaffected by all three. That always lands in
 the folder the terminal is actually in, and a terminal never turns a paste into a file.
@@ -817,7 +817,7 @@ surface they affect:
   pastes become a file.
 - **Both surfaces**: status-message auto-clear, the attention indicator, its grace period
   and the terminal bell, reopening agents on startup, the always-show-tab-strip preference (which covers an agent's tab strip and its terminal dock's strip together),
-  the PR banner position, clickable hyperlinks, GitHub integration, whether dux binds your
+  the PR banner position, clickable hyperlinks, GitHub integration, whether yaran binds your
   Tailscale address, the welcome and what's-new screens, the default provider, and whether
   new agents start with a random pet name.
 - **Terminal UI only**: whether Tab reaches the agent, and Nerd Font icons.
@@ -831,7 +831,7 @@ hid is still saved, and if a new password is refused, the search clears so you c
 The Tailscale row does more than save a value: it also moves the listener that is
 serving right now and tells you what happened to it. Choosing **No** from a browser
 reached over your tailnet closes that tab's own connection, which the row says before
-you pick it. See [Changing the mode while dux is serving](/docs/tailscale#changing-the-mode-while-dux-is-serving).
+you pick it. See [Changing the mode while yaran is serving](/docs/tailscale#changing-the-mode-while-yaran-is-serving).
 
 Each row shows its documented default and, where `0` means something special like "never
 auto-clear", that meaning too. Values are validated and clamped on save, and every

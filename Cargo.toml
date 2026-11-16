@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "crates/dux-core",
-    "crates/dux-tui",
-    "crates/dux",
-    "crates/dux-web",
-    "crates/dux-journeys",
+    "crates/yaran-core",
+    "crates/yaran-tui",
+    "crates/yaran",
+    "crates/yaran-web",
+    "crates/yaran-journeys",
 ]
 resolver = "3"
 
-# Single source of truth for the crate version so the TUI (dux-tui) and the web
-# (dux-core's display_version) can never show different versions.
+# Single source of truth for the crate version so the TUI (yaran-tui) and the web
+# (yaran-core's display_version) can never show different versions.
 [workspace.package]
 version = "0.1.0"
 
@@ -17,7 +17,7 @@ version = "0.1.0"
 anyhow = "1.0.98"
 chrono = { version = "0.4.41", features = ["serde"] }
 rustix = { version = "1.1", features = ["termios", "process", "event", "stdio", "fs", "time"] }
-dux-core = { path = "crates/dux-core" }
+yaran-core = { path = "crates/yaran-core" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 indexmap = { version = "2.13.0", features = ["serde"] }
@@ -106,8 +106,8 @@ debug = 2         # Full debug info for symbols in flamegraphs.
 strip = false     # Keep symbols intact for profilers.
 lto = false       # Disable LTO so builds are faster during profiling.
 
-# The binary the container journeys (crates/dux-journeys) mount into Docker:
-# `cargo build --profile journeys --bin dux` writes target/journeys/dux. Release's
+# The binary the container journeys (crates/yaran-journeys) mount into Docker:
+# `cargo build --profile journeys --bin yaran` writes target/journeys/yaran. Release's
 # own settings (opt-level "z", LTO, one codegen unit) make a build take minutes,
 # and a debug build runs password hashing and PTY streaming slowly enough to
 # shift the timings a journey measures, so this sits between: optimized, but

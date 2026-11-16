@@ -11,7 +11,7 @@ export async function GET(context: APIContext) {
   const site = context.site ?? new URL("https://getdux.app");
 
   return rss({
-    title: "dux blog",
+    title: "yaran blog",
     description: BLOG_DESCRIPTION,
     site,
     items: posts.map((post) => ({

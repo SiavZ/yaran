@@ -1,0 +1,545 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
+// Mock sonner so the store's `import { toast } from "sonner"` picks up spies; the
+// saveMacros null-bootstrap guard surfaces an error toast we assert on.
+vi.mock("sonner", () => {
+  const toast = Object.assign(vi.fn(), {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    loading: vi.fn(),
+    dismiss: vi.fn(),
+  })
+  return { toast }
+})
+
+import type { MacroView } from "./types"
+import type { Bootstrap } from "./bootstrapApi"
+import { macroPayloadBytes } from "./macros"
+import type { SelectedTarget } from "./store"
+
+// `store` reads `location`/`localStorage`, registers a `popstate` listener, and
+// at module load constructs an `EventsSocket` and fetches bootstrap. Stub the
+// minimum so the import succeeds.
+//
+// Macros moved off the broadcast ViewModel onto the `GET /api/v1/bootstrap`
+// document, so the dialog seeds from `state.bootstrap.macros`. The
+// boot path fetches it at module load; tests control its body via the
+// `bootstrapMacros` variable the fetch double reads at call time.
+
+let bootstrapMacros: MacroView[] = []
+// When set, the bootstrap fetch fails so `state.bootstrap` stays null; the
+// window the saveMacros guard protects against.
+let failBootstrap = false
+// When set, the macros PUT returns a 400, exercising the reorder rollback path.
+let failMacrosPut = false
+// The bootstrap's `macros_version`, absent unless a test sets it.
+let bootstrapMacrosVersion: string | undefined
+// When set, the macros PUT answers the 409 a list that changed since is given.
+let staleMacrosPut = false
+// When set, the macros PUT waits for this promise before answering.
+let holdMacrosPut: Promise<void> | null = null
+// The version a successful macros PUT answers with, absent unless set.
+let savedMacrosVersion: string | undefined
+
+function makeBootstrap(macros: MacroView[]): Bootstrap {
+  return {
+    available_providers: [],
+    macros,
+    ...(bootstrapMacrosVersion === undefined
+      ? {}
+      : { macros_version: bootstrapMacrosVersion }),
+    welcome_tips: [],
+    yaran_version: "development",
+    randomize_agent_names_by_default: false,
+    gh_available: false,
+    pr_banner_position: "top",
+    agent_scrollback_lines: 10000,
+    show_changes_pane: true,
+    always_show_tab_strip: false,
+    global_env: {},
+    status_clear_seconds: 6,
+  }
+}
+
+const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
+  const u = String(url)
+  if (u.includes("/api/v1/bootstrap")) {
+    if (failBootstrap) {
+      return {
+        ok: false,
+        status: 500,
+        json: async () => null,
+        text: async () => "bootstrap unavailable",
+        headers: { get: () => null },
+      } as unknown as Response
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => makeBootstrap(bootstrapMacros),
+      text: async () => "",
+      headers: { get: () => null },
+    } as unknown as Response
+  }
+  // The macro editor persists via a REST PUT.
+  if (u.includes("/api/v1/macros")) {
+    if (holdMacrosPut) await holdMacrosPut
+    if (staleMacrosPut) {
+      const body = JSON.stringify({
+        error: "changed",
+        message: "The macro list changed after this dialog read it.",
+      })
+      return {
+        ok: false,
+        status: 409,
+        json: async () => JSON.parse(body),
+        text: async () => body,
+        headers: { get: () => null },
+      } as unknown as Response
+    }
+    if (failMacrosPut) {
+      return {
+        ok: false,
+        status: 400,
+        json: async () => null,
+        text: async () => "macros rejected",
+        headers: { get: () => null },
+      } as unknown as Response
+    }
+    const saved =
+      savedMacrosVersion === undefined
+        ? ""
+        : JSON.stringify({ version: savedMacrosVersion })
+    return {
+      ok: true,
+      status: 200,
+      json: async () => (saved ? JSON.parse(saved) : null),
+      text: async () => saved,
+      headers: { get: () => null },
+    } as unknown as Response
+  }
+  // Anything else: empty 200.
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    text: async () => "",
+    headers: { get: () => null },
+  } as unknown as Response
+})
+
+class FakeWebSocket {
+  onopen: (() => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: (() => void) | null = null
+  binaryType = ""
+  readyState = 1
+  close() {}
+  send() {}
+}
+
+beforeEach(() => {
+  bootstrapMacros = []
+  failBootstrap = false
+  failMacrosPut = false
+  bootstrapMacrosVersion = undefined
+  staleMacrosPut = false
+  holdMacrosPut = null
+  savedMacrosVersion = undefined
+  vi.stubGlobal("location", { host: "localhost:0" })
+  vi.stubGlobal("localStorage", {
+    getItem: () => null,
+    setItem: () => {},
+    removeItem: () => {},
+  })
+  vi.stubGlobal("window", { addEventListener: () => {} })
+  vi.stubGlobal("WebSocket", FakeWebSocket)
+  vi.stubGlobal("fetch", fetchMock)
+  vi.resetModules()
+})
+
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
+  vi.unstubAllGlobals()
+})
+
+// Load the store and wait for the bootstrap fetch to settle,
+// so `state.bootstrap.macros` is the `bootstrapMacros` set by the test.
+async function loadStore() {
+  const mod = await import("./store")
+  await vi.waitFor(() => {
+    expect(mod.getSnapshot().booted).toBe(true)
+    expect(mod.getSnapshot().bootstrap).not.toBeNull()
+  })
+  return mod
+}
+
+// Load the store with the bootstrap fetch failing, so `state.bootstrap` stays
+// null (consumers fall back to defaults). Used to exercise the saveMacros guard.
+async function loadStoreNoBootstrap() {
+  const mod = await import("./store")
+  await vi.waitFor(() => {
+    expect(mod.getSnapshot().booted).toBe(true)
+  })
+  expect(mod.getSnapshot().bootstrap).toBeNull()
+  return mod
+}
+
+describe("store macros dialog", () => {
+  const seed: MacroView[] = [
+    { name: "Review", text: "review this", surface: "agent" },
+    { name: "Build", text: "cargo build", surface: "terminal" },
+  ]
+
+  it("openMacrosDialog seeds the draft from the bootstrap macros (copied)", async () => {
+    bootstrapMacros = seed
+    const mod = await loadStore()
+
+    mod.openMacrosDialog()
+    const snap = mod.getSnapshot()
+    expect(snap.macrosDialogOpen).toBe(true)
+    expect(snap.macrosDraft).toEqual(seed)
+    // The draft is a copy, not the same array/objects as the bootstrap slice.
+    expect(snap.macrosDraft).not.toBe(snap.bootstrap?.macros)
+    expect(snap.macrosDraft[0]).not.toBe(seed[0])
+  })
+
+  it("openMacrosDialog seeds an empty draft when there are no macros", async () => {
+    bootstrapMacros = []
+    const mod = await loadStore()
+    mod.openMacrosDialog()
+    expect(mod.getSnapshot().macrosDraft).toEqual([])
+  })
+
+  it("closeMacrosDialog clears the draft", async () => {
+    bootstrapMacros = seed
+    const mod = await loadStore()
+    mod.openMacrosDialog()
+    mod.closeMacrosDialog()
+    const snap = mod.getSnapshot()
+    expect(snap.macrosDialogOpen).toBe(false)
+    expect(snap.macrosDraft).toEqual([])
+  })
+})
+
+describe("store macros commands", () => {
+  // A macro goes to the pane its control belongs to, which each mounted pane
+  // publishes under its pty id. `registerPaneMacroTarget` is pulled from the
+  // SAME module graph the dynamically imported store uses (vi.resetModules() in
+  // beforeEach forks a fresh graph), so a static import would write to a
+  // different, unobserved module instance.
+  async function fakePane(
+    ptyId: string,
+    opts: { owner?: boolean; compose?: boolean; reconnecting?: boolean } = {},
+  ): Promise<{ sent: Uint8Array[]; inserted: string[] }> {
+    const sent: Uint8Array[] = []
+    const inserted: string[] = []
+    const owner = opts.owner ?? true
+    const { registerPaneMacroTarget } = await import("./paneMacroTarget")
+    registerPaneMacroTarget(ptyId, {
+      takeoverCard: !owner,
+      send: owner
+        ? (b) => {
+            if (opts.reconnecting) return false
+            sent.push(b)
+            return true
+          }
+        : null,
+      compose: opts.compose
+        ? { insert: (text) => inserted.push(text), target: () => null }
+        : null,
+      typingSurface: () => null,
+    })
+    return { sent, inserted }
+  }
+
+  const agentTab = (tabId: string): SelectedTarget => ({
+    kind: "agent",
+    sessionId: "s1",
+    tabId,
+  })
+
+  it("runMacro writes the macro payload to its target pane's socket", async () => {
+    bootstrapMacros = [{ name: "Greet", text: "hello\nworld", surface: "both" }]
+    const mod = await loadStore()
+    const pane = await fakePane("s1")
+    expect(mod.runMacro("Greet", agentTab("s1"))).toBe("pty")
+    expect(pane.sent).toHaveLength(1)
+    // The bytes match the newline→Alt+Enter transform exactly.
+    expect(Array.from(pane.sent[0])).toEqual(
+      Array.from(macroPayloadBytes("hello\nworld")),
+    )
+  })
+
+  it("runMacro types into its own pane when two panes are mounted", async () => {
+    bootstrapMacros = [{ name: "Greet", text: "hi", surface: "both" }]
+    const mod = await loadStore()
+    const mine = await fakePane("s1")
+    // Mounted after, so the one a "last mounted" rule would have picked.
+    const other = await fakePane("t1")
+    mod.runMacro("Greet", agentTab("s1"))
+    expect(mine.sent).toHaveLength(1)
+    expect(other.sent).toHaveLength(0)
+    mod.runMacro("Greet", { kind: "terminal", terminalId: "t1" } as SelectedTarget)
+    expect(other.sent).toHaveLength(1)
+    expect(mine.sent).toHaveLength(1)
+  })
+
+  it("runMacro refuses out loud, sending nothing, when its pane is not the owner", async () => {
+    // Against a pty nobody drives, a write would claim it: a macro must never
+    // be how a terminal changes hands.
+    bootstrapMacros = [{ name: "Greet", text: "hi", surface: "both" }]
+    const mod = await loadStore()
+    const watcher = await fakePane("s1", { owner: false })
+    const owner = await fakePane("t1")
+    const { toast } = await import("sonner")
+    expect(mod.runMacro("Greet", agentTab("s1"))).toBe("none")
+    expect(watcher.sent).toHaveLength(0)
+    expect(owner.sent).toHaveLength(0)
+    expect(toast.warning).toHaveBeenCalledWith(
+      "The macro was not sent: this page is not driving this terminal. Take over to send macros.",
+      expect.anything(),
+    )
+  })
+
+  it("runMacro refuses out loud when its pane's socket is reconnecting", async () => {
+    bootstrapMacros = [{ name: "Greet", text: "hi", surface: "both" }]
+    const mod = await loadStore()
+    const pane = await fakePane("s1", { reconnecting: true })
+    const { toast } = await import("sonner")
+    expect(mod.runMacro("Greet", agentTab("s1"))).toBe("none")
+    expect(pane.sent).toHaveLength(0)
+    expect(toast.warning).toHaveBeenCalledWith(
+      "The macro was not sent: this terminal is reconnecting, and nothing was sent to it. Pick the macro again once it is back.",
+      expect.anything(),
+    )
+  })
+
+  it("runMacro refuses out loud when no pane for its target is mounted", async () => {
+    bootstrapMacros = [{ name: "Greet", text: "hi", surface: "both" }]
+    const mod = await loadStore()
+    const other = await fakePane("t1")
+    const { toast } = await import("sonner")
+    expect(mod.runMacro("Greet", agentTab("s1"))).toBe("none")
+    expect(other.sent).toHaveLength(0)
+    expect(toast.warning).toHaveBeenCalledWith(
+      "The macro was not sent: this terminal is not open on this page. Open it, then pick the macro again.",
+      expect.anything(),
+    )
+  })
+
+  it("runMacro ignores an unknown macro name", async () => {
+    bootstrapMacros = [{ name: "Greet", text: "hi", surface: "both" }]
+    const mod = await loadStore()
+    const pane = await fakePane("s1")
+    expect(mod.runMacro("Nope", agentTab("s1"))).toBe("none")
+    expect(pane.sent).toHaveLength(0)
+  })
+
+  // The compose-bar routing: while the compose bar is the rendered typing
+  // surface, a picked macro is a DRAFT INSERT, never a wire write. The RAW text
+  // goes to the draft verbatim (newlines included: the compose Send path owns
+  // the newline→keystroke transform later), and the PTY receives NOTHING.
+  it("runMacro routes the raw macro text into its pane's compose draft, PTY untouched", async () => {
+    bootstrapMacros = [{ name: "Greet", text: "hello\nworld", surface: "both" }]
+    const mod = await loadStore()
+    const pane = await fakePane("s1", { compose: true })
+    expect(mod.runMacro("Greet", agentTab("s1"))).toBe("compose")
+    expect(pane.inserted).toEqual(["hello\nworld"])
+    expect(pane.sent).toHaveLength(0)
+  })
+
+  it("runMacro resolves the compose draft for its target, not another pane's", async () => {
+    bootstrapMacros = [{ name: "Greet", text: "hi", surface: "both" }]
+    const mod = await loadStore()
+    const mine = await fakePane("s1")
+    const other = await fakePane("t1", { compose: true })
+    expect(mod.runMacro("Greet", agentTab("s1"))).toBe("pty")
+    expect(mine.sent).toHaveLength(1)
+    expect(other.inserted).toHaveLength(0)
+  })
+
+  it("saveMacros PUTs the FULL ordered entries with the version it read, closes, and comes back on a stale refusal", async () => {
+    bootstrapMacrosVersion = "v1"
+    const mod = await loadStore()
+    mod.openMacrosDialog()
+
+    // The wholesale list preserves order and edits made in the dialog.
+    const edited: MacroView[] = [
+      { name: "Build", text: "cargo build --release", surface: "terminal" },
+      { name: "Review", text: "review this", surface: "agent" },
+      { name: "New", text: "added", surface: "both" },
+    ]
+    mod.saveMacros(edited)
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/v1/macros",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ entries: edited, version: "v1" }),
+      }),
+    )
+    // Order is preserved exactly (wholesale replace, not a delta).
+    const call = fetchMock.mock.calls.find(
+      (c) => String(c[0]) === "/api/v1/macros",
+    )
+    const sent = (JSON.parse((call?.[1] as RequestInit).body as string) as {
+      entries: MacroView[]
+    }).entries
+    expect(sent.map((m) => m.name)).toEqual(["Build", "Review", "New"])
+    // The dialog closes after dispatching the save.
+    expect(mod.getSnapshot().macrosDialogOpen).toBe(false)
+
+    // The list changed after the dialog read it: the dialog comes back with
+    // the edits and the server's sentence, and nothing typed is lost.
+    staleMacrosPut = true
+    mod.openMacrosDialog()
+    mod.saveMacros(edited)
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().macrosDialogOpen).toBe(true)
+    })
+    expect(mod.getSnapshot().macrosConflict).toBe(
+      "The macro list changed after this dialog read it.",
+    )
+    expect(mod.getSnapshot().macrosDraft).toEqual(edited)
+
+    // Reloading reseeds the draft and its version from the server's list.
+    staleMacrosPut = false
+    bootstrapMacros = [{ name: "Shell", text: "yaran macros add", surface: "both" }]
+    bootstrapMacrosVersion = "v2"
+    await mod.reloadMacrosDraft()
+    expect(mod.getSnapshot().macrosConflict).toBeNull()
+    expect(mod.getSnapshot().macrosDraft).toEqual(bootstrapMacros)
+    expect(mod.getSnapshot().macrosDraftVersion).toBe("v2")
+
+    // A refusal that answers after the user has opened the editor again
+    // belongs to the earlier save: the editing session now open keeps its
+    // draft, the refused edits are kept aside, and the notice says so.
+    mod.closeMacrosDialog()
+    staleMacrosPut = true
+    let answer = () => {}
+    holdMacrosPut = new Promise<void>((resolve) => {
+      answer = resolve
+    })
+    mod.openMacrosDialog()
+    const refused: MacroView[] = [{ name: "Old", text: "earlier", surface: "both" }]
+    mod.saveMacros(refused)
+    mod.openMacrosDialog()
+    const current = mod.getSnapshot().macrosDraft
+    const epoch = mod.getSnapshot().macrosDraftEpoch
+    answer()
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().macrosConflict).not.toBeNull()
+    })
+    expect(mod.getSnapshot().macrosConflict).toContain("earlier save")
+    expect(mod.getSnapshot().macrosDraft).toBe(current)
+    expect(mod.getSnapshot().macrosDraftEpoch).toBe(epoch)
+    expect(mod.getSnapshot().macrosRejected).toEqual(refused)
+  })
+
+  it("persistMacroOrder PUTs the reordered entries, keeps the dialog open, resolves true", async () => {
+    savedMacrosVersion = "v3"
+    bootstrapMacros = [
+      { name: "Review", text: "review this", surface: "agent" },
+      { name: "Build", text: "cargo build", surface: "terminal" },
+    ]
+    const mod = await loadStore()
+    mod.openMacrosDialog()
+    fetchMock.mockClear()
+
+    const reordered: MacroView[] = [
+      { name: "Build", text: "cargo build", surface: "terminal" },
+      { name: "Review", text: "review this", surface: "agent" },
+    ]
+    await expect(mod.persistMacroOrder(reordered)).resolves.toBe(true)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/macros",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ entries: reordered }),
+      }),
+    )
+    // Unlike saveMacros, a reorder save must NOT close the dialog: the user is
+    // still arranging the list.
+    expect(mod.getSnapshot().macrosDialogOpen).toBe(true)
+    // The dialog's next save is based on the list this one left.
+    expect(mod.getSnapshot().macrosDraftVersion).toBe("v3")
+  })
+
+  it("persistMacroOrder resolves false and toasts when the PUT is rejected", async () => {
+    bootstrapMacros = [{ name: "Review", text: "review this", surface: "agent" }]
+    failMacrosPut = true
+    const mod = await loadStore()
+    const { toast } = await import("sonner")
+    mod.openMacrosDialog()
+
+    await expect(
+      mod.persistMacroOrder([
+        { name: "Review", text: "review this", surface: "agent" },
+      ]),
+    ).resolves.toBe(false)
+    // The caller rolls the visual order back on false; the toast names why.
+    expect(toast.error).toHaveBeenCalled()
+    expect(mod.getSnapshot().macrosDialogOpen).toBe(true)
+  })
+
+  it("persistMacroOrder refuses (no PUT, resolves false) when bootstrap is null", async () => {
+    failBootstrap = true
+    const mod = await loadStoreNoBootstrap()
+    const { toast } = await import("sonner")
+    fetchMock.mockClear()
+
+    await expect(
+      mod.persistMacroOrder([{ name: "X", text: "y", surface: "both" }]),
+    ).resolves.toBe(false)
+    const putCall = fetchMock.mock.calls.find(
+      (c) => String(c[0]) === "/api/v1/macros",
+    )
+    expect(putCall).toBeUndefined()
+    expect(toast.error).toHaveBeenCalled()
+  })
+
+  it("saveMacros refuses (no PUT, error toast, dialog stays open) when bootstrap is null", async () => {
+    failBootstrap = true
+    const mod = await loadStoreNoBootstrap()
+    const { toast } = await import("sonner")
+    mod.openMacrosDialog()
+
+    // The shared module-level fetch double accumulates calls across tests; clear
+    // it so a PUT here can only come from THIS save.
+    fetchMock.mockClear()
+
+    // A wholesale update_macros from an empty/unknown base would destroy the
+    // server's macros, so the save must be refused while bootstrap is unloaded.
+    mod.saveMacros([{ name: "X", text: "y", surface: "both" }])
+
+    const putCall = fetchMock.mock.calls.find(
+      (c) => String(c[0]) === "/api/v1/macros",
+    )
+    expect(putCall).toBeUndefined()
+    expect(toast.error).toHaveBeenCalled()
+    // The dialog stays open so the user keeps their edits and can retry.
+    expect(mod.getSnapshot().macrosDialogOpen).toBe(true)
+  })
+})

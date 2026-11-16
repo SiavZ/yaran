@@ -1,4 +1,4 @@
-// `dux server` listening on every interface with no password set: the startup
+// `yaran server` listening on every interface with no password set: the startup
 // banner and, in red, the warning that anyone who can reach it controls your
 // agents and terminals.
 module.exports = async ({ sleep, waitFor }) => {
@@ -8,7 +8,7 @@ module.exports = async ({ sleep, waitFor }) => {
 
 module.exports.launch = "server"
 
-// Every interface, which is what makes dux reachable beyond this machine, on the
+// Every interface, which is what makes yaran reachable beyond this machine, on the
 // default port the docs name. The canonical config may or may not spell `host`
 // out, so it is replaced where it is and added where it is not.
 module.exports.config = (text) => {
@@ -21,8 +21,8 @@ module.exports.config = (text) => {
 
 // The warning, and the command it tells you to run.
 module.exports.expectText = [
-  "No password is set and dux is reachable beyond this machine",
-  "dux config set",
+  "No password is set and yaran is reachable beyond this machine",
+  "yaran config set",
 ]
 
 module.exports.file = "server-no-password-warning.png"

@@ -1,23 +1,23 @@
 ---
-title: Hosting dux on the public internet
-description: TLS in front, then either dux's own password or oauth2-proxy with GitHub sign-in restricted to an org, a team, or named accounts, in one Docker Compose file, and what breaks when a piece is missing.
+title: Hosting yaran on the public internet
+description: TLS in front, then either yaran's own password or oauth2-proxy with GitHub sign-in restricted to an org, a team, or named accounts, in one Docker Compose file, and what breaks when a piece is missing.
 group: Web UI
 order: 66
 ---
 
-Put dux on a box with a real uplink and reach it from anywhere. That is safe with the right
+Put yaran on a box with a real uplink and reach it from anywhere. That is safe with the right
 config, and this page is that config: a TLS terminator in front, a gate that asks who you
-are, and dux on a private network where nothing but the proxy can see it.
+are, and yaran on a private network where nothing but the proxy can see it.
 
 > [!CAUTION]
 > **Whoever gets past the gate gets the whole workspace**: every agent, every terminal, a
 > shell on the machine through those terminals, git, and the server's filesystem through
-> the project picker. dux has one password for one owner and no accounts. See
+> the project picker. yaran has one password for one owner and no accounts. See
 > [Who can get in](/docs/server-mode#who-can-get-in).
 
 There are two gates to choose from, and you can stack them:
 
-- **dux's own password.** One password, set with `dux config set server.auth.password`,
+- **yaran's own password.** One password, set with `yaran config set server.auth.password`,
   asked of everyone with `require = "everywhere"`. Nothing extra to run. See
   [The web password](/docs/web-login).
 - **`oauth2-proxy` with GitHub sign-in**, restricted to your org, a team, or accounts you
@@ -29,7 +29,7 @@ There are two gates to choose from, and you can stack them:
 > [Tailscale](/docs/tailscale) puts the same workspace on a private network with
 > nothing to publish and nothing to configure, and it is what the maintainer uses.
 
-## The simple version: Caddy and the dux password
+## The simple version: Caddy and the yaran password
 
 Two containers, and only Caddy publishes a port:
 
@@ -46,35 +46,35 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
-  dux:
-    build: ./dux                      # see "Building the dux image" below
+  yaran:
+    build: ./yaran                      # see "Building the yaran image" below
     restart: unless-stopped
-    command: ["dux", "server", "--bind", "0.0.0.0:3890", "--no-tailscale"]
+    command: ["yaran", "server", "--bind", "0.0.0.0:3890", "--no-tailscale"]
     volumes:
-      - dux_config:/root/.config/dux
+      - yaran_config:/root/.config/yaran
       - ./code:/root/code
 
 volumes:
   caddy_data:
   caddy_config:
-  dux_config:
+  yaran_config:
 ```
 
 ```caddyfile
-dux.example.com {
-	reverse_proxy dux:3890
+yaran.example.com {
+	reverse_proxy yaran:3890
 }
 ```
 
-Then the dux side, in the container's `config.toml`:
+Then the yaran side, in the container's `config.toml`:
 
 ```toml
 [server]
-allowed_hosts = ["dux.example.com"]
+allowed_hosts = ["yaran.example.com"]
 
 [server.auth]
 require       = "everywhere"   # Caddy is a proxy; say so rather than relying on how it connects
-cookie_secure = "always"       # the browser speaks HTTPS to Caddy; dux cannot see that
+cookie_secure = "always"       # the browser speaks HTTPS to Caddy; yaran cannot see that
 max_failed_logins = 0          # every visitor arrives from Caddy's address; see below
 ```
 
@@ -82,12 +82,12 @@ Settings under `[server.auth]` and `allowed_hosts` apply on **Reload config**; n
 Then the password, set inside the container where nothing echoes it:
 
 ```bash
-docker compose exec dux dux config set server.auth.password
+docker compose exec yaran yaran config set server.auth.password
 ```
 
 > [!WARNING]
-> **Every visitor looks like Caddy to dux.** Caddy reaches dux over the Compose network,
-> so dux sees one address for everybody, and the failed-sign-in slow-down and the block
+> **Every visitor looks like Caddy to yaran.** Caddy reaches yaran over the Compose network,
+> so yaran sees one address for everybody, and the failed-sign-in slow-down and the block
 > treat all your visitors as one person.
 >
 > - Left at its default, five wrong guesses by anyone would block Caddy itself, and with
@@ -101,17 +101,17 @@ docker compose exec dux dux config set server.auth.password
 ## The GitHub version: oauth2-proxy in front
 
 The rest of this page builds the second gate: a TLS terminator, `oauth2-proxy` doing GitHub
-sign-in restricted to your org or to accounts you name, and dux behind it.
+sign-in restricted to your org or to accounts you name, and yaran behind it.
 
-A dux password behind the proxy is not free:
+A yaran password behind the proxy is not free:
 
-- **Everyone signs in twice**, once to GitHub and once to dux.
-- **dux sees one address for every visitor**, the proxy's, so five wrong guesses by anyone
+- **Everyone signs in twice**, once to GitHub and once to yaran.
+- **yaran sees one address for every visitor**, the proxy's, so five wrong guesses by anyone
   block the proxy and with it everybody.
-- **The cookie is not marked Secure.** dux cannot see the HTTPS in front, so under the
+- **The cookie is not marked Secure.** yaran cannot see the HTTPS in front, so under the
   default `cookie_secure = "auto"` it leaves the flag off.
 
-You can still set one as the gate for anyone who reaches dux around the proxy. If you do,
+You can still set one as the gate for anyone who reaches yaran around the proxy. If you do,
 use the simple version's settings (`require = "everywhere"`, `cookie_secure = "always"`,
 `max_failed_logins = 0`).
 
@@ -120,7 +120,7 @@ use the simple version's settings (`require = "everywhere"`, `cookie_secure = "a
 The GitHub version runs three containers on one private Compose network, and exactly one
 of them has a published port.
 
-```dot Only Caddy publishes a port. dux publishes none, so the proxy container is the only thing on the machine that can reach it.
+```dot Only Caddy publishes a port. yaran publishes none, so the proxy container is the only thing on the machine that can reach it.
 digraph topology {
   bgcolor="transparent";
   rankdir=TB;
@@ -141,10 +141,10 @@ digraph topology {
 
     caddy  [class="d-tls",  label=<caddy<br/><font point-size="9">:80 and :443, published</font>>];
     gate   [class="d-gate", label=<oauth2&#45;proxy<br/><font point-size="9">:4180, not published</font>>];
-    duxsvc [class="d-app",  label=<dux server<br/><font point-size="9">:3890, never published</font>>];
+    yaransvc [class="d-app",  label=<yaran server<br/><font point-size="9">:3890, never published</font>>];
 
     caddy -> gate   [label="  http"];
-    gate  -> duxsvc [label="  http"];
+    gate  -> yaransvc [label="  http"];
   }
 
   internet -> caddy [label="  https"];
@@ -152,23 +152,23 @@ digraph topology {
 ```
 
 The order matters. TLS is outermost so the login cookie never crosses the internet in the
-clear, and `oauth2-proxy` sits between Caddy and dux rather than beside it, so nothing
-reaches dux without passing the gate.
+clear, and `oauth2-proxy` sits between Caddy and yaran rather than beside it, so nothing
+reaches yaran without passing the gate.
 
 ## Before you start
 
 You need three things.
 
 **A hostname with DNS pointing at the box.** Caddy gets a certificate for it
-automatically, and the name has to resolve first. Everything below uses `dux.example.com`;
-replace it everywhere, including in the dux config.
+automatically, and the name has to resolve first. Everything below uses `yaran.example.com`;
+replace it everywhere, including in the yaran config.
 
 **A GitHub OAuth app.** Create one under your account or your org
 (`Settings → Developer settings → OAuth Apps`). The **Authorization callback URL** must
 be exactly:
 
 ```text
-https://dux.example.com/oauth2/callback
+https://yaran.example.com/oauth2/callback
 ```
 
 Keep the client ID and secret. To restrict by organization, create the app under a
@@ -215,10 +215,10 @@ services:
       # Required. The default is 127.0.0.1:4180, which inside a container means
       # Caddy cannot reach it and every request fails at connect.
       - --http-address=0.0.0.0:4180
-      # Docker's embedded DNS resolves `dux` to the service of that name on the
+      # Docker's embedded DNS resolves `yaran` to the service of that name on the
       # shared network. Resolution happens per request, so no depends_on is needed.
-      - --upstream=http://dux:3890
-      - --redirect-url=https://dux.example.com/oauth2/callback
+      - --upstream=http://yaran:3890
+      - --redirect-url=https://yaran.example.com/oauth2/callback
       # Pick at least one gate. --github-user is an OR escape hatch: a listed
       # username is let in whether or not the org check would have passed.
       - --github-org=your-org
@@ -246,29 +246,29 @@ services:
       OAUTH2_PROXY_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       OAUTH2_PROXY_COOKIE_SECRET: ${COOKIE_SECRET}
 
-  dux:
-    # There is no official dux image. Build one (see below) or point this at
+  yaran:
+    # There is no official yaran image. Build one (see below) or point this at
     # your own; the important part is what is NOT here, which is a ports entry.
-    build: ./dux
+    build: ./yaran
     restart: unless-stopped
     # Binds every interface INSIDE the container. That is not an exposure:
     # with no published port, the container's only neighbours are the other two
-    # services. With no dux password set, dux prints a red warning about the
+    # services. With no yaran password set, yaran prints a red warning about the
     # non-loopback bind on startup, and in this topology that warning is expected.
-    command: ["dux", "server", "--bind", "0.0.0.0:3890", "--no-tailscale"]
+    command: ["yaran", "server", "--bind", "0.0.0.0:3890", "--no-tailscale"]
     volumes:
       # Your config, your session database and your log. Keep it on a named
       # volume or a bind mount: this is where projects and agents live.
-      - dux_config:/root/.config/dux
-      # Your repositories. dux does NOT create worktrees next to them: they go
-      # under its own config directory, so they live on the dux_config volume
+      - yaran_config:/root/.config/yaran
+      # Your repositories. yaran does NOT create worktrees next to them: they go
+      # under its own config directory, so they live on the yaran_config volume
       # above. Do not treat that volume as disposable.
       - ./code:/root/code
 
 volumes:
   caddy_data:
   caddy_config:
-  dux_config:
+  yaran_config:
 ```
 
 Two flags are deliberately **not** in that list:
@@ -286,12 +286,12 @@ Two flags are deliberately **not** in that list:
 The `Caddyfile` is three lines:
 
 ```caddyfile
-dux.example.com {
+yaran.example.com {
 	reverse_proxy oauth2-proxy:4180
 }
 ```
 
-That is the whole configuration, because Caddy already does the two things dux needs with
+That is the whole configuration, because Caddy already does the two things yaran needs with
 no directives: it passes incoming headers through unchanged, `Host` included, and it
 tunnels WebSockets.
 
@@ -309,15 +309,15 @@ GITHUB_CLIENT_SECRET=...
 COOKIE_SECRET=...   # the openssl output from above
 ```
 
-### The one line of dux config
+### The one line of yaran config
 
-dux's Host allowlist accepts `localhost`, loopback addresses, and IP literals it actually
-bound. `dux.example.com` is none of those, so every request gets a `403` until you say the
+yaran's Host allowlist accepts `localhost`, loopback addresses, and IP literals it actually
+bound. `yaran.example.com` is none of those, so every request gets a `403` until you say the
 name out loud once:
 
 ```toml
 [server]
-allowed_hosts = ["dux.example.com"]
+allowed_hosts = ["yaran.example.com"]
 ```
 
 The rules for each entry:
@@ -334,9 +334,9 @@ The rules for each entry:
 > hostile web page tricking **your** browser into driving your server, which is a real
 > attack worth defending. They do nothing at all about a person who simply visits the URL.
 
-### Building the dux image
+### Building the yaran image
 
-dux ships no image, so this part is yours. The container is not really "dux": it is your
+yaran ships no image, so this part is yours. The container is not really "yaran": it is your
 whole development environment, the agent CLIs and their credentials, `git`, your git
 identity, and whatever your projects need to build. A sketch:
 
@@ -347,10 +347,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client gnupg \
  && rm -rf /var/lib/apt/lists/*
 
-# dux itself.
-RUN curl -sSfL https://getdux.app/install.sh | DUX_INSTALL_DIR=/usr/local/bin bash
+# yaran itself.
+RUN curl -sSfL https://getdux.app/install.sh | YARAN_INSTALL_DIR=/usr/local/bin bash
 
-# gh is OPTIONAL. Skip it and dux hides the "new agent from a GitHub PR" entry
+# gh is OPTIONAL. Skip it and yaran hides the "new agent from a GitHub PR" entry
 # and stops syncing PR status; nothing else changes.
 RUN curl -sSfL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -366,23 +366,23 @@ RUN curl -sSfL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 WORKDIR /root/code
 ```
 
-Then `docker compose exec dux gh auth login` and the equivalent for each agent CLI,
+Then `docker compose exec yaran gh auth login` and the equivalent for each agent CLI,
 once.
 
 > [!WARNING]
-> Those credentials do **not** land on the `dux_config` volume. `gh` writes
+> Those credentials do **not** land on the `yaran_config` volume. `gh` writes
 > `/root/.config/gh` and each agent CLI writes its own directory, none of which is
 > mounted above. Add volumes for them (or mount all of `/root`) if you want them to
 > survive a restart. This is the part that takes an afternoon, and it has nothing to do
-> with dux.
+> with yaran.
 
 > [!TIP]
-> If containerising your dev environment is not appealing, run `dux server` on the host and
-> delete the `dux` service. There is one catch:
+> If containerising your dev environment is not appealing, run `yaran server` on the host and
+> delete the `yaran` service. There is one catch:
 >
-> - The proxy container cannot reach a host-loopback bind, so dux has to bind an address
+> - The proxy container cannot reach a host-loopback bind, so yaran has to bind an address
 >   the container can route to, and the "no published port" protection goes with it.
-> - **Firewall that port**, and set a dux password. Without one, the firewall is the only
+> - **Firewall that port**, and set a yaran password. Without one, the firewall is the only
 >   thing between the internet and your workspace.
 
 ## What each piece is doing
@@ -394,7 +394,7 @@ recent click. [The Tailscale page lists the exact set](/docs/tailscale#plain-htt
 and it is the same set here.
 
 **`oauth2-proxy`** is the login. Without it, or reachable around it, you have published a
-shell to the internet, unless a dux password is set behind it.
+shell to the internet, unless a yaran password is set behind it.
 
 **The GitHub restriction flags** are what make the login mean something, since
 `--provider=github` on its own authenticates *any* GitHub account. Set at least one:
@@ -407,17 +407,17 @@ shell to the internet, unless a dux password is set behind it.
   complete allowlist, and an unlisted account is rejected outright.
 
 > [!CAUTION]
-> **The absent `ports:` entry on the `dux` service** is doing more work than any flag here.
-> It makes "you cannot get to dux without passing the proxy" a property of the network
+> **The absent `ports:` entry on the `yaran` service** is doing more work than any flag here.
+> It makes "you cannot get to yaran without passing the proxy" a property of the network
 > rather than a promise.
 >
 > Add a published port for a quick test and you have removed the GitHub sign-in for as
-> long as it is there. The dux password, if you set one, is then the only gate.
+> long as it is there. The yaran password, if you set one, is then the only gate.
 
 ## What this does not give you
 
 > [!CAUTION]
-> Everyone through the door shares one workspace, because dux has no concept of a user to
+> Everyone through the door shares one workspace, because yaran has no concept of a user to
 > scope anything to. They can attach to any agent, type into a session someone else is
 > mid-sentence in, run git, and browse the server's filesystem. There is no per-user
 > ownership and no path sandbox, by design.
@@ -425,15 +425,15 @@ shell to the internet, unless a dux password is set behind it.
 > So restrict the gate to people you would hand a terminal on that machine. An org-wide
 > `--github-org` on a company with a thousand engineers is a thousand people with a shell.
 
-**dux keeps no record of who someone is.** It ignores the `X-Forwarded-User` and
+**yaran keeps no record of who someone is.** It ignores the `X-Forwarded-User` and
 `X-Forwarded-Email` headers `oauth2-proxy` adds, and its access log carries no client
 identity: it records only the timestamp, method, path, status and latency. Your audit
-trail lives in the proxy's logs, not in dux's.
+trail lives in the proxy's logs, not in yaran's.
 
 > [!CAUTION]
 > A tunnel that publishes the port to the anonymous internet (Tailscale Funnel, `ngrok`,
 > `cloudflared` in its no-authentication mode) is only as safe as the gate behind it.
-> Without a dux password, a tunnel has not made this easier, it has made your shell public.
+> Without a yaran password, a tunnel has not made this easier, it has made your shell public.
 > What a Funnel does with and without a password is in
 > [The web password](/docs/web-login#tailscale-serve-and-funnel).
 
@@ -459,27 +459,27 @@ proxy_read_timeout 1h;      # or an idle agent's socket is closed under you
 ```
 
 > [!WARNING]
-> nginx's `proxy_pass` adds no `X-Forwarded-For` by default, so on the same machine as dux
+> nginx's `proxy_pass` adds no `X-Forwarded-For` by default, so on the same machine as yaran
 > every visitor looks like that machine and the default `require` lets them in with no
 > password. Add `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and set
 > `require = "everywhere"` either way. Why:
 > [Behind a reverse proxy](/docs/web-login#behind-a-reverse-proxy).
 
-### `403 this dux server does not serve the requested host`
+### `403 this yaran server does not serve the requested host`
 
-The Host allowlist. The proxy is forwarding a `Host` that dux does not accept, almost
+The Host allowlist. The proxy is forwarding a `Host` that yaran does not accept, almost
 always your public hostname before you added it to `allowed_hosts`. Add it and run
 **Reload config**: the running server answers by the new list with no restart.
 
 ### `403 cross-origin WebSocket upgrade rejected`, or `cross-origin request rejected` on a write
 
-The same-origin check. dux compares the browser's `Origin` against the request's `Host` on
+The same-origin check. yaran compares the browser's `Origin` against the request's `Host` on
 every socket upgrade and every `POST`, `PATCH`, `PUT` and `DELETE`. A proxy that
 **rewrites** `Host` to its backend target satisfies the allowlist, because loopback is
 always allowed, and then fails this check on everything that matters, because the browser
-still sends `dux.example.com` as `Origin`.
+still sends `yaran.example.com` as `Origin`.
 
-```dot Every hop forwards the same Host, and dux checks it against the browser's Origin. Rewrite Host anywhere in that chain and only the writes break.
+```dot Every hop forwards the same Host, and yaran checks it against the browser's Origin. Rewrite Host anywhere in that chain and only the writes break.
 digraph headers {
   bgcolor="transparent";
   rankdir=TB;
@@ -491,11 +491,11 @@ digraph headers {
   browser [class="d-outside", label=<the browser<br/><font point-size="9">sends Origin, cannot be told not to</font>>];
   caddy   [class="d-tls",     label=<caddy<br/><font point-size="9">passes Host through by default</font>>];
   gate    [class="d-gate",    label=<oauth2&#45;proxy<br/><font point-size="9">pass&#45;host&#45;header defaults to true</font>>];
-  duxsvc  [class="d-app",     label=<dux<br/><font point-size="9">Origin authority must equal Host</font>>];
+  yaransvc  [class="d-app",     label=<yaran<br/><font point-size="9">Origin authority must equal Host</font>>];
 
-  browser -> caddy  [label="  Host: dux.example.com"];
-  caddy   -> gate   [label="  Host: dux.example.com"];
-  gate    -> duxsvc [label="  Host: dux.example.com"];
+  browser -> caddy  [label="  Host: yaran.example.com"];
+  caddy   -> gate   [label="  Host: yaran.example.com"];
+  gate    -> yaransvc [label="  Host: yaran.example.com"];
 }
 ```
 
@@ -533,10 +533,10 @@ so check the `oauth2-proxy` logs, which name the org it wanted and the orgs it s
 
 ### The console shows one client IP for everybody
 
-dux's per-request access log records no IP at all. Its connect and disconnect lines do
-print a peer address, and since the proxy connects to dux over the network, that address
-is the proxy's for every client. A dux password's slow-down and blocks see the same single
-address, as [the simple version](#the-simple-version-caddy-and-the-dux-password) warns.
+yaran's per-request access log records no IP at all. Its connect and disconnect lines do
+print a peer address, and since the proxy connects to yaran over the network, that address
+is the proxy's for every client. A yaran password's slow-down and blocks see the same single
+address, as [the simple version](#the-simple-version-caddy-and-the-yaran-password) warns.
 Use the proxy's logs to know who did something.
 
 ## Where to go next
@@ -544,7 +544,7 @@ Use the proxy's logs to know who did something.
 - [Server mode overview](/docs/server-mode): who can get in, every `[server]` key with
   its default, the startup banner, and graceful shutdown.
 - [The web password](/docs/web-login): `require`, bans, the cookie, and the honest limits.
-- [Reaching dux over Tailscale](/docs/tailscale): the private-network answer, which
+- [Reaching yaran over Tailscale](/docs/tailscale): the private-network answer, which
   needs none of this page and is what the maintainer actually uses.
 - [The workspace in the browser](/docs/web-workspace): what you get once you are in,
   including the phone shell.

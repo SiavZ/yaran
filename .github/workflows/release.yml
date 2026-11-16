@@ -9,24 +9,24 @@ permissions:
 
 jobs:
   # A release binary with no web UI is the failure this guard exists to prevent.
-  # DUX_DISABLE_UI_BUILD makes crates/dux-web/build.rs skip the React build, which
+  # YARAN_DISABLE_UI_BUILD makes crates/yaran-web/build.rs skip the React build, which
   # would produce four platform archives serving a "web UI not built" notice page.
   # Every build job needs this one, so the hatch cannot ship.
   #
-  # DUX_UI_BUILD_STATE is checked alongside it, belt and braces. build.rs stamps
+  # YARAN_UI_BUILD_STATE is checked alongside it, belt and braces. build.rs stamps
   # that name on every path it takes and a cargo:rustc-env beats an ambient value,
   # so a set one can no longer talk the test suite into skipping; the two retired
   # names could, and are listed here so a branch still carrying one is caught
   # rather than quietly ignored.
   no-ui-build-hatch:
-    name: Reject DUX_DISABLE_UI_BUILD
+    name: Reject YARAN_DISABLE_UI_BUILD
     runs-on: ubuntu-latest
     steps:
       - name: Fail if the frontend-build escape hatch is set
         run: |
           set -euo pipefail
           failed=""
-          for name in DUX_DISABLE_UI_BUILD DUX_UI_BUILD_STATE DUX_UI_BUILD_SKIPPED DUX_UI_BUILD_STALE; do
+          for name in YARAN_DISABLE_UI_BUILD YARAN_UI_BUILD_STATE YARAN_UI_BUILD_SKIPPED YARAN_UI_BUILD_STALE; do
             value="$(printenv "$name" || true)"
             if [ -n "$value" ]; then
               echo "$name is set to '$value' in this workflow's environment. It skips the" >&2
@@ -43,7 +43,7 @@ jobs:
     name: Prepare release metadata
     runs-on: ubuntu-latest
     # Carries the guard edge even though it only reads the tag, so that "the
-    # release workflow refuses to run with DUX_DISABLE_UI_BUILD set" is true of
+    # release workflow refuses to run with YARAN_DISABLE_UI_BUILD set" is true of
     # the whole workflow rather than of most of it.
     needs: no-ui-build-hatch
     outputs:
@@ -87,16 +87,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
-            archive: dux-linux-amd64.tar.gz
+            archive: yaran-linux-amd64.tar.gz
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
-            archive: dux-linux-arm64.tar.gz
+            archive: yaran-linux-arm64.tar.gz
           - target: x86_64-apple-darwin
             runner: macos-latest
-            archive: dux-darwin-amd64.tar.gz
+            archive: yaran-darwin-amd64.tar.gz
           - target: aarch64-apple-darwin
             runner: macos-latest
-            archive: dux-darwin-arm64.tar.gz
+            archive: yaran-darwin-arm64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -121,7 +121,7 @@ jobs:
 
       - name: Build
         env:
-          DUX_RELEASE_BUILD: "1"
+          YARAN_RELEASE_BUILD: "1"
         run: cargo build --release --target ${{ matrix.target }}
 
       # Symbol stripping happens in Cargo ([profile.release] strip = "symbols"),
@@ -129,7 +129,7 @@ jobs:
       # exactly one stripping mechanism.
 
       - name: Package
-        run: tar czf ${{ matrix.archive }} -C target/${{ matrix.target }}/release dux
+        run: tar czf ${{ matrix.archive }} -C target/${{ matrix.target }}/release yaran
 
       # One "<archive>.sha256" beside each archive, in sha256sum's own format
       # (hex digest, two spaces, file name) so `sha256sum -c` and `shasum -a 256
@@ -193,8 +193,8 @@ jobs:
   # a needs edge requires ALL matrix legs to succeed. The smoke test still gates
   # its own archive inside the build job; this gates the release.
   #
-  # It also publishes a single dux-checksums.txt holding all four lines, for a
-  # human verifying a download by hand: `sha256sum -c dux-checksums.txt` in a
+  # It also publishes a single yaran-checksums.txt holding all four lines, for a
+  # human verifying a download by hand: `sha256sum -c yaran-checksums.txt` in a
   # directory holding the archives. The installer deliberately does NOT use that
   # file, it fetches the per-archive .sha256 instead, so a single-platform user
   # never needs the other three archives present.
@@ -223,17 +223,17 @@ jobs:
           cd dist/artifacts
           # The glob sorts, so the file is byte-stable regardless of the order
           # the matrix jobs happened to finish in.
-          cat *.sha256 > dux-checksums.txt
+          cat *.sha256 > yaran-checksums.txt
           echo "Combined checksums:"
-          cat dux-checksums.txt
+          cat yaran-checksums.txt
           # Four archives in the matrix, so four lines. A short file means a
           # matrix job silently produced nothing.
-          lines="$(wc -l < dux-checksums.txt)"
+          lines="$(wc -l < yaran-checksums.txt)"
           if [ "$lines" -ne 4 ]; then
             echo "Expected 4 checksum lines, got ${lines}." >&2
             exit 1
           fi
-          sha256sum -c dux-checksums.txt
+          sha256sum -c yaran-checksums.txt
 
       # One upload call for everything, so the release page goes from "no assets"
       # to "all assets" rather than filling in over several minutes.
@@ -252,7 +252,7 @@ jobs:
           set -euo pipefail
           cd dist/artifacts
           gh release upload "${{ github.event.release.tag_name }}" --clobber \
-            *.tar.gz *.tar.gz.sha256 dux-checksums.txt
+            *.tar.gz *.tar.gz.sha256 yaran-checksums.txt
           echo "Published:"
           ls -1
 
@@ -284,7 +284,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: npm-package
-          path: dist/npm/dux-npm-*.tgz
+          path: dist/npm/yaran-npm-*.tgz
           retention-days: 1
           if-no-files-found: error
 
@@ -319,7 +319,7 @@ jobs:
           NPM_TAG: ${{ needs.prepare-release.outputs.npm_tag }}
         run: |
           set -euo pipefail
-          tarball="dist/npm/dux-npm-${VERSION}.tgz"
+          tarball="dist/npm/yaran-npm-${VERSION}.tgz"
           if [[ ! -f "$tarball" ]]; then
             echo "npm tarball $tarball not found"
             exit 1
@@ -384,7 +384,7 @@ jobs:
 
           ## Installation
 
-          Use any of the following options to install dux on your system:
+          Use any of the following options to install yaran on your system:
 
           ${install_section}
 
@@ -397,7 +397,7 @@ jobs:
 
           ## Installation
 
-          Use any of the following options to install dux on your system:
+          Use any of the following options to install yaran on your system:
 
           ${install_section}"
           fi

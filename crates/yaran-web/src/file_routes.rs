@@ -1,0 +1,2574 @@
+//! HTTP endpoints for the web code editor: list the worktree's files, read and
+//! write a file's working copy, and open a file in a locally-installed GUI editor
+//! (a process spawned ON the server). Request/response so the editor gets real
+//! content + errors and can drive per-file loading/saving state.
+//!
+//! The editor may touch any path inside the root, tracked or not, and may create
+//! files, but nothing outside it. Containment is enforced by `yaran_core`:
+//! `resolve_worktree_path` rejects absolute, `..` and `.git` paths and escaping
+//! symlinks, and `worktree_file::{read,write}_file` additionally refuse symlinks
+//! and validate a created file's parent stays inside the tree. There is
+//! deliberately no git-tracked gate: the editor works against the worktree itself.
+//!
+//! `tree` lazily lists exactly one directory per request and backs the file tree;
+//! `list` is a flat walk capped by `[server] search_index_max_files` backing only
+//! the search box. Neither bounds what is editable. `open-in-editor` only spawns an
+//! editor, is gated to local-access clients in the UI, and is a harmless failure on
+//! a headless server.
+//!
+//! A save may carry the freshness token the read handed out, as the pair
+//! `expected_modified`/`expected_size`; with it the write is refused with a 409
+//! when the file moved underneath the buffer, and without it the write is
+//! unconditional, so every other writer is unaffected.
+//!
+//! Every route runs its file I/O off the async reactor. After a write the
+//! changed-files cache is invalidated, so a `session.changes` event reaches
+//! subscribed clients.
+
+use std::path::{Path as StdPath, PathBuf};
+use std::sync::Arc;
+
+use axum::{
+    Json, Router,
+    extract::{
+        DefaultBodyLimit, FromRequestParts, Path as ApiPath, Query, State, rejection::JsonRejection,
+    },
+    http::{StatusCode, header, request::Parts},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+
+use yaran_core::model::TerminalRoute;
+
+use crate::git_routes::resolve_editor_worktree;
+use crate::rest_common::{RouteRejection, id_within_bound, unknown_session};
+use crate::server::AppState;
+
+/// Largest raw asset the markdown-preview proxy will serve. Bigger than the
+/// editable-file cap (images/screenshots run larger than source files) but still
+/// bounded so a single request can't buffer an unbounded blob into memory.
+const MAX_RAW_BYTES: u64 = 25 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct ReadOp {
+    path: String,
+    /// Read in exactly this encoding (a WHATWG label) instead of by the
+    /// automatic rules: the person's answer to a fallback that read the file
+    /// wrong. Absent for an ordinary read, and from every older client.
+    #[serde(default)]
+    encoding: Option<String>,
+}
+
+/// Resolve an optional client encoding label. An unknown one is answered 400 by
+/// the caller rather than the file being read or written some other way.
+fn requested_encoding(
+    label: Option<&str>,
+) -> Result<Option<&'static yaran_core::text_encoding::Encoding>, String> {
+    match label {
+        None => Ok(None),
+        Some(label) => yaran_core::text_encoding::encoding_for_label(label)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct WriteOp {
+    path: String,
+    content: String,
+    /// The freshness token `read` handed out, echoed back so the server can refuse
+    /// to overwrite a file that moved underneath the buffer.
+    ///
+    /// The guard is opt-in by presence of BOTH halves, so a client that sends
+    /// neither gets the unconditional write. Half a token counts as none, since
+    /// enforcing a size against an mtime nobody supplied compares against a value
+    /// the server invented. Both halves are needed because mtime granularity is
+    /// coarse enough for two writes in one tick to share a timestamp, which is the
+    /// race the guard exists for.
+    #[serde(default)]
+    expected_modified: Option<String>,
+    #[serde(default)]
+    expected_size: Option<u64>,
+    /// The encoding to write the text in (a WHATWG label): the one the read
+    /// reported, or a conversion the person chose. Absent means the text's own
+    /// UTF-8, which is what every older client and the upload route send, and
+    /// such a save is still refused over a file that is not UTF-8.
+    #[serde(default)]
+    encoding: Option<String>,
+    /// Start the file with the encoding's byte-order mark. Only meaningful with
+    /// `encoding`, and refused for an encoding that has none.
+    #[serde(default)]
+    bom: bool,
+    /// The encoding (a WHATWG label) and mark the client read the file in. The
+    /// same as `encoding` and `bom` for an ordinary save, different for a
+    /// conversion, and absent from an older client, which is then judged the
+    /// conservative way (see `write_checked_existing`).
+    #[serde(default)]
+    read_encoding: Option<String>,
+    #[serde(default)]
+    read_bom: bool,
+}
+
+/// A save refused (422) because the text holds a character the chosen encoding
+/// has no bytes for. Structured so the browser can name the character and
+/// where it is, and point at converting the file, in its own words.
+#[derive(Serialize)]
+struct UnmappableBody {
+    error: &'static str,
+    message: String,
+    character: String,
+    line: usize,
+    column: usize,
+    encoding: &'static str,
+}
+
+/// A save's success body: the file's stamp AFTER the write. The client
+/// re-baselines on it so its own save is not mistaken for somebody else's edit
+/// the moment the changed-files broadcast moves.
+#[derive(Serialize)]
+struct WriteResult {
+    modified: Option<String>,
+    size: u64,
+    /// The verdict on what was written, judged the way a read would judge it,
+    /// so the editor takes a conversion's outcome from the server rather than
+    /// assuming it (see `WorktreeFile`). Absent for a save that stated no
+    /// encoding.
+    #[serde(flatten)]
+    verdict: Option<WriteVerdict>,
+}
+
+/// What a save that stated an encoding wrote, as [`WriteResult`] carries it.
+#[derive(Serialize)]
+struct WriteVerdict {
+    /// Why the text cannot be written back unchanged in this encoding, or
+    /// `null` when it can.
+    unwritable: Option<&'static str>,
+    mixed_line_endings: bool,
+    eol: &'static str,
+}
+
+/// A 409's body. `deleted` is its own field rather than being inferred from a
+/// null `modified`, because a null mtime is a legitimate answer on a filesystem
+/// that reports none, and "changed" and "deleted" are different rungs with
+/// different offers in the UI (reload versus close-or-keep).
+#[derive(Serialize)]
+struct WriteConflictBody {
+    modified: Option<String>,
+    size: Option<u64>,
+    deleted: bool,
+}
+
+#[derive(Deserialize)]
+struct PathOp {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct RenameOp {
+    from: String,
+    to: String,
+}
+
+#[derive(Deserialize)]
+struct OpenInEditorOp {
+    path: String,
+    /// Which editor to open, as a yaran-core editor config key/alias (e.g.
+    /// "vscode", "zed"). When absent, the configured/preferred editor is used,
+    /// which is the original auto-pick behavior.
+    #[serde(default)]
+    editor: Option<String>,
+}
+
+/// Query for the raw-asset proxy. A GET so it can back an `<img src>`; the
+/// session resolves the worktree (from the `:id` path segment), `path` is
+/// worktree-relative.
+#[derive(Deserialize)]
+struct RawQuery {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct FileList {
+    files: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
+}
+
+/// Request for the lazy tree listing: one worktree-relative directory
+/// (`""` = the worktree root).
+#[derive(Deserialize)]
+struct TreeOp {
+    #[serde(default)]
+    dir: String,
+}
+
+/// One directory's children for the lazy file tree, pre-sorted dirs-first.
+#[derive(Serialize)]
+struct TreeList {
+    dir: String,
+    entries: Vec<yaran_core::git::DirEntryInfo>,
+}
+
+#[derive(Serialize)]
+struct OpenedEditor {
+    /// Human-readable editor label (e.g. "VS Code") for the success toast.
+    editor: String,
+}
+
+/// Largest request body the editor's save route accepts. It must cover anything
+/// the reader opens, so it is derived from `MAX_EDITABLE_BYTES` rather than left at
+/// the framework's default, which would let a file open and then refuse to save.
+///
+/// Not simply the read cap, because the content travels as decoded text in a JSON
+/// string, and both grow it. A byte of a single-byte code page can decode to a
+/// character three bytes long in UTF-8 (every € in windows-1252), and `serde_json`
+/// escapes a control character to six bytes (`\u0001`); six bytes per byte read is
+/// the worst any supported encoding reaches, so six times the read cap covers any
+/// file the reader opens, and the extra room is the envelope and the path.
+///
+/// This only bounds the request. The limit that means something to a person is the
+/// size of the file that would be written, [`MAX_SAVED_BYTES`], checked on the
+/// encoded bytes before anything is written.
+///
+/// [`MAX_SAVED_BYTES`]: yaran_core::worktree_file::MAX_SAVED_BYTES
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "MAX_EDITABLE_BYTES is five megabytes, which a usize holds on every target, and a const cannot call TryFrom"
+)]
+const MAX_EDIT_WRITE_BYTES: usize =
+    6 * yaran_core::worktree_file::MAX_EDITABLE_BYTES as usize + 64 * 1024;
+
+/// What an editor request's paths resolve against, decided by the ADDRESS the
+/// request arrived at and never by the id alone. Each address is an extractor that
+/// answers the root or refuses with a 404, so a namespace's guard is written once
+/// and every handler is generic over which one ran. There is deliberately no
+/// session-nested terminal address: a session-owned terminal shares its agent's
+/// worktree, so its editor is the agent's editor.
+///
+/// Terminal roots are pinned at spawn, parting company with the file-drop tenet,
+/// which follows the live shell so a dropped file lands where the user is typing.
+/// An editor root backs a tree, a set of buffers, their drafts and a bookmarkable
+/// URL, and a root that moved on a `cd` would invalidate all four at once.
+trait EditorRoot: Send + 'static {
+    /// The absolute directory every path in the request resolves against.
+    fn path(&self) -> &StdPath;
+
+    /// The agent whose changed-files broadcast a mutation here should refresh.
+    ///
+    /// A terminal root answers `None`, and the absence is the design: it has no
+    /// agent, no changes pane and no diff mode, so there is nothing for a
+    /// broadcast to update. Freshness in a terminal-rooted editor rides the
+    /// remaining two triggers, window focus and tab activation.
+    fn changes_session(&self) -> Option<String>;
+
+    /// The flat walk backing the "Search files…" box. A worktree walks its own
+    /// dot directories (the editor opens `.git/config` through it); a terminal
+    /// root prunes them, for the reasons on [`yaran_core::git::rooted_files`].
+    fn search_walk(
+        root: &StdPath,
+        max_files: usize,
+    ) -> anyhow::Result<yaran_core::git::WorktreeFileList>;
+}
+
+/// An agent's worktree, from `/api/v1/sessions/{id}/files/*`.
+struct SessionRoot {
+    worktree: PathBuf,
+    session_id: String,
+}
+
+impl EditorRoot for SessionRoot {
+    fn path(&self) -> &StdPath {
+        &self.worktree
+    }
+    fn changes_session(&self) -> Option<String> {
+        Some(self.session_id.clone())
+    }
+    fn search_walk(
+        root: &StdPath,
+        max_files: usize,
+    ) -> anyhow::Result<yaran_core::git::WorktreeFileList> {
+        yaran_core::git::worktree_files(root, max_files)
+    }
+}
+
+impl FromRequestParts<AppState> for SessionRoot {
+    type Rejection = RouteRejection;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, RouteRejection> {
+        let ApiPath(id) = ApiPath::<String>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| unknown_session())?;
+        if !id_within_bound(&id) {
+            return Err(unknown_session().into());
+        }
+        let worktree = resolve_editor_worktree(state, id.clone()).await?;
+        Ok(Self {
+            worktree,
+            session_id: id,
+        })
+    }
+}
+
+/// A standalone terminal's pinned spawn directory, from
+/// `/api/v1/terminals/{tid}/files/*`.
+struct StandaloneTerminalRoot(PathBuf);
+
+/// A project terminal's pinned spawn directory, from
+/// `/api/v1/projects/{pid}/terminals/{tid}/files/*`.
+struct ProjectTerminalRoot(PathBuf);
+
+/// The shared body of both terminal roots. Only the extractors differ, because
+/// only the address differs.
+macro_rules! terminal_root {
+    ($ty:ident) => {
+        impl EditorRoot for $ty {
+            fn path(&self) -> &StdPath {
+                &self.0
+            }
+            fn changes_session(&self) -> Option<String> {
+                None
+            }
+            fn search_walk(
+                root: &StdPath,
+                max_files: usize,
+            ) -> anyhow::Result<yaran_core::git::WorktreeFileList> {
+                yaran_core::git::rooted_files(root, max_files)
+            }
+        }
+    };
+}
+
+terminal_root!(StandaloneTerminalRoot);
+terminal_root!(ProjectTerminalRoot);
+
+impl FromRequestParts<AppState> for StandaloneTerminalRoot {
+    type Rejection = RouteRejection;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, RouteRejection> {
+        let ApiPath(tid) = ApiPath::<String>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| unknown_terminal())?;
+        resolve_terminal_root(state, TerminalRoute::Standalone, &tid)
+            .await
+            .map(Self)
+    }
+}
+
+impl FromRequestParts<AppState> for ProjectTerminalRoot {
+    type Rejection = RouteRejection;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, RouteRejection> {
+        let ApiPath((pid, tid)) = ApiPath::<(String, String)>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| unknown_terminal())?;
+        if !id_within_bound(&pid) {
+            return Err(unknown_terminal().into());
+        }
+        resolve_terminal_root(state, TerminalRoute::Project(&pid), &tid)
+            .await
+            .map(Self)
+    }
+}
+
+/// The one place a terminal id becomes an editor root, for every terminal address.
+/// It takes the route namespace, never just the id, and hands it to the exhaustive
+/// [`yaran_core::model::TerminalOwner::is_at_route`], which is what makes a project
+/// terminal at the un-nested address, or one belonging to another project, a 404
+/// rather than a way to read a directory the address never named.
+async fn resolve_terminal_root(
+    state: &AppState,
+    route: TerminalRoute<'_>,
+    tid: &str,
+) -> Result<PathBuf, RouteRejection> {
+    if !id_within_bound(tid) {
+        return Err(unknown_terminal().into());
+    }
+    match state.engine.terminal_root(tid.to_string()).await {
+        Some((owner, root)) if owner.is_at_route(route) => Ok(root),
+        _ => Err(unknown_terminal().into()),
+    }
+}
+
+fn unknown_terminal() -> Response {
+    (StatusCode::NOT_FOUND, "unknown terminal").into_response()
+}
+
+/// Tell an agent's changes pane that a file moved underneath it, when there is
+/// an agent to tell. A terminal root answers no session, so a write there emits
+/// nothing: there is no changes pane listing that directory, and inventing a
+/// broadcast would mean naming an agent whose worktree the file is not in.
+fn refresh_root_changes<R: EditorRoot>(state: &AppState, root: &R, worktree: &StdPath) {
+    if let Some(session_id) = root.changes_session() {
+        crate::git_routes::refresh_changed_files_now(state, session_id, worktree);
+    }
+}
+
+/// The editor file routes for one address, generic over what that address roots
+/// at. Registering the same handlers three times is the whole mechanism: the
+/// guards live in the extractor and nothing below this line knows which
+/// namespace it is serving.
+fn editor_file_routes<R>(prefix: &str) -> Router<AppState>
+where
+    R: EditorRoot + FromRequestParts<AppState, Rejection = RouteRejection>,
+{
+    Router::new()
+        .route(&format!("{prefix}/list"), post(list_files::<R>))
+        .route(&format!("{prefix}/tree"), post(list_tree::<R>))
+        .route(&format!("{prefix}/read"), post(read_file::<R>))
+        .route(&format!("{prefix}/raw"), get(read_raw::<R>))
+        .route(
+            &format!("{prefix}/write"),
+            // Set EXPLICITLY, or the framework's 2 MB default applies and a file
+            // the editor was willing to OPEN cannot be saved. See
+            // [`MAX_EDIT_WRITE_BYTES`] for the size and why it is not simply the
+            // read cap.
+            post(write_file::<R>).layer(DefaultBodyLimit::max(MAX_EDIT_WRITE_BYTES)),
+        )
+        .route(&format!("{prefix}/info"), post(entry_info::<R>))
+        .route(&format!("{prefix}/create-file"), post(create_file::<R>))
+        .route(&format!("{prefix}/create-dir"), post(create_dir::<R>))
+        .route(&format!("{prefix}/rename"), post(rename_entry::<R>))
+        .route(&format!("{prefix}/delete"), post(delete_entry::<R>))
+        .route(
+            &format!("{prefix}/open-in-editor"),
+            post(open_in_editor::<R>),
+        )
+}
+
+/// The editor file routes. These are path-keyed: the id is a path segment,
+/// validated by `id_within_bound` and resolved to a root by the address's own
+/// extractor before any handler runs (mirroring the other resource-nested REST
+/// routes). The `raw` proxy is a GET with a root-relative `?path=` query.
+pub fn routes() -> Router<AppState> {
+    let session = "/api/v1/sessions/{id}/files";
+    Router::new()
+        .merge(editor_file_routes::<SessionRoot>(session))
+        // `diff` is registered for the AGENT address only. A terminal-rooted
+        // editor has no diff mode, so the route it would call does not exist:
+        // the affordance is absent rather than disabled, and there is no
+        // half-working endpoint for a client to find.
+        .route(&format!("{session}/diff"), post(diff_contents))
+        .merge(editor_file_routes::<StandaloneTerminalRoot>(
+            "/api/v1/terminals/{tid}/files",
+        ))
+        .merge(editor_file_routes::<ProjectTerminalRoot>(
+            "/api/v1/projects/{pid}/terminals/{tid}/files",
+        ))
+}
+
+/// The flat search walk. Bounded by `state.tree_list_semaphore`, the same permit
+/// `list_tree` takes: this is the more expensive of the two (a whole recursive
+/// walk against one `read_dir`), so leaving it unbounded while the cheap one was
+/// capped had the accounting backwards.
+async fn list_files<R: EditorRoot>(State(state): State<AppState>, root: R) -> Response {
+    let _permit = match tree_list_permit(&state).await {
+        Ok(permit) => permit,
+        Err(resp) => return resp.into_response(),
+    };
+    let worktree = root.path().to_path_buf();
+    let max_files = state.live_limits.search_index_max_files();
+    match tokio::task::spawn_blocking(move || R::search_walk(&worktree, max_files)).await {
+        Ok(Ok(listing)) => Json(FileList {
+            files: listing.files,
+            truncated: listing.truncated,
+        })
+        .into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("list task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// A permit from `state.tree_list_semaphore` so a burst of directory work cannot
+/// exhaust the blocking-thread pool. A request beyond the limit waits rather than
+/// being rejected, because this is small, fast background work rather than a
+/// long-lived connection like the `ws_*_semaphore` classes, which 503 instead.
+/// `None` means the config value is 0, unlimited, and no permit is taken.
+///
+/// The permit also serializes `list_files`, whose walk is bounded by
+/// `[server] search_index_max_files`; with that cap disabled a `/`-rooted terminal
+/// editor can hold a permit for a very long walk.
+async fn tree_list_permit(
+    state: &AppState,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, RouteRejection> {
+    match &state.tree_list_semaphore {
+        Some(sem) => match Arc::clone(sem).acquire_owned().await {
+            Ok(permit) => Ok(Some(permit)),
+            Err(_) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "tree listing semaphore closed unexpectedly",
+            )
+                .into_response()
+                .into()),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Lazy tree listing: one directory per request, no recursion, no cap. The
+/// blocking `read_dir` runs off the async reactor via `spawn_blocking`, bounded
+/// by [`tree_list_permit`].
+async fn list_tree<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Json(op): Json<TreeOp>,
+) -> Response {
+    let worktree = root.path().to_path_buf();
+    let _permit = match tree_list_permit(&state).await {
+        Ok(permit) => permit,
+        Err(resp) => return resp.into_response(),
+    };
+    let dir = op.dir;
+    let dir_echo = dir.clone();
+    match tokio::task::spawn_blocking(move || yaran_core::git::list_dir(&worktree, &dir)).await {
+        Ok(Ok(entries)) => Json(TreeList {
+            dir: dir_echo,
+            entries,
+        })
+        .into_response(),
+        // list_dir errors are containment/traversal/missing-dir conditions the
+        // client caused, so surface them as a 400, not a server error.
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("tree task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn read_file<R: EditorRoot>(root: R, Json(op): Json<ReadOp>) -> Response {
+    let worktree = root.path().to_path_buf();
+    let path = op.path;
+    let requested = match requested_encoding(op.encoding.as_deref()) {
+        Ok(requested) => requested,
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        yaran_core::worktree_file::read_file_as(&worktree, &path, requested)
+    })
+    .await
+    {
+        Ok(Ok(file)) => Json(file).into_response(),
+        // read_file's errors are path/containment/binary/size: client conditions.
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// What the diff endpoint answers with: the two sides for a file the editor can
+/// hold, or the head of git's own patch for one past the size ceiling.
+///
+/// Untagged, so the ordinary answer is the same object it has always been and a
+/// client tells the two apart by which key is there.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum DiffAnswer {
+    Contents(yaran_core::diff::DiffContents),
+    Head {
+        path: String,
+        head: yaran_core::diff::DiffHead,
+    },
+}
+
+/// Return the two raw sides (HEAD vs working copy) of a changed file so the web
+/// editor can render a Monaco diff. Same worktree-relative path security as
+/// `read`; binary content is reported via the `binary` flag with empty sides.
+/// A version past the size ceiling answers with the diff head instead.
+async fn diff_contents(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<String>,
+    Json(op): Json<ReadOp>,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_session();
+    }
+    // A DIFF is a git read, so it follows the folder-driven verdict like the
+    // rest of the changes panel. Ungated it would be actively misleading rather
+    // than merely broken: `file_bytes_at_head` maps a git failure to Ok(None),
+    // which the diff reads as "new file", so every file in a folder with no
+    // repository would render as fully added.
+    let worktree = match crate::git_routes::resolve_changes_worktree(&state, id).await {
+        Ok(w) => w,
+        Err(r) => return r.into_response(),
+    };
+    let path = op.path;
+    let requested = match requested_encoding(op.encoding.as_deref()) {
+        Ok(requested) => requested,
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        match yaran_core::diff::file_diff_contents_as(&worktree, &path, requested) {
+            Ok(contents) => Ok(DiffAnswer::Contents(contents)),
+            // A version past the editor's size ceiling is answered with the head
+            // of git's own patch rather than an error: the reader wanted to see
+            // the change, and there is one to show. Every other refusal is still
+            // a refusal.
+            Err(e) if e.downcast_ref::<yaran_core::diff::DiffTooLarge>().is_some() => {
+                match yaran_core::diff::diff_head_via_git_as(&worktree, &path, requested) {
+                    Ok(head) => Ok(DiffAnswer::Head {
+                        path: path.clone(),
+                        head,
+                    }),
+                    // The person asked for an encoding the patch is not valid
+                    // in: that is the whole answer, and the size story would
+                    // bury it.
+                    Err(fallback)
+                        if fallback
+                            .downcast_ref::<yaran_core::diff::PatchNotInEncoding>()
+                            .is_some() =>
+                    {
+                        Err(fallback)
+                    }
+                    // The fallback failing does not make the file smaller. The
+                    // refusal leads and git's words follow it, so the browser
+                    // still learns the first and more useful fact.
+                    Err(fallback) => Err(anyhow::anyhow!(
+                        "{e}; the git fallback could not answer either: {fallback:#}"
+                    )),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    })
+    .await
+    {
+        Ok(Ok(answer)) => Json(answer).into_response(),
+        // file_diff_contents errors are mostly client conditions (path/containment,
+        // symlink); a git/IO failure also lands here as 400, matching
+        // read_file (both wrap yaran_core errors without classifying them).
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("diff task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// Serve a file's raw bytes for the markdown preview's relative-image proxy. Uses
+/// the same read-permissive resolver as `read_file`, so `.git/` assets and symlinked
+/// images reach it; `canonicalize()` resolves a leaf symlink and `read_nofollow`
+/// re-opens the target with `O_NOFOLLOW` to close the TOCTOU window between them.
+/// Content-Type is guessed from the extension.
+///
+/// Containment is enforced in two stages, and unlike `read_file`, which allows an
+/// outside-resolving symlink as read-only so the editor can display it, this proxy
+/// must serve nothing outside the root:
+///
+/// 1. `resolve_worktree_path_for_read` flags an outside-resolving symlink as
+///    `is_outside`, which is rejected immediately.
+/// 2. After `canonicalize()` the resolved target is re-verified inside the
+///    canonical root, closing the gap in which a symlink could be replaced.
+///
+/// A markdown preview asks for every image it shows at once, so reads share the
+/// [`tree_list_permit`] bound with the editor's other small filesystem work. The
+/// permit bounds how many reads hold a blocking thread at once; it is released
+/// when the read is done, so a file's bytes, up to `MAX_RAW_BYTES`, stay in memory
+/// past it until the response has been sent.
+async fn read_raw<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Query(q): Query<RawQuery>,
+) -> Response {
+    let worktree = root.path().to_path_buf();
+    let path = q.path;
+    let _permit = match tree_list_permit(&state).await {
+        Ok(permit) => permit,
+        Err(resp) => return resp.into_response(),
+    };
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(&'static str, Vec<u8>)> {
+        // Use the read-permissive resolver so symlinked images inside the
+        // worktree reach this proxy. The image proxy intentionally does NOT
+        // serve .git/ internals: those never contain renderable assets and
+        // exposing them (e.g. .git/config, pack files) is unnecessary risk.
+        let (abs, is_git, is_outside) =
+            yaran_core::worktree_file::resolve_worktree_path_for_read(&worktree, &path)?;
+
+        // Stage 1: reject immediately when the resolver determined the path
+        // escapes the worktree via a symlink. The image proxy must not serve
+        // host files outside the worktree.
+        if is_outside {
+            anyhow::bail!("refusing to serve path outside the worktree");
+        }
+
+        // Also refuse .git/ internals: they are not renderable image assets.
+        if is_git {
+            anyhow::bail!("refusing to serve git internal path via image proxy");
+        }
+
+        let meta = std::fs::symlink_metadata(&abs)?;
+        // Resolve symlinks to get the real target for the size check and read.
+        let real = if meta.file_type().is_symlink() {
+            std::fs::canonicalize(&abs)? // follows the link; dangling → error
+        } else {
+            abs.clone()
+        };
+
+        // Stage 2: re-verify containment after following a leaf symlink.
+        // The resolver canonicalizes the joined path (worktree + rel_path);
+        // if a leaf symlink was swapped between the resolver call and here,
+        // the canonicalize above reflects the NEW target. Re-check it against
+        // the canonical worktree root to guarantee the target is still inside.
+        if meta.file_type().is_symlink() {
+            let wt_real = std::fs::canonicalize(&worktree)
+                .map_err(|e| anyhow::anyhow!("cannot canonicalize worktree: {e}"))?;
+            if !real.starts_with(&wt_real) {
+                anyhow::bail!("refusing to serve symlink target outside worktree");
+            }
+        }
+
+        let real_meta = std::fs::metadata(&real)?;
+        if real_meta.len() > MAX_RAW_BYTES {
+            anyhow::bail!(
+                "file too large to serve: {} bytes (limit {MAX_RAW_BYTES})",
+                real_meta.len()
+            );
+        }
+        // Use read_nofollow (O_NOFOLLOW) to close the TOCTOU window between
+        // canonicalize() above and the actual read. If `real` was swapped to a
+        // symlink in the interim, the open fails safely rather than following it.
+        let bytes = yaran_core::worktree_file::read_nofollow(&real)?;
+        Ok((mime_for_path(&path), bytes))
+    })
+    .await;
+    match result {
+        Ok(Ok((mime, bytes))) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                // Working-copy content can change between views; don't let a stale
+                // image stick in the browser cache.
+                (header::CACHE_CONTROL, "no-cache"),
+                // An `<img src>` runs no scripts, but navigating directly to this URL
+                // renders a top-level document in yaran's origin, and an SVG document
+                // can carry <script>. None of these three affect subresource
+                // rendering, so markdown images still display.
+                (header::CONTENT_SECURITY_POLICY, "sandbox"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_DISPOSITION, "attachment"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        // Path/containment/symlink/size are client-actionable.
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("raw task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// Best-effort Content-Type from a path's extension, enough for the image types
+/// markdown references; anything else falls back to a generic binary type.
+fn mime_for_path(path: &str) -> &'static str {
+    let ext = path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, ext)| ext.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("ico") => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+/// The answer to a save the write itself refused: a freshness conflict carrying
+/// the file's current stamp, a file too large to save, text the chosen encoding
+/// cannot hold, or a path or containment problem.
+fn write_refusal(e: &anyhow::Error) -> Response {
+    if let Some(conflict) = e.downcast_ref::<yaran_core::worktree_file::WriteConflict>() {
+        return (
+            StatusCode::CONFLICT,
+            Json(WriteConflictBody {
+                modified: conflict.current.as_ref().and_then(|s| s.modified.clone()),
+                size: conflict.current.as_ref().map(|s| s.size),
+                deleted: conflict.deleted,
+            }),
+        )
+            .into_response();
+    }
+    if let Some(too_large) = e.downcast_ref::<yaran_core::worktree_file::SaveTooLarge>() {
+        return (StatusCode::PAYLOAD_TOO_LARGE, too_large.to_string()).into_response();
+    }
+    if let Some(refused) = e.downcast_ref::<yaran_core::text_encoding::Unmappable>() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(UnmappableBody {
+                error: "unmappable",
+                message: refused.to_string(),
+                character: refused.character.to_string(),
+                line: refused.line,
+                column: refused.column,
+                encoding: refused.encoding.name(),
+            }),
+        )
+            .into_response();
+    }
+    (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+}
+
+/// The root extractor runs before the body is read, so an address problem (an
+/// unknown or malformed id) answers 404 before any body diagnostic, oversize
+/// included; that extractor-first ordering is deliberate and pinned by
+/// `a_bad_id_beats_the_body_diagnostic` below.
+async fn write_file<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    op: Result<Json<WriteOp>, JsonRejection>,
+) -> Response {
+    // Taken as a Result so the OVER-SIZE case can say what happened. Left to the
+    // framework it is a bare "length limit exceeded" with no number in it and no
+    // hint that the file is simply too big to save, which is the one rejection a
+    // user can actually provoke by opening a large file and typing in it.
+    let Json(op) = match op {
+        Ok(op) => op,
+        Err(rejection) => return write_rejection(&rejection),
+    };
+    let worktree = root.path().to_path_buf();
+    let wt = worktree.clone();
+    let path = op.path;
+    let content = op.content;
+    // Both halves or nothing; see `WriteOp::expected_modified`.
+    let expected = op
+        .expected_size
+        .zip(op.expected_modified)
+        .map(|(size, modified)| yaran_core::worktree_file::FileStamp {
+            modified: Some(modified),
+            size,
+        });
+    let read_as = match requested_encoding(op.read_encoding.as_deref()) {
+        Ok(read) => read.map(|read| (read, op.read_bom)),
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
+    let encoding = match requested_encoding(op.encoding.as_deref()) {
+        Ok(encoding) => encoding.map(|encoding| yaran_core::worktree_file::SaveEncoding {
+            encoding,
+            bom: op.bom,
+            read_as,
+        }),
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
+    // write_file's errors are path/containment validation, all client conditions, so
+    // map them to 400. The one exception is a freshness conflict, which is a
+    // 409 carrying the file's CURRENT stamp so the browser can offer a choice
+    // (overwrite, reload, cancel) without another round trip.
+    let hold = match crate::git_routes::hold_targets_for_write(
+        &state,
+        root.path(),
+        &[&path],
+        yaran_core::worktree_ops::WorktreeOpKind::EditorWrite,
+        "save the file",
+    )
+    .await
+    {
+        Ok(hold) => hold,
+        Err(r) => return r.into_response(),
+    };
+    let stamp = match tokio::task::spawn_blocking(move || {
+        let _hold = hold;
+        yaran_core::worktree_file::write_file_encoded(
+            &wt,
+            &path,
+            &content,
+            encoding,
+            expected.as_ref(),
+        )
+        .map(|stamp| {
+            (
+                stamp,
+                encoding.map(|save| {
+                    yaran_core::text_encoding::saved_verdict(
+                        &content,
+                        save.encoding,
+                        if save.bom {
+                            yaran_core::text_encoding::ByteOrderMark::Written
+                        } else {
+                            yaran_core::text_encoding::ByteOrderMark::Omitted
+                        },
+                    )
+                }),
+            )
+        })
+    })
+    .await
+    {
+        Ok(Ok(written)) => written,
+        Ok(Err(e)) => return write_refusal(&e),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write task failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+    refresh_root_changes(&state, &root, &worktree);
+    let (stamp, verdict) = stamp;
+    Json(WriteResult {
+        modified: stamp.modified,
+        size: stamp.size,
+        verdict: verdict.map(|v| WriteVerdict {
+            unwritable: v
+                .unwritable
+                .map(yaran_core::text_encoding::Unwritable::as_str),
+            mixed_line_endings: v.line_endings.mixed,
+            eol: v.line_endings.saves_as.label(),
+        }),
+    })
+    .into_response()
+}
+
+/// Turn a save-route body rejection into a response the user can act on. Only the
+/// size case is reworded, reporting the cap in MB and saying the file can still be
+/// edited outside yaran; everything else keeps the framework's own accurate wording.
+fn write_rejection(rejection: &JsonRejection) -> Response {
+    let too_large = matches!(rejection, JsonRejection::BytesRejection(_))
+        || rejection.status() == StatusCode::PAYLOAD_TOO_LARGE;
+    if too_large {
+        let limit_mb = MAX_EDIT_WRITE_BYTES / (1024 * 1024);
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "This file is too large for the editor to save: the request body \
+                 is over the {limit_mb} MB limit. Edit it outside yaran instead."
+            ),
+        )
+            .into_response();
+    }
+    (rejection.status(), rejection.body_text()).into_response()
+}
+
+/// Describe one entry for the editor's read-only file-info panel: path, kind, size,
+/// modified time, permissions, and what git says. Side-effect free, so unlike the
+/// mutating routes below it does not touch the changed-files cache. Containment is
+/// the write path's own boundary, and the git lookup shells out, so this runs off
+/// the async reactor.
+async fn entry_info<R: EditorRoot>(root: R, Json(op): Json<PathOp>) -> Response {
+    let worktree = root.path().to_path_buf();
+    let path = op.path;
+    match tokio::task::spawn_blocking(move || yaran_core::worktree_file::entry_info(&worktree, &path))
+        .await
+    {
+        Ok(Ok(info)) => Json(info).into_response(),
+        // A path that resolved cleanly but is GONE answers 404, while a path
+        // that was refused (traversal, `.git`, an escaping symlink) answers
+        // 400. The browser's info panel self-dismisses on the 404 only.
+        Ok(Err(e)) => {
+            let status = if e
+                .downcast_ref::<yaran_core::worktree_file::EntryMissing>()
+                .is_some()
+            {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, e.to_string()).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("info task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// Create a new empty file at `op.path`. Refuses an already-existing entry and
+/// a missing parent, same as `write_file`'s create arm. See
+/// `yaran_core::worktree_file::create_file` for the containment guards.
+async fn create_file<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Json(op): Json<PathOp>,
+) -> Response {
+    let worktree = root.path().to_path_buf();
+    let wt = worktree.clone();
+    let path = op.path;
+    let hold = match crate::git_routes::hold_targets_for_write(
+        &state,
+        root.path(),
+        &[&path],
+        yaran_core::worktree_ops::WorktreeOpKind::EditorWrite,
+        "create the file",
+    )
+    .await
+    {
+        Ok(hold) => hold,
+        Err(r) => return r.into_response(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _hold = hold;
+        yaran_core::worktree_file::create_file(&wt, &path)
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create-file task failed: {e}"),
+            )
+                .into_response();
+        }
+    }
+    refresh_root_changes(&state, &root, &worktree);
+    StatusCode::OK.into_response()
+}
+
+/// Create a new directory at `op.path`, creating missing intermediate
+/// components. See `yaran_core::worktree_file::create_dir`.
+async fn create_dir<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Json(op): Json<PathOp>,
+) -> Response {
+    let worktree = root.path().to_path_buf();
+    let wt = worktree.clone();
+    let path = op.path;
+    let hold = match crate::git_routes::hold_targets_for_write(
+        &state,
+        root.path(),
+        &[&path],
+        yaran_core::worktree_ops::WorktreeOpKind::EditorWrite,
+        "create the folder",
+    )
+    .await
+    {
+        Ok(hold) => hold,
+        Err(r) => return r.into_response(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _hold = hold;
+        yaran_core::worktree_file::create_dir(&wt, &path)
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create-dir task failed: {e}"),
+            )
+                .into_response();
+        }
+    }
+    refresh_root_changes(&state, &root, &worktree);
+    StatusCode::OK.into_response()
+}
+
+/// Rename/move `op.from` to `op.to` (file or directory). See
+/// `yaran_core::worktree_file::rename_entry`.
+async fn rename_entry<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Json(op): Json<RenameOp>,
+) -> Response {
+    let worktree = root.path().to_path_buf();
+    let wt = worktree.clone();
+    let from = op.from;
+    let to = op.to;
+    let targets = [from.clone(), to.clone()];
+    let outcome = destructive_editor_op(
+        &state,
+        root.path(),
+        &[&targets[0], &targets[1]],
+        "move",
+        move |clear| yaran_core::worktree_file::rename_entry(&wt, &from, &to, clear),
+    )
+    .await;
+    if let Err(rejection) = outcome {
+        return rejection.into_response();
+    }
+    refresh_root_changes(&state, &root, &worktree);
+    StatusCode::OK.into_response()
+}
+
+/// Delete `op.path` (file or, recursively, a directory). Permanent: no trash on
+/// the server. See `yaran_core::worktree_file::delete_entry`.
+async fn delete_entry<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Json(op): Json<PathOp>,
+) -> Response {
+    let worktree = root.path().to_path_buf();
+    let wt = worktree.clone();
+    let path = op.path;
+    let target = path.clone();
+    let outcome = destructive_editor_op(&state, root.path(), &[&target], "delete", move |clear| {
+        yaran_core::worktree_file::delete_entry(&wt, &path, clear)
+    })
+    .await;
+    if let Err(rejection) = outcome {
+        return rejection.into_response();
+    }
+    refresh_root_changes(&state, &root, &worktree);
+    StatusCode::OK.into_response()
+}
+
+/// Run an editor delete or move of `targets` (relative to `root`) behind the
+/// one gate every destructive file operation passes. Removing or moving a
+/// folder removes or moves everything under it (an agent's worktree inside a
+/// terminal's root, a standalone agent's folder, a project's repository,
+/// something yaran started there), so:
+///
+/// 1. every target that is a folder is CLAIMED, so nothing new can start
+///    inside it from here on;
+/// 2. the engine is asked the one occupancy question for every target;
+/// 3. the targets that are not folders are held;
+/// 4. the operation runs off the async runtime, and gets its clearance from
+///    the check right before it touches anything. A refusal is a 409 with
+///    the sentence, a request the operation itself rejects a 400.
+async fn destructive_editor_op(
+    state: &AppState,
+    root: &std::path::Path,
+    targets: &[&String],
+    what: &'static str,
+    op: impl for<'c> FnOnce(
+        &mut dyn FnMut()
+            -> Result<yaran_core::destructive::Cleared<'c>, yaran_core::destructive::Refused>,
+    ) -> anyhow::Result<()>
+    + Send
+    + 'static,
+) -> Result<(), crate::rest_common::RouteRejection> {
+    // Off the async runtime: a claim may wait (bounded) for a removal
+    // running inside the folder.
+    let guard = {
+        let state = state.clone();
+        let root = root.to_path_buf();
+        let relative: Vec<String> = targets
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            let relative: Vec<&str> = relative.iter().map(String::as_str).collect();
+            crate::git_routes::guard_destructive_targets(
+                &state,
+                &root,
+                &relative,
+                &format!("{what} the entry"),
+            )
+        })
+        .await
+        .map_err(|e| {
+            crate::rest_common::RouteRejection::from(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("{what} task failed: {e}"),
+                )
+                    .into_response(),
+            )
+        })??
+    };
+    let mut check: Option<yaran_core::engine::DestructiveCheck> = None;
+    for target in targets {
+        let one = state
+            .engine
+            .destructive_check(root.join(target))
+            .await
+            .ok_or_else(|| {
+                crate::rest_common::RouteRejection::from(
+                    (StatusCode::SERVICE_UNAVAILABLE, "engine unavailable").into_response(),
+                )
+            })?;
+        check = Some(match check {
+            Some(check) => check.and(one),
+            None => one,
+        });
+    }
+    let outcome = tokio::task::spawn_blocking(move || {
+        let claims: Vec<&yaran_core::worktree_ops::DestructiveClaim> = guard.claims.iter().collect();
+        let mut clear = || match &check {
+            Some(check) => check.clear(&claims, what),
+            None => Err(yaran_core::destructive::Refused(
+                "yaran did not touch it: nothing was checked".to_string(),
+            )),
+        };
+        op(&mut clear)
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) if e.downcast_ref::<yaran_core::destructive::Refused>().is_some() => {
+            Err((StatusCode::CONFLICT, e.to_string()).into_response().into())
+        }
+        Ok(Err(e)) => Err((StatusCode::BAD_REQUEST, e.to_string())
+            .into_response()
+            .into()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{what} task failed: {e}"),
+        )
+            .into_response()
+            .into()),
+    }
+}
+
+/// Open a file in a locally-installed GUI editor, reusing the TUI's detection and
+/// launch path. `op.editor` names a yaran-core editor config key, which the web picker
+/// always sends, and an editor not on PATH is reported by name; with no pick this
+/// falls back to `config.editor.default`. The editor is spawned on the SERVER
+/// machine, so the UI gates the picker to local-access URLs and a headless server
+/// simply returns the spawn error. Containment is `resolve_worktree_path`'s, as for
+/// read and write.
+async fn open_in_editor<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Json(op): Json<OpenInEditorOp>,
+) -> Response {
+    let worktree = root.path().to_path_buf();
+    let configured = state.engine.editor_default().await;
+    let path = op.path;
+    let requested = op.editor;
+    // Detecting editors scans PATH and launching spawns a process, both blocking,
+    // so run them off the async reactor.
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let abs = yaran_core::git::resolve_worktree_path(&worktree, &path)?;
+        if !abs.exists() {
+            anyhow::bail!("file does not exist in the worktree");
+        }
+        let editors = yaran_core::editor::detect_installed_editors();
+        let choice = match requested {
+            // An explicit pick from the web editor menu: launch THAT editor, or
+            // report it isn't installed (naming it even when absent from PATH).
+            Some(name) => {
+                // The key comes from the fixed editor menu. Bound the length by
+                // CHARS (never byte-slice user-facing input) and don't echo the raw
+                // value back in the error: it could carry control characters.
+                if name.chars().count() > 64 {
+                    anyhow::bail!("unrecognized editor key");
+                }
+                let label = yaran_core::editor::editor_label(&name)
+                    .ok_or_else(|| anyhow::anyhow!("unrecognized editor key"))?;
+                editors
+                    .into_iter()
+                    .find(|editor| yaran_core::editor::matches_configured_editor(editor, &name))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{label} isn't installed on this machine (no matching command on PATH)"
+                        )
+                    })?
+            }
+            // No pick: fall back to the configured/preferred editor.
+            None => yaran_core::editor::preferred_editor(&editors, &configured).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No supported editor found on PATH (install cursor, code, zed, vscodium, or sublime)"
+                )
+            })?,
+        };
+        yaran_core::editor::launch_editor(&choice, &abs)?;
+        Ok(choice.label.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(editor)) => Json(OpenedEditor { editor }).into_response(),
+        // Path/containment/no-editor/spawn failures are all client-actionable.
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("open-in-editor task failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_list_omits_truncated_unless_it_is_true() {
+        let list = |truncated| FileList {
+            files: vec!["a".to_string()],
+            truncated,
+        };
+        assert_eq!(
+            serde_json::to_string(&list(false)).unwrap(),
+            r#"{"files":["a"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&list(true)).unwrap(),
+            r#"{"files":["a"],"truncated":true}"#
+        );
+    }
+
+    #[test]
+    fn mime_for_path_maps_image_extensions_case_insensitively() {
+        assert_eq!(mime_for_path("assets/logo.png"), "image/png");
+        assert_eq!(mime_for_path("a/b/Photo.JPG"), "image/jpeg");
+        assert_eq!(mime_for_path("x.jpeg"), "image/jpeg");
+        assert_eq!(mime_for_path("icon.svg"), "image/svg+xml");
+        assert_eq!(mime_for_path("anim.GIF"), "image/gif");
+        assert_eq!(mime_for_path("p.webp"), "image/webp");
+    }
+
+    #[test]
+    fn mime_for_path_falls_back_for_unknown_or_extensionless() {
+        assert_eq!(mime_for_path("README"), "application/octet-stream");
+        assert_eq!(mime_for_path("notes.txt"), "application/octet-stream");
+        // A dot in a directory name must not be read as the file's extension.
+        assert_eq!(mime_for_path("v1.2/Makefile"), "application/octet-stream");
+    }
+
+    /// Symlink containment tests for the `read_raw` image proxy.
+    ///
+    /// These tests exercise the two-stage containment logic in `read_raw`'s
+    /// blocking closure at the filesystem level, mirroring what the handler does:
+    ///
+    /// Stage 1: `resolve_worktree_path_for_read` sets `is_outside = true` when
+    ///           the symlink resolves outside the worktree.
+    /// Stage 2: After `canonicalize()` on a leaf symlink, we re-verify the
+    ///           target is still under the canonical worktree root.
+    ///
+    /// RED before fix: outside symlinks would pass through; GREEN after fix: they
+    /// are rejected, while in-worktree symlinks are still served.
+    mod symlink_containment {
+        use std::fs;
+        use std::path::PathBuf;
+
+        use yaran_core::worktree_file::resolve_worktree_path_for_read;
+
+        /// Build a minimal temp directory layout:
+        ///   <tmp>/
+        ///     worktree/
+        ///       real.png          ← the actual image inside the worktree
+        ///       inlink.png        → real.png          (symlink INSIDE)
+        ///       outlink.png       → <tmp>/outside.png (symlink OUTSIDE)
+        ///     outside.png         ← file that must NOT be reachable via the proxy
+        fn setup_dirs() -> (tempfile::TempDir, PathBuf) {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path();
+
+            let worktree = root.join("worktree");
+            fs::create_dir_all(&worktree).unwrap();
+
+            // A real file inside the worktree.
+            let real = worktree.join("real.png");
+            fs::write(&real, b"\x89PNG\r\n\x1a\n").unwrap(); // minimal PNG header
+
+            // In-worktree symlink: worktree/inlink.png → worktree/real.png
+            let inlink = worktree.join("inlink.png");
+            std::os::unix::fs::symlink(&real, &inlink).unwrap();
+
+            // Outside file: <tmp>/outside.png
+            let outside = root.join("outside.png");
+            fs::write(&outside, b"SECRET").unwrap();
+
+            // Out-of-worktree symlink: worktree/outlink.png → <tmp>/outside.png
+            let outlink = worktree.join("outlink.png");
+            std::os::unix::fs::symlink(&outside, &outlink).unwrap();
+
+            (tmp, worktree)
+        }
+
+        /// Stage 1 containment: a symlink whose target is OUTSIDE the worktree
+        /// must have `is_outside = true` so the handler can reject it immediately.
+        #[test]
+        fn outside_symlink_is_flagged_by_resolver() {
+            let (_tmp, worktree) = setup_dirs();
+            let (_, _, is_outside) =
+                resolve_worktree_path_for_read(&worktree, "outlink.png").unwrap();
+            assert!(
+                is_outside,
+                "outlink.png resolves outside the worktree: is_outside must be true"
+            );
+        }
+
+        /// Stage 1 containment: the handler must REFUSE an outside-resolving symlink.
+        /// This mirrors the `if is_outside { bail!(...) }` guard in `read_raw`.
+        #[test]
+        fn outside_symlink_is_refused_by_read_raw_logic() {
+            let (_tmp, worktree) = setup_dirs();
+            let result: anyhow::Result<()> = (|| {
+                let (_, _, is_outside) = resolve_worktree_path_for_read(&worktree, "outlink.png")?;
+                if is_outside {
+                    anyhow::bail!("refusing to serve path outside the worktree");
+                }
+                Ok(())
+            })();
+            assert!(
+                result.is_err(),
+                "read_raw must refuse a symlink whose target is outside the worktree"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("refusing"),
+                "error message should say 'refusing', got: {msg}"
+            );
+        }
+
+        /// Stage 2 containment: after `canonicalize()` on a leaf symlink, we
+        /// re-verify the target is inside the worktree. This mirrors the
+        /// `!real.starts_with(&wt_real)` guard in `read_raw`.
+        #[test]
+        fn stage2_rejects_out_of_tree_canonicalized_target() {
+            let (_tmp, worktree) = setup_dirs();
+            let outlink = worktree.join("outlink.png");
+
+            // Replicate stage-2 logic exactly as written in the handler.
+            let result: anyhow::Result<()> = (|| {
+                let real = std::fs::canonicalize(&outlink)?;
+                let wt_real = std::fs::canonicalize(&worktree)
+                    .map_err(|e| anyhow::anyhow!("cannot canonicalize worktree: {e}"))?;
+                if !real.starts_with(&wt_real) {
+                    anyhow::bail!("refusing to serve symlink target outside worktree");
+                }
+                Ok(())
+            })();
+
+            assert!(
+                result.is_err(),
+                "stage-2 check must reject a canonicalized target outside the worktree"
+            );
+        }
+
+        /// A symlink whose target is INSIDE the worktree must NOT be flagged as
+        /// outside, and the stage-2 canonicalize check must pass: the proxy must
+        /// continue to serve in-worktree images correctly.
+        #[test]
+        fn inside_symlink_is_allowed() {
+            let (_tmp, worktree) = setup_dirs();
+
+            // Stage 1: resolver must NOT flag the in-worktree link as outside.
+            let (abs, _, is_outside) =
+                resolve_worktree_path_for_read(&worktree, "inlink.png").unwrap();
+            assert!(
+                !is_outside,
+                "inlink.png resolves inside the worktree: is_outside must be false"
+            );
+
+            // Stage 2: canonicalize and re-verify containment.
+            let meta = std::fs::symlink_metadata(&abs).unwrap();
+            assert!(
+                meta.file_type().is_symlink(),
+                "inlink.png must be a symlink"
+            );
+
+            let real = std::fs::canonicalize(&abs).unwrap();
+            let wt_real = std::fs::canonicalize(&worktree).unwrap();
+            assert!(
+                real.starts_with(&wt_real),
+                "canonicalized target of inlink.png must be inside the worktree"
+            );
+        }
+    }
+
+    /// `read_raw` git-dir guard: the image proxy must refuse `.git/` paths even
+    /// though `resolve_worktree_path_for_read` permits them (for the text editor).
+    mod git_dir_guard {
+        use yaran_core::worktree_file::resolve_worktree_path_for_read;
+
+        fn setup_worktree_with_git() -> tempfile::TempDir {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let wt = dir.path();
+            // Minimal .git directory with a config file (stands in for any git internal).
+            std::fs::create_dir(wt.join(".git")).unwrap();
+            std::fs::write(
+                wt.join(".git/config"),
+                "[core]\n\trepositoryformatversion = 0\n",
+            )
+            .unwrap();
+            // A normal image inside the worktree.
+            std::fs::write(wt.join("logo.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+            dir
+        }
+
+        /// `.git/config` must have `is_git = true` from the resolver so the
+        /// guard in `read_raw` can reject it.
+        #[test]
+        fn git_config_is_flagged_as_git_dir() {
+            let dir = setup_worktree_with_git();
+            let (_, is_git, _) = resolve_worktree_path_for_read(dir.path(), ".git/config").unwrap();
+            assert!(
+                is_git,
+                ".git/config must be flagged as a git-dir path by the resolver"
+            );
+        }
+
+        /// Mirroring `read_raw`'s `if is_git { bail! }` guard: a `.git/` path
+        /// must be refused by the image proxy logic.
+        #[test]
+        fn read_raw_refuses_git_internal_path() {
+            let dir = setup_worktree_with_git();
+            let result: anyhow::Result<()> = (|| {
+                let (_, is_git, is_outside) =
+                    resolve_worktree_path_for_read(dir.path(), ".git/config")?;
+                if is_outside {
+                    anyhow::bail!("refusing to serve path outside the worktree");
+                }
+                if is_git {
+                    anyhow::bail!("refusing to serve git internal path via image proxy");
+                }
+                Ok(())
+            })();
+            assert!(result.is_err(), "read_raw must refuse .git/ paths");
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("git internal"),
+                "error should mention 'git internal', got: {msg}"
+            );
+        }
+
+        /// A normal image inside the worktree must NOT be refused.
+        #[test]
+        fn read_raw_allows_normal_in_worktree_image() {
+            let dir = setup_worktree_with_git();
+            let (_, is_git, is_outside) =
+                resolve_worktree_path_for_read(dir.path(), "logo.png").unwrap();
+            assert!(!is_outside, "logo.png must not be flagged as outside");
+            assert!(!is_git, "logo.png must not be flagged as git-dir");
+        }
+    }
+
+    /// Endpoint tests for the four VS Code-style file management routes:
+    /// create-file, create-dir, rename, delete. Boots a real engine with a
+    /// session pointed at a real worktree directory (not a git repo: these
+    /// operations don't need git, only the containment guards in
+    /// `yaran_core::worktree_file`), mirroring `changes.rs`'s `boot()` helper but
+    /// serving requests through the real axum router.
+    mod fs_op_endpoints {
+        use axum::body::to_bytes;
+        use axum::http::{Request, StatusCode};
+        use yaran_core::config::{YaranPaths, ProjectConfig};
+        use yaran_core::storage::SessionStore;
+        use tower::ServiceExt;
+
+        fn now() -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc::now()
+        }
+
+        fn sample_session(id: &str, worktree: &str) -> yaran_core::model::AgentSession {
+            let n = now();
+            yaran_core::model::AgentSession {
+                id: id.to_string(),
+                slot_tab_id: format!("{id}-slot"),
+                provider: yaran_core::model::ProviderKind::new("claude"),
+                title: None,
+                started_providers: Vec::new(),
+                desired_running: true,
+                auto_reopen_enabled: false,
+                status: yaran_core::model::SessionStatus::Detached,
+                created_at: n,
+                updated_at: n,
+                last_focused_tab: None,
+                workspace: yaran_core::model::AgentWorkspace::Managed(
+                    yaran_core::model::ManagedWorkspace {
+                        project_id: "p1".to_string(),
+                        project_path: None,
+                        source_branch: "main".to_string(),
+                        branch_name: "feat".to_string(),
+                        initial_branch: "feat".to_string(),
+                        branch_provenance: yaran_core::model::BranchProvenance::CreatedByYaran,
+                        worktree_path: worktree.to_string(),
+                    },
+                ),
+            }
+        }
+
+        /// Boots a real router with session "s1" pointed at a fresh worktree
+        /// directory containing `hello.txt`. Returns the temp root (kept alive
+        /// for the test), the worktree path, and the router.
+        fn router_with_session() -> (tempfile::TempDir, std::path::PathBuf, axum::Router) {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
+            let wt = root.join("wt");
+            std::fs::create_dir_all(&wt).unwrap();
+            std::fs::write(wt.join("hello.txt"), "hi\n").unwrap();
+
+            let paths = YaranPaths {
+                root: root.clone(),
+                config_path: root.join("config.toml"),
+                sessions_db_path: root.join("sessions.sqlite3"),
+                worktrees_root: root.join("worktrees"),
+                lock_path: root.join("dux.lock"),
+                socket_path: root.join("yaran.sock"),
+            };
+            std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+            {
+                let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+                store
+                    .upsert_project(&ProjectConfig {
+                        id: "p1".to_string(),
+                        path: root.to_string_lossy().into_owned(),
+                        name: Some("p1".to_string()),
+                        default_provider: None,
+                        leading_branch: None,
+                        auto_reopen_agents: None,
+                        startup_command: None,
+                        env: std::collections::BTreeMap::new(),
+                    })
+                    .unwrap();
+                store
+                    .create_session(&sample_session("s1", wt.to_string_lossy().as_ref()))
+                    .unwrap();
+            }
+            let engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
+            let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+            let app = crate::server::router(handle);
+            (tmp, wt, app)
+        }
+
+        /// Every editor write into a worktree whose removal has begun is
+        /// refused with a 409 that says so, and writes nothing: a save landing
+        /// after the folder went would otherwise bring it back.
+        #[tokio::test]
+        async fn editor_writes_are_refused_once_the_worktree_removal_has_begun() {
+            let (_tmp, wt, app, ops) = router_with_session_and_ops();
+            let _removal = ops.announce_removal(&wt);
+            for (route, body) in [
+                (
+                    "write",
+                    serde_json::json!({ "path": "new.txt", "content": "x" }),
+                ),
+                ("create-file", serde_json::json!({ "path": "made.txt" })),
+                ("create-dir", serde_json::json!({ "path": "a/b" })),
+                (
+                    "rename",
+                    serde_json::json!({ "from": "hello.txt", "to": "moved.txt" }),
+                ),
+                ("delete", serde_json::json!({ "path": "hello.txt" })),
+            ] {
+                let resp = app
+                    .clone()
+                    .oneshot(json_req(
+                        &format!("/api/v1/sessions/s1/files/{route}"),
+                        &body,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::CONFLICT, "{route}");
+                let text = String::from_utf8(
+                    axum::body::to_bytes(resp.into_body(), 64 * 1024)
+                        .await
+                        .unwrap()
+                        .to_vec(),
+                )
+                .unwrap();
+                assert!(text.contains("removing the worktree"), "{route}: {text}");
+            }
+            assert!(!wt.join("new.txt").exists());
+            assert!(!wt.join("made.txt").exists());
+            assert!(!wt.join("a").exists());
+            assert!(wt.join("hello.txt").exists());
+        }
+
+        /// While an editor save is running it holds the worktree, so a removal
+        /// waits for it instead of racing it.
+        #[tokio::test]
+        async fn an_editor_write_is_released_once_it_has_finished() {
+            let (_tmp, wt, app, ops) = router_with_session_and_ops();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "new.txt", "content": "x" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(ops.holders(&wt).is_empty(), "the hold ends with the write");
+        }
+
+        fn router_with_session_and_ops() -> (
+            tempfile::TempDir,
+            std::path::PathBuf,
+            axum::Router,
+            yaran_core::worktree_ops::WorktreeOps,
+        ) {
+            let (tmp, wt, _) = router_with_session();
+            let paths = YaranPaths {
+                root: tmp.path().to_path_buf(),
+                config_path: tmp.path().join("config.toml"),
+                sessions_db_path: tmp.path().join("sessions.sqlite3"),
+                worktrees_root: tmp.path().join("worktrees"),
+                lock_path: tmp.path().join("yaran2.lock"),
+                socket_path: tmp.path().join("yaran.sock"),
+            };
+            let engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
+            let ops = engine.worktree_ops().clone();
+            let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+            (tmp, wt, crate::server::router(handle), ops)
+        }
+
+        fn json_req(uri: &str, body: &serde_json::Value) -> Request<axum::body::Body> {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn create_file_endpoint_creates_an_empty_file() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/create-file",
+                    &serde_json::json!({ "path": "new.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(std::fs::read_to_string(wt.join("new.txt")).unwrap(), "");
+        }
+
+        #[tokio::test]
+        async fn create_file_endpoint_rejects_overwrite_with_400() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/create-file",
+                    &serde_json::json!({ "path": "hello.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn create_file_endpoint_rejects_git_path() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/create-file",
+                    &serde_json::json!({ "path": ".git/evil" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn create_dir_endpoint_creates_a_directory() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/create-dir",
+                    &serde_json::json!({ "path": "a/b/c" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(wt.join("a/b/c").is_dir());
+        }
+
+        #[tokio::test]
+        async fn create_dir_endpoint_rejects_existing_entry_with_400() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/create-dir",
+                    &serde_json::json!({ "path": "hello.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn rename_endpoint_renames_a_file() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/rename",
+                    &serde_json::json!({ "from": "hello.txt", "to": "renamed.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(!wt.join("hello.txt").exists());
+            assert!(wt.join("renamed.txt").exists());
+        }
+
+        #[tokio::test]
+        async fn rename_endpoint_rejects_existing_destination_with_400() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("dst.txt"), "already here\n").unwrap();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/rename",
+                    &serde_json::json!({ "from": "hello.txt", "to": "dst.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            // The refused rename must not overwrite the destination's content
+            // (no partial/silent clobber on a rejected no-overwrite request).
+            assert_eq!(
+                std::fs::read_to_string(wt.join("dst.txt")).unwrap(),
+                "already here\n"
+            );
+        }
+
+        #[tokio::test]
+        async fn rename_endpoint_rejects_git_destination_with_400() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/rename",
+                    &serde_json::json!({ "from": "hello.txt", "to": ".git/evil" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn delete_endpoint_deletes_a_file() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/delete",
+                    &serde_json::json!({ "path": "hello.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(!wt.join("hello.txt").exists());
+        }
+
+        #[tokio::test]
+        async fn delete_endpoint_rejects_worktree_root_with_400() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/delete",
+                    &serde_json::json!({ "path": "." }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert!(wt.exists());
+        }
+
+        #[tokio::test]
+        async fn delete_endpoint_rejects_git_path_with_400() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::create_dir(wt.join(".git")).unwrap();
+            std::fs::write(wt.join(".git/config"), "[core]\n").unwrap();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/delete",
+                    &serde_json::json!({ "path": ".git/config" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert!(wt.join(".git/config").exists());
+        }
+
+        #[tokio::test]
+        async fn create_file_endpoint_unknown_session_is_404() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/does-not-exist/files/create-file",
+                    &serde_json::json!({ "path": "new.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+
+        /// A successful mutation must invalidate the REST changed-files cache so a
+        /// subsequent GET recomputes instead of serving a stale snapshot from
+        /// before the mutation. We can't easily observe the `/ws/events` push in
+        /// a oneshot test, so this asserts the response is OK and the body is
+        /// empty (the documented no-content success contract every route shares).
+        #[tokio::test]
+        async fn create_file_endpoint_returns_no_content_body_on_success() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/create-file",
+                    &serde_json::json!({ "path": "empty-body.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            assert!(bytes.is_empty());
+        }
+
+        /// The save route must accept a file the read route was willing to open.
+        /// The default limit is 2 MB and the read cap is 5 MB, so without a
+        /// raised limit a 3 MB file opens and then fails to save.
+        #[tokio::test]
+        async fn a_file_larger_than_the_framework_default_still_saves() {
+            let (_tmp, wt, app) = router_with_session();
+            let content = "a".repeat(3 * 1024 * 1024);
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "big.txt", "content": content }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "a 3 MB save is inside the editor's read cap and must go through"
+            );
+            assert_eq!(
+                std::fs::metadata(wt.join("big.txt")).unwrap().len(),
+                3 * 1024 * 1024
+            );
+        }
+
+        async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice(&bytes).expect("a JSON body")
+        }
+
+        async fn read_json(
+            app: &axum::Router,
+            body: serde_json::Value,
+        ) -> axum::response::Response {
+            app.clone()
+                .oneshot(json_req("/api/v1/sessions/s1/files/read", &body))
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn read_reports_the_encoding_and_whether_it_was_a_fallback() {
+            let (_tmp, wt, app) = router_with_session();
+            let plain =
+                body_json(read_json(&app, serde_json::json!({ "path": "hello.txt" })).await).await;
+            assert_eq!(plain["encoding"], "UTF-8");
+            assert_eq!(plain["bom"], false);
+            assert_eq!(plain["encoding_fallback"], false);
+            assert!(plain["unwritable"].is_null());
+            assert_eq!(plain["mixed_line_endings"], false);
+            assert_eq!(plain["eol"], "LF");
+            assert_eq!(plain["looks_like_utf8"], false);
+
+            // Text this encoding cannot write back unchanged opens read-only
+            // with the reason on the wire, never as binary.
+            std::fs::write(wt.join("nec.txt"), [0x87, 0x90]).unwrap();
+            let nec = body_json(
+                read_json(
+                    &app,
+                    serde_json::json!({ "path": "nec.txt", "encoding": "shift_jis" }),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(nec["binary"], false);
+            assert_eq!(nec["read_only"], true);
+            assert_eq!(nec["unwritable"], "round_trip");
+            assert_eq!(nec["path_read_only"], false);
+
+            // The server holds the line itself: the client's read-only is not
+            // the only thing between this save and `81 E0`.
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "nec.txt",
+                        "content": nec["content"],
+                        "expected_modified": nec["modified"],
+                        "expected_size": nec["size"],
+                        "encoding": "Shift_JIS",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(std::fs::read(wt.join("nec.txt")).unwrap(), [0x87, 0x90]);
+
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\n").unwrap();
+            let latin1 =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            assert_eq!(latin1["binary"], false);
+            assert_eq!(latin1["content"], "caf\u{e9}\n");
+            assert_eq!(latin1["encoding"], "windows-1252");
+            assert_eq!(latin1["encoding_fallback"], true);
+        }
+
+        #[tokio::test]
+        async fn read_in_a_requested_encoding_or_refuse_it() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("jp.txt"), [0x93, 0xfa, 0x96, 0x7b]).unwrap();
+            let resp = read_json(
+                &app,
+                serde_json::json!({ "path": "jp.txt", "encoding": "shift_jis" }),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_json(resp).await;
+            assert_eq!(body["content"], "\u{65e5}\u{672c}");
+            assert_eq!(body["encoding"], "Shift_JIS");
+            assert_eq!(body["encoding_fallback"], false);
+
+            // Bytes that are not valid in the requested encoding are refused,
+            // never shown with replacement characters.
+            let resp = read_json(
+                &app,
+                serde_json::json!({ "path": "jp.txt", "encoding": "utf-8" }),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let text = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            assert!(String::from_utf8_lossy(&text).contains("not valid UTF-8"));
+
+            let resp = read_json(
+                &app,
+                serde_json::json!({ "path": "jp.txt", "encoding": "klingon" }),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn a_save_in_the_read_encoding_writes_those_bytes() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\r\n").unwrap();
+            let stamp =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "latin1.txt",
+                        "content": "th\u{e9}\r\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                        "encoding": "windows-1252",
+                        "bom": false,
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(std::fs::read(wt.join("latin1.txt")).unwrap(), b"th\xe9\r\n");
+        }
+
+        /// A character the encoding cannot hold is a 422 that names it and
+        /// where it is, and the file is left exactly as it was.
+        #[tokio::test]
+        async fn a_near_fit_character_is_422_and_nothing_is_written() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "yen.txt",
+                        "content": "\u{a5}100\n",
+                        "encoding": "Shift_JIS",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(body_json(resp).await["character"], "\u{a5}");
+            assert!(!wt.join("yen.txt").exists());
+        }
+
+        /// What the save wrote, judged by the server: a conversion that still
+        /// leaves two marks is read-only in its new encoding too, and the
+        /// client must not assume otherwise.
+        #[tokio::test]
+        async fn a_save_answers_with_the_verdict_on_what_it_wrote() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "ok.txt",
+                        "content": "a\r\nb\r\n",
+                        "encoding": "UTF-8",
+                    }),
+                ))
+                .await
+                .unwrap();
+            let body = body_json(resp).await;
+            assert!(body["unwritable"].is_null());
+            assert_eq!(body["mixed_line_endings"], false);
+            assert_eq!(body["eol"], "CRLF");
+        }
+
+        /// The verdict's three keys are all there (a writable save says
+        /// `unwritable: null`) when the save stated an encoding, and all absent
+        /// when it did not.
+        #[tokio::test]
+        async fn a_save_carries_its_verdict_keys_only_when_it_stated_an_encoding() {
+            let (_tmp, _wt, app) = router_with_session();
+            let save = |body: serde_json::Value| {
+                let app = app.clone();
+                async move {
+                    let resp = app
+                        .oneshot(json_req("/api/v1/sessions/s1/files/write", &body))
+                        .await
+                        .unwrap();
+                    let body = body_json(resp).await;
+                    let object = body.as_object().unwrap().clone();
+                    ["unwritable", "mixed_line_endings", "eol"].map(|key| object.get(key).cloned())
+                }
+            };
+            let stated = save(serde_json::json!({
+                "path": "ok.txt",
+                "content": "a\n",
+                "encoding": "UTF-8",
+            }))
+            .await;
+            assert_eq!(
+                stated,
+                [
+                    Some(serde_json::Value::Null),
+                    Some(serde_json::Value::Bool(false)),
+                    Some(serde_json::json!("LF")),
+                ]
+            );
+            let unstated = save(serde_json::json!({ "path": "ok2.txt", "content": "a\n" })).await;
+            assert_eq!(unstated, [None, None, None]);
+        }
+
+        #[tokio::test]
+        async fn an_unmappable_character_is_422_with_its_details() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\n").unwrap();
+            let stamp =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "latin1.txt",
+                        "content": "caf\u{e9}\n\u{20ac}\u{65e5}\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                        "encoding": "windows-1252",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let body = body_json(resp).await;
+            assert_eq!(body["error"], "unmappable");
+            assert_eq!(body["character"], "\u{65e5}");
+            assert_eq!(body["line"], 2);
+            assert_eq!(body["column"], 2);
+            assert_eq!(body["encoding"], "windows-1252");
+            assert_eq!(std::fs::read(wt.join("latin1.txt")).unwrap(), b"caf\xe9\n");
+        }
+
+        /// A page that predates encodings sends no encoding, and its guarded
+        /// save over bytes that are not UTF-8 is still refused.
+        #[tokio::test]
+        async fn a_save_with_no_encoding_over_a_non_utf8_file_is_still_refused() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\n").unwrap();
+            let stamp =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "latin1.txt",
+                        "content": "typed over nothing\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(std::fs::read(wt.join("latin1.txt")).unwrap(), b"caf\xe9\n");
+        }
+
+        /// The read route must hand the editor the token a later save sends
+        /// back, or the guard below has nothing to compare against.
+        #[tokio::test]
+        async fn read_returns_the_files_stamp() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/read",
+                    &serde_json::json!({ "path": "hello.txt" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_json(resp).await;
+            assert_eq!(body["size"], 3);
+            assert!(
+                body["modified"].is_string(),
+                "the read must carry an mtime: {body}"
+            );
+        }
+
+        /// A save's success body is the client's new baseline. Without it the
+        /// user's OWN save moves the changed-files signal and the editor would
+        /// then believe somebody else edited the file.
+        #[tokio::test]
+        async fn a_successful_write_returns_the_fresh_stamp() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "hello.txt", "content": "typed\n" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_json(resp).await;
+            assert_eq!(body["size"], 6);
+            assert!(body["modified"].is_string());
+        }
+
+        #[tokio::test]
+        async fn a_write_with_a_matching_stamp_is_accepted() {
+            let (_tmp, wt, app) = router_with_session();
+            let read = app
+                .clone()
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/read",
+                    &serde_json::json!({ "path": "hello.txt" }),
+                ))
+                .await
+                .unwrap();
+            let stamp = body_json(read).await;
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "hello.txt",
+                        "content": "mine\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(
+                std::fs::read_to_string(wt.join("hello.txt")).unwrap(),
+                "mine\n"
+            );
+        }
+
+        /// The data-loss fix, end to end: the agent edits the file while the
+        /// editor holds an older buffer, and the save is refused with the facts
+        /// the browser needs to offer a choice.
+        #[tokio::test]
+        async fn a_write_with_a_stale_stamp_is_409_with_the_current_stamp() {
+            let (_tmp, wt, app) = router_with_session();
+            let read = app
+                .clone()
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/read",
+                    &serde_json::json!({ "path": "hello.txt" }),
+                ))
+                .await
+                .unwrap();
+            let stamp = body_json(read).await;
+            std::fs::write(wt.join("hello.txt"), "the agent's work\n").unwrap();
+
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "hello.txt",
+                        "content": "clobber\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CONFLICT);
+            let body = body_json(resp).await;
+            assert_eq!(body["deleted"], false);
+            assert_eq!(body["size"], "the agent's work\n".len());
+            assert!(body["modified"].is_string());
+            assert_eq!(
+                std::fs::read_to_string(wt.join("hello.txt")).unwrap(),
+                "the agent's work\n",
+                "a refused save must leave the file exactly as it was"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_write_onto_a_file_deleted_underneath_is_409_and_creates_nothing() {
+            let (_tmp, wt, app) = router_with_session();
+            let read = app
+                .clone()
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/read",
+                    &serde_json::json!({ "path": "hello.txt" }),
+                ))
+                .await
+                .unwrap();
+            let stamp = body_json(read).await;
+            std::fs::remove_file(wt.join("hello.txt")).unwrap();
+
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "hello.txt",
+                        "content": "back\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CONFLICT);
+            let body = body_json(resp).await;
+            assert_eq!(body["deleted"], true);
+            assert!(body["modified"].is_null());
+            assert!(!wt.join("hello.txt").exists());
+        }
+
+        /// A client that sends no token is every other writer and every older
+        /// page: it must behave exactly as it did before the guard existed.
+        #[tokio::test]
+        async fn a_write_with_no_stamp_still_overwrites_unconditionally() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("hello.txt"), "changed by someone else\n").unwrap();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "hello.txt", "content": "overwritten\n" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(
+                std::fs::read_to_string(wt.join("hello.txt")).unwrap(),
+                "overwritten\n"
+            );
+        }
+
+        /// Half a token is no token: guarding on a size with no mtime (or the
+        /// other way round) would compare against a value nobody supplied.
+        #[tokio::test]
+        async fn a_half_specified_stamp_is_ignored_rather_than_half_enforced() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "hello.txt",
+                        "content": "written\n",
+                        "expected_size": 999_999,
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(
+                std::fs::read_to_string(wt.join("hello.txt")).unwrap(),
+                "written\n"
+            );
+        }
+
+        /// Past the cap the refusal must SAY it is a size problem and name the
+        /// limit, rather than the framework's bare length message.
+        #[tokio::test]
+        async fn an_over_limit_save_is_refused_with_a_message_naming_the_limit() {
+            let (_tmp, wt, app) = router_with_session();
+            let content = "a".repeat(crate::file_routes::MAX_EDIT_WRITE_BYTES + 1);
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "huge.txt", "content": content }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let body = String::from_utf8(
+                to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            let limit = format!(
+                "{} MB",
+                crate::file_routes::MAX_EDIT_WRITE_BYTES / (1024 * 1024)
+            );
+            assert!(
+                body.contains("too large") && body.contains(&limit),
+                "the refusal must name the cause and the limit: {body}"
+            );
+            assert!(
+                !wt.join("huge.txt").exists(),
+                "a refused save must write nothing"
+            );
+        }
+
+        /// A file the reader opens must save: 4 MiB of € in windows-1252 is
+        /// 12 MiB of UTF-8 in the request, and 4 MiB on disk.
+        #[tokio::test]
+        async fn a_code_page_file_the_editor_opened_saves_however_its_text_grows() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("euro.txt"), vec![0x80u8; 4 * 1024 * 1024]).unwrap();
+            let read =
+                body_json(read_json(&app, serde_json::json!({ "path": "euro.txt" })).await).await;
+            assert_eq!(read["encoding"], "windows-1252");
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "euro.txt",
+                        "content": read["content"],
+                        "expected_modified": read["modified"],
+                        "expected_size": read["size"],
+                        "encoding": "windows-1252",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(
+                std::fs::metadata(wt.join("euro.txt")).unwrap().len(),
+                4 * 1024 * 1024
+            );
+        }
+
+        /// The limit that matters is the file that would be written, and its
+        /// refusal says so.
+        #[tokio::test]
+        async fn a_save_whose_file_would_be_too_large_is_refused_naming_that_limit() {
+            let (_tmp, wt, app) = router_with_session();
+            let content = "a".repeat(
+                usize::try_from(yaran_core::worktree_file::MAX_SAVED_BYTES)
+                    .expect("ten megabytes fits a usize")
+                    + 1,
+            );
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "huge.txt", "content": content, "encoding": "UTF-8" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let body = String::from_utf8(
+                to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert!(body.contains("on disk") && body.contains("10 MB"), "{body}");
+            assert!(!wt.join("huge.txt").exists());
+        }
+
+        #[tokio::test]
+        async fn a_conversion_states_the_encoding_it_was_read_in() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("j.txt"), "\u{3042}\u{71d0}").unwrap();
+            let read =
+                body_json(read_json(&app, serde_json::json!({ "path": "j.txt" })).await).await;
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "j.txt",
+                        "content": read["content"],
+                        "expected_modified": read["modified"],
+                        "expected_size": read["size"],
+                        "encoding": "Shift_JIS",
+                        "read_encoding": "UTF-8",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let back = body_json(
+                read_json(
+                    &app,
+                    serde_json::json!({ "path": "j.txt", "encoding": "Shift_JIS" }),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(back["content"], "\u{3042}\u{71d0}");
+            assert!(back["unwritable"].is_null());
+        }
+
+        #[tokio::test]
+        async fn a_save_whose_text_starts_with_a_mark_character_is_refused() {
+            let (_tmp, wt, app) = router_with_session();
+            for (encoding, bom) in [("UTF-8", false), ("UTF-16LE", true)] {
+                let resp = app
+                    .clone()
+                    .oneshot(json_req(
+                        "/api/v1/sessions/s1/files/write",
+                        &serde_json::json!({
+                            "path": "m.txt",
+                            "content": "\u{feff}a",
+                            "encoding": encoding,
+                            "bom": bom,
+                        }),
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{encoding}");
+                let text = String::from_utf8(
+                    to_bytes(resp.into_body(), usize::MAX)
+                        .await
+                        .unwrap()
+                        .to_vec(),
+                )
+                .unwrap();
+                assert!(
+                    text.contains("U+FEFF") && text.contains("nothing was written"),
+                    "{text}"
+                );
+            }
+            assert!(!wt.join("m.txt").exists());
+        }
+
+        /// The root extractor runs before the body is read, so a request that
+        /// is wrong in BOTH ways (unknown id and an over-limit body) answers
+        /// for the address first: 404, never the body diagnostic. This pins
+        /// the extractor-first ordering the `write_file` doc comment names.
+        #[tokio::test]
+        async fn a_bad_id_beats_the_body_diagnostic() {
+            let (_tmp, _wt, app) = router_with_session();
+            let content = "a".repeat(crate::file_routes::MAX_EDIT_WRITE_BYTES + 1);
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/ghost/files/write",
+                    &serde_json::json!({ "path": "huge.txt", "content": content }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+    }
+}

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Stand-in `gh` for the screenshot container, so the pull-request banner, its
 // list, the Pull requests dialog and the from-PR dialog can be shot without a
-// GitHub login. It answers only the calls dux makes, from the table below, and
+// GitHub login. It answers only the calls yaran makes, from the table below, and
 // fails loudly on anything else rather than pretending: a screenshot of a lie
 // is worse than a screenshot that did not happen. Installed by entrypoint.sh
-// only when DUX_SCREENS=1.
+// only when YARAN_SCREENS=1.
 //
 // Every time is relative to the moment of the call, so "updated 2 hours ago"
 // in a screenshot reads the same whenever it is reshot.
@@ -55,7 +55,7 @@ function refuse(why) {
 }
 
 // A pull request as the sync's GraphQL query asks for it. `createdAt` is a
-// moment ago so a branch dux has only just seen still counts it as its own.
+// moment ago so a branch yaran has only just seen still counts it as its own.
 function node(repo, number) {
   const pr = PULL_REQUESTS[repo] && PULL_REQUESTS[repo][number]
   if (!pr) return null

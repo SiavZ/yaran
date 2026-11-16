@@ -81,7 +81,7 @@ function session(
           initial_branch: branch,
           branch_provenance: "created",
           source_branch: "main",
-          worktree_path: `/home/dev/.local/share/dux/worktrees/${over.id}`,
+          worktree_path: `/home/dev/.local/share/yaran/worktrees/${over.id}`,
         },
     status: "active",
     auto_reopen_enabled: true,
@@ -162,7 +162,7 @@ const checkoutRetry = session({
   id: CHECKOUT,
   project_id: STOREFRONT,
   title: "checkout-retry",
-  branch_name: "dux/checkout-retry",
+  branch_name: "yaran/checkout-retry",
   working: true,
   tabs: [
     tab(CHECKOUT, "claude", { order: 0, working: true }),
@@ -183,7 +183,7 @@ const sessions: SessionView[] = [
     project_id: BILLING,
     title: "webhook-replay",
     provider: "codex",
-    branch_name: "dux/webhook-replay",
+    branch_name: "yaran/webhook-replay",
     needs_attention: true,
     tabs: [tab("agt-webhook-replay", "codex", { needs_attention: true })],
   }),
@@ -192,7 +192,7 @@ const sessions: SessionView[] = [
     project_id: BILLING,
     title: "invoice-pdf-export",
     provider: "codex",
-    branch_name: "dux/invoice-pdf-export",
+    branch_name: "yaran/invoice-pdf-export",
     // Idle: nothing running, nothing waiting on the user.
   }),
   // A standalone agent, seeded so the figure shows that row shape too: it belongs
@@ -210,7 +210,7 @@ const sessions: SessionView[] = [
     project_id: STOREFRONT,
     title: "search-ranking",
     provider: "opencode",
-    branch_name: "dux/search-ranking",
+    branch_name: "yaran/search-ranking",
     status: "detached",
     typing: true,
     tabs: [
@@ -274,7 +274,7 @@ export const bootstrap: Bootstrap = {
   available_providers: ["claude", "codex", "opencode", "copilot", "grok"],
   macros: [],
   welcome_tips: [],
-  dux_version: "development",
+  yaran_version: "development",
   randomize_agent_names_by_default: false,
   gh_available: true,
   github_integration: true,
@@ -286,7 +286,7 @@ export const bootstrap: Bootstrap = {
   global_env: {},
   status_clear_seconds: 6,
   agent_sort: "active",
-  title: "dux",
+  title: "yaran",
 }
 
 // The changed-files pane's contents for the focused agent: the diff a real

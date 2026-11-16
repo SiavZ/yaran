@@ -1,0 +1,528 @@
+//! Config-to-SQLite project reconciliation, the core-owned application of the
+//! "config wins for explicit project preferences" tenet. Runs at every
+//! entrypoint's startup (the TUI bootstrap AND the headless `yaran serve`
+//! bootstrap) and on config reload, so config-only `[[projects]]`, config-edited
+//! preferences, and identity-conflict validation are honored regardless of
+//! surface.
+//!
+//! Split of responsibility: the DECISION (validate identity, merge per field,
+//! adopt config-only projects, write store-only projects back as portable
+//! config) lives here; PERSISTING the reconciled config to disk is a surface
+//! concern (the TUI renders the full commented template, the web a plain one),
+//! so the driver takes a `persist` hook rather than hardcoding a renderer.
+//!
+//! Tenets honored (see CLAUDE.md):
+//! - Config wins for the safe explicit preference fields (`name`,
+//!   `default_provider`, `auto_reopen_agents`, `startup_command`, `env`); a
+//!   missing config field is filled from SQLite instead.
+//! - Runtime-derived git/agent state is never written into config; in
+//!   particular saved config OMITS `leading_branch` (it may be parsed from an
+//!   older config to repair SQLite, but reconciled config drops it).
+//! - Hard conflicts are reserved for identity ambiguity: duplicate ids/paths
+//!   within one store, the same id pointing at different expanded paths, or the
+//!   same expanded path under different ids.
+
+use anyhow::Result;
+
+use crate::config::{Config, ProjectConfig, expand_path};
+use crate::storage::SessionStore;
+
+/// Reconcile the config's `[[projects]]` with the SQLite store, in place.
+///
+/// Applies the "config wins" tenet: for each project present in BOTH stores the
+/// safe preference fields are merged (config value wins, else SQLite fills the
+/// gap); a config-only project is adopted into SQLite; a store-only project is
+/// written back into config in portable form. `persist(config)` is called to
+/// save the config to disk whenever the reconciled config changed (or the store
+/// was repaired from config-only projects, to keep the on-disk config
+/// normalized). Identity conflicts within either store, or across the two, abort
+/// with a descriptive error and no writes.
+///
+/// # Errors
+///
+/// Fails on an identity conflict within or across the two stores, or when the database or `persist`
+/// fails.
+pub fn reconcile_config_projects<P>(
+    config: &mut Config,
+    session_store: &SessionStore,
+    mut persist: P,
+) -> Result<()>
+where
+    P: FnMut(&Config) -> Result<()>,
+{
+    validate_project_records("config.toml", &config.projects)?;
+    let mut stored = session_store.load_projects()?;
+    validate_project_records("SQLite", &stored)?;
+
+    let mut changed_config = false;
+    let mut changed_store = false;
+    let mut merged = config.projects.clone();
+    // Every write waits until the whole list has been judged, so a conflict
+    // found on a later entry leaves the store as it was.
+    let mut upserts: Vec<(ProjectConfig, i64)> = Vec::new();
+
+    for (index, cfg_project) in config.projects.iter().enumerate() {
+        if let Some(stored_index) = stored.iter().position(|stored_project| {
+            stored_project.id == cfg_project.id
+                || same_expanded_project_path(stored_project, cfg_project)
+        }) {
+            let stored_project = &stored[stored_index];
+            // Named by its line in config.toml, never by its id or path.
+            let (merged_config_project, merged_stored_project) =
+                merge_project_records(cfg_project, stored_project).map_err(|clause| {
+                    let label = config
+                        .source_text
+                        .as_str()
+                        .and_then(|raw| crate::config::line_of_project(raw, index))
+                        .map_or_else(
+                            || format!("project {} (counting from 1)", index + 1),
+                            |line| format!("the project on line {line}"),
+                        );
+                    anyhow::anyhow!("Project sync conflict: {label} in config.toml {clause:#}")
+                })?;
+            if &merged_config_project != cfg_project {
+                merged[index] = merged_config_project;
+                changed_config = true;
+            }
+            if &merged_stored_project != stored_project {
+                upserts.push((
+                    merged_stored_project.clone(),
+                    crate::numeric::usize_to_i64_wrapping(stored_index),
+                ));
+                stored[stored_index] = merged_stored_project;
+                changed_store = true;
+            }
+        } else {
+            upserts.push((
+                cfg_project.clone(),
+                crate::numeric::usize_to_i64_wrapping(index),
+            ));
+            changed_store = true;
+            stored.push(cfg_project.clone());
+        }
+    }
+
+    for (project, position) in &upserts {
+        session_store.upsert_project_at(project, *position)?;
+    }
+
+    for stored_project in stored {
+        let exists = merged.iter().any(|cfg_project| {
+            cfg_project.id == stored_project.id
+                || same_expanded_project_path(cfg_project, &stored_project)
+        });
+        if !exists {
+            let mut portable = stored_project;
+            portable.path = portable_project_path(&portable.path);
+            merged.push(portable);
+            changed_config = true;
+        }
+    }
+
+    if changed_config || changed_store {
+        // Keep the on-disk config normalized after adopting config-only projects
+        // into the store OR editing a config-authoritative field.
+        config.projects = merged;
+        persist(config)?;
+    }
+    Ok(())
+}
+
+/// Reject identity-ambiguous project records within one store BEFORE
+/// reconciliation touches anything: two entries with the same id, or two entries
+/// whose expanded paths collide. `source` names the store ("config.toml" or
+/// "SQLite") for the error.
+///
+/// # Errors
+///
+/// Fails when two records share an id or a path.
+pub fn validate_project_records(source: &str, projects: &[ProjectConfig]) -> Result<()> {
+    match duplicate_project(projects) {
+        // Named by position, never by path, name or id: those are what a
+        // user may keep private in a pasted bug report.
+        Some(duplicate) => anyhow::bail!(
+            "Project sync conflict in {source}: {}",
+            duplicate.sentence(
+                &format!("project {} (counting from 1)", duplicate.first + 1),
+                &format!("project {}", duplicate.second + 1),
+            )
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Two project records yaran cannot tell apart, by their positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DuplicateProject {
+    pub first: usize,
+    pub second: usize,
+    /// Whether they share an id (else they share a path).
+    pub(crate) same_id: bool,
+}
+
+impl DuplicateProject {
+    /// The sentence, with the two projects as `first` and `second` say
+    /// them (by position or by line), never by path, name or id.
+    pub(crate) fn sentence(&self, first: &str, second: &str) -> String {
+        if self.same_id {
+            format!(
+                "{first} and {second} have the same id. Remove one, or give it another id, then \
+                 restart yaran."
+            )
+        } else {
+            format!(
+                "{first} and {second} have the same path. Remove one of them, then restart yaran."
+            )
+        }
+    }
+}
+
+/// The first two project records in `projects` that share an id or a path.
+pub(crate) fn duplicate_project(projects: &[ProjectConfig]) -> Option<DuplicateProject> {
+    for (first, project) in projects.iter().enumerate() {
+        for (offset, other) in projects.iter().skip(first + 1).enumerate() {
+            let second = first + 1 + offset;
+            if project.id == other.id {
+                return Some(DuplicateProject {
+                    first,
+                    second,
+                    same_id: true,
+                });
+            }
+            if same_expanded_project_path(project, other) {
+                return Some(DuplicateProject {
+                    first,
+                    second,
+                    same_id: false,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Merge a config project with its matching stored project, returning the
+/// reconciled (config, stored) pair. Config wins for the safe preference fields
+/// (a present config value overwrites the stored one; a missing config value is
+/// filled from the store); `leading_branch` is repaired INTO SQLite from config
+/// but DROPPED from the reconciled config (runtime-derived state never persists
+/// back into portable config); `env` is config-authoritative wholesale. A
+/// same-id/different-path or same-path/different-id mismatch is an identity
+/// conflict and aborts.
+///
+/// # Errors
+///
+/// Fails when the two records share an id but not a path, or a path but not an id.
+pub fn merge_project_records(
+    config_project: &ProjectConfig,
+    stored_project: &ProjectConfig,
+) -> Result<(ProjectConfig, ProjectConfig)> {
+    let config_path = expanded_project_path(config_project);
+    let stored_path = expanded_project_path(stored_project);
+    // Said without the id or either path, which a user may keep private in a
+    // pasted bug report: the caller names the project by its line.
+    if config_project.id == stored_project.id && config_path != stored_path {
+        anyhow::bail!(
+            "points to a different folder than yaran recorded for it. If the project moved, \
+             remove it in yaran and add it again from its new folder; otherwise put its old path \
+             back in config.toml."
+        );
+    }
+    if config_path == stored_path && config_project.id != stored_project.id {
+        anyhow::bail!(
+            "has a different id than yaran recorded for the same folder. Put the id back as it \
+             was in config.toml, or remove the project in yaran and add it again."
+        );
+    }
+
+    let mut merged_config = config_project.clone();
+    let mut merged_stored = stored_project.clone();
+
+    sync_config_authoritative_project_field(&mut merged_config.name, &mut merged_stored.name);
+    sync_config_authoritative_project_field(
+        &mut merged_config.default_provider,
+        &mut merged_stored.default_provider,
+    );
+    if merged_stored.leading_branch.is_none() {
+        merged_stored.leading_branch = merged_config.leading_branch.clone();
+    }
+    // Runtime-derived: never persist a leading branch back into portable config.
+    merged_config.leading_branch = None;
+    sync_config_authoritative_project_field(
+        &mut merged_config.startup_command,
+        &mut merged_stored.startup_command,
+    );
+    sync_config_authoritative_project_field(
+        &mut merged_config.auto_reopen_agents,
+        &mut merged_stored.auto_reopen_agents,
+    );
+    merged_stored.env = merged_config.env.clone();
+
+    Ok((merged_config, merged_stored))
+}
+
+/// Config wins: a present config value is copied into the store; a missing
+/// config value is filled from the store (so SQLite fills MISSING config fields).
+fn sync_config_authoritative_project_field<T>(
+    config_value: &mut Option<T>,
+    stored_value: &mut Option<T>,
+) where
+    T: Clone,
+{
+    match config_value.as_ref() {
+        Some(config) => {
+            *stored_value = Some(config.clone());
+        }
+        None => {
+            config_value.clone_from(stored_value);
+        }
+    }
+}
+
+/// Whether two project records resolve to the same expanded filesystem path.
+pub fn same_expanded_project_path(left: &ProjectConfig, right: &ProjectConfig) -> bool {
+    expanded_project_path(left).is_some_and(|left_path| {
+        expanded_project_path(right).is_some_and(|right_path| left_path == right_path)
+    })
+}
+
+/// The project's `path` with env/tilde expansion applied, or `None` when it does
+/// not resolve to a valid path.
+pub fn expanded_project_path(project: &ProjectConfig) -> Option<String> {
+    expand_path(&project.path)
+}
+
+/// Re-portabilize an absolute path under `$HOME` so a store-only project written
+/// back into config stays portable across machines. Falls back to the literal
+/// path when it is not under the home directory (or home cannot be resolved).
+pub fn portable_project_path(path: &str) -> String {
+    let Some(home) = home::home_dir() else {
+        return path.to_string();
+    };
+    let path_buf = std::path::Path::new(path);
+    if let Ok(relative) = path_buf.strip_prefix(&home) {
+        let relative = relative.to_string_lossy();
+        if relative.is_empty() {
+            "$HOME".to_string()
+        } else {
+            format!("$HOME/{relative}")
+        }
+    } else {
+        path.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> SessionStore {
+        SessionStore::open(std::path::Path::new(":memory:")).expect("in-memory store")
+    }
+
+    fn project(id: &str, path: &str) -> ProjectConfig {
+        ProjectConfig {
+            id: id.to_string(),
+            path: path.to_string(),
+            name: None,
+            default_provider: None,
+            leading_branch: None,
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: std::collections::BTreeMap::default(),
+        }
+    }
+
+    #[test]
+    fn a_config_only_project_is_adopted_into_sqlite() {
+        let store = store();
+        let mut config = Config {
+            projects: vec![project("p1", "/tmp/p1")],
+            ..Config::default()
+        };
+        let mut saved = 0;
+        reconcile_config_projects(&mut config, &store, |_| {
+            saved += 1;
+            Ok(())
+        })
+        .expect("reconcile ok");
+
+        let stored = store.load_projects().expect("load");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id, "p1");
+        assert!(
+            saved >= 1,
+            "config normalized to disk after adopting the project"
+        );
+    }
+
+    #[test]
+    fn a_config_value_updates_sqlite() {
+        let store = store();
+        // The store already knows p1 with a stale name.
+        let mut in_store = project("p1", "/tmp/p1");
+        in_store.name = Some("old".to_string());
+        store.upsert_project_at(&in_store, 0).unwrap();
+
+        // Config sets an explicit newer name: config wins into SQLite.
+        let mut cfg_project = project("p1", "/tmp/p1");
+        cfg_project.name = Some("new".to_string());
+        let mut config = Config {
+            projects: vec![cfg_project],
+            ..Config::default()
+        };
+        reconcile_config_projects(&mut config, &store, |_| Ok(())).expect("reconcile ok");
+
+        let stored = store.load_projects().expect("load");
+        assert_eq!(stored[0].name.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn sqlite_fills_a_missing_config_field() {
+        let store = store();
+        let mut in_store = project("p1", "/tmp/p1");
+        in_store.default_provider = Some("codex".to_string());
+        store.upsert_project_at(&in_store, 0).unwrap();
+
+        // Config omits default_provider: SQLite fills it into the config.
+        let mut config = Config {
+            projects: vec![project("p1", "/tmp/p1")],
+            ..Config::default()
+        };
+        reconcile_config_projects(&mut config, &store, |_| Ok(())).expect("reconcile ok");
+
+        assert_eq!(
+            config.projects[0].default_provider.as_deref(),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn merging_repairs_leading_branch_into_sqlite_but_drops_it_from_config() {
+        // A MATCHED project (present in both stores) goes through the merge: the
+        // config's leading_branch repairs the store's missing one, and is then
+        // dropped from the in-memory config (runtime-derived state never persists
+        // back into portable config; the renderer also omits it, but the merge is
+        // where the in-memory drop happens). A config-only project keeps its
+        // in-memory leading_branch and relies on the renderer to omit it.
+        let store = store();
+        store
+            .upsert_project_at(&project("p1", "/tmp/p1"), 0)
+            .unwrap();
+        let mut cfg_project = project("p1", "/tmp/p1");
+        cfg_project.leading_branch = Some("main".to_string());
+        let mut config = Config {
+            projects: vec![cfg_project],
+            ..Config::default()
+        };
+        reconcile_config_projects(&mut config, &store, |_| Ok(())).expect("reconcile ok");
+
+        assert_eq!(config.projects[0].leading_branch, None);
+        let stored = store.load_projects().expect("load");
+        assert_eq!(stored[0].leading_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_store_only_project_is_written_back_into_config() {
+        let store = store();
+        store
+            .upsert_project_at(&project("p2", "/tmp/p2"), 0)
+            .unwrap();
+        let mut config = Config {
+            projects: Vec::new(),
+            ..Config::default()
+        };
+        reconcile_config_projects(&mut config, &store, |_| Ok(())).expect("reconcile ok");
+        assert_eq!(config.projects.len(), 1);
+        assert_eq!(config.projects[0].id, "p2");
+    }
+
+    #[test]
+    fn duplicate_config_ids_are_a_conflict() {
+        let store = store();
+        let mut config = Config {
+            projects: vec![project("dup", "/tmp/a"), project("dup", "/tmp/b")],
+            ..Config::default()
+        };
+        let err = reconcile_config_projects(&mut config, &store, |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        // Named by position, never by the id itself.
+        assert!(
+            err.contains("project 1 (counting from 1) and project 2 have the same id"),
+            "{err}"
+        );
+        assert!(!err.contains("dup"), "{err}");
+    }
+
+    #[test]
+    fn same_id_different_path_across_stores_is_a_conflict() {
+        let store = store();
+        store
+            .upsert_project_at(&project("p1", "/tmp/here"), 0)
+            .unwrap();
+        let mut config = Config {
+            projects: vec![project("p1", "/tmp/there")],
+            ..Config::default()
+        };
+        let err = reconcile_config_projects(&mut config, &store, |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("in config.toml points to a different folder than yaran recorded"),
+            "{err}"
+        );
+        for private in ["p1", "/tmp/here", "/tmp/there"] {
+            assert!(!err.contains(private), "{err}");
+        }
+    }
+
+    /// A conflict found late in the list leaves the store as it was, even when
+    /// earlier entries would have been adopted or updated.
+    #[test]
+    fn a_conflict_anywhere_writes_nothing() {
+        let store = store();
+        let mut in_store = project("p1", "/tmp/p1");
+        in_store.name = Some("old".to_string());
+        store.upsert_project_at(&in_store, 0).unwrap();
+        store
+            .upsert_project_at(&project("p3", "/tmp/here"), 1)
+            .unwrap();
+        let before = store.load_projects().unwrap();
+
+        let mut renamed = project("p1", "/tmp/p1");
+        renamed.name = Some("new".to_string());
+        let mut config = Config {
+            projects: vec![
+                renamed,
+                project("p2", "/tmp/p2"),
+                project("p3", "/tmp/there"),
+            ],
+            ..Config::default()
+        };
+        reconcile_config_projects(&mut config, &store, |_| Ok(())).unwrap_err();
+        assert_eq!(store.load_projects().unwrap(), before);
+    }
+
+    #[test]
+    fn same_path_different_id_across_stores_is_a_conflict() {
+        let store = store();
+        store
+            .upsert_project_at(&project("stored-id", "/tmp/same"), 0)
+            .unwrap();
+        let mut config = Config {
+            projects: vec![project("config-id", "/tmp/same")],
+            ..Config::default()
+        };
+        let err = reconcile_config_projects(&mut config, &store, |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("has a different id than yaran recorded for the same folder"),
+            "{err}"
+        );
+        for private in ["stored-id", "config-id", "/tmp/same"] {
+            assert!(!err.contains(private), "{err}");
+        }
+    }
+}

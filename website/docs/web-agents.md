@@ -5,7 +5,7 @@ group: Web UI
 order: 64
 ---
 
-The whole agent lifecycle runs from the browser: spin one up (in a worktree and branch dux
+The whole agent lifecycle runs from the browser: spin one up (in a worktree and branch yaran
 manages, or standalone in a folder you already have), fork it, adopt an orphaned worktree,
 retarget its provider, and tear it down. This page is the click-by-click version;
 the concepts behind projects, agents, and providers are in
@@ -17,19 +17,19 @@ the concepts behind projects, agents, and providers are in
 > The **Add project** dialog browses the **server's** own disk, not your laptop's, starting
 > from its configured start directory, normally the server's home directory.
 
-Repositories carry a small "git" badge. Pick one, give it an optional name, and dux may
+Repositories carry a small "git" badge. Pick one, give it an optional name, and yaran may
 show a pre-flight step first:
 
-- **Not on its default branch.** dux offers to check the default branch out before adding.
+- **Not on its default branch.** yaran offers to check the default branch out before adding.
   Leave the box ticked and new agents branch from the default branch; untick it and your
   folder stays where it is, and new agents branch from the branch it is on. The dialog names
   the branch either way.
-- **No commits yet** (a fresh `git init`). dux offers to make the initial commit for you. If
-  git on the server cannot work out an identity for that commit, dux fills in
-  `dux@localhost` as the address so the add still succeeds; see
+- **No commits yet** (a fresh `git init`). yaran offers to make the initial commit for you. If
+  git on the server cannot work out an identity for that commit, yaran fills in
+  `yaran@localhost` as the address so the add still succeeds; see
   [the workspace page](/docs/web-workspace) for what it keeps and what it fills in.
-- **Not a repository at all.** dux offers to initialize one, as described next.
-- **Inside another repository.** dux refuses and names the repository's root: add that
+- **Not a repository at all.** yaran offers to initialize one, as described next.
+- **Inside another repository.** yaran refuses and names the repository's root: add that
   repository instead.
 
 The confirm button's label adapts to whichever applies.
@@ -52,7 +52,7 @@ Every project, including one with no agents yet, is in **Projects…** in the ap
 that is not a git repository yet. The dialog says what it will do: pick an existing folder
 or create a new one with the new-folder control, then choose **Use this folder**.
 
-dux then:
+yaran then:
 
 - runs `git init` in it;
 - seeds a starter `.gitignore` covering the kinds of project it recognises in the folder (the
@@ -74,7 +74,7 @@ behalf. Picking a plain folder in **Add project…** offers the same step.
 Press **Clone** and the dialog closes. Progress rides a toast, and the new agent is selected
 when it shows up.
 
-If dux can tell straight away that something is wrong, the dialog stays open with the reason
+If yaran can tell straight away that something is wrong, the dialog stays open with the reason
 so you can fix it without retyping:
 
 - no address;
@@ -135,16 +135,16 @@ back as an agent.
 
 Pick **New agent from PR…** in the launcher's menu and its own dialog opens with the reference
 field first. **No project is chosen and none is asked for.** Paste a PR link (or
-`owner/repo#123`, or a bare `owner/repo`) and dux compares the repository it names against
+`owner/repo#123`, or a bare `owner/repo`) and yaran compares the repository it names against
 every project you have:
 
 ![The New agent from PR dialog with a pull request reference typed into its first field.](/screens/new-agent-from-pr-dialog.png)
 
-- **One project is a checkout of that repository** and dux goes straight on to resolve the
+- **One project is a checkout of that repository** and yaran goes straight on to resolve the
   pull request.
-- **Two or more are** and dux shows you just those and asks which.
+- **Two or more are** and yaran shows you just those and asks which.
 - **None is**, and the reference names a repository and a pull request number on a host
-  `gh` is signed in to. dux looks the pull request up and shows it, with its title and
+  `gh` is signed in to. yaran looks the pull request up and shows it, with its title and
   branch, and offers to clone the repository, add it as a project and start the agent on
   the pull request in one go.
   - If the folder it would clone into already holds a checkout of that repository, it offers
@@ -165,11 +165,11 @@ every project you have:
 > cannot trust it.
 
 A number on its own (`#123` or `123`) is the one form this door cannot take, since it does
-not say which repository it belongs to. dux refuses it and points you at "choose an existing
+not say which repository it belongs to. yaran refuses it and points you at "choose an existing
 project" under the field, which switches to the project-first mode below and brings anything
 you typed with it.
 
-The full list of accepted spellings, and what happens to projects dux cannot compare, is in
+The full list of accepted spellings, and what happens to projects yaran cannot compare, is in
 [Creating agents](/docs/creating-agents).
 
 ### Starting from a project
@@ -181,7 +181,7 @@ project and a bare `123` is meaningful.
 ![The New agent dialog with a branch name typed, ready to create the worktree and launch the agent.](/screens/new-agent-dialog.png)
 
 - **New agent…** creates a fresh git worktree and branch and launches the agent. The branch
-  name is optional; leave it blank and dux generates a memorable pet name.
+  name is optional; leave it blank and yaran generates a memorable pet name.
 - **New agent from PR…** fetches a pull request's head branch into a new worktree. Give it
   a PR URL, `#123`, or just `123`. It appears only when GitHub integration and the `gh` CLI
   are available.
@@ -195,12 +195,12 @@ to valid branch characters as you type.
 
 ### The worktree manager
 
-**Worktrees…** lists every worktree dux manages for the project, with its branch, its path
+**Worktrees…** lists every worktree yaran manages for the project, with its branch, its path
 on disk, and a warning when it is holding uncommitted changes. Pick one that has no agent
 and it becomes a live agent again on its existing branch, which is how you reclaim work a
 deleted agent left behind.
 
-![The Worktrees dialog listing every worktree dux manages for a project, with the agent holding each one.](/screens/worktree-manager-dialog.png)
+![The Worktrees dialog listing every worktree yaran manages for a project, with the agent holding each one.](/screens/worktree-manager-dialog.png)
 
 Each row is in one of these states:
 
@@ -213,8 +213,8 @@ Each row is in one of these states:
   its worktree kept (still stopping), or a standalone agent whose folder is the worktree or
   anywhere inside it. It cannot be deleted from the manager until that has gone.
 - **Left over after a delete.** A folder git let go of when its worktree was deleted, but
-  that dux could not delete because something kept writing into it. The row names the
-  branches dux kept because of it. Its `⋯` menu has **Copy path** and **Delete folder…**
+  that yaran could not delete because something kept writing into it. The row names the
+  branches yaran kept because of it. Its `⋯` menu has **Copy path** and **Delete folder…**
   (absent while something is using the folder). See
   [When something keeps writing into the worktree](#when-something-keeps-writing-into-the-worktree).
 
@@ -223,10 +223,10 @@ and the full path. That confirmation carries an **"Also delete the branch"** che
 by default, because a branch left behind makes creating an agent under that name later fail
 with "branch already exists".
 
-- Untick it and dux removes the working directory only.
+- Untick it and yaran removes the working directory only.
 - A worktree that is not on a branch has no branch to offer, so the checkbox does not appear.
 - If git refuses the branch deletion (it is checked out somewhere else, say), the worktree
-  still goes and dux tells you the branch survived and quotes git's reason.
+  still goes and yaran tells you the branch survived and quotes git's reason.
 
 The manager checks again at the moment you confirm, and a few rules keep it safe:
 
@@ -235,13 +235,13 @@ The manager checks again at the moment you confirm, and a few rules keep it safe
 - A removal that finds work still running in the worktree waits for it the same way an agent
   delete does.
 - A standalone agent inside a worktree keeps that worktree for as long as the agent exists,
-  because dux never removes a standalone agent's folder. Delete that agent, or move its folder
+  because yaran never removes a standalone agent's folder. Delete that agent, or move its folder
   out, first. The same holds when you delete the worktree's own agent with the worktree box
-  ticked: the worktree is kept and dux names the standalone agent.
+  ticked: the worktree is kept and yaran names the standalone agent.
 - Once a removal of a folder has begun, nothing new starts in it or in any folder inside it:
   a new agent, a standalone agent, a relaunch, a terminal or a project added there is refused
   and says why.
-- A worktree that holds a dux project's repository is never removed.
+- A worktree that holds a yaran project's repository is never removed.
 
 > [!TIP]
 > This is where you remove the branch of a worktree that has no agent. For a worktree that
@@ -268,7 +268,7 @@ heading: **Tabs and project**, **Running**, **Agent**, **Startup**, **Worktree**
 - **Recreate working copy…**, which only appears when the agent's folder has gone missing.
 - The **auto-reopen** toggle, and **Delete agent…**.
 
-These entries are about a branch dux manages, so a standalone agent does not get them at all:
+These entries are about a branch yaran manages, so a standalone agent does not get them at all:
 
 - **Fork agent…**.
 - The project's environment, [startup command](/docs/startup-commands), **Rerun startup
@@ -337,16 +337,16 @@ use the provider's own history command.
 
 When an agent needs you (a permission prompt, a finished turn), its sidebar icon turns cyan
 and pulses, its tab-strip pill gains a small cyan dot, the browser tab title gains a count
-like `(2) dux`, and the favicon grows a small blinking cyan dot. The flag clears the moment
+like `(2) yaran`, and the favicon grows a small blinking cyan dot. The flag clears the moment
 you look at that agent. The whole model, and how to make sure your agents emit the signal, is
 in [Attention indicators](/docs/attention-indicators).
 
 Server mode can also raise a **real browser desktop notification** when an agent asks for
 you:
 
-- It is strictly opt-in: dux never auto-prompts. Open **Preferences…** from the cog menu, use
+- It is strictly opt-in: yaran never auto-prompts. Open **Preferences…** from the cog menu, use
   **Enable browser notifications** once, and grant permission.
-- It fires only while the dux browser window is hidden or unfocused, and only for the agent
+- It fires only while the yaran browser window is hidden or unfocused, and only for the agent
   whose view you have open.
 - It is governed by the `web_notifications` capability, detailed in
   [Terminal capabilities](/docs/terminal-capabilities#browser-notifications-web-ui).
@@ -360,13 +360,13 @@ you:
 ## Kill versus delete
 
 **Kill (detach)** stops the running session but keeps the agent and its worktree in a
-detached, reopenable state. **Delete** removes the agent from dux entirely.
+detached, reopenable state. **Delete** removes the agent from yaran entirely.
 
 ### The Task Manager
 
 The **Task Manager**, in the app menu behind the cog button, lists every running agent tab
 and every terminal (companion, project and standalone), with its CPU, memory, and process
-count. Expand any row to see the child processes underneath. It also shows a row for dux
+count. Expand any row to see the child processes underneath. It also shows a row for yaran
 itself and a total.
 
 - It stops rows one by one, or all at once. Every stop confirms first.
@@ -385,7 +385,7 @@ itself and a total.
 
 **Detach agent…** in the agent's `⋯` menu is the polite alternative to Force stop. You do not
 have to be inside the agent's own CLI to use it. It asks every process the agent is running
-to shut down, the same way closing dux does:
+to shut down, the same way closing yaran does:
 
 1. A polite signal first.
 2. A wait.
@@ -398,7 +398,7 @@ reaches the same action with the `detach-agent` palette command on the selected 
 - The confirmation names the wait, which is the top-level `shutdown_timeout_seconds` in your
   `config.toml` (30 seconds by default, and not the same key as the one under `[server]`).
 - It also says how many of the agent's tabs stop together when it has more than one running.
-- Afterwards dux says which way it went: that the agent shut down and is detached, or that it
+- Afterwards yaran says which way it went: that the agent shut down and is detached, or that it
   did not exit in time and was force-closed.
 
 > [!CAUTION]
@@ -408,14 +408,14 @@ reaches the same action with the `detach-agent` palette command on the selected 
 
 ### Deleting an agent
 
-**Delete agent…** is the one destructive per-agent action dux tints red, and it always
+**Delete agent…** is the one destructive per-agent action yaran tints red, and it always
 confirms first. The confirmation includes an unchecked "also delete the git worktree" box, so
 by default your worktree survives a delete.
 
 Tick it and the branch boxes appear. They only appear then because git will not delete a
 branch that is still checked out in a worktree, so with the worktree staying there is nothing
-to offer. dux keeps a list of every branch the agent's worktree has been on, including one
-it only passed through between two of dux's checks, so the dialog can offer all of them:
+to offer. yaran keeps a list of every branch the agent's worktree has been on, including one
+it only passed through between two of yaran's checks, so the dialog can offer all of them:
 
 - **"Also delete the branch …"** names the branch the worktree is on now.
 - **"Also delete the other branches this agent was on: …"** names every other branch the
@@ -432,7 +432,7 @@ worktree folder already gone, there is no line at all.
 > No unpushed commits does not mean nothing is lost. Removing the worktree deletes every
 > uncommitted file in it, untracked ones included, and nothing can bring them back.
 
-dux starts reading the branches from git as soon as the dialog opens, so the answer is
+yaran starts reading the branches from git as soon as the dialog opens, so the answer is
 usually in by the time you tick the worktree box. Until it is, the dialog says "Looking for
 unpushed work on the branches…" (the browser shows the first box disabled; the terminal UI
 shows no branch box yet). Once git answers, the dialog says whether deleting the branches it
@@ -444,14 +444,14 @@ and every branch is kept. When git could not be asked, or could not count the co
 dialog says why; cancel and open it again to retry. A box whose commits git could not count
 is disabled and unticked, so its branches are kept.
 
-Where each box starts depends on whether dux can prove the branch is its own:
+Where each box starts depends on whether yaran can prove the branch is its own:
 
-- **The first box is ticked** for the branch dux created for the agent, and for a branch the
+- **The first box is ticked** for the branch yaran created for the agent, and for a branch the
   agent switched onto that git shows was created after the agent started. It is **unticked**
   for a branch that already existed, came with an adopted worktree, or whose age git cannot
   tell, with a line saying which.
-- **The second box is ticked** only when every branch in it is one dux created for this agent.
-  Any other branch leaves it unticked, and the line under it names the ones dux cannot vouch
+- **The second box is ticked** only when every branch in it is one yaran created for this agent.
+  Any other branch leaves it unticked, and the line under it names the ones yaran cannot vouch
   for. A branch created after the agent started is one of those, because another worktree
   may have made it.
 
@@ -460,12 +460,12 @@ on no remote and no local branch that stays. In a repository with no remote, the
 too. This line is separate from what git found above the boxes. The line changes as you tick, and with both boxes
 ticked it counts everything the two hold together, which can be more than either box alone.
 When deleting them loses no commit there is no line at all. Ticking a box is the only way to
-remove such a branch from dux once its worktree is gone.
+remove such a branch from yaran once its worktree is gone.
 
-What dux deletes, and what it never does:
+What yaran deletes, and what it never does:
 
 - **Only what the dialog showed.** Each branch is deleted only while it still points at the
-  commit the dialog counted. One that moved since is kept, and dux says so. A branch dux
+  commit the dialog counted. One that moved since is kept, and yaran says so. A branch yaran
   noticed only after the dialog opened is kept too.
 - **Never the project's own branch**, and never a branch another worktree has checked out. The
   dialog names a project branch the agent was on as kept rather than offering it.
@@ -473,25 +473,25 @@ What dux deletes, and what it never does:
   different `spike` exists now, the dialog does not offer it, and the message after the delete
   says it was kept because a different branch now has that name. When git no longer keeps the
   record that would say, a branch that has not moved on from where the agent left it still
-  counts as the same one; anything else is kept, with the reason that dux cannot confirm it.
-  So a branch dux could not fingerprint that was later rewritten (rebased or amended) is kept
-  and named as one dux cannot confirm.
-- **Git refuses to delete a branch dux tried to remove:** dux says which branch is still
+  counts as the same one; anything else is kept, with the reason that yaran cannot confirm it.
+  So a branch yaran could not fingerprint that was later rewritten (rebased or amended) is kept
+  and named as one yaran cannot confirm.
+- **Git refuses to delete a branch yaran tried to remove:** yaran says which branch is still
   there and why, rather than reporting a deletion that did not happen.
 - **After the delete**, the message names every branch that was kept, each with its own
   reason and the `git branch -D` command to remove it yourself.
 
 > [!IMPORTANT]
 > Deleting a project, and any delete where nobody was asked (the command line with no
-> branch flag, say), removes only the branch dux created for the agent, and only while dux
+> branch flag, say), removes only the branch yaran created for the agent, and only while yaran
 > can prove the branch under that name is still the one it made. Every other branch the
-> worktree was on is kept and named. dux's own renames of the branch are followed; a branch
-> you rename yourself and then recreate under the old name is not dux's.
+> worktree was on is kept and named. yaran's own renames of the branch are followed; a branch
+> you rename yourself and then recreate under the old name is not yaran's.
 
 ### When somebody else is connected
 
 Some changes end terminals, and somebody else may be looking at one: another browser tab, a
-phone, or the terminal app. dux refuses these while anybody else is connected to what they
+phone, or the terminal app. yaran refuses these while anybody else is connected to what they
 would end:
 
 - deleting an agent, detaching it, force-stopping it, restarting it from scratch;
@@ -508,7 +508,7 @@ own.
 The refusal says who, and changes nothing. It gives:
 
 - the device;
-- the address it connects from (marked unverified when dux cannot vouch for it);
+- the address it connects from (marked unverified when yaran cannot vouch for it);
 - whether they are typing in it or watching;
 - which tab or terminal.
 
@@ -552,7 +552,7 @@ Some details:
 
 ### What a delete with the worktree waits for
 
-With the worktree box ticked, dux removes nothing until everything it started for that agent
+With the worktree box ticked, yaran removes nothing until everything it started for that agent
 has stopped:
 
 - every tab;
@@ -565,7 +565,7 @@ Each is asked to exit, given the same shutdown grace as a quit (`shutdown_timeou
 and killed if it is still there. The agent leaves the list at once; the removal finishes in
 the background and reports when it is done.
 
-It also waits for dux's own work in that worktree: a pull, a push, a commit, a branch rename,
+It also waits for yaran's own work in that worktree: a pull, a push, a commit, a branch rename,
 a recreate of the working copy or a save from the editor still running there is allowed to
 finish, and the status says what it is waiting for. A branch renamed while the delete waited
 is removed under its new name.
@@ -582,32 +582,32 @@ a pull or a new agent there is refused, and says why.
 When it cannot finish cleanly:
 
 - **The work does not finish in time.** After `removal_wait_seconds` in your `config.toml`
-  (120 seconds by default), dux keeps the worktree and tells you so. Remove it later from the
+  (120 seconds by default), yaran keeps the worktree and tells you so. Remove it later from the
   worktree manager.
-- **Something refuses to stop even when killed.** dux keeps the worktree untouched and names
+- **Something refuses to stop even when killed.** yaran keeps the worktree untouched and names
   the processes, so you can stop them and remove the worktree from the worktree manager.
 - **A terminal is standing in it.** A project or standalone terminal whose shell you `cd`'d
-  into the worktree, or anything else dux started elsewhere that is standing in it, is never
-  ended to make way. The worktree is kept and dux names the terminal: `cd` out of the folder
+  into the worktree, or anything else yaran started elsewhere that is standing in it, is never
+  ended to make way. The worktree is kept and yaran names the terminal: `cd` out of the folder
   or close the terminal, then remove the worktree from the worktree manager.
-- **Something dux cannot see writes into it.** A server another program launched in that
+- **Something yaran cannot see writes into it.** A server another program launched in that
   folder can still write while git deletes it. git then removes the worktree from the
   repository but cannot delete the folder. See below.
 
 #### When something keeps writing into the worktree
 
-dux does not delete such a folder on its own. It tells you what is left in it, and the
+yaran does not delete such a folder on its own. It tells you what is left in it, and the
 project's worktree manager lists the folder under **Left over after a delete** until it is
 gone.
 
 - **The branches stay.** The branches the delete was going to remove are kept, because the
   folder still holds their files. The message names them.
 - **Delete folder…** asks first. The confirmation names the folder and offers to delete the
-  kept branches too: ticked for a branch dux created, unticked (with a warning) for one that
+  kept branches too: ticked for a branch yaran created, unticked (with a warning) for one that
   existed before the agent.
 - **A branch that moved is kept.** If a kept branch now points at a different commit than
-  when the folder was left behind, it is not deleted, and dux says so.
-- **dux deletes only the folder that was left behind.** It refuses a folder outside its
+  when the folder was left behind, it is not deleted, and yaran says so.
+- **yaran deletes only the folder that was left behind.** It refuses a folder outside its
   worktrees folder for the project, one reached through a symbolic link, one git lists as a
   worktree again, one that holds another worktree or repository, one that holds the
   project's own repository, and one an agent, a standalone agent or a terminal is using. If
@@ -627,13 +627,13 @@ gone.
   still exists. Once neither is left, it goes away.
 
 > [!IMPORTANT]
-> dux only sees what it started. A program that fully detaches itself from the terminal
+> yaran only sees what it started. A program that fully detaches itself from the terminal
 > session and the process tree, such as a `tmux new -d` session or a daemon that double-forks,
-> is not seen at all: dux neither stops it nor counts it as using the worktree.
+> is not seen at all: yaran neither stops it nor counts it as using the worktree.
 >
 > Stop such a program yourself before you delete the worktree.
 
-If you quit dux while a removal is still waiting, the quit finishes it before exiting. If dux
+If you quit yaran while a removal is still waiting, the quit finishes it before exiting. If yaran
 is killed or crashes first, the next start finishes it in the background and says so. It
 never removes a folder that another agent has started using in the meantime.
 

@@ -1,0 +1,1551 @@
+//! The web password login, server side: one optional password for one owner,
+//! the same single workspace as always (no accounts, no per-user isolation).
+//!
+//! The pieces, each in its own module:
+//!
+//! - [`provenance`]: who a request is (this machine, the tailnet, the network,
+//!   the internet), decided from the connection and only the headers the
+//!   nearest hop can vouch for.
+//! - [`admission`]: `blocked_addresses` and the failed-login counting. Applies
+//!   with or without a password.
+//! - [`gate`]: the bound on concurrent password checks and their queue.
+//! - [`sessions`]: signed-in browsers, persisted as digests.
+//! - [`cookie`]: how a session travels.
+//! - [`middleware`]: the ONE layer every request passes, inside the Host guard,
+//!   with the declared public routes. A no-op for authentication when no
+//!   password is set (admission still applies).
+//! - [`routes`]: the routes under `/api/v1/auth/`.
+//! - [`socket`]: what an open WebSocket holds to be closed the moment its
+//!   session ends or its client stops being allowed.
+//! - [`warnings`]: what yaran says about it, on every serving mode alike.
+//!
+//! The live `[server.auth]` section is a [`LiveAuth`], held by the engine
+//! handle's live limits so every reload path (the engine actor's for
+//! `yaran server` and the flip, the terminal UI's for the background serve)
+//! updates it in the same place, and a write yaran makes itself (a password, a
+//! ban, the warning's dismissal) applies to it at once.
+//!
+//! Proving who someone is and holding a session are separate on purpose: a
+//! password is the only provider today, and another (a bearer token, an identity
+//! from somewhere else) would issue sessions through [`sessions`] without the
+//! middleware changing.
+
+pub(crate) mod admission;
+pub(crate) mod bearer;
+pub(crate) mod blocked_page;
+pub(crate) mod cookie;
+pub(crate) mod gate;
+pub(crate) mod middleware;
+pub mod provenance;
+pub(crate) mod routes;
+pub(crate) mod sessions;
+pub(crate) mod socket;
+pub(crate) mod warnings;
+
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+
+use axum::http::HeaderMap;
+use yaran_core::auth::Password;
+use yaran_core::config::{AddressBlock, AuthRequire, ServerAuthConfig};
+use yaran_core::web_sessions::{SessionKind, TokenDigest};
+
+use crate::exposure::{Exposure, ExposureCell};
+pub use provenance::{Arrival, ClientClass};
+use provenance::{Classification, RequestFacts};
+pub(crate) use socket::SocketAuth;
+
+/// One reading of the `[server.auth]` section, with what every request needs
+/// from it worked out once.
+#[derive(Debug)]
+pub struct AuthSnapshot {
+    /// The section as it was read.
+    pub config: ServerAuthConfig,
+    /// The credential generation of `config.password_hash` (empty for none).
+    pub generation: String,
+    /// `blocked_addresses`, parsed.
+    pub blocks: Vec<AddressBlock>,
+    /// Why this section cannot be used, when it cannot. A config yaran loaded
+    /// never has one (a bad section stops the start and is refused by a
+    /// reload); this is the fail-closed answer if one ever arrives anyway.
+    pub broken: Option<String>,
+}
+
+impl AuthSnapshot {
+    fn of(config: &ServerAuthConfig) -> Self {
+        Self {
+            config: config.clone(),
+            generation: yaran_core::web_sessions::credential_generation(&config.password_hash),
+            blocks: config.blocked(),
+            broken: config.validate().err(),
+        }
+    }
+
+    /// Whether a password is set.
+    pub fn has_password(&self) -> bool {
+        self.config.has_password()
+    }
+}
+
+/// The live `[server.auth]` section. Cloning the `Arc` shares it.
+///
+/// Two writers meet here: a reload, which stores what it read from the file,
+/// and yaran itself, which writes a password, a ban or the warning's dismissal
+/// to the file and then applies the same change in memory at once. A reload
+/// that READ the file before such a write can arrive after it; storing what it
+/// read would drop the write from memory. So every in-memory write stays
+/// pending and is judged by FILE IDENTITY, never by comparing values (decided,
+/// after review): it remembers the digest of the text its write replaced, and
+/// a reload re-applies it only when the text that reload read has exactly
+/// that digest, which means it read the file before the write. Any other text
+/// (the write's own, or anything written after it, the owner's hand edit
+/// included) retires it for good, so a later accepted reload can never put
+/// back a ban the owner removed. Every read-modify-store happens under one
+/// lock.
+pub struct LiveAuth {
+    inner: std::sync::RwLock<Live>,
+    changes: tokio::sync::watch::Sender<u64>,
+    /// Test-only: runs inside [`LiveAuth::update`] between its read and its
+    /// store, with the lock held, so a test can race a store against it.
+    #[cfg(test)]
+    update_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send>>>,
+}
+
+impl std::fmt::Debug for LiveAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveAuth")
+            .field("snapshot", &self.snapshot())
+            .finish_non_exhaustive()
+    }
+}
+
+struct Live {
+    current: Arc<AuthSnapshot>,
+    /// In the order they were written.
+    pending: Vec<PendingChange>,
+}
+
+/// One change yaran applied in memory after writing it to the file.
+struct PendingChange {
+    change: Box<dyn Fn(&mut ServerAuthConfig) + Send + Sync>,
+    /// The digest of the file text the write replaced; `None` when the write
+    /// left no identity to judge by, which the next reload retires.
+    replaced: Option<String>,
+}
+
+impl Default for LiveAuth {
+    fn default() -> Self {
+        Self::new(&ServerAuthConfig::default())
+    }
+}
+
+impl LiveAuth {
+    /// The live section, starting from `config` with nothing written yet.
+    pub fn new(config: &ServerAuthConfig) -> Self {
+        Self {
+            inner: std::sync::RwLock::new(Live {
+                current: Arc::new(AuthSnapshot::of(config)),
+                pending: Vec::new(),
+            }),
+            changes: tokio::sync::watch::Sender::new(0),
+            #[cfg(test)]
+            update_hook: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Live> {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The section as it is now.
+    pub fn snapshot(&self) -> Arc<AuthSnapshot> {
+        Arc::clone(
+            &self
+                .inner
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .current,
+        )
+    }
+
+    /// Whether a password is set right now.
+    pub fn has_password(&self) -> bool {
+        self.snapshot().has_password()
+    }
+
+    /// Adopt a section a reload read from `source` (the file's text, when
+    /// there was one), with every change yaran wrote after that text was read
+    /// applied over it. Answers whether anything changed.
+    pub fn store(&self, config: &ServerAuthConfig, source: Option<&str>) -> bool {
+        let read = source.map(|text| yaran_core::config_write::read_token(Some(text)));
+        self.store_read(config, read.as_deref())
+    }
+
+    /// [`LiveAuth::store`] by the digest of the text the reload read.
+    fn store_read(&self, config: &ServerAuthConfig, read: Option<&str>) -> bool {
+        let changed = {
+            let mut live = self.write();
+            let mut config = config.clone();
+            // The first change whose write replaced exactly the text this
+            // reload read came after that read, and so did every change after
+            // it: they are applied over it, in order. Every change before it
+            // is in the text already. A read matching none of them read the
+            // file after them all, or after somebody else changed it: all of
+            // them retire.
+            match read.and_then(|read| {
+                live.pending
+                    .iter()
+                    .position(|pending| pending.replaced.as_deref() == Some(read))
+            }) {
+                Some(first) => {
+                    live.pending.drain(..first);
+                    for pending in &live.pending {
+                        (pending.change)(&mut config);
+                    }
+                }
+                None => live.pending.clear(),
+            }
+            Self::set(&mut live, &config)
+        };
+        if changed {
+            self.changes.send_modify(|n| *n += 1);
+        }
+        changed
+    }
+
+    /// Change the section in memory after yaran wrote the same change to
+    /// `config.toml` itself (`written` is that write's file identity), so it
+    /// applies before the reload that follows. The read, the change and the
+    /// store happen under one lock, and the change stays pending until a
+    /// reload reads a text other than the one the write replaced.
+    pub(crate) fn update(
+        &self,
+        change: impl Fn(&mut ServerAuthConfig) + Send + Sync + 'static,
+        written: Option<yaran_core::config_write::FileWrite>,
+    ) {
+        let changed = {
+            let mut live = self.write();
+            let before = live.current.config.clone();
+            #[cfg(test)]
+            if let Some(hook) = self
+                .update_hook
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                hook();
+            }
+            let mut after = before;
+            change(&mut after);
+            live.pending.push(PendingChange {
+                change: Box::new(change),
+                replaced: written.map(|written| written.before),
+            });
+            Self::set(&mut live, &after)
+        };
+        if changed {
+            self.changes.send_modify(|n| *n += 1);
+        }
+    }
+
+    fn set(live: &mut Live, config: &ServerAuthConfig) -> bool {
+        if live.current.config == *config {
+            return false;
+        }
+        live.current = Arc::new(AuthSnapshot::of(config));
+        true
+    }
+
+    /// A receiver that wakes on every change.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+}
+
+/// Whether `require` asks a client of `class` for the password.
+pub fn required_by(require: AuthRequire, class: ClientClass) -> bool {
+    match require {
+        AuthRequire::Network => matches!(class, ClientClass::Network | ClientClass::Internet),
+        AuthRequire::Tailnet => !matches!(class, ClientClass::ThisMachine),
+        AuthRequire::Everywhere => true,
+    }
+}
+
+/// What the serve listens on, for "is yaran reachable beyond this machine".
+pub(crate) struct Reach {
+    /// The addresses bound when the serve started.
+    pub(crate) bound_ips: Vec<IpAddr>,
+    /// The Tailscale leg the serve loop has bound right now, when one can come
+    /// and go.
+    pub(crate) tailscale_leg: Option<Arc<std::sync::Mutex<Option<SocketAddr>>>>,
+}
+
+impl Reach {
+    /// The listeners beyond loopback, in words, empty when there are none.
+    pub(crate) fn beyond_loopback(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .bound_ips
+            .iter()
+            .filter(|ip| !ip.is_loopback())
+            .map(|ip| match ip {
+                IpAddr::V4(v4) if v4.is_unspecified() => "every IPv4 address".to_string(),
+                IpAddr::V6(v6) if v6.is_unspecified() => "every IPv6 address".to_string(),
+                ip => ip.to_string(),
+            })
+            .collect();
+        if let Some(leg) = self.tailscale_leg.as_ref().and_then(|cell| {
+            *cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }) && !out.contains(&leg.ip().to_string())
+        {
+            out.push(leg.ip().to_string());
+        }
+        out
+    }
+}
+
+/// What [`AuthState::start`] needs from the serve that builds it.
+pub(crate) struct AuthSetup {
+    pub(crate) live: Arc<LiveAuth>,
+    pub(crate) exposure: Option<ExposureCell>,
+    pub(crate) bound_ips: Vec<IpAddr>,
+    pub(crate) tailscale_leg: Option<Arc<std::sync::Mutex<Option<SocketAddr>>>>,
+    /// Where yaran writes a password, a ban and the warning's dismissal. `None`
+    /// for a router with no config behind it, which then writes nothing.
+    pub(crate) config_path: Option<PathBuf>,
+    /// The session database. `None` keeps sessions in memory only.
+    pub(crate) sessions_db: Option<PathBuf>,
+    pub(crate) console: crate::console::Console,
+    pub(crate) engine: Option<crate::engine_actor::EngineHandle>,
+    /// Asks the running yaran to reload its config after yaran wrote to it.
+    pub(crate) reload: Arc<dyn Fn() + Send + Sync>,
+    /// Test seam: see [`crate::server::RouterParams::socket_opening_hook`].
+    pub(crate) opening_hook: Option<OpeningHook>,
+}
+
+/// A test seam awaited at a socket's opening check.
+pub type OpeningHook =
+    Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
+/// The auth layer's state for one serve.
+pub struct AuthState {
+    live: Arc<LiveAuth>,
+    exposure: Option<ExposureCell>,
+    /// The addresses on this machine's network interfaces, for the
+    /// own-address check; read at start and again on the reach clock.
+    interfaces: std::sync::RwLock<Arc<Vec<IpAddr>>>,
+    reach: Reach,
+    pub(crate) sessions: sessions::Sessions,
+    /// The process's admission state, shared by every serve over this
+    /// engine (see [`yaran_core::engine::Engine::serve_memory`]).
+    pub(crate) admission: Arc<admission::Admission>,
+    pub(crate) gate: Arc<gate::CheckGate>,
+    /// Bumped whenever something an open socket depends on changed: the
+    /// section, a session ended, an address was blocked.
+    revision: tokio::sync::watch::Sender<u64>,
+    /// The generation whose password was found below the minimums at its last
+    /// sign-in.
+    weak: std::sync::Mutex<Option<String>>,
+    proxy_warned: AtomicBool,
+    config_path: Option<PathBuf>,
+    reload: Arc<dyn Fn() + Send + Sync>,
+    pub(crate) speaker: warnings::Speaker,
+    /// See [`AuthSetup::opening_hook`].
+    pub(crate) opening_hook: Option<OpeningHook>,
+}
+
+impl std::fmt::Debug for AuthState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthState")
+            .field("live", &self.live)
+            .field("config_path", &self.config_path)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Everything the auth layer worked out about one request. Handlers read it
+/// from the request's extensions.
+#[derive(Debug)]
+pub(crate) struct Assessment {
+    pub(crate) snapshot: Arc<AuthSnapshot>,
+    pub(crate) facts: RequestFacts,
+    pub(crate) classification: Classification,
+    /// The port in the cookie's name.
+    pub(crate) cookie_port: u16,
+    pub(crate) blocked: bool,
+    /// Whether this request needs a session.
+    pub(crate) required: bool,
+    /// The valid session the request presented, if any.
+    pub(crate) session: Option<TokenDigest>,
+    /// Every session token the request presented in a cookie, valid or not:
+    /// what a sign-out revokes.
+    pub(crate) presented: Vec<TokenDigest>,
+    /// Every token the request presented as a bearer, valid or not: what a
+    /// command-line sign-out revokes.
+    pub(crate) bearer: Vec<TokenDigest>,
+}
+
+/// The [`Assessment`] of the request in hand, as an extension.
+#[derive(Clone, Debug)]
+pub(crate) struct RequestAuth(pub(crate) Arc<Assessment>);
+
+/// How a password that was right measures up against today's minimums.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PasswordStrength {
+    /// Below today's minimums.
+    Weak,
+    /// Meets them.
+    Sufficient,
+}
+
+/// What a password check came to.
+#[derive(Debug)]
+pub(crate) enum Verify {
+    /// Right. `generation` is the one it was checked against; `strength` says
+    /// how it measures up against today's minimums.
+    Right {
+        generation: String,
+        strength: PasswordStrength,
+    },
+    Wrong,
+    /// This failure blocked the client's address.
+    Blocked,
+    /// Too soon after a failure, or past the global limit; seconds to wait.
+    Wait(admission::Limited),
+    /// Every check slot and the queue are busy.
+    Busy,
+    NoPassword,
+    /// The password changed while this check ran, so its answer is about a
+    /// password that is no longer the one.
+    Stale,
+    Failed(String),
+}
+
+/// What [`AuthState::issue_session`] did.
+pub(crate) enum Issued {
+    Session(yaran_core::web_sessions::NewToken),
+    /// The address was blocked while the check ran.
+    Blocked,
+    /// The password changed while the check ran.
+    Stale,
+}
+
+impl AuthState {
+    /// Build the state and start its background work: loading the stored
+    /// sessions, writing their last use, following config changes, and the
+    /// no-password warning. Needs a tokio runtime context.
+    pub(crate) fn start(setup: AuthSetup) -> Arc<Self> {
+        let clock = sessions::system_clock();
+        Self::start_with_clock(setup, clock)
+    }
+
+    pub(crate) fn start_with_clock(setup: AuthSetup, clock: sessions::Clock) -> Arc<Self> {
+        let sessions = match &setup.sessions_db {
+            Some(_) => sessions::Sessions::new(clock),
+            None => sessions::Sessions::in_memory(clock),
+        };
+        let state = Arc::new(Self {
+            live: setup.live,
+            exposure: setup.exposure,
+            interfaces: std::sync::RwLock::new(Arc::new(own_interfaces())),
+            reach: Reach {
+                bound_ips: setup.bound_ips,
+                tailscale_leg: setup.tailscale_leg,
+            },
+            sessions,
+            admission: setup
+                .engine
+                .as_ref()
+                .map_or_else(Arc::default, crate::engine_actor::EngineHandle::admission),
+            gate: Arc::default(),
+            revision: tokio::sync::watch::Sender::new(0),
+            weak: std::sync::Mutex::new(None),
+            proxy_warned: AtomicBool::new(false),
+            config_path: setup.config_path,
+            reload: setup.reload,
+            speaker: warnings::Speaker::new(setup.console, setup.engine),
+            opening_hook: setup.opening_hook,
+        });
+        if let Some(db) = setup.sessions_db {
+            let snapshot = state.snapshot();
+            let sessions = state.sessions.clone();
+            tokio::spawn(async move {
+                sessions
+                    .load(
+                        db,
+                        snapshot.generation.clone(),
+                        idle_windows(&snapshot.config),
+                    )
+                    .await;
+            });
+        }
+        tokio::spawn(maintain(Arc::clone(&state)));
+        state
+    }
+
+    /// The section as it is now.
+    pub fn snapshot(&self) -> Arc<AuthSnapshot> {
+        self.live.snapshot()
+    }
+
+    pub(crate) fn exposure(&self) -> Exposure {
+        self.exposure.as_ref().map_or_default(ExposureCell::get)
+    }
+
+    /// This machine's interface addresses as last read.
+    fn interfaces(&self) -> Arc<Vec<IpAddr>> {
+        Arc::clone(
+            &self
+                .interfaces
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Read the interface addresses again; a change re-judges open sockets.
+    async fn refresh_interfaces(&self) {
+        let Ok(fresh) = tokio::task::spawn_blocking(own_interfaces).await else {
+            return;
+        };
+        let changed = {
+            let mut slot = self
+                .interfaces
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let changed = **slot != fresh;
+            if changed {
+                *slot = Arc::new(fresh);
+            }
+            changed
+        };
+        if changed {
+            self.bump();
+        }
+    }
+
+    pub(crate) fn subscribe_exposure(&self) -> Option<tokio::sync::watch::Receiver<Exposure>> {
+        self.exposure.as_ref().map(ExposureCell::subscribe)
+    }
+
+    pub(crate) fn subscribe_revision(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision.subscribe()
+    }
+
+    fn bump(&self) {
+        self.revision.send_modify(|n| *n += 1);
+    }
+
+    /// Work out who a request is and whether it may pass. Refreshes a valid
+    /// session's last use (any request counts as activity).
+    pub(crate) async fn assess(&self, facts: RequestFacts, headers: &HeaderMap) -> Assessment {
+        let snapshot = self.snapshot();
+        let exposure = self.exposure();
+        let interfaces = self.interfaces();
+        let classification = provenance::classify(&facts, &exposure, &interfaces);
+        let blocked = self.admission.is_blocked(
+            &snapshot.blocks,
+            &classification,
+            &own_addresses(&exposure, &interfaces, facts.arrival),
+        );
+        let cookie_port = facts
+            .arrival
+            .and_then(Arrival::local)
+            .map_or(0, |local| local.port());
+        // The control socket carries no cookie: its client is this machine's
+        // own user, who never needs a session.
+        let over_socket = facts.arrival.is_some_and(Arrival::is_control_socket);
+        let mut session = None;
+        let (presented, bearer): (Vec<TokenDigest>, Vec<TokenDigest>) =
+            if snapshot.has_password() && !over_socket {
+                let digests = |values: Vec<String>| -> Vec<TokenDigest> {
+                    values
+                        .iter()
+                        .filter_map(|value| yaran_core::web_sessions::digest_of(value))
+                        .collect()
+                };
+                (
+                    digests(cookie::read_all(headers, cookie_port)),
+                    digests(bearer::read_all(headers)),
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
+        if !presented.is_empty() || !bearer.is_empty() {
+            self.sessions.ready().await;
+            // Checks every credential rather than stopping at the first valid
+            // one, because a check also refreshes it; the first valid one wins.
+            let idle = idle_windows(&snapshot.config);
+            session = presented
+                .iter()
+                .chain(&bearer)
+                .copied()
+                .filter(|digest| {
+                    self.sessions.check(
+                        digest,
+                        &snapshot.generation,
+                        idle,
+                        sessions::LastUse::Refresh,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .first()
+                .copied();
+        }
+        let required = snapshot.has_password()
+            && !over_socket
+            && required_by(snapshot.config.require, classification.class);
+        Assessment {
+            snapshot,
+            facts,
+            classification,
+            cookie_port,
+            blocked,
+            required,
+            session,
+            presented,
+            bearer,
+        }
+    }
+
+    /// Whether an open socket must close now, and with which code: 4403 when
+    /// its client is blocked, 4401 when it needs a session it no longer has.
+    pub(crate) fn socket_verdict(
+        &self,
+        facts: &RequestFacts,
+        session: Option<&TokenDigest>,
+    ) -> Option<u16> {
+        let snapshot = self.snapshot();
+        let exposure = self.exposure();
+        let interfaces = self.interfaces();
+        let classification = provenance::classify(facts, &exposure, &interfaces);
+        if self.admission.is_blocked(
+            &snapshot.blocks,
+            &classification,
+            &own_addresses(&exposure, &interfaces, facts.arrival),
+        ) {
+            return Some(socket::CLOSE_BLOCKED);
+        }
+        // As in `assess`: the control socket's client is this machine's own
+        // user, who never holds a session, so none can end.
+        if facts.arrival.is_some_and(Arrival::is_control_socket) {
+            return None;
+        }
+        if !snapshot.has_password() || !required_by(snapshot.config.require, classification.class) {
+            return None;
+        }
+        if snapshot.broken.is_some() {
+            return Some(socket::CLOSE_SIGNED_OUT);
+        }
+        let valid = session.is_some_and(|digest| {
+            self.sessions.check(
+                digest,
+                &snapshot.generation,
+                idle_windows(&snapshot.config),
+                sessions::LastUse::Keep,
+            )
+        });
+        (!valid).then_some(socket::CLOSE_SIGNED_OUT)
+    }
+
+    /// Say once per run that a forwarded request arrived through a proxy yaran
+    /// cannot vouch for, while `require` would let such a proxy hide outsiders.
+    pub(crate) fn note_proxy(&self, assessment: &Assessment) {
+        if assessment.classification.unvouched_proxy
+            && assessment.snapshot.config.require != AuthRequire::Everywhere
+            && !self.proxy_warned.swap(true, Ordering::SeqCst)
+        {
+            self.speaker.proxy_warning();
+        }
+    }
+
+    /// Whether yaran knows it is reachable from beyond this machine: a listener
+    /// beyond loopback, or a Funnel or forward it has seen.
+    pub(crate) fn known_reachable(&self) -> bool {
+        !self.reach.beyond_loopback().is_empty() || self.exposure().known_published()
+    }
+
+    /// The `GET /api/v1/auth/status` document for an assessed request.
+    pub(crate) fn status(&self, a: &Assessment) -> routes::StatusDoc {
+        let config = &a.snapshot.config;
+        let password_set = a.snapshot.has_password();
+        let signed_in = password_set && a.session.is_some();
+        let class = a.classification.class;
+        let trusted_reader = matches!(class, ClientClass::ThisMachine | ClientClass::Tailnet);
+        routes::StatusDoc {
+            password_set,
+            required_here: a.required,
+            signed_in,
+            client_class: class.as_str(),
+            // `cookie_secure = "always"` is the owner saying browsers reach yaran
+            // over HTTPS through something yaran cannot see into, so the
+            // plain-HTTP warning would be false there.
+            transport_encrypted: a.classification.transport_encrypted
+                || config.cookie_secure == yaran_core::config::CookieSecure::Always,
+            no_auth_warning: !password_set
+                && !config.disable_no_auth_warning
+                && (self.known_reachable() || class != ClientClass::ThisMachine),
+            weak_password: password_set
+                && (signed_in || !a.required)
+                && self
+                    .weak
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_deref()
+                    == Some(a.snapshot.generation.as_str()),
+            can_set_first_password: !password_set && trusted_reader,
+            auth_broken: a.snapshot.broken.as_ref().map(|detail| {
+                if trusted_reader {
+                    routes::BrokenDoc::Reason(detail.clone())
+                } else {
+                    routes::BrokenDoc::Broken(true)
+                }
+            }),
+            minimum_password_length: config.minimum_password_length,
+            minimum_password_score: config.minimum_password_score,
+            // Set whenever this device reached yaran over loopback and yaran could
+            // not take it for this machine: the browser shows it where it says
+            // why this device signs in, or why the first password cannot be set
+            // from here. Setting names are in backticks for the browser's chips.
+            required_reason: a.classification.loopback_distrusted.map(|cause| {
+                format!(
+                    "{}, so yaran treats this device as the network.",
+                    capitalize(cause)
+                )
+            }),
+            // Filled in by the route, which holds the engine.
+            instance: None,
+        }
+    }
+
+    /// Check `password` against the configured hash, through the client's
+    /// slow-down, the global limit and the check gate, counting a wrong one
+    /// (and blocking the address when it reaches the limit). Also measures a
+    /// right one against today's minimums.
+    ///
+    /// Once a check slot is taken, the check and its accounting run in a task
+    /// of their own that outlives the request (decided, after review): the
+    /// slot is held by the blocking work until Argon2 finishes, and a wrong
+    /// guess is counted (and may block) even when the client hung up first, so
+    /// hanging up neither frees a slot early nor makes a guess free.
+    pub(crate) async fn verify(self: &Arc<Self>, c: &Classification, password: Password) -> Verify {
+        let snapshot = self.snapshot();
+        let Some(hash) = snapshot.config.password_hash().map(str::to_string) else {
+            return Verify::NoPassword;
+        };
+        // Reserved at once, so an attempt sent beside this one waits as if
+        // this one had failed; settled when the check is accounted for (or
+        // dropped with the request, if it never got a slot).
+        let reservation = match self
+            .admission
+            .check_attempt(&snapshot.config, c, Instant::now())
+        {
+            Ok(reservation) => reservation,
+            Err(wait) => return Verify::Wait(wait),
+        };
+        let Ok(permit) = self
+            .gate
+            .enter(
+                snapshot.config.max_concurrent_password_checks,
+                snapshot.config.password_check_queue,
+            )
+            .await
+        else {
+            return Verify::Busy;
+        };
+        let state = Arc::clone(self);
+        let c = c.clone();
+        let check = tokio::spawn(async move {
+            let policy = snapshot.config.password_policy();
+            let checked = tokio::task::spawn_blocking(move || {
+                let outcome = yaran_core::auth::verify_password(&password, &hash);
+                let weak = matches!(outcome, Ok(true)) && {
+                    let words = yaran_core::auth::guess_words();
+                    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+                    !yaran_core::auth::check_minimums(&password, &policy, &words).passes()
+                };
+                let strength = if weak {
+                    PasswordStrength::Weak
+                } else {
+                    PasswordStrength::Sufficient
+                };
+                // Released here, as the Argon2 work ends, whatever became of
+                // the request.
+                drop(permit);
+                (outcome, strength)
+            })
+            .await;
+            state.settle(&snapshot, &c, checked, reservation).await
+        });
+        match check.await {
+            Ok(verdict) => verdict,
+            Err(error) => Verify::Failed(format!("the password check stopped: {error}")),
+        }
+    }
+
+    /// Account for one finished check: count a wrong guess (blocking or
+    /// reporting at the limit) and forget the client's failures after a right
+    /// one.
+    async fn settle(
+        &self,
+        snapshot: &AuthSnapshot,
+        c: &Classification,
+        checked: Result<
+            (Result<bool, yaran_core::auth::AuthError>, PasswordStrength),
+            tokio::task::JoinError,
+        >,
+        reservation: admission::Reservation,
+    ) -> Verify {
+        // The reservation is given back only once the outcome is counted, so
+        // there is no moment when the check is neither pending nor counted.
+        let _reservation = reservation;
+        match checked {
+            Ok((Ok(true), strength)) => {
+                if self.snapshot().generation != snapshot.generation {
+                    return Verify::Stale;
+                }
+                self.admission.record_success(c);
+                Verify::Right {
+                    generation: snapshot.generation.clone(),
+                    strength,
+                }
+            }
+            Ok((Ok(false), _)) => {
+                if self.snapshot().generation != snapshot.generation {
+                    return Verify::Stale;
+                }
+                match self
+                    .admission
+                    .record_failure(&snapshot.config, c, Instant::now())
+                {
+                    admission::Strike::Block(ban) => {
+                        self.block(ban).await;
+                        Verify::Blocked
+                    }
+                    admission::Strike::UnverifiedLimit(ip) => {
+                        self.speaker.unverified_limit(
+                            ip,
+                            warnings::Unverified::of(c),
+                            snapshot.config.max_failed_logins,
+                            &self.config_path_text(),
+                        );
+                        Verify::Wrong
+                    }
+                    admission::Strike::Counted => Verify::Wrong,
+                }
+            }
+            Ok((Err(error), _)) => Verify::Failed(error.to_string()),
+            Err(error) => Verify::Failed(format!("the password check stopped: {error}")),
+        }
+    }
+
+    /// The config file's path for a log line, or its name when this serve has
+    /// none.
+    fn config_path_text(&self) -> String {
+        self.config_path
+            .as_ref()
+            .map_or_else(|| "config.toml".to_string(), |p| p.display().to_string())
+    }
+
+    /// Note how the password that just signed in measures up, saying so once
+    /// per password when it is below today's minimums.
+    pub(crate) fn note_strength(&self, generation: &str, strength: PasswordStrength) {
+        let mut slot = self
+            .weak
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let was = slot.as_deref() == Some(generation);
+        if strength == PasswordStrength::Weak {
+            *slot = Some(generation.to_string());
+            if !was {
+                drop(slot);
+                self.speaker.weak_password();
+            }
+        } else if was {
+            *slot = None;
+        }
+    }
+
+    /// Block `ban`: append its entry to `blocked_addresses` through the locked
+    /// config mutation, apply it at once, and say where to lift it. A write
+    /// that cannot happen holds the ban in memory for this run and says that.
+    pub(crate) async fn block(&self, ban: admission::Ban) {
+        let snapshot = self.snapshot();
+        let max = snapshot.config.max_blocked_addresses;
+        let failures = snapshot.config.max_failed_logins;
+        // Applies before the write is even attempted: the next request from
+        // this address is refused whatever the write does.
+        self.admission.ban_for_this_run(&ban);
+        self.bump();
+        let outcome = match self.config_path.clone() {
+            Some(path) => {
+                let (ip, entry) = (ban.ip, ban.entry.clone());
+                tokio::task::spawn_blocking(move || {
+                    yaran_core::config_keys::append_blocked_entry(&path, ip, &entry, max)
+                        .map(|outcome| (outcome, yaran_core::config_write::take_last_write()))
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("the write stopped: {e}"))
+                .and_then(|written| written)
+            }
+            None => Err(anyhow::anyhow!("this server has no config file")),
+        };
+        let path = self.config_path_text();
+        match outcome {
+            Ok((
+                yaran_core::config_keys::BanWrite::Written
+                | yaran_core::config_keys::BanWrite::AlreadyBlocked,
+                written,
+            )) => {
+                // The file holds it now, so the file is where it lives: the
+                // owner lifting it there (and reloading) lifts it here too.
+                // The same change the file got: the entry, with the single
+                // addresses a range covers folded into it.
+                let entry = ban.entry.clone();
+                self.live.update(
+                    move |config| {
+                        if entry.contains('/')
+                            && let Ok(range) = yaran_core::config::AddressBlock::parse(&entry)
+                        {
+                            config.blocked_addresses.retain(|existing| {
+                                existing
+                                    .parse::<IpAddr>()
+                                    .map_or(true, |single| !range.contains(single))
+                            });
+                        }
+                        if !config.blocked_addresses.contains(&entry) {
+                            config.blocked_addresses.push(entry.clone());
+                        }
+                    },
+                    written,
+                );
+                self.admission.lift_ban_for_this_run(&ban);
+                (self.reload)();
+                self.speaker
+                    .blocked(&ban.entry, failures, &path, &warnings::BanKept::InConfig);
+            }
+            Ok((yaran_core::config_keys::BanWrite::AtLimit, _)) => {
+                self.speaker.blocked(
+                    &ban.entry,
+                    failures,
+                    &path,
+                    &warnings::BanKept::ListFull { max },
+                );
+            }
+            Err(error) => {
+                self.speaker.blocked(
+                    &ban.entry,
+                    failures,
+                    &path,
+                    &warnings::BanKept::WriteFailed {
+                        error: format!("{error:#}"),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Whether the request in `facts` is refused by the blocklist right now,
+    /// judged afresh rather than from its assessment.
+    fn blocked_now(&self, facts: &RequestFacts) -> bool {
+        let snapshot = self.snapshot();
+        let exposure = self.exposure();
+        let interfaces = self.interfaces();
+        let classification = provenance::classify(facts, &exposure, &interfaces);
+        self.admission.is_blocked(
+            &snapshot.blocks,
+            &classification,
+            &own_addresses(&exposure, &interfaces, facts.arrival),
+        )
+    }
+
+    /// Start a session for a sign-in whose password was right under
+    /// `generation`, unless admission changed while its check ran (decided,
+    /// after review): the address was blocked meanwhile, or the password
+    /// changed. Judged when the session is issued and again once it exists,
+    /// so a block landing in between still takes the session back.
+    pub(crate) async fn issue_session(
+        &self,
+        facts: &RequestFacts,
+        generation: &str,
+        kind: SessionKind,
+    ) -> Result<Issued, anyhow::Error> {
+        let refused = |state: &Self| {
+            if state.snapshot().generation != generation {
+                Some(Issued::Stale)
+            } else if state.blocked_now(facts) {
+                Some(Issued::Blocked)
+            } else {
+                None
+            }
+        };
+        // The stored sessions are loaded first, as `assess` waits for them, so
+        // the new session is written to the table rather than issued before
+        // it is open.
+        self.sessions.ready().await;
+        if let Some(refused) = refused(self) {
+            return Ok(refused);
+        }
+        let token = self.sessions.issue(generation, kind).await?;
+        if let Some(refused) = refused(self) {
+            self.end_session(token.digest).await;
+            return Ok(refused);
+        }
+        Ok(Issued::Session(token))
+    }
+
+    /// A session ended (sign-out): revoke it and close the sockets that held it.
+    pub(crate) async fn end_session(&self, digest: TokenDigest) {
+        self.sessions.revoke(digest).await;
+        self.bump();
+    }
+
+    /// Where yaran writes its config, when it has one.
+    pub(crate) fn config_path(&self) -> Option<&PathBuf> {
+        self.config_path.as_ref()
+    }
+
+    /// Adopt a change yaran just wrote to `config.toml` and ask for the reload
+    /// that brings the rest of the running config along.
+    pub(crate) fn applied(
+        &self,
+        change: impl Fn(&mut ServerAuthConfig) + Send + Sync + 'static,
+        written: Option<yaran_core::config_write::FileWrite>,
+    ) {
+        self.live.update(change, written);
+        (self.reload)();
+    }
+}
+
+/// `text` with its first character in upper case.
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// How long each kind of session may sit unused: `session_idle_seconds` for a
+/// browser's and `cli_token_idle_days` for the command line's, in milliseconds.
+pub(crate) fn idle_windows(config: &ServerAuthConfig) -> sessions::Idle {
+    sessions::Idle {
+        browser_ms: i64::from(config.session_idle_seconds) * 1000,
+        cli_ms: i64::from(config.cli_token_idle_days) * 86_400_000,
+    }
+}
+
+/// How often the sessions' last use is written: a third of the idle timeout,
+/// between one and fifteen seconds.
+fn flush_period(config: &ServerAuthConfig) -> std::time::Duration {
+    std::time::Duration::from_millis(
+        u64::try_from((idle_windows(config).browser_ms / 3).clamp(1_000, 15_000))
+            .expect("the period is clamped to between one and fifteen seconds"),
+    )
+}
+
+/// How often the reach behind the no-password alarm is looked at.
+/// Every address of this machine's own: its interfaces', the Tailscale
+/// addresses the current look reported, and the one a connection reached.
+fn own_addresses(
+    exposure: &Exposure,
+    interfaces: &[IpAddr],
+    arrival: Option<Arrival>,
+) -> Vec<IpAddr> {
+    let mut own = interfaces.to_vec();
+    own.extend(
+        arrival
+            .and_then(Arrival::local)
+            .map(|local| yaran_core::config_auth::canonical(local.ip())),
+    );
+    if let Some(facts) = &exposure.identity {
+        own.extend(
+            facts
+                .own_ips
+                .iter()
+                .map(|ip| yaran_core::config_auth::canonical(*ip)),
+        );
+    }
+    own
+}
+
+/// This machine's own interface addresses, canonical and sorted so two reads
+/// compare equal when nothing changed.
+fn own_interfaces() -> Vec<IpAddr> {
+    let mut addrs: Vec<IpAddr> = yaran_core::tailscale::interfaces()
+        .into_iter()
+        .map(|(_, ip)| yaran_core::config_auth::canonical(ip))
+        .collect();
+    addrs.sort();
+    addrs.dedup();
+    addrs
+}
+
+const REACH_LOOK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The auth layer's background work, for the life of the serve's runtime.
+async fn maintain(state: Arc<AuthState>) {
+    let mut config = state.live.subscribe();
+    let mut exposure = state.subscribe_exposure();
+    let mut generation = state.snapshot().generation.clone();
+    let mut warning = warnings::ExposedWarning::default();
+    warning.check(&state);
+    // Each entry covering loopback or an own address is said once per run,
+    // at load, at the reload that adds it, or when the address appears.
+    let mut own_said: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut say_own_entries = |state: &AuthState| {
+        let own = own_addresses(&state.exposure(), &state.interfaces(), None);
+        for (entry, ip) in warnings::own_entries(&state.snapshot().config.blocked_addresses, &own) {
+            if own_said.insert(entry.clone()) {
+                state.speaker.own_entry(&entry, ip);
+            }
+        }
+    };
+    say_own_entries(&state);
+    // Said when a raw forward appears (the first look at start included), and
+    // withdrawn when it goes.
+    let mut forward_said = false;
+    let mut say_forward = |state: &AuthState| {
+        let known = state.exposure().forward_known();
+        if known && !forward_said {
+            state.speaker.forward_known();
+        } else if !known && forward_said {
+            state.speaker.forward_gone();
+        }
+        forward_said = known;
+    };
+    say_forward(&state);
+    // The Tailscale leg comes and goes with no event of its own to wait on, so
+    // the reach behind the no-password alarm is looked at on a short clock.
+    let mut reach = tokio::time::interval(REACH_LOOK);
+    reach.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Its own clock rather than a sleep made afresh each turn: the other arms
+    // fire every couple of seconds, and a fresh sleep would never finish. A
+    // config change that moves the period starts it again.
+    let mut period = flush_period(&state.snapshot().config);
+    let mut flush = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            changed = config.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                let snapshot = state.snapshot();
+                if snapshot.generation != generation {
+                    generation.clone_from(&snapshot.generation);
+                    state.sessions.retain_generation(&generation);
+                }
+                let next = flush_period(&snapshot.config);
+                if next != period {
+                    period = next;
+                    flush = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                    flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                }
+                state.bump();
+                warning.check(&state);
+                say_own_entries(&state);
+            }
+            changed = async {
+                match exposure.as_mut() {
+                    Some(rx) => rx.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if changed.is_err() {
+                    exposure = None;
+                }
+                warning.check(&state);
+                say_forward(&state);
+            }
+            _ = flush.tick() => {
+                state.sessions.flush(idle_windows(&state.snapshot().config)).await;
+            }
+            _ = reach.tick() => {
+                warning.check(&state);
+                state.refresh_interfaces().await;
+                say_own_entries(&state);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_means_exactly_what_its_comment_says() {
+        use ClientClass::*;
+        let table = [
+            (AuthRequire::Network, [false, false, true, true]),
+            (AuthRequire::Tailnet, [false, true, true, true]),
+            (AuthRequire::Everywhere, [true, true, true, true]),
+        ];
+        for (require, wants) in table {
+            for (class, want) in [ThisMachine, Tailnet, Network, Internet]
+                .into_iter()
+                .zip(wants)
+            {
+                assert_eq!(required_by(require, class), want, "{require:?} {class:?}");
+            }
+        }
+    }
+
+    /// A misconfigured section's reason goes to this machine and the tailnet
+    /// only; anyone else is told the section is broken and nothing more, in
+    /// the status and in the refusal of a protected request alike.
+    #[tokio::test]
+    async fn only_this_machine_and_the_tailnet_are_told_why_the_section_is_broken() {
+        let broken = ServerAuthConfig {
+            session_idle_seconds: 0,
+            ..ServerAuthConfig::default()
+        };
+        let state = AuthState::start(AuthSetup {
+            live: Arc::new(LiveAuth::new(&broken)),
+            exposure: None,
+            bound_ips: Vec::new(),
+            tailscale_leg: None,
+            config_path: None,
+            sessions_db: None,
+            console: crate::console::Console::noop(),
+            engine: None,
+            reload: Arc::new(|| {}),
+            opening_hook: None,
+        });
+        let reason = state
+            .snapshot()
+            .broken
+            .clone()
+            .expect("the section is broken");
+        let status_of = |peer: &str, local: &str| {
+            let facts = RequestFacts::of(
+                Some(Arrival::Tcp {
+                    peer: peer.parse().unwrap(),
+                    local: local.parse().unwrap(),
+                }),
+                &HeaderMap::new(),
+            );
+            let state = Arc::clone(&state);
+            async move {
+                let a = state.assess(facts, &HeaderMap::new()).await;
+                let body = middleware::broken_body(
+                    a.snapshot.broken.as_deref().unwrap_or_default(),
+                    &a.classification,
+                );
+                (serde_json::to_value(state.status(&a)).unwrap(), body)
+            }
+        };
+        let (mine, mine_refusal) = status_of("127.0.0.1:5000", "127.0.0.1:3890").await;
+        assert_eq!(mine["auth_broken"], serde_json::json!(reason));
+        assert_eq!(mine_refusal["detail"], serde_json::json!(reason));
+        let (theirs, theirs_refusal) = status_of("198.51.100.7:5000", "192.0.2.10:3890").await;
+        assert_eq!(theirs["auth_broken"], serde_json::json!(true));
+        assert!(theirs_refusal.get("detail").is_none(), "{theirs_refusal}");
+        assert_eq!(theirs_refusal["error"], "auth_config_invalid");
+    }
+
+    #[test]
+    fn the_live_section_reports_a_change_only_when_there_is_one() {
+        let live = LiveAuth::default();
+        let rx = live.subscribe();
+        assert!(!live.store(&ServerAuthConfig::default(), None));
+        assert!(!rx.has_changed().unwrap());
+        live.update(
+            |config| config.blocked_addresses.push("198.51.100.1".into()),
+            None,
+        );
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(live.snapshot().blocks.len(), 1);
+    }
+
+    fn ban(entry: &'static str) -> impl Fn(&mut ServerAuthConfig) + Send + Sync + 'static {
+        move |config: &mut ServerAuthConfig| {
+            if !config.blocked_addresses.iter().any(|e| e == entry) {
+                config.blocked_addresses.push(entry.to_string());
+            }
+        }
+    }
+
+    /// A write from file text `before` to `after`, as its file identity.
+    fn wrote(before: &str, after: &str) -> yaran_core::config_write::FileWrite {
+        yaran_core::config_write::FileWrite {
+            before: yaran_core::config_write::read_token(Some(before)),
+            after: yaran_core::config_write::read_token(Some(after)),
+        }
+    }
+
+    fn with_bans(bans: &[&str]) -> ServerAuthConfig {
+        ServerAuthConfig {
+            blocked_addresses: bans.iter().map(ToString::to_string).collect(),
+            ..ServerAuthConfig::default()
+        }
+    }
+
+    /// Staleness is the file's identity, never a comparison of values: a
+    /// reload that read the very text a write replaced gets the write applied
+    /// over it, and any other text (the write's own, or the owner's later
+    /// edit) retires the write for good.
+    #[test]
+    fn a_reload_read_before_a_write_never_drops_it() {
+        let live = LiveAuth::default();
+        live.update(ban("198.51.100.1"), Some(wrote("v0", "v1")));
+        // Read before the write: the ban stands over it, edits and all.
+        let edited = ServerAuthConfig {
+            disable_no_auth_warning: true,
+            ..ServerAuthConfig::default()
+        };
+        live.store(&edited, Some("v0"));
+        let now = live.snapshot();
+        assert!(now.config.disable_no_auth_warning);
+        assert_eq!(now.config.blocked_addresses, ["198.51.100.1"]);
+        // Read after it: retired. The owner removing the ban by hand, with a
+        // list equal to the one before the ban, lifts it.
+        live.store(&with_bans(&["198.51.100.1"]), Some("v1"));
+        live.store(&with_bans(&[]), Some("v2 the owner's edit"));
+        assert_eq!(
+            live.snapshot().config.blocked_addresses,
+            Vec::<String>::new()
+        );
+        // Even when the reload of the write's own text never landed.
+        let live = LiveAuth::default();
+        live.update(ban("198.51.100.1"), Some(wrote("v0", "v1")));
+        live.store(&with_bans(&[]), Some("v2 the owner's edit"));
+        assert_eq!(
+            live.snapshot().config.blocked_addresses,
+            Vec::<String>::new()
+        );
+        live.store(&with_bans(&[]), Some("v0"));
+        assert!(
+            live.snapshot().config.blocked_addresses.is_empty(),
+            "retired for good"
+        );
+    }
+
+    #[test]
+    fn writes_in_a_row_survive_a_read_older_than_them_all() {
+        let live = LiveAuth::default();
+        live.update(ban("198.51.100.2"), Some(wrote("v0", "v1")));
+        live.update(ban("198.51.100.3"), Some(wrote("v1", "v2")));
+        live.store(&with_bans(&[]), Some("v0"));
+        assert_eq!(
+            live.snapshot().config.blocked_addresses,
+            ["198.51.100.2", "198.51.100.3"]
+        );
+        // A read between them carries the first already; the second applies.
+        live.store(&with_bans(&["198.51.100.2"]), Some("v1"));
+        assert_eq!(
+            live.snapshot().config.blocked_addresses,
+            ["198.51.100.2", "198.51.100.3"]
+        );
+        live.store(&with_bans(&["198.51.100.2", "198.51.100.3"]), Some("v2"));
+        live.store(&with_bans(&[]), Some("v3"));
+        assert_eq!(
+            live.snapshot().config.blocked_addresses,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_password_written_after_ours_stands() {
+        let live = LiveAuth::default();
+        live.update(
+            |config| config.password_hash = "ours".into(),
+            Some(wrote("v0", "v1")),
+        );
+        live.store(
+            &ServerAuthConfig {
+                password_hash: "theirs".into(),
+                ..ServerAuthConfig::default()
+            },
+            Some("v2"),
+        );
+        assert_eq!(live.snapshot().config.password_hash, "theirs");
+    }
+
+    /// The read, the change and the store of an update are one step: a store
+    /// racing it (forced into the window by the hook) cannot interleave, and
+    /// a reload that read the file before the write cannot drop it.
+    #[test]
+    fn an_update_and_a_racing_store_cannot_interleave() {
+        let live = Arc::new(LiveAuth::default());
+        let (inside_tx, inside_rx) = std::sync::mpsc::channel::<()>();
+        *live.update_hook.lock().unwrap() = Some(Box::new(move || {
+            let _ = inside_tx.send(());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }));
+        let racer = {
+            let live = Arc::clone(&live);
+            std::thread::spawn(move || {
+                inside_rx.recv().unwrap();
+                live.store(
+                    &ServerAuthConfig {
+                        disable_no_auth_warning: true,
+                        ..ServerAuthConfig::default()
+                    },
+                    Some("v0"),
+                );
+            })
+        };
+        live.update(ban("198.51.100.9"), Some(wrote("v0", "v1")));
+        racer.join().unwrap();
+        let now = live.snapshot();
+        assert_eq!(now.config.blocked_addresses, ["198.51.100.9"]);
+        assert!(
+            now.config.disable_no_auth_warning,
+            "the reload's edit stands"
+        );
+    }
+
+    /// The stored sessions' last use is written on its own clock even while
+    /// the reach look ticks more often: a session kept alive by an open socket
+    /// must reach the database, or a restart signs its tab out.
+    #[tokio::test(start_paused = true)]
+    async fn the_maintenance_loop_writes_leased_sessions_on_its_own_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.sqlite3");
+        let config = ServerAuthConfig {
+            session_idle_seconds: 9,
+            ..ServerAuthConfig::default()
+        };
+        let state = AuthState::start(AuthSetup {
+            live: Arc::new(LiveAuth::new(&config)),
+            exposure: None,
+            bound_ips: Vec::new(),
+            tailscale_leg: None,
+            config_path: None,
+            sessions_db: Some(db.clone()),
+            console: crate::console::Console::noop(),
+            engine: None,
+            reload: Arc::new(|| {}),
+            opening_hook: None,
+        });
+        state.sessions.ready().await;
+        let token = state
+            .sessions
+            .issue("", SessionKind::Browser)
+            .await
+            .unwrap();
+        let _lease = state.sessions.lease(token.digest).unwrap();
+        let stored = || {
+            yaran_core::web_sessions::WebSessionStore::open(&db)
+                .unwrap()
+                .load()
+                .unwrap()[0]
+                .last_seen_ms
+        };
+        let first = stored();
+        // Wall time must move for the written last use to; the paused tokio
+        // clock moves the loop's timers.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        for _ in 0..8 {
+            tokio::time::advance(std::time::Duration::from_millis(500)).await;
+            tokio::task::yield_now().await;
+        }
+        // Let the blocking write land.
+        for _ in 0..50 {
+            if stored() > first {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            stored() > first,
+            "the leased session's last use was written"
+        );
+    }
+
+    #[test]
+    fn the_flush_follows_the_idle_timeout_within_its_bounds() {
+        let at = |seconds| {
+            flush_period(&ServerAuthConfig {
+                session_idle_seconds: seconds,
+                ..ServerAuthConfig::default()
+            })
+        };
+        assert_eq!(at(1).as_millis(), 1_000);
+        assert_eq!(at(9).as_millis(), 3_000);
+        assert_eq!(at(3600).as_millis(), 15_000);
+    }
+
+    /// A request carrying a cookie and a bearer token together keeps both
+    /// sessions alive, not only the one that identifies it.
+    #[tokio::test]
+    async fn a_cookie_and_a_bearer_presented_together_both_stay_alive() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let hash = yaran_core::auth::hash_password(&yaran_core::auth::Password::new(
+            "orbit velvet quarry lantern cobalt".to_string(),
+        ))
+        .unwrap();
+        let config = ServerAuthConfig {
+            password_hash: hash,
+            session_idle_seconds: 10 * 86_400,
+            cli_token_idle_days: 1,
+            ..ServerAuthConfig::default()
+        };
+        let now = Arc::new(AtomicI64::new(1_000_000));
+        let reads = Arc::clone(&now);
+        let state = AuthState::start_with_clock(
+            AuthSetup {
+                live: Arc::new(LiveAuth::new(&config)),
+                exposure: None,
+                bound_ips: Vec::new(),
+                tailscale_leg: None,
+                config_path: None,
+                sessions_db: None,
+                console: crate::console::Console::noop(),
+                engine: None,
+                reload: Arc::new(|| {}),
+                opening_hook: None,
+            },
+            Arc::new(move || reads.load(Ordering::SeqCst)),
+        );
+        let generation = state.snapshot().generation.clone();
+        let browser = state
+            .sessions
+            .issue(&generation, SessionKind::Browser)
+            .await
+            .unwrap();
+        let cli = state
+            .sessions
+            .issue(&generation, SessionKind::Cli)
+            .await
+            .unwrap();
+        let both = |headers: &mut HeaderMap| {
+            headers.insert(
+                "cookie",
+                format!("yaran_session_0={}", browser.cookie_value)
+                    .parse()
+                    .unwrap(),
+            );
+            headers.insert(
+                "authorization",
+                format!("Bearer {}", cli.cookie_value).parse().unwrap(),
+            );
+        };
+        // Thirty-six hours, twelve at a time, each request carrying both.
+        for _ in 0..3 {
+            now.fetch_add(12 * 3_600_000, Ordering::SeqCst);
+            let mut headers = HeaderMap::new();
+            both(&mut headers);
+            let facts = RequestFacts::of(None, &headers);
+            assert!(state.assess(facts, &headers).await.session.is_some());
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", cli.cookie_value).parse().unwrap(),
+        );
+        let facts = RequestFacts::of(None, &headers);
+        assert!(
+            state.assess(facts, &headers).await.session.is_some(),
+            "the bearer was presented every twelve hours, so it is not a day idle"
+        );
+    }
+}

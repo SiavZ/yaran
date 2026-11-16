@@ -3,14 +3,14 @@
 // it costs no JavaScript; every rule that hides a panel is an override, so a
 // browser without `:has()` shows a panel rather than blanking.
 //
-// The web panel is the dux web UI's own React components rendered to static HTML
+// The web panel is the yaran web UI's own React components rendered to static HTML
 // at build time (see `src/figure/`), embedded from /figure/web-ui in an iframe.
 // The phone slot is an optional real capture: `publicPng` returns null when
-// public/dux-web-phone.png is absent and the whole block is skipped. PNG only,
+// public/yaran-web-phone.png is absent and the whole block is skipped. PNG only,
 // because the size is read from the PNG header.
 import { publicPng } from "../lib/public-image";
 
-const phone = publicPng("dux-web-phone");
+const phone = publicPng("yaran-web-phone");
 
 // The iframe's logical viewport: it is laid out at exactly this size and scaled
 // down in CSS, so the app always renders its desktop layout however narrow the
@@ -42,7 +42,7 @@ const tab =
         Three panes. <span class="text-[color:var(--color-accent)]">Unlimited</span> agents.
       </h2>
       <p class="mt-4 text-[color:var(--color-muted)] leading-relaxed">
-        Most AI coding tools give you one agent in one directory. dux gives you unlimited agents across unlimited worktrees, all visible at once. Spawn five agents on five branches and let them work in parallel.
+        Most AI coding tools give you one agent in one directory. yaran gives you unlimited agents across unlimited worktrees, all visible at once. Spawn five agents on five branches and let them work in parallel.
       </p>
       <p class="mt-4 text-[color:var(--color-muted)] leading-relaxed">
         Two front ends draw that layout: a terminal UI and a web UI. Both are first
@@ -51,8 +51,8 @@ const tab =
         the same agent in the other. Flip the figure below between them.
       </p>
       <p class="mt-4 text-[color:var(--color-muted)] leading-relaxed">
-        One dux owns your dux directory at a time, and it can wear both faces. A
-        palette command has the dux you are already running start serving in
+        One yaran owns your yaran directory at a time, and it can wear both faces. A
+        palette command has the yaran you are already running start serving in
         place, and leaving that screen drops you back into the terminal; or one
         setting keeps the terminal and serves the browser behind it, so the same
         workspace is on your desk and on your phone at once. Nothing relaunches and
@@ -107,13 +107,13 @@ const tab =
             </span>
           </div>
           <fieldset class="ml-auto flex min-w-0 flex-1 items-end justify-end gap-1 border-0 p-0 sm:flex-none">
-            <legend class="sr-only">Choose which dux surface to show</legend>
+            <legend class="sr-only">Choose which yaran surface to show</legend>
             <label class={tab}>
-              <input class="surface-radio" type="radio" name="dux-surface" value="web" checked />
+              <input class="surface-radio" type="radio" name="yaran-surface" value="web" checked />
               Web UI
             </label>
             <label class={tab}>
-              <input class="surface-radio" type="radio" name="dux-surface" value="tui" />
+              <input class="surface-radio" type="radio" name="yaran-surface" value="tui" />
               Terminal UI
             </label>
           </fieldset>
@@ -125,7 +125,7 @@ const tab =
           <div class="surface-panel" data-surface="tui">
             <img
               src="/dux-screenshot.svg"
-              alt="dux running in a terminal: a projects pane with a tree of agent sessions on the left, a Claude agent's live terminal in the center, and the dux header bar showing project, branch, agent, and provider."
+              alt="yaran running in a terminal: a projects pane with a tree of agent sessions on the left, a Claude agent's live terminal in the center, and the yaran header bar showing project, branch, agent, and provider."
               width="1609"
               height="784"
               loading="lazy"
@@ -146,7 +146,7 @@ const tab =
                   non-interactive regardless, because `allow-scripts` is withheld. */}
               <iframe
                 src="/figure/web-ui"
-                title="The dux web UI, rendered from its own components"
+                title="The yaran web UI, rendered from its own components"
                 width={FIGURE_W}
                 height={FIGURE_H}
                 loading="lazy"
@@ -171,7 +171,7 @@ const tab =
                 {phone.webp && <source srcset={phone.webp} type="image/webp" />}
                 <img
                   src={phone.src}
-                  alt="The dux web UI on a phone in portrait: an agent's terminal filling the screen with the accessory key bar and compose bar below it."
+                  alt="The yaran web UI on a phone in portrait: an agent's terminal filling the screen with the accessory key bar and compose bar below it."
                   width={phone.width}
                   height={phone.height}
                   loading="lazy"

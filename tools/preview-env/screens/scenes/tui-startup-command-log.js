@@ -7,17 +7,17 @@ const fs = require("fs")
 const path = require("path")
 
 const STARTUP_COMMAND = [
-  'echo "Installing dependencies for $DUX_AGENT_BRANCH"',
+  'echo "Installing dependencies for $YARAN_AGENT_BRANCH"',
   "ls -1 src",
-  'echo "Worktree ready at $DUX_WORKTREE_PATH"',
+  'echo "Worktree ready at $YARAN_WORKTREE_PATH"',
 ].join("\n")
 
-module.exports = async ({ createAgent, duxHome, palette, sendKeys, sleep, waitFor }) => {
+module.exports = async ({ createAgent, yaranHome, palette, sendKeys, sleep, waitFor }) => {
   // Written into the project's own config entry rather than typed into the
   // dialog: this shot is of the log, and config is where the command lives.
   // The project entries exist by now because the driver added them through the
   // UI before the journey started.
-  const configPath = path.join(duxHome, "config.toml")
+  const configPath = path.join(yaranHome, "config.toml")
   const config = fs.readFileSync(configPath, "utf8")
   const marker = 'path = "/capture/repos/demo-api"'
   if (!config.includes(marker)) throw new Error("demo-api is not in the config yet")

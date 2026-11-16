@@ -1,0 +1,39 @@
+//! A token pasted where a name goes in `[env]` (a name that breaks the
+//! variable-name rule) is never printed by the start checks, which place it
+//! by its line, and `yaran server`'s load, which resets the entry, never writes
+//! it to yaran.log either.
+
+#[test]
+fn a_token_pasted_as_an_env_name_is_not_written_to_yaran_log() {
+    let token = "sk-proj-AbCdEf0123456789 x";
+    let dir = tempfile::tempdir().unwrap();
+    let paths = yaran_core::config::YaranPaths {
+        root: dir.path().to_path_buf(),
+        config_path: dir.path().join("config.toml"),
+        sessions_db_path: dir.path().join("sessions.sqlite3"),
+        worktrees_root: dir.path().join("worktrees"),
+        lock_path: dir.path().join("dux.lock"),
+        socket_path: dir.path().join("yaran.sock"),
+    };
+    let logging = yaran_core::config::LoggingConfig {
+        path: dir.path().join("yaran.log").to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    yaran_core::logger::init(&logging, &paths);
+    std::fs::write(&paths.config_path, format!("[env]\n\"{token}\" = 1\n")).unwrap();
+
+    // The start checks never print it ...
+    for problem in
+        yaran_core::config::start_problems_of(&std::fs::read_to_string(&paths.config_path).unwrap())
+    {
+        assert!(!problem.message.contains("sk-proj"), "{}", problem.message);
+    }
+    // ... and yaran server starts with it, resetting the entry.
+    let _ = yaran_core::config::load_config(&paths).expect("yaran server starts");
+
+    let log = std::fs::read_to_string(dir.path().join("yaran.log")).unwrap_or_default();
+    assert!(
+        !log.contains("sk-proj"),
+        "the pasted token reached yaran.log:\n{log}"
+    );
+}

@@ -1,6 +1,6 @@
 // The start-web-server flip's status screen on a tailnet where `tailscale serve`
-// already points at dux: the header lists the MagicDNS and HTTPS URLs, and the
-// log shows the same rows and the same two QR codes `dux server` prints. Tall
+// already points at yaran: the header lists the MagicDNS and HTTPS URLs, and the
+// log shows the same rows and the same two QR codes `yaran server` prints. Tall
 // enough that the whole block fits the log without scrolling.
 //
 // There is no tailnet in the capture container, so the Tailscale CLI is a
@@ -8,7 +8,7 @@
 // the real CLI prints. Nothing here is a real name or address.
 module.exports = async ({ palette, sleep, waitFor }) => {
   await palette("start-web-server")
-  await waitFor("dux server running", 30000)
+  await waitFor("yaran server running", 30000)
   // The flip reads the machine's name off its own thread once it is serving,
   // so the codes arrive a moment after the screen does.
   await waitFor("https://demo-box.example-tailnet.ts.net", 30000)
@@ -50,7 +50,7 @@ module.exports.config = (text) => text.replace(/^port = \d+$/m, "port = 3890")
 
 // The screen's heading and both codes' URLs.
 module.exports.expectText = [
-  "dux server running",
+  "yaran server running",
   "http://100.101.102.103:3890",
   "https://demo-box.example-tailnet.ts.net",
 ]

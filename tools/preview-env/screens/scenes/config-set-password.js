@@ -1,15 +1,15 @@
-// `dux config set server.auth.password` typed into a plain shell: the hidden
+// `yaran config set server.auth.password` typed into a plain shell: the hidden
 // prompt with its strength meter, the second prompt, and the two lines that say
 // where the hash went and when it applies. Nothing is echoed, so the password
 // itself is never on screen; it is a made-up passphrase all the same.
 //
-// No dux is running in the capture, which is why the last line says the change
+// No yaran is running in the capture, which is why the last line says the change
 // applies the next time it starts.
 const PASSPHRASE = "lantern-quarry-velvet-otter-89"
 
 module.exports = async ({ sendKeys, sendText, sleep, waitFor }) => {
   await waitFor("$")
-  sendText("dux config set server.auth.password")
+  sendText("yaran config set server.auth.password")
   sendKeys("Enter")
   await waitFor("New web UI password", 15000)
   // One key at a time, the way a person types: the meter redraws on every key.
@@ -31,15 +31,15 @@ module.exports.launch = "shell"
 // The command, the meter as it stood when Enter was pressed, the second prompt,
 // where the hash landed, and when it applies.
 module.exports.expectText = [
-  "$ dux config set server.auth.password",
+  "$ yaran config set server.auth.password",
   "New web UI password [",
   "Type it again:",
   "The web UI password is stored",
   "Argon2id hash is in server.auth.password_hash in",
   // The path opens a row of its own, whole: the terminal is exactly as wide as
   // the words before it, so the wrap lands on the space and never mid-path.
-  "\n/home/you/.config/dux/config.toml, and the password itself is stored nowhere.",
-  "dux is not running",
+  "\n/home/you/.config/yaran/config.toml, and the password itself is stored nowhere.",
+  "yaran is not running",
 ]
 
 module.exports.file = "config-set-password.png"

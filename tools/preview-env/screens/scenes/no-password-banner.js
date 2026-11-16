@@ -1,4 +1,4 @@
-// The red banner every browser gets while dux has no password and is reachable
+// The red banner every browser gets while yaran has no password and is reachable
 // beyond the machine it runs on. The preview listens on every interface with no
 // password, so this is simply what it shows.
 const { clearToasts, expectBanner, goto } = require("../lib.js")
@@ -10,7 +10,7 @@ module.exports = {
   async shoot(page) {
     await goto(page, "", { keepNoPasswordBanner: true })
     await clearToasts(page)
-    await expectBanner(page, "No password: anyone who can reach this address can use dux.")
+    await expectBanner(page, "No password: anyone who can reach this address can use yaran.")
     return bannerClip(page, "no-auth-banner")
   },
 }

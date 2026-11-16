@@ -5,7 +5,7 @@ group: Guides
 order: 40
 ---
 
-dux ships with a generous set of built-in themes and lets you write your own.
+yaran ships with a generous set of built-in themes and lets you write your own.
 
 > [!IMPORTANT]
 > Theming is a terminal UI feature. The web UI is dark-only: it ships one tuned dark
@@ -28,8 +28,8 @@ To set it by hand instead, edit the `[ui]` section of `config.toml` and reload t
 theme = "dux_dark"   # the default
 ```
 
-With a dux running, `dux config set ui.theme "nord"` does the edit and the reload in one
-step. `dux themes ls` lists every theme dux can load and which one is in use.
+With a yaran running, `yaran config set ui.theme "nord"` does the edit and the reload in one
+step. `yaran themes ls` lists every theme yaran can load and which one is in use.
 
 Built-in names use underscores:
 
@@ -47,10 +47,10 @@ never goes stale.
 
 ## Nerd Font icons
 
-Running a [Nerd Font](https://www.nerdfonts.com) in your terminal? dux can trade its
+Running a [Nerd Font](https://www.nerdfonts.com) in your terminal? yaran can trade its
 plain icons for proper ones: a folder for the project, a star for standalone rows, the
 pull-request and warning marks, the disclosure chevrons, and the serving and terminals
-chips in the header. Out of the box dux draws the plain set every screenshot in these
+chips in the header. Out of the box yaran draws the plain set every screenshot in these
 docs shows, so it looks right in any font:
 
 ![The terminal UI sidebar: three active agents, one of them running three tabs, and a collapsed Inactive tail.](/screens/tui-agent-list-two-line.png)
@@ -71,7 +71,7 @@ nerd_font_icons = true   # off by default
 
 ## How a theme name is resolved
 
-When you set `theme = "<name>"`, dux looks in this order:
+When you set `theme = "<name>"`, yaran looks in this order:
 
 1. A user theme at `<config dir>/themes/<name>.toml`. Your own themes win first.
 2. The bundled `dux_dark` theme.
@@ -79,15 +79,15 @@ When you set `theme = "<name>"`, dux looks in this order:
    Dracula, and friends).
 
 > [!NOTE]
-> A name that matches nothing is not fatal. dux tells you so and falls back to a safe
+> A name that matches nothing is not fatal. yaran tells you so and falls back to a safe
 > default rather than launching into an unreadable color scheme.
 
 ## Writing your own theme
 
 Custom themes are TOML files. Put one at:
 
-- **Linux:** `~/.config/dux/themes/<name>.toml`
-- **macOS:** `~/.dux/themes/<name>.toml`
+- **Linux:** `~/.config/yaran/themes/<name>.toml`
+- **macOS:** `~/.yaran/themes/<name>.toml`
 
 then point your config at it:
 
@@ -99,10 +99,10 @@ theme = "my_theme"   # matches my_theme.toml in the themes directory
 The file name, without `.toml`, is the theme's id.
 
 > [!TIP]
-> Start from the theme dux already uses. Grab
+> Start from the theme yaran already uses. Grab
 > [`assets/themes/dux_dark.toml`](https://github.com/patrickdappollonio/dux/blob/main/assets/themes/dux_dark.toml)
 > from the repository, drop it in your themes directory under a new name, and recolor
-> it. It defines every surface dux paints, so you will never hit a missing color.
+> it. It defines every surface yaran paints, so you will never hit a missing color.
 
 ### The shape of a theme file
 
@@ -113,7 +113,7 @@ Theme files use the Opaline format. Three parts matter most:
 name = "My Theme"
 author = "you"
 variant = "dark"        # or "light"
-description = "A custom dux theme"
+description = "A custom yaran theme"
 
 [palette]
 # Name your colors once, reuse them everywhere below.
@@ -123,33 +123,33 @@ accent = "#00d4ff"
 pink   = "#ff4fd8"
 
 [tokens]
-# dux.* tokens map a color onto a specific dux UI surface.
-"dux.app_bg"         = "bg"
-"dux.text_fg"        = "fg"
-"dux.border_focused" = "accent"
-"dux.title_focused"  = "accent"
-"dux.selection_bg"   = "pink"
+# yaran.* tokens map a color onto a specific yaran UI surface.
+"yaran.app_bg"         = "bg"
+"yaran.text_fg"        = "fg"
+"yaran.border_focused" = "accent"
+"yaran.title_focused"  = "accent"
+"yaran.selection_bg"   = "pink"
 # ...and so on for every surface you want to control.
 ```
 
 You have two ways to define colors:
 
-- **Set `dux.*` tokens explicitly** for control over each surface: borders, headers,
+- **Set `yaran.*` tokens explicitly** for control over each surface: borders, headers,
   selection, diff colors, status line, and the rest. This is what the bundled theme
   does.
-- **Rely on the fallback.** Any `dux.*` token you leave out is derived from Opaline's
+- **Rely on the fallback.** Any `yaran.*` token you leave out is derived from Opaline's
   standard semantic tokens (`text.*`, `bg.*`, `accent.*`, `border.*`, `code.*`). A
-  complete, standard Opaline theme works in dux as-is, even if it was never written
-  with dux in mind.
+  complete, standard Opaline theme works in yaran as-is, even if it was never written
+  with yaran in mind.
 
 Names inside dialogs (branches, paths, agent and project names) are drawn as small chips:
-the dialog background (`dux.overlay_bg`) on the dialog text color (`dux.text_fg`). There is
+the dialog background (`yaran.overlay_bg`) on the dialog text color (`yaran.text_fg`). There is
 nothing extra to set.
 
 > [!TIP]
 > The cards inside a pane, like the note in the changes pane when a folder has no
-> repository, sit on the pane's own background (`dux.app_bg`) with just a border. Want them
-> to stand out? Set `dux.pane_card_bg` and they get a fill of their own.
+> repository, sit on the pane's own background (`yaran.app_bg`) with just a border. Want them
+> to stand out? Set `yaran.pane_card_bg` and they get a fill of their own.
 
 Save the file and open the theme picker: your theme is listed alongside the built-ins,
 labeled as user-authored, with the same live preview. Tweak, save, re-pick, repeat.

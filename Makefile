@@ -17,4 +17,4 @@ lint-fix:
 
 profiling:
 	@command -v flamegraph >/dev/null 2>&1 || { echo "Error: 'flamegraph' not found. Install it with: cargo install flamegraph"; exit 1; }
-	cargo flamegraph --profile profiling --bin dux -o flamegraph.svg
+	cargo flamegraph --profile profiling --bin yaran -o flamegraph.svg

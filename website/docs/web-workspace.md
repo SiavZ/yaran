@@ -13,7 +13,7 @@ way, so if you know the terminal UI the shape will be familiar.
 
 On a desktop-width screen it is three panes.
 
-![The dux web workspace on a desktop screen: the sidebar of agents and terminals on the left, the running agent's terminal in the middle, and the list of changed files on the right.](/screens/web-workspace-layout.png#full)
+![The yaran web workspace on a desktop screen: the sidebar of agents and terminals on the left, the running agent's terminal in the middle, and the list of changed files on the right.](/screens/web-workspace-layout.png#full)
 
 **The collapsible left sidebar** lists your agents and your project and standalone terminals in one list, titled **Agents & Terminals**, with the dormant agents tucked into a collapsible Inactive tail. Toggle it with `Ctrl-b` (`Cmd-b` on a Mac). It carries:
 
@@ -74,12 +74,12 @@ The URL tracks what you are looking at, so you can bookmark a session or send a 
 
 Every move to a different place adds one history entry, so Back always returns you to where you were: select three agents in turn and Back walks them in reverse. Every tab and every terminal you look at is a place of its own, like browser tabs: switch from one of an agent's tabs to another, or from one of its terminals to the next, and Back takes you to the one before.
 
-Changing the layout, or clicking from the agent into its terminal and back, adds nothing: the address follows the part you are typing into, rewritten in place. Closing the tab you are on adds nothing either: its step becomes the tab beside it. If Back or Forward lands on a tab that has since closed, dux says so, tells you where you are now, and keeps going the way you were: Back to the agent (or past it, if you just came from there), Forward to the step after it, or back where you came from when there is nothing after it. Moves that stay where you already are rewrite the one entry instead:
+Changing the layout, or clicking from the agent into its terminal and back, adds nothing: the address follows the part you are typing into, rewritten in place. Closing the tab you are on adds nothing either: its step becomes the tab beside it. If Back or Forward lands on a tab that has since closed, yaran says so, tells you where you are now, and keeps going the way you were: Back to the agent (or past it, if you just came from there), Forward to the step after it, or back where you came from when there is nothing after it. Moves that stay where you already are rewrite the one entry instead:
 
 - reconnecting after the wifi drops
 - following a link back to where you already were
 
-dux never presses Back for you. The phone's back chevron is an **up** control: it takes you one level up (Changes to its agent, an agent to the home screen), adds its own history entry, and can never step out of dux.
+yaran never presses Back for you. The phone's back chevron is an **up** control: it takes you one level up (Changes to its agent, an agent to the home screen), adds its own history entry, and can never step out of yaran.
 
 ### Dialogs and Back
 
@@ -88,7 +88,7 @@ An open dialog, sheet or menu is one step of its own, with no change to the addr
 - Closing a dialog any other way takes its step away too, so Back is never spent on something already closed, and Forward never brings a closed dialog's step back.
 - A dialog opened from another one stacks, and each Back closes the top one.
 - A dialog that is in the middle of saving when you press Back closes as soon as the save finishes.
-- Two cases keep the plain behavior, where Back moves the page and leaves the dialog alone: some older browsers, and a dialog dux raises by itself rather than in answer to a click or a tap, such as the welcome screen.
+- Two cases keep the plain behavior, where Back moves the page and leaves the dialog alone: some older browsers, and a dialog yaran raises by itself rather than in answer to a click or a tap, such as the welcome screen.
 
 ### When a link goes wrong
 
@@ -98,7 +98,7 @@ Three things can go wrong with a link:
   silent bounce home. It gives way on its own if that agent reappears, and leaving it
   corrects the URL rather than stacking on top of it, so Back cannot drop you back onto
   the dead end.
-- **The agent you are watching is deleted out from under you.** dux moves you to the next
+- **The agent you are watching is deleted out from under you.** yaran moves you to the next
   active agent, or home when there is not one.
 - **The terminal has since closed.** You get a **Terminal not found** screen with a
   **New terminal** button that opens a fresh one in the same place: in that agent's
@@ -120,7 +120,7 @@ workspace.
 > The folder does not have to be a repository yet, which is what makes this work from a
 > phone with no terminal in reach.
 
-- **Point it at a plain folder** (via the pinned **Use this folder** row at the top of the list) and dux offers to **initialize a repository**. It:
+- **Point it at a plain folder** (via the pinned **Use this folder** row at the top of the list) and yaran offers to **initialize a repository**. It:
   - runs `git init`
   - seeds a commented starter `.gitignore` for dependency and build folders it actually finds (`node_modules`, `target`, and friends)
   - makes an empty initial commit
@@ -128,26 +128,26 @@ workspace.
 
   Your existing files are left untracked and untouched.
 - The picker's **New folder** button creates a directory from the browser.
-- Pick a folder *inside* an existing repository and dux refuses, pointing you at the repository root instead.
+- Pick a folder *inside* an existing repository and yaran refuses, pointing you at the repository root instead.
 
 > [!NOTE]
-> If git on that machine cannot work out an identity for that first commit, dux fills in `dux@localhost` as the address (keeping your `user.name` if git knows one, and signing as `dux` if it does not) so adding the folder still succeeds. That applies to dux's own empty first commit and nothing else: your later commits still need an identity you have configured.
+> If git on that machine cannot work out an identity for that first commit, yaran fills in `yaran@localhost` as the address (keeping your `user.name` if git knows one, and signing as `yaran` if it does not) so adding the folder still succeeds. That applies to yaran's own empty first commit and nothing else: your later commits still need an identity you have configured.
 
 The launcher's **▾** menu holds both flavors under **Projects** ("Add project…" and "Initialize a repository…"); either way the picker inspects your selection and offers the right action. The TUI's project browser makes the same offer.
 
 ### Cloning a repository
 
-Not on the server yet? **Clone a repository** sits right beside them, under **Projects** in the launcher's **▾** menu and in the app menu's **Add project** submenu. Paste the remote's address (a short `owner/repo` or a GitHub page straight from your browser works too) and dux clones it, adds it as a project and starts its first agent, all in one go.
+Not on the server yet? **Clone a repository** sits right beside them, under **Projects** in the launcher's **▾** menu and in the app menu's **Add project** submenu. Paste the remote's address (a short `owner/repo` or a GitHub page straight from your browser works too) and yaran clones it, adds it as a project and starts its first agent, all in one go.
 
 - The destination folder fills itself in from the address (your start directory plus the repository's name) until you type over it.
 - The agent gets the name you give it or a random one, exactly like **New agent**.
-- When the agent appears, dux selects it for you, however long the clone took.
+- When the agent appears, yaran selects it for you, however long the clone took.
 
 The full story, including what happens when something goes wrong halfway, is in [Creating agents](/docs/creating-agents#cloning-a-repository).
 
 ## Managing projects
 
-**Projects…** in the app menu (the cog), right under **Add project**, lists every project dux knows about, with a search box on top. It is the place to manage a project that has no agents yet.
+**Projects…** in the app menu (the cog), right under **Add project**, lists every project yaran knows about, with a search box on top. It is the place to manage a project that has no agents yet.
 
 - **Order:** whichever happened last, adding the project or creating its newest agent, latest first.
 - **Each row** shows the project's folder, how many agents it has, and its base branch (the branch new agents start from), plus a warning when the folder is missing.
@@ -162,14 +162,14 @@ If agents are left over from a project whose record is gone, they show up in the
 ### Changing the base branch
 
 **Change base branch…** in a project's menu lets you pick any branch as the one new agents
-start from: a local branch, or one that so far exists only on `origin` (dux creates the
+start from: a local branch, or one that so far exists only on `origin` (yaran creates the
 local branch, tracking origin's, when you pick it). Handy when a project was added from a
 clone that sat on the wrong branch.
 
 - **Opening it** fetches `origin` first. If that fails or times out, the list shows the branches as they were last fetched and says why.
 - **The current base** is marked.
 - **A branch another worktree has checked out** (usually an agent's) is shown but cannot be picked, because git will not check a branch out twice. The row names the agent, or the folder when no agent owns it.
-- **After you confirm,** dux switches the project folder to that branch and then saves it as the base. If git refuses the switch (say, uncommitted changes in the folder would be overwritten), you get an error and the base stays where it was.
+- **After you confirm,** yaran switches the project folder to that branch and then saves it as the base. If git refuses the switch (say, uncommitted changes in the folder would be overwritten), you get an error and the base stays where it was.
 
 > [!IMPORTANT]
 > This moves the project folder itself onto the branch. Uncommitted changes that do not
@@ -178,9 +178,9 @@ clone that sat on the wrong branch.
 > [!CAUTION]
 > **Git treats ignored files as disposable.** Switching the project folder, **Pull project** and an agent's **Pull** make git delete or overwrite an ignored folder or file when the incoming branch tracks that same path.
 >
-> - dux **refuses, and changes nothing,** when that folder holds, or that file sits inside, an agent's worktree, a standalone agent's folder, a project's repository or a terminal working there, and says which.
+> - yaran **refuses, and changes nothing,** when that folder holds, or that file sits inside, an agent's worktree, a standalone agent's folder, a project's repository or a terminal working there, and says which.
 > - Any other ignored folder or file git still replaces, so move it aside first if it matters.
-> - A folder the incoming commit deletes every file of goes too, as does a link it deletes or replaces (tracked or not). dux refuses the same way when one of those lives or works there.
+> - A folder the incoming commit deletes every file of goes too, as does a link it deletes or replaces (tracked or not). yaran refuses the same way when one of those lives or works there.
 
 > [!NOTE]
 > These pulls and switches never update submodules, even when your git config sets
@@ -205,17 +205,17 @@ The full scrollback comes back when you open it, and the "Reconnecting…" cover
 
 ### Reconnecting
 
-**dux keeps trying while the page is open, tells you how it is going, and reconnects the moment you come back.** A visible tab retries with a widening gap between attempts, and the cover says which attempt failed and counts down to the next one.
+**yaran keeps trying while the page is open, tells you how it is going, and reconnects the moment you come back.** A visible tab retries with a widening gap between attempts, and the cover says which attempt failed and counts down to the next one.
 
 The knobs all live under `[server]` in your config file (see [Server mode](/docs/server-mode#the-server-config-keys)):
 
 - **`reconnect_backoff_cap_seconds`** (10 by default) is the longest the gap between attempts grows to.
-- **`reconnect_attempts`** (8 by default) is how many attempts dux makes before it stops. Set it to `0` to keep trying indefinitely.
+- **`reconnect_attempts`** (8 by default) is how many attempts yaran makes before it stops. Set it to `0` to keep trying indefinitely.
 - **`reconnect_attempt_timeout_seconds`** (10 by default) abandons an attempt that never connects and counts it as a failure, because a host you cannot reach does not refuse the connection, it just never answers.
 - **`replay_wait_seconds`** (8 by default) is how long the cover waits for the terminal's screen to arrive once the connection is up.
 - **`heartbeat_seconds`** (15 by default) and **`heartbeat_deadline_seconds`** (30 by default) are the dead-connection check described below.
 
-When the attempts run out, dux stops rather than spinning forever in front of a server that is not there, says so plainly, and offers a **Reconnect** button that starts over.
+When the attempts run out, yaran stops rather than spinning forever in front of a server that is not there, says so plainly, and offers a **Reconnect** button that starts over.
 
 **The budget resets** when anything connects, and also when you come back to the tab, unlock the phone or the network returns.
 
@@ -232,7 +232,7 @@ Two things can still stop the wait, and both offer you a **Reconnect** button ra
 - The connection is really gone. The blocking **Connection lost** card takes over.
 
 > [!NOTE]
-> A phone that switches from Wi-Fi to cellular can leave a connection that looks alive but answers nothing. dux checks, from the browser, every `heartbeat_seconds`, and if the answer has not come back within `heartbeat_deadline_seconds` it reconnects rather than leaving you typing into a dead terminal.
+> A phone that switches from Wi-Fi to cellular can leave a connection that looks alive but answers nothing. yaran checks, from the browser, every `heartbeat_seconds`, and if the answer has not come back within `heartbeat_deadline_seconds` it reconnects rather than leaving you typing into a dead terminal.
 
 ### Theater mode: one pane, no chrome
 
@@ -326,9 +326,9 @@ own.
 
 ![A card covering the terminal that says the agent is active on another device, with a Take over button.](/screens/take-over-card.png)
 
-**The terminal UI is one of those devices.** When dux is [serving in the background of a running TUI](/docs/server-mode#serve-in-the-background-and-keep-the-tui), that terminal can hold a terminal or be a watcher like any browser, and the card names it as `the dux TUI`. It shows the same card, with the same words, when your browser is the one driving.
+**The terminal UI is one of those devices.** When yaran is [serving in the background of a running TUI](/docs/server-mode#serve-in-the-background-and-keep-the-tui), that terminal can hold a terminal or be a watcher like any browser, and the card names it as `the yaran TUI`. It shows the same card, with the same words, when your browser is the one driving.
 
-**A watcher sees the take-over card**, a full-pane card naming who has the keyboard ("Active on Chrome on macOS") with a **Take over** button. Hit it and dux resizes the PTY to your screen, repaints it fresh, and hands you the keyboard. Nothing is lost; the other device becomes the watcher.
+**A watcher sees the take-over card**, a full-pane card naming who has the keyboard ("Active on Chrome on macOS") with a **Take over** button. Hit it and yaran resizes the PTY to your screen, repaints it fresh, and hands you the keyboard. Nothing is lost; the other device becomes the watcher.
 
 Taking over reattaches, so it takes a moment and you will see "Reconnecting…" until the screen is really there. Behind the card, a watcher's terminal renders at the driver's true size with the text shrunk to fit, so the screen you take over is clean from the first frame.
 
@@ -350,7 +350,7 @@ Every automatic reconnect joins as a watcher unless nobody is driving. Taking a 
 
 - **The one exception** takes nothing from anyone. The device that lost the keyboard to a blip gets it back when it returns, provided the server is still holding its old, dead session and nobody else has claimed the terminal in the meantime.
 - **If somebody has claimed it,** you come back as a watcher with the card up, and one tap puts you back in the driver's seat.
-- **If your page cannot confirm it is talking to the very same dux** it started against, because dux was restarted while you were away or the check could not get through, you land as a watcher and press the button. Coming back automatically is only safe when the old session is provably still the one you left.
+- **If your page cannot confirm it is talking to the very same yaran** it started against, because yaran was restarted while you were away or the check could not get through, you land as a watcher and press the button. Coming back automatically is only safe when the old session is provably still the one you left.
 - **A page in the background** stays a watcher until it is in front again.
 - **If your own connection has given up entirely,** the card steps aside for the **Connection lost** notice and its **Reconnect** button.
 
@@ -359,20 +359,20 @@ Every automatic reconnect joins as a watcher unless nobody is driving. Taking a 
 The web terminal copies and pastes the way a real terminal does, no menu required:
 
 - **Select to copy.** Highlight text and it lands on your clipboard immediately, with a "Copied to clipboard" toast. Governed by the `ui.copy_on_select` preference (on by default), which you can flip in **Preferences** (the cog menu).
-- **Right-click to paste** (mouse or pen). On plain HTTP, where the browser blocks clipboard reads, dux nudges you toward `Ctrl+v` instead. On a touch screen the same press-and-hold gesture belongs to selection, which is the next section.
+- **Right-click to paste** (mouse or pen). On plain HTTP, where the browser blocks clipboard reads, yaran nudges you toward `Ctrl+v` instead. On a touch screen the same press-and-hold gesture belongs to selection, which is the next section.
 - A fixed set of chords works too, and it is not user-configurable: `Ctrl+Shift+c`, `Ctrl+Insert`, or `Cmd+c` to copy, and `Ctrl+v`, `Ctrl+Shift+v`, or `Cmd+v` to paste, with `Ctrl+c` staying SIGINT.
-- **Paste an image with the keyboard and dux uploads it**, saving it on the server and pasting its **path** into the prompt. Text paste is untouched, and `Ctrl+Shift+v` (`Cmd+Shift+v`) forces the text when the clipboard carries both. Keyboard chords only: right-click paste can never carry an image. See [Dropping and pasting files onto an agent](/docs/dropping-files).
+- **Paste an image with the keyboard and yaran uploads it**, saving it on the server and pasting its **path** into the prompt. Text paste is untouched, and `Ctrl+Shift+v` (`Cmd+Shift+v`) forces the text when the clipboard carries both. Keyboard chords only: right-click paste can never carry an image. See [Dropping and pasting files onto an agent](/docs/dropping-files).
 
 There is deliberately no right-click context menu, because it would fight the paste gesture.
 
 > [!TIP]
-> When the app inside the terminal grabs the mouse, a plain drag goes to that app instead of selecting text. Hold **Shift** (Linux and Windows) or **Option** (macOS) while dragging to force a local selection. dux pops a one-time hint the first time this bites you.
+> When the app inside the terminal grabs the mouse, a plain drag goes to that app instead of selecting text. Hold **Shift** (Linux and Windows) or **Option** (macOS) while dragging to force a local selection. yaran pops a one-time hint the first time this bites you.
 
 ### Programs that write your clipboard
 
 Your agent can also write your clipboard directly through an `OSC 52` escape sequence. That write lands on **your** browser's clipboard, not the server's, and is governed by the `clipboard_passthrough` capability (`"focused"` by default; see [Terminal capabilities](/docs/terminal-capabilities)).
 
-- **Time limit.** The browser accepts the write only within a few seconds (about 5 in Chrome) of your last key press or click in the page. That limit is the browser's rule, not a dux setting.
+- **Time limit.** The browser accepts the write only within a few seconds (about 5 in Chrome) of your last key press or click in the page. That limit is the browser's rule, not a yaran setting.
 - **A copy that arrives later** shows a message with the start of the text and a **Copy** button. Press it and the whole text lands on your clipboard.
 - **If the browser refuses even that,** the message offers **Show text**, which opens the text already selected so you can copy it yourself.
 
@@ -383,8 +383,8 @@ On a phone or tablet, **press and hold** on the terminal. The word under your fi
 - While your finger is down, the terminal stops following new output, so the text you are selecting stays where it is. It catches up with the output when you lift.
 - Drag past the top or bottom edge and the terminal keeps scrolling for as long as you hold there.
 - **Lift your finger and it is copied**, under the same `ui.copy_on_select` preference.
-- Press on blank space and nothing highlights; dux tells you there is nothing to copy there.
-- If the terminal changes under your finger (the screen resizes, or a full-screen app opens or closes), nothing is copied and dux says so; press again.
+- Press on blank space and nothing highlights; yaran tells you there is nothing to copy there.
+- If the terminal changes under your finger (the screen resizes, or a full-screen app opens or closes), nothing is copied and yaran says so; press again.
 - The highlight stays on the text you copied until the next tap clears it. If the terminal was following output, that text may scroll out of view as it catches up, highlight and all.
 - A press is not a tap, so the keyboard stays down and does not cover what you highlighted.
 
@@ -394,7 +394,7 @@ There are no drag handles, so a selection cannot be adjusted once you lift (pres
 
 ### Drag a file in, or paste one
 
-Drag a screenshot (or any file) from your desktop onto the terminal, or paste an image, and dux saves it on the server and pastes its path into the prompt.
+Drag a screenshot (or any file) from your desktop onto the terminal, or paste an image, and yaran saves it on the server and pastes its path into the prompt.
 
 - **Dropped on an agent,** it goes to that agent's upload folder (`.dux/uploads` in its worktree), invisible to git and deleted along with the agent.
 - **Dropped on a terminal,** it goes to the folder that terminal is in right now.
@@ -422,13 +422,13 @@ There are three kinds of plain shell:
 
 - A **companion terminal** runs in an agent's worktree, for tests, git, or tailing a log while the agent works. It lives in the agent's **terminal dock**, under the agent, and has no row of its own in the sidebar: the agent's row stands for it. See [The terminal dock](#the-terminal-dock) below.
   - Open one from the agent's `⋯` menu, from the dock's **+**, from the **New terminal** button in the changes pane's header, or from **New terminal for an agent…** in the launcher's **▾** menu, which asks which agent: every agent is listed under its project, standalone ones last, with a search box to narrow them down.
-- A **project terminal** opens at the project's repo root with no agent attached. It is a row of the sidebar's one list, sorted with your agents. It is the escape hatch when dux will not do something for you remotely, even over Tailscale with no local terminal in sight.
+- A **project terminal** opens at the project's repo root with no agent attached. It is a row of the sidebar's one list, sorted with your agents. It is the escape hatch when yaran will not do something for you remotely, even over Tailscale with no local terminal in sight.
   - Spawn one from the project's `⋯` menu ("New terminal at the project root").
   - It shows up in the Task Manager and is destroyed on close.
 - A **standalone terminal** opens in your home directory with no agent and no project, so you can reach for one before you have added a single project. It is a row of the one list too.
   - Open one from the **Terminals** group of the launcher's **▾** menu, or from the cog menu's **New** submenu.
   - Its row shows the directory it opened in, shortened with `~` and marked with the `✷` standalone star, so the sidebar search finds it by path.
-  - The other two show the `↳` arrow and their owner. The star always means the same thing: this one lives in your folder, not a working copy dux manages.
+  - The other two show the `↳` arrow and their owner. The star always means the same thing: this one lives in your folder, not a working copy yaran manages.
 
 ![New terminal for an agent: a search box over every agent, grouped under its project with the standalone ones last, each row naming its state and the folder the terminal will open in.](/screens/new-terminal-for-agent.png)
 
@@ -440,7 +440,7 @@ When an agent has a terminal of its own, the center pane splits: the agent and i
 
 ![An agent on top of the center pane and its two terminals docked below it, each terminal with its own pill in the dock's strip, and the layout buttons at the strip's right end.](/screens/web-terminal-dock.png#full)
 
-- **Pick a terminal** by clicking its pill. Its glyph pulses and bounces while something runs in it, like a tab pill's. Drag a pill along the strip to reorder the dock; the order lasts until dux restarts. A pill's `⋯` closes that terminal. When the terminal in front ends, the dock shows the one to its right, or to its left when it was the last; with none left the dock goes and the agent shows alone.
+- **Pick a terminal** by clicking its pill. Its glyph pulses and bounces while something runs in it, like a tab pill's. Drag a pill along the strip to reorder the dock; the order lasts until yaran restarts. A pill's `⋯` closes that terminal. When the terminal in front ends, the dock shows the one to its right, or to its left when it was the last; with none left the dock goes and the agent shows alone.
 - **Type into either part** by clicking into it. The part you are not typing in turns grey and fades, so you can always tell where your keystrokes go; its strip stays as it is.
 - **Three layouts.** The dock strip's right end carries **Hide terminals** and **Maximize terminal**. Either one gives the whole height to one part and leaves the other its strip, with a button to bring the split back. Dragging the divider past a part's minimum folds that part away the same way. Each agent reopens in the layout you last left it in on that browser, and an agent you open with its terminal in front opens at least in the split.
 - **Strips show together.** Both strips appear once the agent has two tabs or two terminals, or while **Always show tab strip** is on. Otherwise neither does: the divider is a thin line with a grip in its middle, and a small floating pill on its right end carries the layout buttons, and **New tab…** in the header asks whether you want a new agent tab (on the agent's default provider; pick another from the agent's `⋯`) or a new terminal. With the terminal maximized, the pill also carries a dot for what the agent is doing: green and pulsing while it works, cyan and blinking when it needs you.
@@ -462,14 +462,14 @@ agent opens that agent's editor instead. See [The code editor](/docs/web-editor)
 > terminals do not.
 
 Closing a companion terminal is guarded the way stopping its agent is: while another
-device has any of the agent's tabs or terminals open, dux refuses and names that device,
+device has any of the agent's tabs or terminals open, yaran refuses and names that device,
 and you can go ahead anyway from the dialog. Closing or stopping one of the agent's tabs is
 guarded the same way. A project or standalone terminal is refused
 only over a device that has that terminal open.
 
 Nothing closes a standalone terminal for you. Removing a project closes that project's
 terminals and deleting an agent closes that agent's; neither touches a standalone one. It
-ends when you close it, or when dux shuts down.
+ends when you close it, or when yaran shuts down.
 
 ## Messages
 
@@ -524,7 +524,7 @@ Below tablet width, the web UI becomes a **hub-and-spoke** shell built for one t
 
 ### The screens
 
-![The dux home screen on a phone, listing agents with their state: one waiting on you, the rest working.](/screens/phone-hub.png)
+![The yaran home screen on a phone, listing agents with their state: one waiting on you, the rest working.](/screens/phone-hub.png)
 
 - **Home** is the hub: your projects and sessions with the same `⋯` menus as desktop, the same **New agent…** launcher along the bottom, and a **cog** button that opens the app menu as a bottom sheet (submenus drill down in place, with a back arrow). The launcher's **▾** opens its list as a bottom sheet too. Tap a session to jump into its terminal.
 - **The terminal screen** is a full-screen terminal with a slim bar on top (Back, the agent's name over its assistant, branch and project, and an optional PR chip), with the strip of the part on screen under it when the agent has two or more tabs or two or more terminals: the tab strip over the agent, the dock strip over a terminal.
@@ -575,7 +575,7 @@ Below it sits the **compose bar**: a real text box where you type the message an
 Whether the compose bar appears is the `ui.compose_bar` setting, a Preferences row with three values:
 
 - **Automatic** (the default) asks your browser whether you point at the screen with a finger, and uses the answer as the starting point. Your own choice from the typing-surface switch wins from then on.
-- **Always** and **Never** are for the device dux guesses wrong on.
+- **Always** and **Never** are for the device yaran guesses wrong on.
 - **Never** restores typing straight into the terminal. On a touch device it keeps the terminal keys, since a finger still cannot produce Esc or a Ctrl chord and there is no switch under **Never** to bring them back with. Only the message box goes.
 
 > [!IMPORTANT]
@@ -620,8 +620,8 @@ The group is there only while this device is driving the terminal, and a pane th
 
 ## Install it like an app
 
-Your browser will offer to add dux to your home screen or dock, where it opens standalone
-without browser chrome. Offline it shows a small "dux is unreachable" page and nothing else;
-the app itself always loads fresh. When you lose the connection mid-session, dux grays the
+Your browser will offer to add yaran to your home screen or dock, where it opens standalone
+without browser chrome. Offline it shows a small "yaran is unreachable" page and nothing else;
+the app itself always loads fresh. When you lose the connection mid-session, yaran grays the
 app out behind a "Reconnecting…" overlay and reconnects when it can, without navigating
 away, so you land right back on the screen you were looking at.

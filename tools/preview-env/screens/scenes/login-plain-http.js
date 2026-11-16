@@ -11,7 +11,7 @@ module.exports = {
     await requirePassword()
     await goto(page, "")
     await clearToasts(page)
-    await expectVisibleText(page, "Sign in to dux")
+    await expectVisibleText(page, "Sign in to yaran")
     await expectVisible(page, '[data-testid="login-form"]', "the password form")
     await expectVisible(page, '[data-testid="login-insecure-warning"]', "the plain-HTTP warning")
     return gateClip(page)

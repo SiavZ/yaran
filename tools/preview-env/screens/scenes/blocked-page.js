@@ -1,8 +1,8 @@
-// The page a blocked address gets when it opens dux: the small self-contained
-// page dux serves to a fresh page load from a blocked address, which is what
+// The page a blocked address gets when it opens yaran: the small self-contained
+// page yaran serves to a fresh page load from a blocked address, which is what
 // most blocked visitors ever see. The scene earns the block the way a guesser
 // does: wrong passwords on the sign-in page, each one waiting out the slow-down
-// the last one bought, until dux writes the address the preview's browser
+// the last one bought, until yaran writes the address the preview's browser
 // arrives from into blocked_addresses. Then it loads the page again. The page
 // never names the address, so the picture carries none.
 const { boxOf, clearToasts, expectVisibleText, goto, sleep, steadyBox } = require("../lib.js")
@@ -39,7 +39,7 @@ module.exports = {
         submit,
       )
       // The page's countdown rounds to whole seconds, so it can re-enable the
-      // button a little before dux will take the next attempt.
+      // button a little before yaran will take the next attempt.
       await sleep(1200)
       if (await blocked()) break
       await page.type(field, `not-the-password-${i}`)
@@ -49,7 +49,7 @@ module.exports = {
     if (!(await blocked())) {
       throw new Error("blocked-page: the sign-in page never turned into the blocked page")
     }
-    // A fresh load now, which dux answers with its own HTML page rather than the
+    // A fresh load now, which yaran answers with its own HTML page rather than the
     // app (it refuses the app's every asset too).
     await page.goto(page.url(), { waitUntil: "networkidle0", timeout: 45000 })
     await sleep(800)

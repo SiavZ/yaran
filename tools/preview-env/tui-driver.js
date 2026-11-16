@@ -2,14 +2,14 @@ const fs = require("fs")
 const path = require("path")
 const { spawnSync } = require("child_process")
 
-const cols = readInteger("DUX_TUI_COLS", 160, 80)
-const rows = readInteger("DUX_TUI_ROWS", 45, 24)
-const theme = process.env.DUX_TUI_THEME || "catppuccin-mocha"
-const outputStem = process.env.DUX_TUI_OUTPUT_STEM || "tui"
+const cols = readInteger("YARAN_TUI_COLS", 160, 80)
+const rows = readInteger("YARAN_TUI_ROWS", 45, 24)
+const theme = process.env.YARAN_TUI_THEME || "catppuccin-mocha"
+const outputStem = process.env.YARAN_TUI_OUTPUT_STEM || "tui"
 const journeyPath = "/journey.js"
-const socket = `dux-shot-${process.pid}`
+const socket = `yaran-shot-${process.pid}`
 const session = "capture"
-const duxHome = process.env.DUX_HOME || "/capture/dux"
+const yaranHome = process.env.YARAN_HOME || "/capture/yaran"
 const repos = "/capture/repos"
 const output = "/output"
 
@@ -27,29 +27,29 @@ const fixture = journey.fixture || "steady"
 // dialog first. Takes the rendered config text and returns the text to write.
 const patchConfig = journey.config || ((text) => text)
 // What runs in the captured terminal: the terminal UI (the default),
-// `dux server`, whose console is what a journey shooting the server's own
-// output wants on screen, or a plain shell, for a journey that types a dux
-// command (`dux config set`) and shoots what it prints.
+// `yaran server`, whose console is what a journey shooting the server's own
+// output wants on screen, or a plain shell, for a journey that types a yaran
+// command (`yaran config set`) and shoots what it prints.
 const launch = journey.launch || "tui"
 if (!["tui", "server", "shell"].includes(launch)) {
   fail(`journey.launch must be "tui", "server" or "shell", not ${launch}`, 64)
 }
-// Where the shell's user lives. A dux command typed there finds its config
+// Where the shell's user lives. A yaran command typed there finds its config
 // through the platform default under this home, so what it prints names the
-// path a reader has rather than the capture's own DUX_HOME.
+// path a reader has rather than the capture's own YARAN_HOME.
 const shellHome = "/home/you"
-// An optional stand-in for the Tailscale CLI, so a journey can show dux on a
+// An optional stand-in for the Tailscale CLI, so a journey can show yaran on a
 // tailnet in a container that has none. See standInTailscale below.
 const tailscale = journey.tailscale || null
 // Whether the journey shows GitHub: the integration stays on and the screenshot
 // fixtures' stand-in gh answers from its canned table. Off, the integration is
 // off and no gh is on the PATH, so nothing a journey shows depends on one. The
 // journey points a repository's origin at GitHub itself, once its agents exist:
-// dux pulls a project before creating an agent, and nothing answers that URL.
+// yaran pulls a project before creating an agent, and nothing answers that URL.
 const github = journey.github === true
 // Not under /capture: that is a tmpfs, which Docker mounts noexec, so a script
 // written there cannot run. The container's own layer is disposable too.
-const standInBin = "/opt/dux-stand-in/bin"
+const standInBin = "/opt/yaran-stand-in/bin"
 
 function readInteger(name, fallback, minimum) {
   const value = Number(process.env[name] || fallback)
@@ -86,9 +86,9 @@ function seedRepo(repo) {
   fs.mkdirSync(path.join(repo, "src"), { recursive: true })
   fs.mkdirSync(path.join(repo, "tests"), { recursive: true })
   git(repo, "init", "-q", "-b", "main")
-  git(repo, "config", "user.name", "Dux Preview")
-  git(repo, "config", "user.email", "preview@dux.local")
-  fs.writeFileSync(path.join(repo, "README.md"), `# ${path.basename(repo)}\n\nA deterministic Dux preview project.\n`)
+  git(repo, "config", "user.name", "Yaran Preview")
+  git(repo, "config", "user.email", "preview@yaran.local")
+  fs.writeFileSync(path.join(repo, "README.md"), `# ${path.basename(repo)}\n\nA deterministic Yaran preview project.\n`)
   fs.writeFileSync(path.join(repo, "src/client.rs"), "pub fn request() -> Result<(), String> { Ok(()) }\n")
   fs.writeFileSync(path.join(repo, "tests/client.rs"), "#[test]\nfn request_succeeds() { assert!(true); }\n")
   git(repo, "add", "-A")
@@ -96,7 +96,7 @@ function seedRepo(repo) {
 }
 
 function seedState() {
-  fs.mkdirSync(duxHome, { recursive: true })
+  fs.mkdirSync(yaranHome, { recursive: true })
   fs.mkdirSync(repos, { recursive: true })
   fs.mkdirSync(output, { recursive: true })
   seedRepo(path.join(repos, "demo-api"))
@@ -105,8 +105,8 @@ function seedState() {
   fs.appendFileSync(path.join(repos, "demo-api/README.md"), "\nDocument the retry behavior.\n")
   fs.writeFileSync(path.join(repos, "demo-web/src/status.ts"), 'export const status = "ready"\n')
 
-  run("dux", ["config", "regenerate", "--yes"], { env: { ...process.env, DUX_HOME: duxHome } })
-  const configPath = path.join(duxHome, "config.toml")
+  run("yaran", ["config", "regenerate", "--yes"], { env: { ...process.env, YARAN_HOME: yaranHome } })
+  const configPath = path.join(yaranHome, "config.toml")
   let config = fs.readFileSync(configPath, "utf8")
   config = config
     .replace(/^provider = .*$/m, 'provider = "fake"')
@@ -122,7 +122,7 @@ args = []
   fs.writeFileSync(configPath, patchConfig(config))
 }
 
-/// Put the screenshot fixtures' stand-in gh on the PATH dux is started with.
+/// Put the screenshot fixtures' stand-in gh on the PATH yaran is started with.
 function standInGitHub() {
   if (!github) return
   fs.mkdirSync(standInBin, { recursive: true })
@@ -131,11 +131,11 @@ function standInGitHub() {
 }
 
 /// The fixture the fake provider reads is an environment variable, and the
-/// global `[env]` table is what dux hands a provider it spawns. Rewriting that
+/// global `[env]` table is what yaran hands a provider it spawns. Rewriting that
 /// table and reloading the config therefore changes what the NEXT agent comes up
 /// as, which is how one journey stages agents in different states.
 async function setFixture(name) {
-  const configPath = path.join(duxHome, "config.toml")
+  const configPath = path.join(yaranHome, "config.toml")
   const text = fs.readFileSync(configPath, "utf8").replace(/\n\[env\][\s\S]*?(?=\n\[|$)/, "")
   fs.writeFileSync(configPath, `${text}\n[env]\nDUX_FAKE_FIXTURE = "${name}"\n`)
   await palette("reload-config")
@@ -149,14 +149,14 @@ async function setFixture(name) {
 /// worktree manager has a removable row to show.
 function seedLooseWorktree(project, branch) {
   const repo = path.join(repos, project)
-  const at = path.join(duxHome, "worktrees", project, branch)
+  const at = path.join(yaranHome, "worktrees", project, branch)
   fs.mkdirSync(path.dirname(at), { recursive: true })
   git(repo, "worktree", "add", "-q", "-b", branch, at, "HEAD")
   fs.appendFileSync(path.join(at, "README.md"), "\nA note left in this worktree.\n")
 }
 
-/// Put a stand-in `tailscale` on the PATH dux is started with, answering the
-/// three questions dux asks (`ip`, `status --json --peers=false` and
+/// Put a stand-in `tailscale` on the PATH yaran is started with, answering the
+/// three questions yaran asks (`ip`, `status --json --peers=false` and
 /// `serve status --json`) with the journey's answers and failing anything else,
 /// and give the container's loopback interface the address it reports, so the
 /// Tailscale listener really binds. The capture container is disposable and has
@@ -180,7 +180,7 @@ case "$*" in
   "ip") echo ${ip} ;;
   "status --json --peers=false") cat ${dir}/status.json ;;
   "serve status --json") cat ${dir}/serve.json ;;
-  *) echo "the stand-in tailscale only answers what dux asks" >&2; exit 1 ;;
+  *) echo "the stand-in tailscale only answers what yaran asks" >&2; exit 1 ;;
 esac
 `,
   )
@@ -286,7 +286,7 @@ async function focusPane() {
 /// what creates the tab, which is seen as the new pill's ordinal in the tab
 /// strip. Not the sidebar row's "N tabs": a narrow sidebar gives the tab count
 /// up first, so it is not on screen at every grid. The pane is then focused
-/// AND interactive, so the focus is aimed back at dux before the caller's next
+/// AND interactive, so the focus is aimed back at yaran before the caller's next
 /// chord.
 async function addTab(expectedCount) {
   await palette("new-agent-tab")
@@ -361,7 +361,7 @@ async function createAgent(projectIndex, name) {
   sendText(name)
   sendKeys("Enter")
   // Wait for the creation to FINISH, not merely for the row to appear. The row
-  // shows up while the worktree is still being made, and dux focuses the new
+  // shows up while the worktree is still being made, and yaran focuses the new
   // agent's pane when it finishes: a journey that carried on at the row would
   // have its next keystrokes stolen by that focus change.
   //
@@ -382,8 +382,8 @@ async function createAgent(projectIndex, name) {
     60000,
   )
   await sleep(600)
-  // dux focuses the new agent's pane, and it is interactive there: leave every
-  // journey on the sidebar so the next key is a dux key, whatever it is.
+  // yaran focuses the new agent's pane, and it is interactive there: leave every
+  // journey on the sidebar so the next key is a yaran key, whatever it is.
   await focusSidebar()
 }
 
@@ -411,13 +411,13 @@ async function main() {
   if (launch === "shell") {
     // The seeded state, reached through the home's default config directory.
     fs.mkdirSync(path.join(shellHome, ".config"), { recursive: true })
-    fs.symlinkSync(duxHome, path.join(shellHome, ".config", "dux"))
+    fs.symlinkSync(yaranHome, path.join(shellHome, ".config", "yaran"))
   }
-  const command = { tui: "dux", server: "dux server", shell: "bash --noprofile --norc -i" }[launch]
+  const command = { tui: "yaran", server: "yaran server", shell: "bash --noprofile --norc -i" }[launch]
   const environment =
     launch === "shell"
-      ? `env -u DUX_HOME HOME='${shellHome}' PS1='$ ' PATH='${searchPath}' TERM=xterm-256color COLORTERM=truecolor`
-      : `env DUX_HOME='${duxHome}' DUX_FAKE_FIXTURE='${fixture}' PATH='${searchPath}' TERM=xterm-256color COLORTERM=truecolor`
+      ? `env -u YARAN_HOME HOME='${shellHome}' PS1='$ ' PATH='${searchPath}' TERM=xterm-256color COLORTERM=truecolor`
+      : `env YARAN_HOME='${yaranHome}' YARAN_FAKE_FIXTURE='${fixture}' PATH='${searchPath}' TERM=xterm-256color COLORTERM=truecolor`
   tmux(
     "new-session", "-d", "-c", launch === "shell" ? shellHome : "/",
     "-x", String(cols), "-y", String(rows), "-s", session,
@@ -433,7 +433,7 @@ async function main() {
     captureText,
     createAgent,
     createStandaloneAgent,
-    duxHome,
+    yaranHome,
     focusPane,
     focusSidebar,
     palette,
@@ -446,7 +446,7 @@ async function main() {
     sleep,
     waitFor,
   })
-  await sleep(Number(process.env.DUX_TUI_SETTLE_MS || 400))
+  await sleep(Number(process.env.YARAN_TUI_SETTLE_MS || 400))
 
   const ansi = tmux("capture-pane", "-p", "-e", "-N", "-t", `${session}:0.0`)
   const text = captureText()
@@ -457,11 +457,11 @@ async function main() {
   fs.writeFileSync(path.join(output, `${outputStem}.ansi`), ansi)
   fs.writeFileSync(path.join(output, `${outputStem}.txt`), text)
   fs.writeFileSync(path.join(output, `${outputStem}.json`), `${JSON.stringify({
-    journey: process.env.DUX_TUI_JOURNEY_NAME || path.basename(journeyPath),
+    journey: process.env.YARAN_TUI_JOURNEY_NAME || path.basename(journeyPath),
     columns: cols,
     rows,
     theme,
-    revision: process.env.DUX_PREVIEW_REVISION || "unknown",
+    revision: process.env.YARAN_PREVIEW_REVISION || "unknown",
     fixture,
   }, null, 2)}\n`)
 }

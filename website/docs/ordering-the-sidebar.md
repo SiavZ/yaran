@@ -6,7 +6,7 @@ order: 12
 ---
 
 The left sidebar holds every agent and every terminal. You have two ways to arrange
-it: pick a sort mode and let dux keep the list in order, or place things by hand.
+it: pick a sort mode and let yaran keep the list in order, or place things by hand.
 
 > [!NOTE]
 > There is one sort control, not one per kind. Whichever mode you pick applies to
@@ -40,7 +40,7 @@ picked out.
 ![The same sidebar filtered by the word retry: only the two agents matching it remain.](/screens/tui-sidebar-search.png)
 
 The `✷` star means the same thing wherever you see it: this one lives in your own folder,
-not in a working copy dux manages. A
+not in a working copy yaran manages. A
 [standalone agent](/docs/creating-agents#running-an-agent-in-a-folder-you-already-have) wears
 it over its folder and a standalone terminal wears it over its directory. Anything owned
 keeps the `↳` arrow pointing at its owner.
@@ -60,7 +60,7 @@ On the web, use the **Sort** dropdown above the agent list. In the terminal UI, 
   or by its folder's name for a standalone agent.
 - **Name (Z to A)**: the exact reverse. The terminal UI's cycle includes it; the web dropdown
   does not offer it, but shows it (checked) while the terminal UI has it set.
-- **Manual**: your exact hand-placed order, left untouched by dux. The terminal UI's cycle
+- **Manual**: your exact hand-placed order, left untouched by yaran. The terminal UI's cycle
   does not include it, since it is what you get by placing a row by hand. The web dropdown
   lists it as **Manual order**. In manual order a new agent lands at the top of the list,
   and a new project or standalone terminal at the end.
@@ -69,7 +69,7 @@ Terminals follow the same choice, on both surfaces, sorting among the agents. By
 terminal uses the name it was opened with (`Terminal 3`), never what is running in it, so a
 program starting does not move the row. By activity, a terminal running something counts as
 busy. By updated, its last output counts. In manual order it keeps the place you put it in
-among the agents until dux restarts.
+among the agents until yaran restarts.
 
 > [!NOTE]
 > The web's cog menu also has **Sort agents by** (Recently updated, Created, Name). That is
@@ -104,15 +104,15 @@ move; the agent ones are always there.
 > [!IMPORTANT]
 > Dragging or moving a row switches the sort to **manual**, for the whole list, agents
 > and terminals together, whichever surface you did it on. Otherwise a computed sort would snap your row straight back.
-> Cycle the sort to "active first" to hand the arranging back to dux.
+> Cycle the sort to "active first" to hand the arranging back to yaran.
 
 ## What sticks around
 
-Your **agent** order is saved. Quit dux, reopen it, and your agents come back in the
+Your **agent** order is saved. Quit yaran, reopen it, and your agents come back in the
 order you left them. So is the order of each agent's [provider tabs](/docs/agent-tabs#reordering-tabs).
 
 Your **terminal** order is not, because terminals themselves do not survive a restart.
-A terminal is a live shell; when dux stops, it is gone. New terminals start in creation
+A terminal is a live shell; when yaran stops, it is gone. New terminals start in creation
 order until you rearrange them. The same goes for the order of an agent's terminal dock.
 
 ## Terminals beside their agent

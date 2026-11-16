@@ -2,17 +2,17 @@
 set -euo pipefail
 
 REPO="patrickdappollonio/dux"
-BINARY="dux"
+BINARY="yaran"
 
 # Allow overriding the version and install directory via environment variables.
-VERSION="${DUX_VERSION:-}"
-INSTALL_DIR="${DUX_INSTALL_DIR:-}"
-DUX_TMPDIR=""
+VERSION="${YARAN_VERSION:-}"
+INSTALL_DIR="${YARAN_INSTALL_DIR:-}"
+YARAN_TMPDIR=""
 
 log() { printf '%s\n' "$@" >&2; }
 err() { log "$@"; exit 1; }
 cleanup() {
-    [ -n "$DUX_TMPDIR" ] && rm -rf "$DUX_TMPDIR"
+    [ -n "$YARAN_TMPDIR" ] && rm -rf "$YARAN_TMPDIR"
 }
 
 detect_os() {
@@ -153,7 +153,7 @@ sha256_of() {
 # NOT protection against a tampered release. Anyone able to replace an archive on
 # the release page can replace the checksum file sitting beside it just as
 # easily, because both come from the same place over the same channel. Only
-# signed artifacts would defend against that, and dux does not sign releases yet.
+# signed artifacts would defend against that, and yaran does not sign releases yet.
 #
 # Outcomes:
 #   * checksum present and matching  -> return 0, install proceeds
@@ -200,7 +200,7 @@ verify_checksum() {
     if [ ! -s "$checksum_file" ]; then
         log ""
         log "WARNING: no published checksum for ${label}."
-        log "         The download was NOT verified. Releases published before dux"
+        log "         The download was NOT verified. Releases published before yaran"
         log "         started emitting checksums do not have one."
         log ""
         return 1
@@ -251,12 +251,12 @@ resolve_version() {
     log "Fetching latest release version..."
     local response
     response="$(http_get "https://api.github.com/repos/${REPO}/releases/latest")" \
-        || err "Failed to fetch latest release from GitHub API. Set DUX_VERSION to install a specific version."
+        || err "Failed to fetch latest release from GitHub API. Set YARAN_VERSION to install a specific version."
 
     # Parse the tag_name from the JSON response without requiring jq.
     local tag
     tag="$(echo "$response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
-    [ -n "$tag" ] || err "Could not determine latest release version. Set DUX_VERSION to install a specific version."
+    [ -n "$tag" ] || err "Could not determine latest release version. Set YARAN_VERSION to install a specific version."
     echo "$tag"
 }
 
@@ -291,34 +291,34 @@ main() {
 
     log "Installing ${BINARY} ${version} (${os}/${arch}) to ${install_dir}"
 
-    DUX_TMPDIR="$(mktemp -d)"
+    YARAN_TMPDIR="$(mktemp -d)"
     trap cleanup EXIT
 
     log "Downloading ${url}..."
-    http_download "$url" "${DUX_TMPDIR}/${archive}"
+    http_download "$url" "${YARAN_TMPDIR}/${archive}"
 
-    # Fetching the checksum is best effort: releases from before dux published
+    # Fetching the checksum is best effort: releases from before yaran published
     # them answer this URL with a 404, and that must not abort the install. It
     # goes through http_fetch_optional rather than http_download so that a 404
     # and a failed request stay distinguishable, and the warning can name the
     # cause it actually observed.
-    checksum_file="${DUX_TMPDIR}/${archive}.sha256"
+    checksum_file="${YARAN_TMPDIR}/${archive}.sha256"
     checksum_status=0
     http_fetch_optional "${url}.sha256" "$checksum_file" || checksum_status=$?
 
     # A mismatch exits from inside here without installing anything. A missing or
     # unfetchable checksum warns and returns non-zero, which is not a failure of
     # the install.
-    verify_checksum "${DUX_TMPDIR}/${archive}" "$checksum_file" "$archive" "$checksum_status" || true
+    verify_checksum "${YARAN_TMPDIR}/${archive}" "$checksum_file" "$archive" "$checksum_status" || true
 
-    tar xzf "${DUX_TMPDIR}/${archive}" -C "$DUX_TMPDIR"
+    tar xzf "${YARAN_TMPDIR}/${archive}" -C "$YARAN_TMPDIR"
 
     # Install the binary: use sudo only if the target directory is not writable.
     if [ -w "$install_dir" ]; then
-        install -m 755 "${DUX_TMPDIR}/${BINARY}" "${install_dir}/${BINARY}"
+        install -m 755 "${YARAN_TMPDIR}/${BINARY}" "${install_dir}/${BINARY}"
     else
         log "Installation directory ${install_dir} is not writable, using sudo..."
-        sudo install -m 755 "${DUX_TMPDIR}/${BINARY}" "${install_dir}/${BINARY}"
+        sudo install -m 755 "${YARAN_TMPDIR}/${BINARY}" "${install_dir}/${BINARY}"
     fi
 
     log ""
@@ -332,10 +332,10 @@ main() {
     fi
 }
 
-# Setting DUX_INSTALL_SH_LIB=1 defines the functions above without installing
+# Setting YARAN_INSTALL_SH_LIB=1 defines the functions above without installing
 # anything, so the checksum logic can be driven directly by
 # .github/scripts/test_install_checksum.sh with no network and no release.
 # Nothing outside that test should set it.
-if [ "${DUX_INSTALL_SH_LIB:-}" != "1" ]; then
+if [ "${YARAN_INSTALL_SH_LIB:-}" != "1" ]; then
     main
 fi

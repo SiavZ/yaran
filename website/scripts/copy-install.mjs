@@ -2,7 +2,7 @@
 // Copies canonical assets from the repo into public/ as a prebuild step so the
 // static site stays a single source of truth:
 //   - install.sh  -> served at https://getdux.app/install.sh
-//   - dux-logo.png -> the conductor-duck logo used across the site
+//   - yaran-logo.png -> the conductor-duck logo used across the site
 // Run as a prebuild step in `npm run build`.
 
 import { copyFile, access } from "node:fs/promises";
@@ -16,7 +16,7 @@ const publicDir = resolve(here, "..", "public");
 
 const assets = [
   { from: resolve(repoRoot, "install.sh"), to: resolve(publicDir, "install.sh") },
-  { from: resolve(repoRoot, "assets", "dux-logo.png"), to: resolve(publicDir, "dux-logo.png") },
+  { from: resolve(repoRoot, "assets", "yaran-logo.png"), to: resolve(publicDir, "yaran-logo.png") },
   { from: resolve(repoRoot, "assets", "dux-screenshot.svg"), to: resolve(publicDir, "dux-screenshot.svg") },
 ];
 

@@ -1,13 +1,13 @@
 ---
 title: Attention indicators
-description: How dux notices when an agent is waiting on you, lights up the sidebar, browser tab and favicon, and the per-agent settings that make each CLI speak up.
+description: How yaran notices when an agent is waiting on you, lights up the sidebar, browser tab and favicon, and the per-agent settings that make each CLI speak up.
 group: Guides
 order: 35
 ---
 
 An agent that is blocked on you looks a lot like an agent that is busy. Both sit there
 with output on screen, and one of them has been waiting an hour for you to say "yes, run
-that command." dux listens for the moment an agent asks, and says so where you are
+that command." yaran listens for the moment an agent asks, and says so where you are
 looking.
 
 ## What you see
@@ -25,7 +25,7 @@ looking.
   with no dot, so an agent waiting on you is never hidden behind its terminal. A docked
   terminal's pill pulses and bounces while something runs in it, like a tab pill.
   Everything holds still if you have reduced-motion turned on.
-- **The browser tab title** gains a count at its very front: `(2) fix-login — dux` when
+- **The browser tab title** gains a count at its very front: `(2) fix-login — yaran` when
   two agents are waiting. A backgrounded tab updates the count without
   you visiting it.
 - **The favicon** gets a small cyan dot in the corner of the duck while the count is
@@ -54,13 +54,13 @@ of sight behind its own terminal (a phone showing the terminal, or a computer wi
 terminal maximized) is not being looked at, so its flag stays up until it comes back on
 screen.
 
-When you step away entirely, dux stops treating the focused agent as watched, so a fresh
+When you step away entirely, yaran stops treating the focused agent as watched, so a fresh
 request still lights up. Coming back holds the indicators for a short grace window; see
 [the grace window](#the-grace-window) below.
 
-## How dux detects it
+## How yaran detects it
 
-dux watches the agent's terminal output for two things:
+yaran watches the agent's terminal output for two things:
 
 - **The terminal bell**, the classic ding. The most compatible signal.
 - **Desktop-notification escape codes** (`OSC 9`, `OSC 99`, and `OSC 777`), the ones
@@ -70,27 +70,27 @@ dux watches the agent's terminal output for two things:
 > There is no formal "I need attention" protocol in the terminal world, so detection is
 > best-effort. What an agent emits depends on the agent and on whether it recognizes the
 > terminal it is running in. An agent that thinks it is in a bare, unknown terminal
-> often emits nothing at all, which is why dux presents a real terminal identity; see
+> often emits nothing at all, which is why yaran presents a real terminal identity; see
 > [Terminal capabilities](/docs/terminal-capabilities).
 
 ## Turning it on per agent
 
-Some agents need a one-line setting before they emit anything dux can see:
+Some agents need a one-line setting before they emit anything yaran can see:
 
 - **Claude Code**: with the default `terminal_identity = "auto"`, its automatic
   notification channel usually recognizes the terminal and just works. If yours shows
-  nothing, set `preferredNotifChannel: "terminal_bell"` in its settings and dux catches
+  nothing, set `preferredNotifChannel: "terminal_bell"` in its settings and yaran catches
   the bell it rings on a permission prompt or a finished turn.
-- **Codex**: set `tui.notification_method` in its config. Any value works. dux captures
+- **Codex**: set `tui.notification_method` in its config. Any value works. yaran captures
   both the bell and the richer notification form.
-- **Copilot**: it emits progress by default (its `terminalProgress` setting), which dux
+- **Copilot**: it emits progress by default (its `terminalProgress` setting), which yaran
   reads with no setup. Its turn-completion bell went quiet by default in v1.0.55, so turn the terminal bell back on in Copilot's config if you want
   a finished turn flagged.
-- **Grok**: whether it emits a signal dux can read has not been verified, so its rows may
+- **Grok**: whether it emits a signal yaran can read has not been verified, so its rows may
   not light up on their own.
 - **OpenCode**: no capturable signal out of the box today, because its notifications go
   through plugins. Its rows do not light up on their own. If a future version rings a
-  bell or emits a notification, dux picks it up with no change on your side.
+  bell or emits a notification, yaran picks it up with no change on your side.
 
 > [!NOTE]
 > Any agent that continuously reports its busy or idle status, which Claude Code and
@@ -117,9 +117,9 @@ attention_indicator = true
 # attention_indicator is false.
 attention_on_bell = true
 
-# Seconds the attention indicators stay visible after dux regains your
+# Seconds the attention indicators stay visible after yaran regains your
 # attention, before the focused agent's needs-attention flag clears. Applies
-# when you return to the dux browser tab (web UI) and when your terminal
+# when you return to the yaran browser tab (web UI) and when your terminal
 # window regains focus (TUI). Gives you time to see which agent(s) wanted you
 # before the indicator vanishes. Set to 0 to clear the indicator immediately.
 # TUI note: requires a terminal that reports focus; under tmux, set
@@ -132,15 +132,15 @@ Turn `attention_on_bell` off if a chatty tool inside the session, a test runner 
 completion, rings the bell for reasons that are not about you. Turn
 `attention_indicator` off to silence the whole feature.
 
-By default this feature stays inside dux: bells rung inside an agent's session are
-consumed by dux and not passed on to the terminal you run dux in. Forwarding an agent's
+By default this feature stays inside yaran: bells rung inside an agent's session are
+consumed by yaran and not passed on to the terminal you run yaran in. Forwarding an agent's
 real desktop notifications to your host terminal, or to your browser, is a separate
 feature covered in [Terminal capabilities](/docs/terminal-capabilities). Only the
 browser side needs an explicit permission grant.
 
 ### The grace window
 
-`attention_grace_seconds` only applies right after you return to dux (the browser tab on the
+`attention_grace_seconds` only applies right after you return to yaran (the browser tab on the
 web, the terminal window in the terminal UI). While you stay put, watching an agent still
 clears its flag at once. Through the Preferences dialog it accepts up to 300 seconds, and `0`
 clears immediately.
@@ -151,7 +151,7 @@ clears immediately.
 > reports focus the grace never applies and the focused agent's flag clears right away.
 >
 > Inside tmux, add this to your `~/.tmux.conf`. tmux reports focus per pane, so switching
-> tmux panes away from dux reads as unfocused.
+> tmux panes away from yaran reads as unfocused.
 >
 > ```tmux
 > set -g focus-events on
@@ -166,19 +166,19 @@ Work down this list before concluding it is broken:
    `echo $TERM_PROGRAM`.
    - Seeing your real terminal, or `ghostty` on the web, means identity is doing its job.
    - An empty value is not proof of a problem: kitty, alacritty, foot and xterm never set
-     it, and dux's forced `kitty` identity deliberately does not either. Under kitty look
+     it, and yaran's forced `kitty` identity deliberately does not either. Under kitty look
      for `KITTY_WINDOW_ID` and `TERM` instead.
    - Check `[capabilities] terminal_identity` in your config. Full story in
      [Terminal capabilities](/docs/terminal-capabilities).
 2. **Give it a few seconds.** Some agents wait for a beat of true idleness before
-   notifying; Claude Code holds off for about six seconds after a question appears. dux
+   notifying; Claude Code holds off for about six seconds after a question appears. yaran
    also holds fire briefly after you have just been typing at the agent, so a question
    you were clearly present for does not double-ding you.
 3. **Remember that the agent you are watching never lights up.** To see the indicator
    fire, ask the agent something and then switch to a different agent or tab.
 4. **Prove the plumbing with a forged signal.** Ask the agent to run
    `printf '\033]9;test\007'`. Those bytes land exactly like a real notification, so if
-   the indicator lights up, dux works end to end and the silence is the agent's
+   the indicator lights up, yaran works end to end and the silence is the agent's
    configuration. If even that does nothing, check that `attention_indicator` is still
    `true`.
 5. **Know which silences are expected.** OpenCode has no capturable signal,
