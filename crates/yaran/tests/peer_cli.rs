@@ -1,4 +1,4 @@
-//! End-to-end checks of `yaran peer` through the real binary, with YARAN_HOME and
+//! End-to-end checks of `yaran peer` through the real binary, with `YARAN_HOME` and
 //! the AMQ root pointed at a temp dir so the host's real state is untouched.
 //!
 //! `yaran peer` is a client: its agents and its AMQ registry pass come from the

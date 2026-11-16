@@ -115,15 +115,18 @@ impl MockWorker {
             answers: Arc::default(),
             config: Arc::new(Mutex::new(machine_config())),
         };
-        let (seen, answers, config) =
-            (mock.seen.clone(), mock.answers.clone(), mock.config.clone());
+        let (seen, answers, config) = (
+            std::sync::Arc::clone(&mock.seen),
+            std::sync::Arc::clone(&mock.answers),
+            std::sync::Arc::clone(&mock.config),
+        );
         let public = machine_key().1;
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let (seen, answers, config, public) = (
-                    seen.clone(),
-                    answers.clone(),
-                    config.clone(),
+                    std::sync::Arc::clone(&seen),
+                    std::sync::Arc::clone(&answers),
+                    std::sync::Arc::clone(&config),
                     public.clone(),
                 );
                 std::thread::spawn(move || serve(stream, &seen, &answers, &config, &public));

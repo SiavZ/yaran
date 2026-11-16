@@ -636,7 +636,7 @@ pub struct AgentLaunchRequest {
     /// Decided with `resume` by `Engine::build_tab_launch_request`.
     pub provider_session: crate::resume_recovery::ProviderSessionLaunch,
     /// Extra CLI args the session's YOLO setting adds for this provider
-    /// (`SessionSettings::yolo_launch_args`, e.g. OpenCode `--auto`), appended
+    /// (`SessionSettings::yolo_launch_args`, e.g. `OpenCode` `--auto`), appended
     /// after the resume, resume-by-id or fresh args. Filled by the request
     /// builders; the launch job only appends.
     pub yolo_args: Vec<String>,

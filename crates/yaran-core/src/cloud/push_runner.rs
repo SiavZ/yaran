@@ -359,7 +359,7 @@ impl Runner {
             }
             Err(err) if says_revoked(&err) => self.revoke(org),
             Err(err) => {
-                tracing::debug!(target: "yaran::cloud::push", error = %describe(&err), "machine config fetch failed; keeping the cached limits")
+                tracing::debug!(target: "yaran::cloud::push", error = %describe(&err), "machine config fetch failed; keeping the cached limits");
             }
         }
     }

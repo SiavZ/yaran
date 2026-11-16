@@ -1,7 +1,7 @@
 //! The JWE Concat KDF (RFC 7518 §4.6.2; NIST SP 800-56A single-step KDF over SHA-256),
 //! which turns the ECDH secret Z into the handoff envelope's content key.
 //!
-//! For direct ECDH-ES the AlgorithmID is the `enc` value. Pinned by the RFC 7518
+//! For direct ECDH-ES the `AlgorithmID` is the `enc` value. Pinned by the RFC 7518
 //! Appendix C and RFC 7520 §5.5 vectors in `fixtures/jwe/`.
 //!
 //! - Pure.
@@ -29,7 +29,7 @@ fn length_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-/// OtherInfo = len32(alg) ‖ alg ‖ len32(apu) ‖ apu ‖ len32(apv) ‖ apv ‖ be32(keydatalen).
+/// `OtherInfo` = len32(alg) ‖ alg ‖ len32(apu) ‖ apu ‖ len32(apv) ‖ apv ‖ be32(keydatalen).
 pub fn other_info(algorithm_id: &str, apu: &[u8], apv: &[u8], key_bits: u32) -> Vec<u8> {
     let mut out = Vec::new();
     length_prefixed(&mut out, algorithm_id.as_bytes());

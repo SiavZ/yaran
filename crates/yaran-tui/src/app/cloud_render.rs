@@ -94,7 +94,7 @@ pub(crate) fn qr_lines(
 }
 
 impl App {
-    pub(super) fn render_cloud_prompt(&mut self, frame: &mut Frame) {
+    pub(super) fn render_cloud_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::Cloud(prompt) = &self.prompt else {
             return;
         };
@@ -149,7 +149,7 @@ impl App {
     /// `tail` rows under it. Returns the rect of that tail.
     fn cloud_frame(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         title: &str,
         width: u16,
         body: &[Line<'static>],
@@ -187,7 +187,14 @@ impl App {
         )
     }
 
-    fn render_cloud_hints(&self, frame: &mut Frame, x: u16, y: u16, width: u16, hints: &[Hint]) {
+    fn render_cloud_hints(
+        &self,
+        frame: &mut Frame<'_>,
+        x: u16,
+        y: u16,
+        width: u16,
+        hints: &[Hint],
+    ) {
         let mut line = modal_hint_line(&self.theme, hints, width);
         if let Some(first) = line.spans.first_mut() {
             first.content = first.content.trim_start().to_string().into();
@@ -198,7 +205,7 @@ impl App {
     }
 
     /// The login form. Returns the field's inner rect for the mouse.
-    fn render_cloud_login(&mut self, frame: &mut Frame, login: &CloudLogin) -> Rect {
+    fn render_cloud_login(&mut self, frame: &mut Frame<'_>, login: &CloudLogin) -> Rect {
         let text = self.cloud_text();
         let label = Style::default().fg(self.theme.input_label_fg);
         let mut body: Vec<Line<'static>> = Vec::new();
@@ -291,7 +298,7 @@ impl App {
     /// A Cancel / act pair under one sentence. Returns (cancel, act) rects.
     fn render_cloud_confirm(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         title: &str,
         body: &'static str,
         act: &'static str,
@@ -338,7 +345,7 @@ impl App {
 
     fn render_cloud_report(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         title: &str,
         width: u16,
         body: &[Line<'static>],

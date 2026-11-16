@@ -139,7 +139,7 @@ mod tests {
     fn amq_inject_defaults_match_constants() {
         let c = AmqConfig::default();
         assert!(c.inject.enabled);
-        assert!(c.inject.queue_dir.is_empty());
+        assert_eq!(c.inject.queue_dir, "");
         assert!(
             c.inject
                 .busy_markers
@@ -164,7 +164,7 @@ mod tests {
         );
         assert!(c.orchestrator.enabled);
         assert_eq!(c.orchestrator.poll_interval_secs, 900);
-        assert!(c.orchestrator.checkpoint_prompt.is_empty());
+        assert_eq!(c.orchestrator.checkpoint_prompt, "");
     }
 
     #[test]

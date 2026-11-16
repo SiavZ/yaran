@@ -1,5 +1,5 @@
 //! Remembered handoff consent (Design §8.1, D24): the device signature the phone's
-//! hardware-held key makes over each handoff request, and the MACed consent cookie that
+//! hardware-held key makes over each handoff request, and the `MACed` consent cookie that
 //! lets a renewal from the same device skip the consent page on `/__yaran/handoff`.
 //!
 //! The page is skipped only when the cookie verifies under the current key version, its
@@ -150,7 +150,7 @@ pub fn consent_mac_input(host: &str, fp24: &str, iat: i64, kv: u32) -> String {
     format!("{CONSENT_MAC_TAG}\n{host}\n{fp24}\n{iat}\n{kv}\n")
 }
 
-/// base64url(HMAC-SHA256(key, mac_in)), 43 characters.
+/// base64url(HMAC-SHA256(key, `mac_in`)), 43 characters.
 pub fn consent_mac(key: &[u8], host: &str, fp24: &str, iat: i64, kv: u32) -> String {
     let key = hmac::Key::new(hmac::HMAC_SHA256, key);
     b64url_encode(hmac::sign(&key, consent_mac_input(host, fp24, iat, kv).as_bytes()).as_ref())
@@ -314,7 +314,7 @@ pub fn consent_sets_cookie(decision: HandoffDecision, verified: bool) -> bool {
     }
 }
 
-/// The Worker's consent MAC key: HKDF-SHA256(DATA_KEY, "yaran-cloud", "v1/handoff_consent").
+/// The Worker's consent MAC key: HKDF-SHA256(DATA_KEY, "yaran-cloud", "`v1/handoff_consent`").
 /// yaran keeps its own random key (Phase 09); this exists to pin the shared fixture.
 pub fn worker_consent_key(data_key: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];

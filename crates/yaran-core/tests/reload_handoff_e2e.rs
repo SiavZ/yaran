@@ -130,7 +130,7 @@ fn main() {
     let mut failed = Vec::new();
     for (name, case) in &selected {
         if let Ok(()) = std::panic::catch_unwind(case) {
-            println!("test {name} ... ok")
+            println!("test {name} ... ok");
         } else {
             println!("test {name} ... FAILED");
             failed.push(*name);

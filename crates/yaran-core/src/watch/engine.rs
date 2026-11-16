@@ -518,22 +518,19 @@ impl RuleRuntime {
                 let parsed = captured.as_deref().and_then(|s| {
                     crate::watch::reset_time::parse(*format, s, now, chrono::Utc::now())
                 });
-                match parsed {
-                    Some(target) => {
-                        let jitter_ms = if self.rule.backoff.jitter_ms > 0 {
-                            rng.gen_range(0..=self.rule.backoff.jitter_ms)
-                        } else {
-                            0
-                        };
-                        (target + Duration::from_millis(jitter_ms), None)
-                    }
-                    None => {
-                        let warning = format!(
-                            "watch rule \"{}\": failed to parse capture \"{}\", falling back to backoff",
-                            self.label, capture
-                        );
-                        (backoff_fire(), Some(warning))
-                    }
+                if let Some(target) = parsed {
+                    let jitter_ms = if self.rule.backoff.jitter_ms > 0 {
+                        rng.gen_range(0..=self.rule.backoff.jitter_ms)
+                    } else {
+                        0
+                    };
+                    (target + Duration::from_millis(jitter_ms), None)
+                } else {
+                    let warning = format!(
+                        "watch rule \"{}\": failed to parse capture \"{}\", falling back to backoff",
+                        self.label, capture
+                    );
+                    (backoff_fire(), Some(warning))
                 }
             }
         }
@@ -592,7 +589,10 @@ mod tests {
 
         let quiet = "working on it...";
         for _ in 0..50 {
-            assert!(engine.observe(quiet, now).is_empty());
+            assert_eq!(
+                engine.observe(quiet, now),
+                [] as [crate::watch::engine::WatchEffect; 0]
+            );
         }
         let key = SnapshotKey::of(quiet);
         assert_eq!(engine.rules[0].count_cache, Some((key, 0)));
@@ -601,7 +601,10 @@ mod tests {
         let near = "rate limitee";
         let hit = "rate limited";
         assert_eq!(near.len(), hit.len());
-        assert!(engine.observe(near, now).is_empty());
+        assert_eq!(
+            engine.observe(near, now),
+            [] as [crate::watch::engine::WatchEffect; 0]
+        );
         assert_eq!(engine.rules[0].count_cache.map(|(_, c)| c), Some(0));
 
         // The real hit schedules (backoff 0), and the next tick on the same
@@ -633,7 +636,7 @@ mod tests {
 
         // Just before fire_at, still pending.
         let effects = engine.observe("you are rate limited", t0 + Duration::from_millis(999));
-        assert!(effects.is_empty());
+        assert_eq!(effects, [] as [crate::watch::engine::WatchEffect; 0]);
 
         // At fire_at, sends text + status info.
         let effects = engine.observe("you are rate limited", t0 + Duration::from_millis(1_000));
@@ -748,7 +751,7 @@ mod tests {
 
         // Subsequent ticks are silent.
         let effects = engine.observe("rate\nrate\nrate", now + Duration::from_secs(60));
-        assert!(effects.is_empty());
+        assert_eq!(effects, [] as [crate::watch::engine::WatchEffect; 0]);
     }
 
     #[test]
@@ -871,7 +874,7 @@ mod tests {
             0,
             "oversized pattern should be rejected"
         );
-        assert!(!errors.is_empty());
+        assert_ne!(errors, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -951,7 +954,7 @@ mod tests {
         };
 
         let (mut engine, errors) = WatchEngine::new("s1", &[r]);
-        assert!(errors.is_empty());
+        assert_eq!(errors, [] as [std::string::String; 0]);
         let t0 = Instant::now();
         let effects = engine.observe("limit reached | not-a-timestamp", t0);
         assert!(

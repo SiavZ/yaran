@@ -452,11 +452,11 @@ fn a_cancel_after_a_replace_claim_is_sent_is_too_late_and_the_login_completes() 
     let (_root, paths) = setup();
     let previous = pair_previous(&paths);
     let mut io = FakeIo::new(Browser::Loopback);
-    let cancel = io.cancel.clone();
+    let cancel = std::sync::Arc::clone(&io.cancel);
     // The person chose Replace: the Worker tears the previous machine down at claim time,
     // and the cancel lands while that claim is in flight.
     let torn_down = Arc::new(AtomicBool::new(false));
-    let tear = torn_down.clone();
+    let tear = std::sync::Arc::clone(&torn_down);
     let w = claim_side_effect(move || {
         tear.store(true, Ordering::SeqCst);
         cancel.store(true, Ordering::SeqCst);

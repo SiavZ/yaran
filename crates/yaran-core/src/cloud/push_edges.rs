@@ -119,14 +119,23 @@ mod tests {
             vec![raised("a")]
         );
         // Firing again while flagged is not an edge.
-        assert!(e.observe(&[t("a")], true, NOT_ENGAGED, LIVE).is_empty());
-        assert!(e.observe(&[], true, NOT_ENGAGED, LIVE).is_empty());
+        assert_eq!(
+            e.observe(&[t("a")], true, NOT_ENGAGED, LIVE),
+            [] as [crate::cloud::push_edges::Edge; 0]
+        );
+        assert_eq!(
+            e.observe(&[], true, NOT_ENGAGED, LIVE),
+            [] as [crate::cloud::push_edges::Edge; 0]
+        );
     }
 
     #[test]
     fn push_edges_engaged_suppresses_the_raise() {
         let mut e = PushEdges::default();
-        assert!(e.observe(&[t("a")], true, |_| true, LIVE).is_empty());
+        assert_eq!(
+            e.observe(&[t("a")], true, |_| true, LIVE),
+            [] as [crate::cloud::push_edges::Edge; 0]
+        );
     }
 
     #[test]

@@ -146,7 +146,7 @@ mod tests {
             .collect();
         let prompt = build_orchestrator_checkpoint_prompt(&peers);
         assert!(prompt.contains("- ... 3 more live agents omitted"));
-        assert!(!prompt.contains(&format!("- w{} ", MAX_CHECKPOINT_PEERS)));
+        assert!(!prompt.contains(&format!("- w{MAX_CHECKPOINT_PEERS} ")));
     }
 
     #[test]

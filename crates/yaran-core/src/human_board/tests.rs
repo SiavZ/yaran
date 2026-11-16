@@ -1,7 +1,7 @@
 //! Unit tests for the human board's card model, persistence and reply rules.
 //!
 //! Exercises store updates in temporary files and the pure card/reply behavior.
-//! - Threaded watcher cases live in the watcher_tests child module.
+//! - Threaded watcher cases live in the `watcher_tests` child module.
 //!
 //! <module-headers:begin>
 //! ```text
@@ -176,7 +176,7 @@ fn a_post_needs_a_kind_and_a_title() {
             .post(card(CardKind::Task, None, " \n "), at(0))
             .is_err()
     );
-    assert!(board.cards.is_empty());
+    assert_eq!(board.cards, [] as [crate::human_board::Card; 0]);
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn the_store_round_trips_and_writes_an_owner_only_file() {
     assert_eq!(mode, 0o600);
     let leftovers: Vec<_> = fs::read_dir(dir.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|name| name.contains(".tmp."))
         .collect();

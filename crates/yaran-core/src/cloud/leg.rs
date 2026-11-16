@@ -150,7 +150,7 @@ impl CloudLeg {
         previous: Option<CloudLeg>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
+        let flag = std::sync::Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("yaran-cloud-leg".into())
             .spawn(move || {
@@ -187,7 +187,9 @@ impl CloudLeg {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(|t| t.is_finished())
+        self.thread
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
     }
 }
 
@@ -228,7 +230,7 @@ impl CredentialsWatch {
         on_change: Box<dyn Fn() + Send>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
+        let flag = std::sync::Arc::clone(&stop);
         std::thread::Builder::new()
             .name("yaran-cloud-credentials".into())
             .spawn(move || {

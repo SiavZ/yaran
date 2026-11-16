@@ -972,7 +972,7 @@ impl App {
             HumanBoardCardFocus::Close
         };
         self.mark_board_card_read(&card);
-        self.human_board.card_view = Default::default();
+        self.human_board.card_view = crate::app::human_board_dialog::CardView::default();
         self.prompt = PromptState::HumanBoardCard {
             card: Box::new(card),
             focus,

@@ -111,7 +111,7 @@ async fn rig(
     let fake = Arc::new(Fake {
         dir: dir.path().to_path_buf(),
         machine: Mutex::new(paired.then(|| machine(port))),
-        rev: Default::default(),
+        rev: std::sync::atomic::AtomicU64::default(),
     });
     let ingress = crate::cloud_test_support::offline_ingress();
     let (control, rx) = CloudModeControl::new(tokio::runtime::Handle::current(), ingress);
@@ -122,11 +122,11 @@ async fn rig(
         ..CloudLegSettings::default()
     };
     let ready = Arc::new(AtomicU8::new(1));
-    let probe_ready = ready.clone();
+    let probe_ready = std::sync::Arc::clone(&ready);
     let mut cloud = CloudLoop::new(
         rx,
         control.clone(),
-        fake.clone(),
+        Arc::<Fake>::clone(&fake),
         settings,
         port,
         None,

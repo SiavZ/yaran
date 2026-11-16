@@ -243,7 +243,7 @@ async fn a_remote_browser_completes_by_pasting_its_landing_address() {
     )
     .await;
     assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "{reason}");
-    assert!(!reason.is_empty());
+    assert_ne!(reason, "");
 
     let done = json(
         &app,

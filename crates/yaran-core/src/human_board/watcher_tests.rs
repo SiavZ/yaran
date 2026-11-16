@@ -1,7 +1,7 @@
 //! Watcher snapshots follow complete file changes and eventually reach the newest board.
 //!
 //! Uses atomic fixture writes and waits for observed readiness rather than scheduler timing.
-//! - Test-only child of human_board::tests.
+//! - Test-only child of `human_board::tests`.
 //!
 //! <module-headers:begin>
 //! ```text

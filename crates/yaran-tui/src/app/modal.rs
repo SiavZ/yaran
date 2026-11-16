@@ -1210,7 +1210,7 @@ pub(super) mod tests {
                 PromptState::SessionSettings(Box::new(crate::app::SessionSettingsPrompt {
                     session_id: app.engine.sessions[0].id.clone(),
                     session_label: "demo".to_string(),
-                    draft: Default::default(),
+                    draft: yaran_core::session_settings::SessionSettings::default(),
                     draft_title: TextInput::with_text("demo".to_string()),
                     draft_compact_path: TextInput::new(),
                     global_compact_path: "~/.claude/compact-instructions.txt".to_string(),
@@ -1600,7 +1600,7 @@ pub(super) mod tests {
                     copy_changes: false,
                     review_copy: None,
                     focus: NameNewAgentFocus::Input,
-                    extras: Default::default(),
+                    extras: Box::default(),
                 },
             ),
             (

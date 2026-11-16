@@ -80,7 +80,7 @@ pub fn amq_handle(name: &str) -> String {
 
 /// Sanitise a status's structured parts beside its sanitized plain message.
 ///
-/// Upstream (statusline + status_text) carries a status as a plain message
+/// Upstream (statusline + `status_text`) carries a status as a plain message
 /// plus the [`crate::prose`] segments the web draws chips from. The fork
 /// sanitizes the message at the one chokepoint (`StatusLine::set_scoped`),
 /// and the parts must agree with it: they spell the same sentence, and the

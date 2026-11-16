@@ -48,7 +48,7 @@ pub const MAX_ASSET_BYTES: u64 = 150 * 1024 * 1024;
 /// Cap on the binary extracted from an archive.
 pub const MAX_BINARY_BYTES: u64 = 200 * 1024 * 1024;
 /// ureq 3.3 has no per-read idle timeout, so the body read is capped as a whole.
-const BODY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const BODY_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Why there is no binary to run. Every variant fails closed.
 #[derive(Debug, Clone, PartialEq, Eq)]

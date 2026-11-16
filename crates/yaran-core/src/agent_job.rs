@@ -3036,7 +3036,7 @@ fn run_create_standalone_agent_job(
     // the defaults; a later settings change applies at its next launch.
     let env = crate::agent_env::agent_launch_env(
         &paths,
-        &config,
+        config,
         &session,
         &crate::session_settings::SessionSettings::default(),
         session.slot_tab_id().as_str(),
@@ -4061,7 +4061,7 @@ fn run_agent_launch_job_with(
     // After the ready event, on the same FIFO channel: a newly created agent's
     // row is only written when its launch-ready event is processed, and the id
     // has nowhere to go before that.
-    report_fresh_capture(capture, &session_id, process_id, &worker_tx);
+    report_fresh_capture(capture, &session_id, process_id, worker_tx);
 }
 
 /// Hand a started launch's capture back to the engine: a Claude id at once
@@ -4619,7 +4619,7 @@ mod tests {
             None,
             "the checkout stays detached"
         );
-        assert!(!session.agent_handle().is_empty());
+        assert_ne!(session.agent_handle(), "");
     }
 
     /// Forking a shared agent still makes an isolated worktree agent: a fork

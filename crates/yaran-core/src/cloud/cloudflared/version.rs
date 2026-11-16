@@ -47,7 +47,7 @@ pub const PIN_WARN_DAYS: i64 = 330;
 
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A cloudflared CalVer release, `YYYY.M.N`.
+/// A cloudflared `CalVer` release, `YYYY.M.N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CfVersion {
     pub year: u16,

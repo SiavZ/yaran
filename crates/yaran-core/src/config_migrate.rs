@@ -77,7 +77,7 @@ fn consume_fork_schema_version(doc: &mut DocumentMut) -> bool {
         let no_base_args = codex
             .get("args")
             .and_then(Item::as_array)
-            .is_none_or(|args| args.is_empty());
+            .is_none_or(toml_edit::Array::is_empty);
         let forced_on = codex.get("forward_scroll").and_then(Item::as_bool) == Some(true);
         if stock_command && no_base_args && forced_on {
             codex.remove("forward_scroll");

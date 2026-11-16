@@ -212,7 +212,7 @@ impl MachineApi {
         credentials::update(&self.paths, |c| {
             Ok(c.map(|mut c| {
                 if c.machine_id == machine_id {
-                    c.tunnel_token = resp.tunnel.token.clone();
+                    c.tunnel_token.clone_from(&resp.tunnel.token);
                     c.token_version = resp.tunnel.token_version;
                 }
                 c
@@ -296,10 +296,10 @@ impl MachineApi {
             match credentials::stamp_revoked(&self.paths, &creds) {
                 Ok(true) => RevocationSignal::global().raise(),
                 Ok(false) => {
-                    tracing::info!(target: "yaran::cloud", "a revocation answer for an older pairing was ignored")
+                    tracing::info!(target: "yaran::cloud", "a revocation answer for an older pairing was ignored");
                 }
                 Err(e) => {
-                    tracing::warn!(target: "yaran::cloud", error = %e, "could not stamp revoked_at")
+                    tracing::warn!(target: "yaran::cloud", error = %e, "could not stamp revoked_at");
                 }
             }
         }

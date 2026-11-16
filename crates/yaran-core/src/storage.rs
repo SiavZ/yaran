@@ -4025,12 +4025,12 @@ impl SessionStore {
             "where deleted_at is null"
         };
         let mut stmt = self.conn.prepare(&format!(
-            r#"
+            r"
             select id, project_id, provider, source_branch, branch_name, worktree_path, title, project_path, started_providers, desired_running, auto_reopen_enabled, status, created_at, updated_at, initial_branch, last_focused_tab, branch_provenance, workspace_kind, folder_path, slot_tab_id, agent_handle, shared_workspace, deleted_at
             from agent_sessions
             {where_clause}
             order by sort_order asc, updated_at desc
-            "#
+            "
         ))?;
         let rows = stmt.query_map([], |row| {
             let started_providers: String = row.get(8)?;
@@ -4732,7 +4732,7 @@ impl SessionStore {
 mod tests {
     use super::*;
 
-    /// A corrupt started_providers cell degrades to empty instead of failing
+    /// A corrupt `started_providers` cell degrades to empty instead of failing
     /// the load (fork e79bfbe5 kept this while adding the warning).
     #[test]
     fn started_providers_parse_failure_degrades_to_empty() {
@@ -5353,7 +5353,7 @@ mod tests {
     fn the_title_freeze_never_gives_a_standalone_row_an_empty_name() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            r#"
+            r"
             create table agent_sessions (
                 id text primary key,
                 project_id text not null,
@@ -5369,7 +5369,7 @@ mod tests {
                 workspace_kind text not null default 'managed',
                 folder_path text
             );
-            "#,
+            ",
         )
         .unwrap();
         // A folder row and a managed row side by side, both with a NULL title.
@@ -5406,7 +5406,7 @@ mod tests {
             session.title, None,
             "a frozen empty branch name would leave the row with no label at all"
         );
-        assert!(!session.display_label().is_empty());
+        assert_ne!(session.display_label(), "");
     }
 
     /// The fork's multi-harness setup, in the pre-upgrade shape the user
@@ -5423,7 +5423,7 @@ mod tests {
         // Fork shape: the identity columns exist, `initial_branch` does not, so
         // the one-time freeze really fires during this migrate().
         conn.execute_batch(
-            r#"
+            r"
             create table agent_sessions (
                 id text primary key,
                 project_id text not null,
@@ -5441,7 +5441,7 @@ mod tests {
                 agent_handle text not null default '',
                 shared_workspace integer not null default 0
             );
-            "#,
+            ",
         )
         .unwrap();
         for (id, provider, handle) in [
@@ -5497,7 +5497,7 @@ mod tests {
         // Post-upgrade shape: `initial_branch` already exists, so the one-time
         // freeze does not fire; only the repair can act.
         conn.execute_batch(
-            r#"
+            r"
             create table agent_sessions (
                 id text primary key,
                 project_id text not null,
@@ -5516,7 +5516,7 @@ mod tests {
                 agent_handle text not null default '',
                 shared_workspace integer not null default 0
             );
-            "#,
+            ",
         )
         .unwrap();
         // The damaged state the user's database is in: every shared sibling
@@ -7015,7 +7015,7 @@ mod tests {
         assert_eq!(ids, vec!["b", "a"]);
     }
 
-    /// Fork audit02 P1-Z (tests/session_state.rs). The fork persisted a
+    /// Fork audit02 P1-Z (`tests/session_state.rs`). The fork persisted a
     /// typestate `SessionState` in a `state_json` column; upstream persists
     /// the same lifecycle as `SessionStatus` in `status`, and every value must
     /// come back as written, or a restart would revive an exited agent or lose

@@ -97,7 +97,7 @@ impl App {
     /// A click lands the login's caret, or presses a confirm's button (acting on
     /// the release over the same button). Anything else falls through to the
     /// generic outside-click handling.
-    pub(crate) fn handle_cloud_mouse(&mut self, mouse: &MouseEvent) -> Option<bool> {
+    pub(crate) fn handle_cloud_mouse(&mut self, mouse: MouseEvent) -> Option<bool> {
         let OverlayMouseLayout::Cloud {
             field,
             cancel,

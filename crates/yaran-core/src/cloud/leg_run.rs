@@ -209,7 +209,7 @@ impl Run<'_> {
             metrics_addr: format!("127.0.0.1:{port}"),
             state: state.to_string(),
             since: chrono::Utc::now().to_rfc3339(),
-            child_start_time: process_identity(pid).map(|(_, t)| t).unwrap_or(0),
+            child_start_time: process_identity(pid).map_or(0, |(_, t)| t),
         };
         if let Err(err) = self.identity.write_leg_state(&record) {
             tracing::warn!(target: "yaran::cloud", %err, "could not write leg-state.json");
@@ -354,7 +354,7 @@ pub fn clock_warning(server_time: Option<&str>) -> String {
              fix the system clock. cloudflared keeps running.",
             seconds.abs()
         ),
-        Err(_) => "Yaran Cloud refused this machine's signed request because its clock is off; \
+        Err(()) => "Yaran Cloud refused this machine's signed request because its clock is off; \
                    fix the system clock. cloudflared keeps running."
             .to_string(),
     }

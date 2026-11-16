@@ -185,17 +185,15 @@ pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<S
         Err(e) => return Err(anyhow!("read_dir({}): {e}", queue_dir.display())),
     };
     for receiver_entry in entries.flatten() {
-        let metadata = match receiver_entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
+        let Ok(metadata) = receiver_entry.file_type() else {
+            continue;
         };
         if !metadata.is_dir() {
             continue;
         }
         let name = receiver_entry.file_name();
-        let name_str = match name.to_str() {
-            Some(s) => s,
-            None => continue,
+        let Some(name_str) = name.to_str() else {
+            continue;
         };
         if !is_valid_receiver(name_str) {
             rejections.push((
@@ -207,9 +205,8 @@ pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<S
             continue;
         }
         let receiver_dir = receiver_entry.path();
-        let inner = match fs::read_dir(&receiver_dir) {
-            Ok(it) => it,
-            Err(_) => continue,
+        let Ok(inner) = fs::read_dir(&receiver_dir) else {
+            continue;
         };
         for file_entry in inner.flatten() {
             let file_name = file_entry.file_name();
@@ -219,7 +216,10 @@ pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<S
             if file_str.starts_with(INFLIGHT_PREFIX) || file_str.starts_with('.') {
                 continue;
             }
-            if !file_str.ends_with(".msg") {
+            if !std::path::Path::new(file_str)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("msg"))
+            {
                 continue;
             }
             by_receiver
@@ -352,17 +352,12 @@ pub fn reclaim_stale_inflight_with_max_age(
         Err(e) => return Err(anyhow!("read_dir({}): {e}", queue_dir.display())),
     };
     for receiver_entry in entries.flatten() {
-        if !receiver_entry
-            .file_type()
-            .map(|t| t.is_dir())
-            .unwrap_or(false)
-        {
+        if !receiver_entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let receiver_dir = receiver_entry.path();
-        let inner = match fs::read_dir(&receiver_dir) {
-            Ok(it) => it,
-            Err(_) => continue,
+        let Ok(inner) = fs::read_dir(&receiver_dir) else {
+            continue;
         };
         for entry in inner.flatten() {
             let name = entry.file_name();
@@ -375,7 +370,10 @@ pub fn reclaim_stale_inflight_with_max_age(
             // Bridge-format mktemp temps don't end in `.msg`; leave
             // them alone so we don't yank a half-written file out
             // from under a concurrent bridge process.
-            if !name_str.ends_with(".msg") {
+            if !std::path::Path::new(name_str)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("msg"))
+            {
                 continue;
             }
             let original_name = &name_str[INFLIGHT_PREFIX.len()..];
@@ -389,7 +387,7 @@ pub fn reclaim_stale_inflight_with_max_age(
                             "amq: expired stale AMQ inflight instead of replaying it (from={} to={} max_age_secs={})",
                             inflight_path.display(),
                             expired_path.display(),
-                            max_age.map(|d| d.as_secs()).unwrap_or(0)
+                            max_age.map_or(0, |d| d.as_secs())
                         ));
                     }
                     Err(e) => {
@@ -466,24 +464,23 @@ pub fn expire_stale_messages(queue_dir: &Path, max_age: Option<Duration>) -> Res
         Err(e) => return Err(anyhow!("read_dir({}): {e}", queue_dir.display())),
     };
     for receiver_entry in entries.flatten() {
-        if !receiver_entry
-            .file_type()
-            .map(|t| t.is_dir())
-            .unwrap_or(false)
-        {
+        if !receiver_entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let receiver_dir = receiver_entry.path();
-        let inner = match fs::read_dir(&receiver_dir) {
-            Ok(it) => it,
-            Err(_) => continue,
+        let Ok(inner) = fs::read_dir(&receiver_dir) else {
+            continue;
         };
         for entry in inner.flatten() {
             let name = entry.file_name();
             let Some(name_str) = name.to_str() else {
                 continue;
             };
-            if name_str.starts_with('.') || !name_str.ends_with(".msg") {
+            if name_str.starts_with('.')
+                || !std::path::Path::new(name_str)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("msg"))
+            {
                 continue;
             }
             let path = entry.path();
@@ -724,7 +721,7 @@ pub fn snapshot_busy_marker<'a>(snapshot: &str, busy_markers: &'a [String]) -> O
     busy_markers
         .iter()
         .find(|marker| snapshot.contains(marker.as_str()))
-        .map(|s| s.as_str())
+        .map(std::string::String::as_str)
 }
 
 /// Boolean shorthand for [`snapshot_busy_marker`] used in tests where
@@ -786,8 +783,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let queue = dir.path().join("inject-queue");
         let outcome = scan_queue_dir(&queue).unwrap();
-        assert!(outcome.messages.is_empty());
-        assert!(outcome.rejections.is_empty());
+        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
+        assert_eq!(
+            outcome.rejections,
+            [] as [(std::path::PathBuf, crate::amq::queue::InjectRejection); 0]
+        );
     }
 
     #[test]
@@ -863,7 +863,7 @@ mod tests {
         fs::create_dir_all(&bad).unwrap();
         fs::write(bad.join("001.msg"), b"steal\n").unwrap();
         let outcome = scan_queue_dir(&queue).unwrap();
-        assert!(outcome.messages.is_empty());
+        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
         assert_eq!(outcome.rejections.len(), 1);
         assert!(matches!(
             outcome.rejections[0].1,
@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(rejected, receiver.join(".rejected/.inflight.001.msg"));
         assert_eq!(fs::read(&rejected).unwrap(), b"\x03\n");
         let outcome = scan_queue_dir(dir.path()).unwrap();
-        assert!(outcome.messages.is_empty());
+        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
     }
 
     #[test]
@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(expired, receiver.join(".expired/001.msg"));
         assert_eq!(fs::read(&expired).unwrap(), b"old wake\n");
         let outcome = scan_queue_dir(dir.path()).unwrap();
-        assert!(outcome.messages.is_empty());
+        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
     }
 
     #[test]

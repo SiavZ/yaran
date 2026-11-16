@@ -3943,7 +3943,7 @@ mod tests {
         );
     }
 
-    /// A help entry whose section is not in HELP_SECTION_ORDER is dropped
+    /// A help entry whose section is not in `HELP_SECTION_ORDER` is dropped
     /// from the overlay without a trace (fork 55dba0f7).
     #[test]
     fn every_help_entry_section_is_rendered() {

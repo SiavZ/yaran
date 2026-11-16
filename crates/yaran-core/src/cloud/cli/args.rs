@@ -151,7 +151,12 @@ mod tests {
     use super::*;
 
     fn p(args: &[&str]) -> Result<CloudCommand, String> {
-        parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        parse(
+            &args
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>(),
+        )
     }
 
     #[test]

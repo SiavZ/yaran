@@ -16,9 +16,9 @@
 //!
 //! Used by:
 //! cloud/cloudflared/pins.rs
-//! ├── cloud::cloudflared
-//! ├── cloud::cloudflared::acquire
-//! └── cloud::cloudflared::version
+//! ├── `cloud::cloudflared`
+//! ├── `cloud::cloudflared::acquire`
+//! └── `cloud::cloudflared::version`
 //! <module-headers:end>
 
 /// The cloudflared release the managed path downloads.

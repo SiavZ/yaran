@@ -671,7 +671,7 @@ mod tests {
         // ~1MB `sleep`, so a busy moment failed a test about thread handling.
         let real_process_sum: u64 = descendants_of(&sys, self_pid)
             .into_iter()
-            .filter_map(|pid| sys.process(pid).map(|p| p.memory()))
+            .filter_map(|pid| sys.process(pid).map(sysinfo::Process::memory))
             .sum();
 
         assert!(

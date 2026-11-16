@@ -828,7 +828,7 @@ fn registered_claude_sender_sends_as_itself_without_preamble() {
 }
 
 fn args(parts: &[&str]) -> Vec<String> {
-    parts.iter().map(|s| s.to_string()).collect()
+    parts.iter().map(std::string::ToString::to_string).collect()
 }
 
 #[test]

@@ -82,12 +82,12 @@ fn emitter(paired: bool) -> (PushEmitter, Arc<Mutex<Calls>>, Arc<AtomicUsize>) {
     let calls = Arc::new(Mutex::new(Calls::default()));
     let built = Arc::new(AtomicUsize::new(0));
     let factory: LinkFactory = {
-        let (calls, built) = (calls.clone(), built.clone());
+        let (calls, built) = (std::sync::Arc::clone(&calls), std::sync::Arc::clone(&built));
         Arc::new(move || {
             built.fetch_add(1, Ordering::SeqCst);
             Box::new(FakeLink {
                 paired,
-                calls: calls.clone(),
+                calls: std::sync::Arc::clone(&calls),
             })
         })
     };
@@ -231,7 +231,10 @@ fn push_emitter_off_drops_offers_without_a_thread() {
     e.offer(attention("a", AttentionKind::AttentionRaised));
     drop(e);
     assert_eq!(built.load(Ordering::SeqCst), 0);
-    assert!(calls.lock().unwrap().batches.is_empty());
+    assert_eq!(
+        calls.lock().unwrap().batches,
+        [] as [crate::cloud::protocol::machine::EventBatch; 0]
+    );
 }
 
 /// A link whose pairing and answers a test changes while the thread runs.
@@ -335,19 +338,29 @@ fn wake_in_waits_for_every_send_gate() {
     let ms = Duration::from_millis;
     // Coalescing: the entry is due later, the minimum interval already passed.
     assert_eq!(
-        wake_in(now, Some(now + ms(400)), None, now - ms(5)),
+        wake_in(
+            now,
+            Some(now + ms(400)),
+            None,
+            now.checked_sub(ms(5)).unwrap()
+        ),
         ms(400)
     );
     // Backoff: due already, retry later.
     assert_eq!(wake_in(now, Some(now), Some(now + ms(700)), now), ms(700));
     // Minimum interval: due already, next send later.
     assert_eq!(
-        wake_in(now, Some(now - ms(1)), None, now + ms(250)),
+        wake_in(
+            now,
+            Some(now.checked_sub(ms(1)).unwrap()),
+            None,
+            now + ms(250)
+        ),
         ms(250)
     );
     // Everything open: send now; long gates are capped at the expiry check.
     assert_eq!(
-        wake_in(now, Some(now), Some(now - ms(1)), now),
+        wake_in(now, Some(now), Some(now.checked_sub(ms(1)).unwrap()), now),
         Duration::ZERO
     );
     assert_eq!(

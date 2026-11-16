@@ -135,7 +135,7 @@ pub fn paired_link_factory(
     Arc::new(move || {
         Box::new(PairedLink {
             paths: paths.clone(),
-            api: api.clone(),
+            api: std::sync::Arc::clone(&api),
         })
     })
 }

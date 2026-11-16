@@ -225,7 +225,7 @@ pub fn run_with(
 /// Print an outcome's sentence and return its exit code.
 fn finish(outcome: &CloudActionOutcome, out: &mut dyn Write) -> i32 {
     let _ = writeln!(out, "{}", outcome.report().message());
-    if outcome.is_failure() { 1 } else { 0 }
+    i32::from(outcome.is_failure())
 }
 
 /// Ask a yes/no question on a terminal; off a terminal `--yes` is required.

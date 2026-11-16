@@ -122,7 +122,7 @@ pub fn run_with(
     out: &mut dyn std::io::Write,
 ) -> Result<()> {
     let store = &settings.store;
-    let sub = args.first().map(String::as_str).unwrap_or("");
+    let sub = args.first().map_or("", String::as_str);
     let rest = args.get(1..).unwrap_or_default();
     match sub {
         "post" | "add" => {
@@ -203,9 +203,10 @@ pub fn run_with(
                     board.assign(&id, assignee.as_deref(), settings.me.as_deref(), Utc::now())?;
                 Ok((id, changed))
             })?;
-            let queue = assignee
-                .map(|person| format!("{person}'s queue"))
-                .unwrap_or_else(|| "everybody's queue".to_string());
+            let queue = assignee.map_or_else(
+                || "everybody's queue".to_string(),
+                |person| format!("{person}'s queue"),
+            );
             if changed {
                 writeln!(out, "#{id} is now in {queue}")?;
             } else {
@@ -351,7 +352,7 @@ fn parse_post(
         card.from = default_from();
     }
     card.assignee = assignee.unwrap_or_else(|| settings.me.clone());
-    card.origin = settings.me.clone();
+    card.origin.clone_from(&settings.me);
     Ok(Some(card))
 }
 
@@ -723,7 +724,7 @@ fn run_import(
             let mut copy = card.clone();
             copy.id = id.clone();
             if copy.assignee.is_none() {
-                copy.assignee = me.clone();
+                copy.assignee.clone_from(&me);
             }
             board.cards.push(copy);
             moved.push((card.id.clone(), id));
@@ -755,7 +756,7 @@ mod tests {
     use super::*;
 
     fn args(words: &[&str]) -> Vec<String> {
-        words.iter().map(|w| w.to_string()).collect()
+        words.iter().map(std::string::ToString::to_string).collect()
     }
 
     fn run(store: &BoardStore, words: &[&str]) -> Result<String> {
@@ -899,7 +900,10 @@ mod tests {
         assert!(format!("{err}").contains("needs a value"), "{err}");
         let err = run(&store, &["post", "--bogus", "x"]).unwrap_err();
         assert!(format!("{err}").contains("unknown flag"), "{err}");
-        assert!(store.load().unwrap().cards.is_empty());
+        assert_eq!(
+            store.load().unwrap().cards,
+            [] as [crate::human_board::Card; 0]
+        );
     }
 
     #[test]
@@ -927,7 +931,7 @@ mod tests {
             "no open card is about ticket 1\n"
         );
         let board = store.load().unwrap();
-        assert!(board.open_cards().is_empty());
+        assert_eq!(board.open_cards(), [] as [&crate::human_board::Card; 0]);
         assert_eq!(
             board.card(1).unwrap().resolution.as_deref(),
             Some("shipped")

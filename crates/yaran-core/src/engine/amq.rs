@@ -433,7 +433,10 @@ impl Engine {
                     if shutdown.load(Ordering::Relaxed) {
                         return LoopControl::Break;
                     }
-                    let slice = (interval - slept).min(Duration::from_millis(50));
+                    let slice = interval
+                        .checked_sub(slept)
+                        .unwrap()
+                        .min(Duration::from_millis(50));
                     std::thread::sleep(slice);
                     slept += slice;
                 }
@@ -640,9 +643,10 @@ impl Engine {
                 Err(rejection) => {
                     // Quarantine so startup recovery does not reclaim and
                     // re-reject the same payload forever (b0c52c34).
-                    let where_to = queue::quarantine_rejected(&inflight)
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|e| format!("quarantine failed: {e}"));
+                    let where_to = queue::quarantine_rejected(&inflight).map_or_else(
+                        |e| format!("quarantine failed: {e}"),
+                        |p| p.display().to_string(),
+                    );
                     crate::logger::warn(&format!(
                         "amq: rejected after claim, quarantined to {where_to}: {}",
                         rejection.human()

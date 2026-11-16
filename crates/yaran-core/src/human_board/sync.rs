@@ -348,8 +348,7 @@ impl Repo {
             .map(|path| {
                 Path::new(path)
                     .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.clone())
+                    .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned())
             })
             .collect();
         let message = commit_message(&names);
@@ -453,18 +452,14 @@ impl Repo {
             let theirs = self.stage(3, path)?;
             let name = Path::new(path)
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.clone());
-            match newer_note(&name, ours.as_deref(), theirs.as_deref()) {
-                Some(bytes) => {
-                    std::fs::write(self.root.join(path), bytes)
-                        .with_context(|| format!("could not write {path}"))?;
-                    self.git_ok(&["add", "--", path], LOCAL_TIMEOUT)?;
-                }
-                None => {
-                    self.git_ok(&["rm", "--quiet", "--cached", "--", path], LOCAL_TIMEOUT)?;
-                    let _ = std::fs::remove_file(self.root.join(path));
-                }
+                .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+            if let Some(bytes) = newer_note(&name, ours.as_deref(), theirs.as_deref()) {
+                std::fs::write(self.root.join(path), bytes)
+                    .with_context(|| format!("could not write {path}"))?;
+                self.git_ok(&["add", "--", path], LOCAL_TIMEOUT)?;
+            } else {
+                self.git_ok(&["rm", "--quiet", "--cached", "--", path], LOCAL_TIMEOUT)?;
+                let _ = std::fs::remove_file(self.root.join(path));
             }
             settled.push(name);
         }
@@ -481,7 +476,12 @@ impl Repo {
             path.strip_prefix(self.relative.as_str())
                 .and_then(|rest| rest.strip_prefix('/'))
         };
-        name.is_some_and(|name| !name.contains('/') && name.ends_with(".md"))
+        name.is_some_and(|name| {
+            !name.contains('/')
+                && std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        })
     }
 
     /// The bytes of `path` at merge stage `stage`, or `None` when that side

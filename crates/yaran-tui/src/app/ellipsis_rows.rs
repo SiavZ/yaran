@@ -404,7 +404,7 @@ fn the_new_agent_dialog_cuts_a_wide_worktree_path_and_keeps_the_full_stop() {
         copy_changes: false,
         review_copy: None,
         focus: NameNewAgentFocus::Input,
-        extras: Default::default(),
+        extras: Box::default(),
     };
     for (w, h) in [(120, 40), (80, 24)] {
         let buf = render_at(&mut app, w, h);

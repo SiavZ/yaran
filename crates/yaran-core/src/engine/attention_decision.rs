@@ -113,7 +113,8 @@ mod tests {
         // Stale view → not engaged.
         viewed.insert(
             TabId::new("s1"),
-            now - (ATTENTION_ENGAGED_WINDOW + Duration::from_millis(50)),
+            now.checked_sub(ATTENTION_ENGAGED_WINDOW + Duration::from_millis(50))
+                .unwrap(),
         );
         assert!(!attention_engaged(
             &viewed,
@@ -129,7 +130,8 @@ mod tests {
         // Stale typing → not engaged.
         typed.insert(
             "s1".to_string(),
-            now - (AGENT_INPUT_SUPPRESSION_WINDOW + Duration::from_millis(50)),
+            now.checked_sub(AGENT_INPUT_SUPPRESSION_WINDOW + Duration::from_millis(50))
+                .unwrap(),
         );
         assert!(!attention_engaged(
             &viewed,

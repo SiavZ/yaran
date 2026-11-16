@@ -159,8 +159,8 @@ fn assert_adoption_replay_is_held(kind: &BuiltIn) {
     // SAFETY: `openpty` only fills the two fds it is given.
     let rc = unsafe {
         libc::openpty(
-            &mut master,
-            &mut slave,
+            &raw mut master,
+            &raw mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),

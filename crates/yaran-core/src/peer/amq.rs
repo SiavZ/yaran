@@ -243,7 +243,7 @@ pub fn reserve_and_persist_session_at_root(
         .map(|row| row.agent_handle)
         .collect::<HashSet<_>>();
     let handle = claim_handle_locked(root, store_id, session, &used)?;
-    session.agent_handle = handle.clone();
+    session.agent_handle.clone_from(&handle);
     store.persist_new_session(session)?;
     ensure_owner_marker(root, &handle, &owner_for(store_id, session))?;
     register_config_handle(root, &handle)?;
@@ -347,7 +347,7 @@ pub(crate) fn reconcile_amq_root(
                 &replacement,
             )?;
             used.insert(replacement.clone());
-            sessions[index].agent_handle = replacement.clone();
+            sessions[index].agent_handle.clone_from(&replacement);
             report.handles_deconflicted += 1;
             replacement
         };

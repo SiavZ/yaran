@@ -671,7 +671,7 @@ fn wait_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> bool {
     // SAFETY: `poll` reads and writes only the one `pollfd` this call owns; an
     // invalid descriptor is reported through the structure (`POLLNVAL`), not
     // as misbehaviour.
-    let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    let rc = unsafe { libc::poll(&raw mut pfd, 1, timeout_ms) };
     match rc {
         0 => false,
         1 => true,
@@ -812,16 +812,17 @@ impl PtyWriter {
         };
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         match tx.try_send(PtyWriteMsg::Drain(done_tx)) {
-            Ok(()) => match done_rx.recv_timeout(timeout) {
-                Ok(()) => true,
-                Err(_) => {
+            Ok(()) => {
+                if let Ok(()) = done_rx.recv_timeout(timeout) {
+                    true
+                } else {
                     logger::warn(
                         "reload: the pty writer did not drain within the timeout; \
-                         input queued for a child that is not reading may be lost",
+                     input queued for a child that is not reading may be lost",
                     );
                     false
                 }
-            },
+            }
             // The writer thread is gone, so nothing is queued.
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => true,
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -7228,7 +7229,7 @@ mod tests {
                 client
                     .reader_thread
                     .as_ref()
-                    .is_some_and(|t| t.is_finished()),
+                    .is_some_and(std::thread::JoinHandle::is_finished),
                 "reader {index} should have exited within one interval of the stop \
                  flag being raised for all of them at once",
             );

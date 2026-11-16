@@ -53,7 +53,7 @@ use crate::worker::WorkerEvent;
 /// Engine-to-thread slots; `offer` drops (and counts) rather than wait.
 pub const CHANNEL_CAPACITY: usize = 512;
 /// How often a paused emitter asks whether the org turned push back on.
-pub const CONFIG_RECHECK: Duration = Duration::from_secs(15 * 60);
+pub const CONFIG_RECHECK: Duration = Duration::from_mins(15);
 /// The bound on `Drop`'s join, mirroring `ConfigWriteQueue`.
 pub const SHUTDOWN_JOIN: Duration = Duration::from_secs(2);
 
@@ -163,7 +163,7 @@ impl PushEmitter {
             factory(),
             settings,
             self.status_lane.clone(),
-            flush.clone(),
+            std::sync::Arc::clone(&flush),
         );
         match thread::Builder::new()
             .name("cloud-push".into())
@@ -174,7 +174,7 @@ impl PushEmitter {
                 self.worker = Some((handle, flush));
             }
             Err(err) => {
-                tracing::warn!(target: "yaran::cloud::push", %err, "could not start the phone-notification thread; phone notifications stay off")
+                tracing::warn!(target: "yaran::cloud::push", %err, "could not start the phone-notification thread; phone notifications stay off");
             }
         }
     }

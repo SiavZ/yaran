@@ -312,7 +312,7 @@ pub fn seal(
     let z = agree_ephemeral(
         ephemeral,
         &UnparsedPublicKey::new(&ECDH_P256, recipient),
-        |z| z.to_vec(),
+        <[u8]>::to_vec,
     )
     .map_err(|_| HandoffError::RecipientKey)?;
     let mut iv = [0u8; 12];

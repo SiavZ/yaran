@@ -84,7 +84,7 @@ fn screen(app: &mut App) -> String {
         .map(|cell| cell.symbol().to_string())
         .collect::<Vec<_>>()
         .chunks(width)
-        .map(|row| row.concat())
+        .map(<[std::string::String]>::concat)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -157,8 +157,8 @@ fn rows_group_open_cards_by_kind_then_show_recent_done() {
 #[test]
 fn an_empty_board_has_no_rows() {
     let (rows, slots) = board_rows(&Board::default(), &Audience::Everyone);
-    assert!(rows.is_empty());
-    assert!(slots.is_empty());
+    assert_eq!(rows, [] as [crate::app::human_board::BoardRow; 0]);
+    assert_eq!(slots, [] as [yaran_core::human_board::CardId; 0]);
 }
 
 #[test]
@@ -191,7 +191,10 @@ fn fit_width_cuts_on_display_columns() {
 fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
     let mut state = HumanBoardState::default();
     let board = sample_board();
-    assert!(state.apply_snapshot(Ok(board.clone())).is_empty());
+    assert_eq!(
+        state.apply_snapshot(Ok(board.clone())),
+        [] as [yaran_core::human_board::Card; 0]
+    );
     assert_eq!(
         state.selected,
         Some(CardId::plain(3)),
@@ -285,7 +288,10 @@ fn moving_the_selection_stops_at_both_ends() {
 #[test]
 fn an_unreadable_board_keeps_no_selection_and_announces_nothing() {
     let mut state = HumanBoardState::default();
-    assert!(state.apply_snapshot(Err("broken".to_string())).is_empty());
+    assert_eq!(
+        state.apply_snapshot(Err("broken".to_string())),
+        [] as [yaran_core::human_board::Card; 0]
+    );
     assert_eq!(state.selected, None);
     assert!(state.readable().is_none());
 }
@@ -617,7 +623,7 @@ fn a_narrow_column_keeps_the_waiting_count_and_drops_the_updates() {
         .map(|cell| cell.symbol().to_string())
         .collect::<Vec<_>>()
         .chunks(width)
-        .map(|row| row.concat())
+        .map(<[std::string::String]>::concat)
         .collect::<Vec<_>>()
         .join("\n");
     let title = text
@@ -648,7 +654,7 @@ fn a_compact_board_title_keeps_the_complete_waiting_count() {
             .buffer()
             .content()
             .chunks(usize::from(width))
-            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
             .collect();
         let title = rows.iter().find(|row| row.contains("Tasks ")).unwrap();
         assert!(title.contains("(12)"), "{title}");
@@ -1353,7 +1359,7 @@ fn a_shared_board_shows_how_its_last_sync_went() {
     let mut app = board_app(Some(sample_board()));
     app.human_board.last_sync = Some(yaran_core::human_board::sync::SyncOutcome {
         at: Utc::now(),
-        result: Ok(Default::default()),
+        result: Ok(yaran_core::human_board::sync::SyncReport::default()),
     });
     let text = screen(&mut app);
     assert!(text.contains("synced "), "{text}");
@@ -1991,7 +1997,7 @@ fn a_copy_joins_soft_wrapped_rows_with_a_space_and_keeps_real_breaks() {
         anchor: TermGridPos { row: 0, col: 0 },
         end: TermGridPos { row: 2, col: 40 },
         dragging: false,
-        origin: Default::default(),
+        origin: crate::app::SelectionOrigin::default(),
         part: crate::app::CenterPart::Main,
     };
     assert_eq!(

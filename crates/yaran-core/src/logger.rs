@@ -236,7 +236,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for JsonLinesLayer {
         metadata: &tracing::Metadata<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) -> bool {
-        tracing_level(metadata.level()) <= LogLevel::from_u8(LEVEL.load(Ordering::Relaxed))
+        tracing_level(*metadata.level()) <= LogLevel::from_u8(LEVEL.load(Ordering::Relaxed))
     }
 
     fn on_event(
@@ -251,7 +251,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for JsonLinesLayer {
         let mut visitor = JsonFieldVisitor(serde_json::Map::new());
         event.record(&mut visitor);
         logger.log.write_line(&json_line(
-            tracing_level(metadata.level()),
+            tracing_level(*metadata.level()),
             metadata.target(),
             visitor.0,
         ));
@@ -259,8 +259,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for JsonLinesLayer {
 }
 
 /// yaran has four levels; `trace` folds into `debug`.
-fn tracing_level(level: &tracing::Level) -> LogLevel {
-    match *level {
+fn tracing_level(level: tracing::Level) -> LogLevel {
+    match level {
         tracing::Level::ERROR => LogLevel::Error,
         tracing::Level::WARN => LogLevel::Warn,
         tracing::Level::INFO => LogLevel::Info,
@@ -1274,11 +1274,11 @@ mod tests {
 
     #[test]
     fn tracing_levels_fold_onto_the_four_yaran_levels() {
-        assert_eq!(tracing_level(&tracing::Level::ERROR), LogLevel::Error);
-        assert_eq!(tracing_level(&tracing::Level::WARN), LogLevel::Warn);
-        assert_eq!(tracing_level(&tracing::Level::INFO), LogLevel::Info);
-        assert_eq!(tracing_level(&tracing::Level::DEBUG), LogLevel::Debug);
-        assert_eq!(tracing_level(&tracing::Level::TRACE), LogLevel::Debug);
+        assert_eq!(tracing_level(tracing::Level::ERROR), LogLevel::Error);
+        assert_eq!(tracing_level(tracing::Level::WARN), LogLevel::Warn);
+        assert_eq!(tracing_level(tracing::Level::INFO), LogLevel::Info);
+        assert_eq!(tracing_level(tracing::Level::DEBUG), LogLevel::Debug);
+        assert_eq!(tracing_level(tracing::Level::TRACE), LogLevel::Debug);
     }
 
     #[test]

@@ -257,8 +257,8 @@ pub(crate) fn test_engine_at(root: &std::path::Path) -> Engine {
         pty_progress: HashMap::new(),
         agent_viewed: HashMap::new(),
         last_foreground_refresh: None,
-        limits: Default::default(),
-        amq: Default::default(),
+        limits: crate::engine::limits::LimitsRuntime::default(),
+        amq: crate::engine::amq::AmqRuntime::default(),
         pending_web_checkout_ops: HashMap::new(),
         pending_web_project_saves: std::collections::HashSet::new(),
         pending_change_base_ops: HashMap::new(),
@@ -280,7 +280,7 @@ pub(crate) fn test_engine_at(root: &std::path::Path) -> Engine {
         deferred_operations: Vec::new(),
         deferred_policies: Vec::new(),
         created_session_by_op: HashMap::new(),
-        startup_launches: Default::default(),
+        startup_launches: crate::auto_resume::StartupLaunchQueue::default(),
         removal_coordination: crate::engine::RemovalCoordination::default(),
     };
     // As the real start does: the process registry saved in this database.
@@ -462,7 +462,7 @@ pub(crate) fn seed_signaling_provider(engine: &mut Engine, tab: &str) -> tempfil
         if engine
             .providers
             .get(crate::ids::TabIdRef::new(tab))
-            .and_then(|p| p.progress_report())
+            .and_then(super::super::pty::PtyClient::progress_report)
             .is_some()
         {
             return tmp;

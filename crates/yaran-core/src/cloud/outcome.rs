@@ -77,7 +77,7 @@ pub enum CloudActionOutcome {
     /// Another login or a disconnect changed the pairing while this action ran; the
     /// newer state was kept.
     PairingChanged,
-    /// The newer pairing was kept; cleanup_started records an acknowledged teardown
+    /// The newer pairing was kept; `cleanup_started` records an acknowledged teardown
     /// request for the discarded claim. Any machine it replaced is still torn down.
     LoginSuperseded {
         cleanup_started: bool,

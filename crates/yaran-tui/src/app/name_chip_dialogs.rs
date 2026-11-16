@@ -1392,7 +1392,7 @@ fn the_new_agent_dialog_chips_the_worktree_it_starts_in() {
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         },
     );
     assert_chipped(&app, &buf, "/srv/wt-na");

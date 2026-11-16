@@ -352,7 +352,7 @@ mod tests {
             !sidecar.exists(),
             "a consumed sidecar must not be left behind"
         );
-        assert!(std::fs::read_dir(dir.path()).unwrap().count() == 0);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

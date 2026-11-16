@@ -128,8 +128,7 @@ impl SeenState {
 pub fn latest_activity(card: &Card) -> DateTime<Utc> {
     card.thread
         .last()
-        .map(|message| message.at.max(card.updated_at))
-        .unwrap_or(card.updated_at)
+        .map_or(card.updated_at, |message| message.at.max(card.updated_at))
 }
 
 #[cfg(test)]

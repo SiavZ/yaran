@@ -454,13 +454,13 @@ fn shared_checkout_plan(
         }
         let canonical =
             crate::project_browser::canonical_or_original(Path::new(&entry.worktree_path));
-        let index = match checkouts.iter().position(|(path, ..)| *path == canonical) {
-            Some(index) => index,
-            None => {
-                let head = head_branch(&canonical).ok();
-                checkouts.push((canonical, head, None));
-                checkouts.len() - 1
-            }
+        let index = if let Some(index) = checkouts.iter().position(|(path, ..)| *path == canonical)
+        {
+            index
+        } else {
+            let head = head_branch(&canonical).ok();
+            checkouts.push((canonical, head, None));
+            checkouts.len() - 1
         };
         let (_, head, representative) = &mut checkouts[index];
         let Some(head) = head.clone() else {
@@ -5767,7 +5767,10 @@ headRefOid repository { nameWithOwner } headRepository { nameWithOwner } } }"
         ];
         let plan = shared_checkout_plan(&snapshot, &|_| Ok(None));
         assert_eq!(plan.entries.len(), 2);
-        assert!(plan.followers.is_empty());
+        assert_eq!(
+            plan.followers,
+            [] as [(std::string::String, std::string::String); 0]
+        );
         let questions = plan_entries(
             &plan.entries,
             &ours,

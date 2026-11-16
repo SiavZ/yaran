@@ -3,7 +3,7 @@
 //! `observe_push_tick` runs at the one hook every serving mode shares
 //! (`poll_agent_signals`), feeding the push-only set the same `fired` list and `engaged`
 //! predicate as the sidebar set; `observe_push_bad_exit` runs where a bad ending is
-//! recorded. Events carry ids, the agent's label, its project and a RowState token, never
+//! recorded. Events carry ids, the agent's label, its project and a `RowState` token, never
 //! terminal output. The identity a raise was sent under is remembered, so its clear
 //! collapses the same phone notification even after the tab or the agent is gone.
 //!

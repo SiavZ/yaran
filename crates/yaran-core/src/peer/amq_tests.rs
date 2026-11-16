@@ -408,9 +408,8 @@ fn unambiguous_legacy_path_marker_upgrades_to_exact_owner() {
     reconcile_amq_root(&root, "store-a", Some(&store), &mut rows).unwrap();
 
     assert_eq!(rows[0].agent_handle(), "agent");
-    let owner = match marker_state(&root, "agent").unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("legacy marker was not upgraded"),
+    let MarkerState::Owner(owner) = marker_state(&root, "agent").unwrap() else {
+        panic!("legacy marker was not upgraded")
     };
     assert_eq!(owner.store_id, "store-a");
     assert_eq!(owner.session_id, "session-a");
@@ -433,9 +432,8 @@ fn ambiguous_legacy_path_is_preserved_and_local_handle_is_suffixed() {
 
     assert_eq!(rows[0].agent_handle(), "agent-2");
     assert!(root.join("agents/agent/.dux-amq-source").is_symlink());
-    let owner = match marker_state(&root, "agent-2").unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("replacement owner marker missing"),
+    let MarkerState::Owner(owner) = marker_state(&root, "agent-2").unwrap() else {
+        panic!("replacement owner marker missing")
     };
     assert_eq!(owner.session_id, "a-session");
 }
@@ -526,9 +524,9 @@ fn spawn_failure_after_persist_leaves_retryable_owned_row() {
 
     let loaded = store.load_sessions_including_deleted().unwrap();
     assert_eq!(loaded.len(), 1);
-    let owner = match marker_state(&amq_root, loaded[0].agent_handle()).unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("reserved owner marker missing"),
+    let MarkerState::Owner(owner) = marker_state(&amq_root, loaded[0].agent_handle()).unwrap()
+    else {
+        panic!("reserved owner marker missing")
     };
     assert_eq!(owner.store_id, "store-a");
     assert_eq!(owner.session_id, "session-a");
@@ -805,9 +803,8 @@ fn tombstone_terminates_recorded_wake_pid_and_keeps_inbox() {
     let _ = reaper.join().unwrap();
 
     assert!(root.join("agents/agent").is_dir());
-    let owner = match marker_state(&root, "agent").unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("owner marker missing"),
+    let MarkerState::Owner(owner) = marker_state(&root, "agent").unwrap() else {
+        panic!("owner marker missing")
     };
     assert_eq!(owner.wake_pid, None);
     assert!(!config_raw(&root).contains("\"agent\""));

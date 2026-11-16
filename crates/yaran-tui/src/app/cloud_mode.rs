@@ -233,7 +233,7 @@ impl App {
         }
     }
 
-    pub(crate) fn render_set_cloud_mode_prompt(&mut self, frame: &mut Frame) {
+    pub(crate) fn render_set_cloud_mode_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::SetCloudMode(prompt) = &self.prompt else {
             return;
         };

@@ -226,7 +226,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn fifty_concurrent_misses_cause_one_fetch() {
         let source = FakeSource::new(vec![Ok((fixture_jwks("jwks.json"), None))]);
-        let cache = Arc::new(JwksCache::new(source.clone()));
+        let cache = Arc::new(JwksCache::new(Arc::<FakeSource>::clone(&source)));
         let calls = (0..50).map(|_| {
             let cache = Arc::clone(&cache);
             tokio::spawn(async move { cache.keys(&team(), POLICY).await.is_ok() })
@@ -240,7 +240,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn unknown_kid_refetches_stop_at_the_cooldown() {
         let source = FakeSource::new(vec![Ok((fixture_jwks("jwks.json"), None))]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         for _ in 0..5 {
             cache
@@ -261,7 +261,7 @@ pub(crate) mod tests {
     async fn refresh_honours_max_age_the_ceiling_and_the_floor() {
         let max_age = |s| Ok((fixture_jwks("jwks.json"), Some(Duration::from_secs(s))));
         let source = FakeSource::new(vec![max_age(60), max_age(99_999)]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         tokio::time::advance(Duration::from_secs(299)).await;
         cache.keys(&team(), POLICY).await.unwrap();
@@ -287,7 +287,7 @@ pub(crate) mod tests {
             Ok((fixture_jwks("jwks.json"), None)),
             Err("offline".into()),
         ]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         tokio::time::advance(Duration::from_secs(14_400)).await;
         let keys = cache.keys(&team(), POLICY).await.unwrap();
@@ -298,7 +298,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_empty_cache_with_a_failed_fetch_is_unavailable_and_cools_down() {
         let source = FakeSource::new(vec![Err("dns failure".into())]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         assert_eq!(
             cache.keys(&team(), POLICY).await.unwrap_err(),
             "dns failure"
@@ -313,7 +313,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_different_team_starts_from_empty() {
         let source = FakeSource::new(vec![Ok((fixture_jwks("jwks.json"), None))]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         let other = TeamDomain::parse("other.cloudflareaccess.com").unwrap();
         cache.keys(&other, POLICY).await.unwrap();

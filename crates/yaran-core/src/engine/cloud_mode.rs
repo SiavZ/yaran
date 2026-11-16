@@ -10,12 +10,12 @@
 //!
 //! <module-headers:begin>
 //! Uses:
-//! engine/cloud_mode.rs
-//! └── cloud::leg_identity
+//! `engine/cloud_mode.rs`
+//! └── `cloud::leg_identity`
 //! External: anyhow
 //!
 //! Used by:
-//! engine/cloud_mode.rs
+//! `engine/cloud_mode.rs`
 //! └── engine
 //! <module-headers:end>
 

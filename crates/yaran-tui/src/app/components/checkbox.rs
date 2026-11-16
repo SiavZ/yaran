@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(lines.concat(), "一二三四五六");
     }
 
-    /// "世界" and "日本" are 4 columns each, so at max_width 5 they cannot
+    /// "世界" and "日本" are 4 columns each, so at `max_width` 5 they cannot
     /// share a line (4 + 1 + 4 = 9). A scalar count sees 2 + 1 + 2 = 5 and
     /// packs both onto one line.
     #[test]

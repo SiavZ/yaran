@@ -51,7 +51,7 @@ impl AdoptedChild {
         let mut raw: libc::c_int = 0;
         let flags = if block { 0 } else { libc::WNOHANG };
         // SAFETY: `waitpid` writes only through the `raw` pointer this call owns.
-        let rc = unsafe { libc::waitpid(self.pid, &mut raw, flags) };
+        let rc = unsafe { libc::waitpid(self.pid, &raw mut raw, flags) };
         if rc == 0 {
             return Ok(None); // WNOHANG: alive.
         }

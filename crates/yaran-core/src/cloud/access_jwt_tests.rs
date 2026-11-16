@@ -76,7 +76,11 @@ fn every_fixture_case_gets_its_expected_outcome() {
                 assert!(v.email.eq_ignore_ascii_case("owner@example.com"), "{name}");
                 assert!(!v.sub.is_empty(), "{name}");
             }
-            code => assert_eq!(got.map(|_| ()).map_err(|e| e.code()), Err(code), "{name}"),
+            code => assert_eq!(
+                got.map(|_| ()).map_err(super::AccessRejection::code),
+                Err(code),
+                "{name}"
+            ),
         }
     }
 }

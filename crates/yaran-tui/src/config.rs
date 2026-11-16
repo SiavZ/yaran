@@ -5044,7 +5044,7 @@ name = "test"
         }
     }
 
-    /// Strict mode is opt-in and reaches the bridge as YARAN_AMQ_VERIFY at
+    /// Strict mode is opt-in and reaches the bridge as `YARAN_AMQ_VERIFY` at
     /// spawn, so both values must survive a render and parse.
     #[test]
     fn amq_inject_verify_envelope_round_trips() {
@@ -6349,7 +6349,10 @@ args = [\"-l\"]
         let persisted: Config =
             toml::from_str(&fs::read_to_string(&paths.config_path).expect("read migrated config"))
                 .expect("parse migrated config");
-        assert!(persisted.keys.bindings["open_worktree_in_editor"].is_empty());
+        assert_eq!(
+            persisted.keys.bindings["open_worktree_in_editor"],
+            [] as [std::string::String; 0]
+        );
 
         for custom in ["[\"ctrl-o\"]", "[\"o\", \"ctrl-o\"]"] {
             let (_dir, paths) = seed(custom);
@@ -7116,7 +7119,10 @@ mod web_dragdrop_paste_render_tests {
         );
         // The rendered default still parses with zero rules.
         let parsed: Config = toml::from_str(&rendered).expect("default parses");
-        assert!(parsed.providers.commands["claude"].watch.is_empty());
+        assert_eq!(
+            parsed.providers.commands["claude"].watch,
+            [] as [yaran_core::watch::WatchRule; 0]
+        );
     }
 
     /// The commented examples must be valid rules once uncommented: a user
@@ -7284,7 +7290,7 @@ mod workspace_mode_tests {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             workspace_mode: mode,
         }
     }

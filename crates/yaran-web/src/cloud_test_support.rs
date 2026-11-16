@@ -123,7 +123,7 @@ pub(crate) fn harness_with(host: Option<&str>, jwks: Result<Jwks, String>) -> Ha
     let c = Arc::clone(&clock);
     let ingress = CloudIngress::with_parts(
         FakeSource::new(vec![jwks.map(|j| (j, None))]),
-        consent.clone(),
+        Arc::<FakeConsent>::clone(&consent),
         Arc::new(move || UNIX_EPOCH + Duration::from_secs(c.load(Ordering::SeqCst) as u64)),
     );
     ingress.update_settings(IngressSettings {

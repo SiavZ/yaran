@@ -4411,23 +4411,23 @@ mod tests {
         type Edit = (&'static str, fn(&mut Config));
         let edits: Vec<Edit> = vec![
             ("defaults.provider:", |c| {
-                c.defaults.provider = "codex".into()
+                c.defaults.provider = "codex".into();
             }),
             ("providers.claude.args:", |c| {
-                c.providers.commands["claude"].args.push("--audit03".into())
+                c.providers.commands["claude"].args.push("--audit03".into());
             }),
             ("terminal.command:", |c| {
-                c.terminal.command = "/bin/audit03".into()
+                c.terminal.command = "/bin/audit03".into();
             }),
             ("logging.level:", |c| c.logging.level = "debug".into()),
             ("projects:", |c| {
                 c.projects
-                    .push(toml::from_str("id = \"audit03\"\npath = \"/tmp/audit03\"\n").unwrap())
+                    .push(toml::from_str("id = \"audit03\"\npath = \"/tmp/audit03\"\n").unwrap());
             }),
             ("ui.left_width_pct:", |c| c.ui.left_width_pct += 1),
             ("editor.default:", |c| c.editor.default = "audit03".into()),
             ("keys.show_terminal_keys:", |c| {
-                c.keys.show_terminal_keys = !c.keys.show_terminal_keys
+                c.keys.show_terminal_keys = !c.keys.show_terminal_keys;
             }),
             ("macros:", |c| {
                 c.macros.entries.insert(
@@ -4440,7 +4440,7 @@ mod tests {
             }),
             ("limits.max_panes:", |c| c.limits.max_panes = 3),
             ("storage.backup_interval_minutes:", |c| {
-                c.storage.backup_interval_minutes += 1
+                c.storage.backup_interval_minutes += 1;
             }),
         ];
         for (path, edit) in edits {
@@ -4762,7 +4762,7 @@ mod tests {
                         leading_branch: None,
                         auto_reopen_agents: None,
                         startup_command: None,
-                        env: Default::default(),
+                        env: BTreeMap::default(),
                         workspace_mode: None,
                     })
                     .collect(),

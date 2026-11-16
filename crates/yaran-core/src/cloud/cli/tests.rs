@@ -44,7 +44,7 @@ fn run(
         open_browser: Box::new(|_| Err("no browser in tests".into())),
         pickup_wait: Duration::ZERO,
     };
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let mut out = Vec::new();
     let code = run_with(
         &args,

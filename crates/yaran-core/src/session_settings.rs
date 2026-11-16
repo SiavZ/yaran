@@ -227,7 +227,7 @@ impl SessionSettings {
     }
 
     /// Extra CLI args YOLO adds for providers that take it as a flag rather
-    /// than through a wrapper env var (fork c2c44378: OpenCode `--auto`).
+    /// than through a wrapper env var (fork c2c44378: `OpenCode` `--auto`).
     /// Appended after the provider's own args, resume args included.
     /// The launch request builders carry them in `AgentLaunchRequest::yolo_args`
     /// and `run_agent_launch_job` appends them.
@@ -262,13 +262,13 @@ mod tests {
         assert_eq!(s.compact_instructions_path, None);
         assert!(s.is_default());
         assert_eq!(s.effective_system_prompt(), None);
-        assert!(
-            s.yolo_launch_args(&ProviderKind::from_str("opencode"))
-                .is_empty()
+        assert_eq!(
+            s.yolo_launch_args(&ProviderKind::from_str("opencode")),
+            [] as [std::string::String; 0]
         );
     }
 
-    /// c2c44378: OpenCode's YOLO is `--auto` on the command line, after any
+    /// c2c44378: `OpenCode`'s YOLO is `--auto` on the command line, after any
     /// resume args; no other provider gets a flag from it.
     #[test]
     fn opencode_yolo_launch_adds_auto() {
@@ -277,19 +277,18 @@ mod tests {
             yolo_permissions: true,
             ..SessionSettings::default()
         };
-        assert!(
-            SessionSettings::default()
-                .yolo_launch_args(&opencode)
-                .is_empty()
+        assert_eq!(
+            SessionSettings::default().yolo_launch_args(&opencode),
+            [] as [std::string::String; 0]
         );
         assert_eq!(yolo.yolo_launch_args(&opencode), vec!["--auto"]);
         let mut resumed = vec!["--continue".to_string()];
         resumed.extend(yolo.yolo_launch_args(&opencode));
         assert_eq!(resumed, vec!["--continue", "--auto"]);
         for other in ["claude", "codex", "jcode"] {
-            assert!(
-                yolo.yolo_launch_args(&ProviderKind::from_str(other))
-                    .is_empty()
+            assert_eq!(
+                yolo.yolo_launch_args(&ProviderKind::from_str(other)),
+                [] as [std::string::String; 0]
             );
         }
     }

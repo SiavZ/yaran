@@ -608,7 +608,10 @@ mod tests {
         let session = session_in(tmp.path(), "s1", "claude");
         engine.session_store.create_session(&session).unwrap();
         engine.sessions.push(session);
-        assert!(engine.claude_session_follow_targets().is_empty());
+        assert_eq!(
+            engine.claude_session_follow_targets(),
+            [] as [crate::resume_recovery::ClaudeLiveSessionTarget; 0]
+        );
         engine.handle_claude_session_follow_tick();
         assert!(!engine.is_in_flight(&InFlightKey::ClaudeSessionFollow));
     }
@@ -811,7 +814,7 @@ mod tests {
         assert_eq!(ids, vec!["idle".to_string()]);
 
         // Backdate the directory past the stale threshold.
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 86_400);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_hours(960);
         std::fs::File::open(&dir)
             .unwrap()
             .set_modified(old)
@@ -877,7 +880,9 @@ mod tests {
         engine.config.auto_resume.stagger_ms = 0;
         assert_eq!(engine.queue_startup_launches(true), 2);
         assert!(engine.pump_startup_launches((24, 80)).is_empty());
-        engine.process_worker_event(WorkerEvent::ResumeRecoveryCompleted(Ok(Default::default())));
+        engine.process_worker_event(WorkerEvent::ResumeRecoveryCompleted(Ok(
+            crate::resume_recovery::RecoveryReport::default(),
+        )));
         assert!(!engine.startup_launches.is_held());
     }
 
@@ -913,7 +918,7 @@ mod tests {
             crate::model::ConversationStart::Resume,
             (24, 80),
             AgentLaunchKind::Reconnect {
-                status_message: Default::default(),
+                status_message: crate::status_text::StatusText::default(),
             },
         );
         assert_eq!(
@@ -939,7 +944,9 @@ mod tests {
         engine.providers.insert(slot.clone(), client);
         engine.resume_fallback_candidates.insert(
             slot.clone(),
-            Instant::now() - std::time::Duration::from_millis(50),
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(50))
+                .unwrap(),
         );
         let reactions = engine.sweep_resume_fallbacks((24, 80));
         assert_eq!(reactions.len(), 1, "exactly one fallback relaunch");
@@ -951,7 +958,7 @@ mod tests {
             crate::model::ConversationStart::Fresh,
             (24, 80),
             AgentLaunchKind::ResumeFallback {
-                status_message: Default::default(),
+                status_message: crate::status_text::StatusText::default(),
             },
         );
         assert!(!fallback.resumes_a_conversation());
@@ -1032,7 +1039,7 @@ mod tests {
             crate::model::ConversationStart::Fresh,
             (24, 80),
             AgentLaunchKind::Reconnect {
-                status_message: Default::default(),
+                status_message: crate::status_text::StatusText::default(),
             },
         );
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1068,7 +1075,7 @@ mod tests {
         }
     }
 
-    /// YOLO on appends OpenCode's `--auto` to the launch argv, after every
+    /// YOLO on appends `OpenCode`'s `--auto` to the launch argv, after every
     /// other arg; YOLO off leaves it out (fork c2c44378).
     #[test]
     fn opencode_yolo_launch_appends_auto_only_when_yolo_is_on() {

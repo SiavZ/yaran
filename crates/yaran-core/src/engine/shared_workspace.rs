@@ -230,7 +230,7 @@ mod tests {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             workspace_mode: Some(WorkspaceMode::Shared),
         });
         assert!(engine.new_agent_is_shared("p1"));
@@ -485,7 +485,9 @@ mod tests {
         );
         make_live(&mut engine, "second");
         assert_eq!(
-            engine.shared_multi_writer_summary().map(|s| s.badge()),
+            engine
+                .shared_multi_writer_summary()
+                .map(super::SharedMultiWriterSummary::badge),
             Some("CURRENT STORE ONLY \u{b7} 2 LIVE WRITERS".to_string())
         );
 

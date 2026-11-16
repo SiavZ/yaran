@@ -67,7 +67,7 @@ fn rig_with(ttl: Duration) -> Rig {
     pair(&paths);
     let transport = Arc::new(Mutex::new(worker.base.clone()));
     let api: ApiFactory = {
-        let transport = transport.clone();
+        let transport = std::sync::Arc::<std::sync::Mutex<std::string::String>>::clone(&transport);
         Arc::new(move |org, paths| {
             Ok(MachineApi::new(org, paths, Duration::from_secs(5))?
                 .with_test_transport(&transport.lock().unwrap()))
@@ -78,7 +78,16 @@ fn rig_with(ttl: Duration) -> Rig {
         Arc::new(move || {
             Box::new(PairedLink {
                 paths: paths.clone(),
-                api: api.clone(),
+                api: std::sync::Arc::<
+                    dyn for<'a, 'b> std::ops::Fn(
+                            &'a str,
+                            &'b yaran_core::cloud::paths::CloudPaths,
+                        ) -> std::result::Result<
+                            yaran_core::cloud::machine_api::MachineApi,
+                            yaran_core::cloud::leg_identity::MachineApiError,
+                        > + std::marker::Send
+                        + std::marker::Sync,
+                >::clone(&api),
             })
         })
     };

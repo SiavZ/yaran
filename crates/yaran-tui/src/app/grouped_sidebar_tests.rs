@@ -18,7 +18,7 @@ fn project(id: &str, name: &str) -> Project {
         leading_branch: Some("main".to_string()),
         auto_reopen_agents: None,
         startup_command: None,
-        env: Default::default(),
+        env: std::collections::BTreeMap::default(),
         current_branch: "main".to_string(),
         branch_status: yaran_core::model::ProjectBranchStatus::Unknown,
         path_missing: false,
@@ -187,7 +187,7 @@ fn flat_mode_is_unchanged_by_the_grouped_default() {
         &|_| true,
     );
     assert_eq!(app.left_items(), expected.as_slice());
-    assert!(app.left_groups_cache.is_empty());
+    assert_eq!(app.left_groups_cache, [] as [crate::app::LeftGroup; 0]);
     assert!(
         app.left_items()
             .iter()

@@ -233,7 +233,7 @@ mod tests {
         app.engine
             .providers
             .get(TabIdRef::new(tab))
-            .and_then(|client| client.grid_size())
+            .and_then(yaran_core::pty::PtyClient::grid_size)
     }
 
     fn winches(app: &App, tab: &str) -> usize {
@@ -244,7 +244,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Wait until the child has reported `count` SIGWINCHes, then a little
+    /// Wait until the child has reported `count` `SIGWINCHes`, then a little
     /// longer so a late extra one would also show up.
     fn settle_winches(app: &App, tab: &str, count: usize) -> usize {
         for _ in 0..300 {
@@ -369,7 +369,7 @@ mod tests {
     /// A layout that is only passing through (a pane toggled for a few seconds
     /// and back, a window edge mid-drag) must not make every hidden agent
     /// repaint. Measured on 64 agents with a 1 s settle: a 5 s detour sent
-    /// every agent two SIGWINCHes, one each way, where the previous build sent
+    /// every agent two `SIGWINCHes`, one each way, where the previous build sent
     /// none. Nothing moves until the geometry has held for the full settle.
     #[test]
     fn a_layout_held_for_less_than_the_settle_presizes_nothing() {
@@ -383,7 +383,11 @@ mod tests {
             "half way through the settle nothing is presized"
         );
         assert_eq!(
-            app.presize_background_agent_ptys(now + PRESIZE_SETTLE - Duration::from_millis(100)),
+            app.presize_background_agent_ptys(
+                (now + PRESIZE_SETTLE)
+                    .checked_sub(Duration::from_millis(100))
+                    .unwrap()
+            ),
             0,
             "just short of the settle nothing is presized"
         );

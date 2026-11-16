@@ -122,7 +122,9 @@ impl CloudLoop {
 
     /// Start watching the credentials; the first snapshot arrives at once.
     pub(crate) fn start(&mut self) {
-        let identity = self.identity.clone();
+        let identity = std::sync::Arc::<dyn yaran_core::cloud::leg_identity::CloudIdentity>::clone(
+            &self.identity,
+        );
         let tx = self.control.sender();
         let on_change = Box::new(move || {
             let snapshot = match identity.load() {
@@ -135,7 +137,9 @@ impl CloudLoop {
             let _ = tx.blocking_send(CloudInput::Credentials(snapshot));
         });
         self.watch = Some(CredentialsWatch::spawn(
-            self.identity.clone(),
+            std::sync::Arc::<dyn yaran_core::cloud::leg_identity::CloudIdentity>::clone(
+                &self.identity,
+            ),
             yaran_core::cloud::leg::CREDENTIALS_POLL,
             on_change,
         ));
@@ -269,11 +273,17 @@ impl CloudLoop {
         });
         let mut params = LegParams::new(self.settings.clone(), self.serving_port);
         if let Some(probe) = &self.probe {
-            params.probe = probe.clone();
+            params.probe = std::sync::Arc::<
+                dyn std::ops::Fn(u16) -> yaran_core::cloud::cloudflared::ready::Readiness
+                    + std::marker::Send
+                    + std::marker::Sync,
+            >::clone(probe);
         }
         self.leg = Some(CloudLeg::start(
             params,
-            self.identity.clone(),
+            std::sync::Arc::<dyn yaran_core::cloud::leg_identity::CloudIdentity>::clone(
+                &self.identity,
+            ),
             sink,
             self.stopping.take(),
         ));
@@ -286,7 +296,7 @@ impl CloudLoop {
             .unwrap_or_default();
         match &event {
             CloudLegEvent::Acquiring { pct, .. } => {
-                self.set_state(CloudLegState::Acquiring { pct: *pct }, None)
+                self.set_state(CloudLegState::Acquiring { pct: *pct }, None);
             }
             CloudLegEvent::Acquired { .. } | CloudLegEvent::Warning(_) => {}
             CloudLegEvent::Starting { token_version } => {

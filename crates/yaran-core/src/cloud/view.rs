@@ -91,12 +91,18 @@ pub struct SharedCloudView(Arc<Mutex<CloudLegView>>);
 
 impl SharedCloudView {
     pub fn snapshot(&self) -> CloudLegView {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Replace the snapshot; answers whether anything a surface shows changed.
     pub fn replace(&self, view: CloudLegView) -> bool {
-        let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut slot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed = *slot != view;
         *slot = view;
         changed

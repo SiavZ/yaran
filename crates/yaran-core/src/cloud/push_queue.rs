@@ -135,25 +135,22 @@ impl PushQueue {
 
     pub fn offer(&mut self, event: Event, now: Instant) {
         let topic = topic_of(&event);
-        match attention_kind(&event) {
-            Some(_) => {
-                // Newest state wins; the window still runs from the topic's first edge.
-                if let Some(i) = self.pending_attention(&topic) {
-                    let entry = &mut self.pending[i];
-                    entry.event = event;
-                    entry.born = now;
-                    self.counts.coalesced += 1;
-                    return;
-                }
+        if let Some(_) = attention_kind(&event) {
+            // Newest state wins; the window still runs from the topic's first edge.
+            if let Some(i) = self.pending_attention(&topic) {
+                let entry = &mut self.pending[i];
+                entry.event = event;
+                entry.born = now;
+                self.counts.coalesced += 1;
+                return;
             }
-            None => {
-                // The exit replaces the attention notification on the phone.
-                if let Some(i) = self.pending_attention(&topic) {
-                    self.pending.remove(i);
-                    self.counts.coalesced += 1;
-                }
-                self.raised.remove(&topic);
+        } else {
+            // The exit replaces the attention notification on the phone.
+            if let Some(i) = self.pending_attention(&topic) {
+                self.pending.remove(i);
+                self.counts.coalesced += 1;
             }
+            self.raised.remove(&topic);
         }
         if self.pending.len() >= MAX_PENDING {
             self.pending.pop_front();

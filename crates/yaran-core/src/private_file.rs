@@ -152,7 +152,7 @@ mod tests {
         assert!(write_private_atomic(&occupied, b"x").is_err());
         let leftovers: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
             .collect();
         assert!(leftovers.is_empty());

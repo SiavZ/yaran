@@ -128,7 +128,7 @@ impl BoardStore {
             Backend::Document(path) => load_document(path)?,
             Backend::Folder(dir) => load_folder(dir)?,
         };
-        board.prefix = self.prefix.clone();
+        board.prefix.clone_from(&self.prefix);
         Ok(board)
     }
 
@@ -204,7 +204,11 @@ fn write_document(path: &Path, board: &Board) -> Result<()> {
 
 /// Whether `name` is a note the folder board reads: a visible `.md` file.
 fn is_note_name(name: &str) -> bool {
-    !name.starts_with('.') && name.ends_with(".md") && name.len() > ".md".len()
+    !name.starts_with('.')
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        && name.len() > ".md".len()
 }
 
 fn load_folder(dir: &Path) -> Result<Board> {
@@ -217,7 +221,7 @@ fn load_folder(dir: &Path) -> Result<Board> {
         }
     };
     let mut names: Vec<String> = entries
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| is_note_name(name))
         .collect();
@@ -259,8 +263,7 @@ fn load_folder(dir: &Path) -> Result<Board> {
         };
         let modified = meta
             .modified()
-            .map(DateTime::<Utc>::from)
-            .unwrap_or_else(|_| Utc::now());
+            .map_or_else(|_| Utc::now(), DateTime::<Utc>::from);
         match markdown::parse(&text, stem, modified) {
             Ok(None) => {}
             Ok(Some(card)) => {
@@ -375,7 +378,7 @@ fn fingerprint(store: &BoardStore) -> Fingerprint {
         Backend::Document(path) => Fingerprint::Document(stamp(path)),
         Backend::Folder(dir) => Fingerprint::Folder(fs::read_dir(dir).ok().map(|entries| {
             let mut notes: Vec<(String, FileStamp)> = entries
-                .filter_map(|entry| entry.ok())
+                .filter_map(std::result::Result::ok)
                 .filter_map(|entry| {
                     let name = entry.file_name().into_string().ok()?;
                     if !is_note_name(&name) {
@@ -539,7 +542,7 @@ mod tests {
         fs::write(store.path().join("README.md"), "# The board\n").unwrap();
         fs::write(store.path().join("notes.txt"), "not a note").unwrap();
         let board = store.load().unwrap();
-        assert!(board.cards.is_empty());
+        assert_eq!(board.cards, [] as [crate::human_board::Card; 0]);
         assert_eq!(board.problems.len(), 1, "{:?}", board.problems);
         assert!(board.problems[0].contains("G-7.md"), "{:?}", board.problems);
 
@@ -598,7 +601,10 @@ mod tests {
         let outside = home.path().join("outside.md");
         fs::write(&outside, "---\nkind: task\ntitle: from outside\n---\n").unwrap();
         std::os::unix::fs::symlink(&outside, store.path().join("G-1.md")).unwrap();
-        assert!(store.load().unwrap().cards.is_empty());
+        assert_eq!(
+            store.load().unwrap().cards,
+            [] as [crate::human_board::Card; 0]
+        );
     }
 
     #[test]
@@ -608,14 +614,9 @@ mod tests {
         fs::create_dir_all(store.path()).unwrap();
         let watcher = BoardWatcher::spawn(store.clone(), Duration::from_millis(10)).unwrap();
         let wait = Duration::from_secs(5);
-        assert!(
-            watcher
-                .next_within(wait)
-                .unwrap()
-                .board
-                .unwrap()
-                .cards
-                .is_empty()
+        assert_eq!(
+            watcher.next_within(wait).unwrap().board.unwrap().cards,
+            [] as [crate::human_board::Card; 0]
         );
         store.update(|b| b.post(task("a"), at(0))).unwrap();
         assert_eq!(

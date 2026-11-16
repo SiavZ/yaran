@@ -274,7 +274,7 @@ mod tests {
     ) -> (mpsc::Sender<CopyRequest>, mpsc::Receiver<CopyRequest>) {
         let (tx, rx) = mpsc::channel();
         let op = status_op("copy")
-            .on_success(|_: &()| Final::info("ok"))
+            .on_success(|(): &()| Final::info("ok"))
             .on_failure(|e: &String| Final::error(e.clone()));
         tx.send(CopyRequest {
             text: text.to_string(),
@@ -332,7 +332,7 @@ mod tests {
     fn successful_native_set_does_not_emit_osc52() {
         let (result, seen) = run_one::<Setter>(Ok(|_| Ok(())), true);
         assert!(result.is_ok());
-        assert!(seen.is_empty());
+        assert_eq!(seen, [] as [std::string::String; 0]);
     }
 
     #[test]

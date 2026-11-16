@@ -5976,7 +5976,7 @@ impl App {
     /// Claude Code and Codex keep meaningful history in scrollback while on the
     /// alternate screen. The track rect is published so the thumb can be
     /// dragged (fork 670b8c24).
-    fn render_agent_scrollbar(&mut self, frame: &mut Frame, area: Rect, term_area: Rect) {
+    fn render_agent_scrollbar(&mut self, frame: &mut Frame<'_>, area: Rect, term_area: Rect) {
         let has_output = self
             .selected_terminal_surface_client()
             .is_some_and(yaran_core::pty::PtyClient::has_output);
@@ -6365,7 +6365,7 @@ impl App {
     /// files changed. Publishes each tab's rect for clicks; tabs are separated
     /// by a divider cell with a space either side, so a click cannot land on
     /// the neighbour.
-    fn render_right_tabs(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_right_tabs(&mut self, frame: &mut Frame<'_>, area: Rect) {
         use super::human_board::RightTab;
         let tabs = self.right_column_tabs();
         let has_people = self
@@ -6477,7 +6477,7 @@ impl App {
     /// the Staged Changes list and the commit box under it when something is
     /// staged (or the collapsed rail, or the quiet card for a folder git
     /// cannot work with).
-    fn render_changes_column(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_changes_column(&mut self, frame: &mut Frame<'_>, area: Rect) {
         // Show the shared non-repository message before even the collapsed rail;
         // an empty file region cannot explain a standalone folder on its own.
         if let Some(reason) = self.quiet_changes_reason() {
@@ -6926,7 +6926,7 @@ impl App {
     /// The human board: open cards grouped by kind in the board's column
     /// order, then the most recently resolved under "Done". Publishes the row
     /// area and the row-to-card map for clicks.
-    fn render_human_board(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_human_board(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let pane_focused = self.focus == FocusPane::Files;
         let active = pane_focused && self.right_section == RightSection::Board;
         let title = self.human_board_title(active, usize::from(area.width.saturating_sub(4)));
@@ -6984,7 +6984,7 @@ impl App {
             let open_key = self.bindings.label_for(Action::OpenDiff);
             let done_key = self.bindings.label_for(Action::StageUnstage);
             let desc_style = Style::default().fg(self.theme.hint_dim_desc_fg);
-            let mut spans: Vec<Span> = Vec::new();
+            let mut spans: Vec<Span<'_>> = Vec::new();
             spans.extend(self.theme.dim_key_badge_default(&open_key));
             spans.push(Span::styled(" open  ", desc_style));
             spans.extend(self.theme.dim_key_badge_default(&done_key));
@@ -7001,7 +7001,7 @@ impl App {
 
     fn render_human_board_rows(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         area: Rect,
         board: &yaran_core::human_board::Board,
         selected_slot: Option<usize>,
@@ -18357,7 +18357,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(
             rendered.contains(&format!(
@@ -20970,7 +20970,7 @@ mod tests {
         // still false. Wait for both premises the render checks.
         let has_output = |app: &App| {
             app.selected_terminal_surface_client()
-                .is_some_and(|provider| provider.has_output())
+                .is_some_and(yaran_core::pty::PtyClient::has_output)
         };
         for _ in 0..500 {
             app.refresh_snapshot_buf();
@@ -25667,7 +25667,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(
             text.contains(name) && text.contains("Cancel") && text.contains("Delete"),
@@ -25695,7 +25695,7 @@ mod tests {
                 .buffer()
                 .content()
                 .iter()
-                .map(|cell| cell.symbol())
+                .map(ratatui::buffer::Cell::symbol)
                 .collect();
             assert!(text.contains("Terminal 1"), "{text}");
             assert!(text.contains("Cancel") && text.contains("Delete"), "{text}");
@@ -27333,7 +27333,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(rendered.contains("No matching agents."), "{rendered}");
         assert!(rendered.contains("<Esc> clear"), "{rendered}");
@@ -29220,7 +29220,7 @@ mod tests {
                 copy_changes,
                 review_copy: None,
                 focus,
-                extras: Default::default(),
+                extras: Box::default(),
             },
             other => panic!("expected NameNewAgent, got {other:?}"),
         };
@@ -29640,7 +29640,7 @@ mod tests {
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         }
     }
 
@@ -29689,7 +29689,7 @@ mod tests {
                 agreed: false,
             }),
             focus: NameNewAgentFocus::ReviewCopyCheckbox,
-            extras: Default::default(),
+            extras: Box::default(),
         };
 
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
@@ -30074,7 +30074,7 @@ mod tests {
             copy_changes: false,
             review_copy: None,
             focus,
-            extras: Default::default(),
+            extras: Box::default(),
         }
     }
 

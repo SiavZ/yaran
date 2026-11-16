@@ -13,7 +13,7 @@ use crate::engine::test_support::sample_session;
 use crate::pty::PtyClient;
 
 /// A screen that changes on every tick (a working agent's spinner) is
-/// rescanned at most once per WATCH_RESCAN_INTERVAL, and a match that
+/// rescanned at most once per `WATCH_RESCAN_INTERVAL`, and a match that
 /// appears is still seen once the interval has passed.
 #[test]
 fn a_busy_screen_is_rescanned_at_most_once_per_interval() {
@@ -147,7 +147,8 @@ fn assert_busy_tabs_are_fairly_rescanned(tick: Duration, ticks: u32) -> usize {
 
     let t0 = Instant::now();
     let mut most = 0;
-    let mut scanned: std::collections::HashMap<TabId, Vec<u32>> = Default::default();
+    let mut scanned: std::collections::HashMap<TabId, Vec<u32>> =
+        std::collections::HashMap::default();
     for k in 0..ticks {
         let now = t0 + tick * k;
         let before = engine.watch.rescans;

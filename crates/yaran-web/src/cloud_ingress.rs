@@ -296,7 +296,11 @@ impl CloudIngress {
             aud: input.aud,
             owner_email: input.owner_email,
         });
-        *self.0.binding.write().unwrap_or_else(|e| e.into_inner()) = Some(binding);
+        *self
+            .0
+            .binding
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(binding);
         let this = self.clone();
         match tokio::runtime::Handle::try_current() {
             Ok(rt) => drop(rt.spawn(async move {
@@ -317,13 +321,21 @@ impl CloudIngress {
 
     /// Clears the binding (leg stop, revocation, mode `no`). Idempotent.
     pub fn unbind(&self) {
-        *self.0.binding.write().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .0
+            .binding
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Applies changed `[cloud]` keys live (both reload owners call this).
     /// Adopt changed live `[cloud]` settings.
     pub fn update_settings(&self, settings: IngressSettings) {
-        *self.0.settings.write().unwrap_or_else(|e| e.into_inner()) = settings;
+        *self
+            .0
+            .settings
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = settings;
     }
 
     /// The binding in force, or `None` while the leg is not bound.
@@ -331,7 +343,7 @@ impl CloudIngress {
         self.0
             .binding
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -340,7 +352,7 @@ impl CloudIngress {
         self.0
             .settings
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 

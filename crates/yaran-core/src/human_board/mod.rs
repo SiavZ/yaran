@@ -83,22 +83,19 @@ pub fn fit_title(title: &str, detail: Option<String>) -> Option<(String, Option<
         .filter_map(|mark| window.find(mark).map(|at| (at, *mark)))
         .filter(|(at, _)| window[..*at].chars().count() >= 20)
         .min_by_key(|(at, _)| *at);
-    let headline = match clause {
-        Some((at, mark)) => {
-            let keep = if mark.starts_with('?') || mark.starts_with('!') {
-                1
-            } else {
-                0
-            };
-            window[..at + keep].trim_end().to_string()
-        }
-        None => {
-            let cut = window
-                .rfind(' ')
-                .filter(|at| *at > 20)
-                .unwrap_or(window.len());
-            format!("{}\u{2026}", window[..cut].trim_end())
-        }
+    let headline = if let Some((at, mark)) = clause {
+        let keep = if mark.starts_with('?') || mark.starts_with('!') {
+            1
+        } else {
+            0
+        };
+        window[..at + keep].trim_end().to_string()
+    } else {
+        let cut = window
+            .rfind(' ')
+            .filter(|at| *at > 20)
+            .unwrap_or(window.len());
+        format!("{}\u{2026}", window[..cut].trim_end())
     };
     let detail = match detail {
         Some(detail) => format!("{full}\n\n{detail}"),
@@ -256,6 +253,10 @@ impl Priority {
         matches!(self, Priority::Critical | Priority::High)
     }
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if hands the field over by reference"
+    )]
     fn is_normal(&self) -> bool {
         *self == Priority::Normal
     }
@@ -401,21 +402,18 @@ impl Card {
     pub fn absorb_conversation(&mut self, other: &Card) -> bool {
         let mut changed = false;
         for theirs in &other.thread {
-            match self
+            if let Some(ours) = self
                 .thread
                 .iter_mut()
                 .find(|ours| ours.key() == theirs.key())
             {
-                Some(ours) => {
-                    if ours.relayed_at.is_none() && theirs.relayed_at.is_some() {
-                        ours.relayed_at = theirs.relayed_at;
-                        changed = true;
-                    }
-                }
-                None => {
-                    self.thread.push(theirs.clone());
+                if ours.relayed_at.is_none() && theirs.relayed_at.is_some() {
+                    ours.relayed_at = theirs.relayed_at;
                     changed = true;
                 }
+            } else {
+                self.thread.push(theirs.clone());
+                changed = true;
             }
         }
         if self.relayed_at.is_none() && other.relayed_at.is_some() {

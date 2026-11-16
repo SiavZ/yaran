@@ -126,7 +126,7 @@ pub fn gather(paths: &CloudPaths, mode: CloudMode, remote: Option<&ApiFactory>) 
     report.origin_port = Some(creds.origin_port);
     report.token_version = Some(creds.token_version);
     report.paired_at = Some(creds.paired_at.clone());
-    report.revoked_at = creds.revoked_at.clone();
+    report.revoked_at.clone_from(&creds.revoked_at);
     if let LegStatus::Running(s) = leg_state::status(paths) {
         report.leg = Some(LegReport {
             state: s.state,

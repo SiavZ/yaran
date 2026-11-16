@@ -102,7 +102,7 @@ mod tests {
         };
         assert_eq!(s(0, 1).offline_ttl, Duration::from_secs(30));
         assert_eq!(s(0, 1).coalesce, Duration::ZERO);
-        assert_eq!(s(9_999, 999_999).offline_ttl, Duration::from_secs(86_400));
+        assert_eq!(s(9_999, 999_999).offline_ttl, Duration::from_hours(24));
         assert_eq!(s(9_999, 600).coalesce, Duration::from_secs(300));
         let d = PushSettings::new(true, &PushKeys::default());
         assert_eq!(

@@ -3,7 +3,7 @@
 //! `discover_root`) and the env-expansion helpers (`expand_env_vars`,
 //! `expand_path`, `resolve_project_env`, …). The keybinding-aware *renderer* of
 //! the documented config, plus `ensure_config`/`save_config` orchestration and
-//! the toml_edit patching, live in the binary's `config` module, not here.
+//! the `toml_edit` patching, live in the binary's `config` module, not here.
 //!
 //! <module-headers:begin>
 //! ```text
@@ -4059,8 +4059,7 @@ impl Config {
     pub fn default_workspace_mode(&self) -> WorkspaceMode {
         self.workspace
             .as_ref()
-            .map(|workspace| workspace.default_mode)
-            .unwrap_or(WorkspaceMode::Worktree)
+            .map_or(WorkspaceMode::Worktree, |workspace| workspace.default_mode)
     }
 
     /// Whether shared-workspace agents take part in startup auto-reopen. An
@@ -4083,8 +4082,10 @@ impl Config {
         self.projects
             .iter()
             .find(|project| project.id == project_id)
-            .map(|project| self.workspace_mode_for_project(project))
-            .unwrap_or_else(|| self.default_workspace_mode())
+            .map_or_else(
+                || self.default_workspace_mode(),
+                |project| self.workspace_mode_for_project(project),
+            )
     }
 }
 
@@ -11088,7 +11089,7 @@ mod agent_tabs_cap_tests {
     }
 
     /// Fork bc3a9eec shipped `forward_mouse = false` for Claude and Codex (and
-    /// 55ce75f3 for OpenCode) so agent output can be selected and copied. An
+    /// 55ce75f3 for `OpenCode`) so agent output can be selected and copied. An
     /// existing config written before the key existed gets that policy through
     /// `ensure_defaults`; an explicit value wins.
     #[test]

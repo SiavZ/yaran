@@ -276,7 +276,7 @@ impl App {
         });
     }
 
-    pub(crate) fn render_orphan_worktrees_prompt(&mut self, frame: &mut Frame) {
+    pub(crate) fn render_orphan_worktrees_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::OrphanWorktrees(prompt) = &self.prompt else {
             return;
         };
@@ -568,7 +568,7 @@ mod tests {
             .buffer()
             .content
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
 
         assert!(rendered.contains("DIRTY"));

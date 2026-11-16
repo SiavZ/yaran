@@ -173,7 +173,8 @@ impl CloudState {
 }
 
 fn lock(slot: &Mutex<Option<ActiveLogin>>) -> MutexGuard<'_, Option<ActiveLogin>> {
-    slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The production routes, merged into the main router by `server::build_app`.

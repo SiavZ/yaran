@@ -433,9 +433,8 @@ fn migration_0005_rolls_back_atomically_on_failure() {
         .expect("install failure");
     }
 
-    let err = match SessionStore::open(&path) {
-        Ok(_) => panic!("the injected failure must fail the open"),
-        Err(err) => err,
+    let Err(err) = SessionStore::open(&path) else {
+        panic!("the injected failure must fail the open")
     };
     assert!(
         format!("{err:#}").contains("injected backfill failure"),

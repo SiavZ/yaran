@@ -87,11 +87,10 @@ pub(crate) fn with_legacy_env_aliases(mut env: Vec<(String, String)>) -> Vec<(St
             .iter()
             .rev()
             .find(|(key, _)| key == &new)
-            .map(|(_, value)| value)
-            .unwrap_or(value);
+            .map_or(value, |(_, value)| value);
         for key in [new, old] {
             if let Some((_, value)) = env.iter_mut().find(|(name, _)| name == &key) {
-                *value = resolved.clone();
+                value.clone_from(resolved);
             } else {
                 env.push((key, resolved.clone()));
             }
@@ -310,7 +309,7 @@ mod tests {
             crate::model::ConversationStart::Fresh,
             (5, 80),
             crate::worker::AgentLaunchKind::Reconnect {
-                status_message: Default::default(),
+                status_message: crate::status_text::StatusText::default(),
             },
         );
         let handle = request

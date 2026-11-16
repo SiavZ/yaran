@@ -370,7 +370,10 @@ mod tests {
         // Once marked relayed it is never planned again.
         let (at, from, text) = job.messages[0].clone();
         board.mark_relayed(&id, (at, &from, &text), at).unwrap();
-        assert!(plan(&board, &sam, &here).is_empty());
+        assert_eq!(
+            plan(&board, &sam, &here),
+            [] as [crate::human_board::relay::RelayJob; 0]
+        );
     }
 
     #[test]
@@ -423,10 +426,16 @@ mod tests {
         for (at, from, text) in &job.messages {
             board.mark_relayed(&id, (*at, from, text), *at).unwrap();
         }
-        assert!(plan(&board, &sam, &here).is_empty());
+        assert_eq!(
+            plan(&board, &sam, &here),
+            [] as [crate::human_board::relay::RelayJob; 0]
+        );
 
         // Alex's own board never relays Alex's card back to an agent there.
-        assert!(plan(&board, &settings("Alex", Some("hub")), &|_| true).is_empty());
+        assert_eq!(
+            plan(&board, &settings("Alex", Some("hub")), &|_| true),
+            [] as [crate::human_board::relay::RelayJob; 0]
+        );
     }
 
     #[test]
@@ -471,7 +480,10 @@ mod tests {
         assert!(sent.contains("Alex answered on card #S-1"), "{sent}");
         let card = store.load().unwrap().card(&id).unwrap().clone();
         assert!(card.thread[0].relayed_at.is_some());
-        assert!(plan(&store.load().unwrap(), &settings("Sam", None), &here).is_empty());
+        assert_eq!(
+            plan(&store.load().unwrap(), &settings("Sam", None), &here),
+            [] as [crate::human_board::relay::RelayJob; 0]
+        );
 
         // A send that fails records nothing: the job comes back next time.
         let failing = dir.path().join("failing-yaran");
@@ -499,13 +511,19 @@ mod tests {
         say(&mut board, &id, "Alex", "Alex", "Yes.", false);
         let mut off = settings("Sam", None);
         off.relay = false;
-        assert!(plan(&board, &off, &here).is_empty());
+        assert_eq!(
+            plan(&board, &off, &here),
+            [] as [crate::human_board::relay::RelayJob; 0]
+        );
         assert!(
             plan(&board, &settings("Sam", None), &|_| false).is_empty(),
             "the poster is not one of this yaran's agents"
         );
         let mut nobody = settings("Sam", None);
         nobody.me = None;
-        assert!(plan(&board, &nobody, &here).is_empty());
+        assert_eq!(
+            plan(&board, &nobody, &here),
+            [] as [crate::human_board::relay::RelayJob; 0]
+        );
     }
 }

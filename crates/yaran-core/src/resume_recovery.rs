@@ -671,7 +671,12 @@ fn codex_rollout_paths_from_events(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> 
 fn is_codex_rollout_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+        .is_some_and(|name| {
+            name.starts_with("rollout-")
+                && std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+        })
 }
 
 fn parse_codex_rollout_identity(path: PathBuf) -> Option<(String, PathBuf)> {
@@ -801,7 +806,7 @@ pub fn recover_stranded_histories(
 /// The recovery work that touches only the provider directories: scan the
 /// transcripts, match them to agents, and copy Claude artifacts into each
 /// agent's current project directory. Safe on a worker thread because it
-/// never opens the session store (every `SessionStore::open` runs migrate(),
+/// never opens the session store (every `SessionStore::open` runs `migrate()`,
 /// which must not race the engine's own writes). The ids it finds are in
 /// `report.updates` and are NOT persisted yet: see [`persist_recovered_ids`].
 pub fn scan_stranded_histories(
@@ -1118,8 +1123,9 @@ fn visit_jsonl(path: &Path, mut visit: impl FnMut(usize, &Value)) -> Result<i64>
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(0);
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        });
     let mut reader = BufReader::new(File::open(path)?);
     let mut line = Vec::new();
     let mut line_index = 0;
@@ -1514,11 +1520,17 @@ mod tests {
                 recorded: Some(stale),
             }]
         );
-        assert!(read_claude_live_sessions(records.path(), vec![target(Some(&live_id))]).is_empty());
+        assert_eq!(
+            read_claude_live_sessions(records.path(), vec![target(Some(&live_id))]),
+            [] as [crate::resume_recovery::ClaudeLiveSession; 0]
+        );
         let _ = child.kill();
         let _ = child.wait();
         // Gone: no process, nothing reported even though the record is still there.
-        assert!(read_claude_live_sessions(records.path(), vec![target(None)]).is_empty());
+        assert_eq!(
+            read_claude_live_sessions(records.path(), vec![target(None)]),
+            [] as [crate::resume_recovery::ClaudeLiveSession; 0]
+        );
     }
     use crate::model::{
         AgentWorkspace, BranchProvenance, ManagedWorkspace, ProjectBranchStatus, ProviderKind,
@@ -1637,7 +1649,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Leading,
             path_missing: false,

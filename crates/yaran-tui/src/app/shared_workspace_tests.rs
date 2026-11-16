@@ -132,7 +132,7 @@ fn shared_default_opens_shared_request_with_prefilled_handle() {
                 request,
                 CreateAgentRequest::SharedWorkspace { .. }
             ));
-            assert!(!input.text.is_empty());
+            assert_ne!(input.text, "");
             assert!(yaran_core::model::is_valid_agent_handle(
                 &yaran_core::model::normalize_agent_handle(&input.text)
             ));
@@ -159,7 +159,7 @@ fn project_workspace_override_controls_create_mode() {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             workspace_mode: Some(project_mode),
         });
 

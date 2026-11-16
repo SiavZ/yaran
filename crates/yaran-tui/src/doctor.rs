@@ -421,7 +421,10 @@ mod tests {
         assert_eq!(snap.integrity, "absent");
         assert_eq!(snap.active, 0);
         assert_eq!(snap.orphaned_worktrees, 0);
-        assert!(snap.orphaned_sessions.is_empty());
+        assert_eq!(
+            snap.orphaned_sessions,
+            [] as [crate::doctor::OrphanedSessionSnapshot; 0]
+        );
     }
 
     /// Only the lock holder opens the session database: while a running yaran

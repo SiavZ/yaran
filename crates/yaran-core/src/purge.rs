@@ -125,8 +125,7 @@ impl PurgeConfig {
                     None => paths
                         .root
                         .parent()
-                        .map(|parent| parent.join("amq"))
-                        .unwrap_or_else(|| paths.root.join("amq")),
+                        .map_or_else(|| paths.root.join("amq"), |parent| parent.join("amq")),
                 },
             },
         };
@@ -697,7 +696,7 @@ pub fn execute(
                 sanitize::for_terminal(why)
             )),
             PurgeOutcome::DryRun | PurgeOutcome::Done => {
-                crate::logger::info(&format!("purge: step complete: {}", item.describe()))
+                crate::logger::info(&format!("purge: step complete: {}", item.describe()));
             }
         }
         entries.push((item.clone(), outcome));
@@ -890,8 +889,7 @@ fn execute_redact_logs(log_path: &Path, session_id: &str, dry_run: bool) -> Purg
             log_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .map(sanitize::for_terminal)
-                .unwrap_or_else(|| "configured".to_string()),
+                .map_or_else(|| "configured".to_string(), sanitize::for_terminal),
             safe_path(log_root)
         ));
     }

@@ -128,9 +128,8 @@ fn integrity_check_failure_returns_error_not_panic() {
     )
     .expect("write corrupt file");
 
-    let err = match SessionStore::open(&path) {
-        Ok(_) => panic!("expected SessionStore::open on a corrupt file to return Err"),
-        Err(err) => err,
+    let Err(err) = SessionStore::open(&path) else {
+        panic!("expected SessionStore::open on a corrupt file to return Err")
     };
     let msg = format!("{err:#}");
     assert!(

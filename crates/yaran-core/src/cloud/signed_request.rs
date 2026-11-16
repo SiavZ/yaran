@@ -131,6 +131,6 @@ mod tests {
         assert!(recorded.signature_verifies(&public));
         recorded.body = serde_json::to_vec_pretty(&req).unwrap();
         assert!(!recorded.signature_verifies(&public));
-        assert!(body_bytes::<RotateRequest>(None).is_empty());
+        assert_eq!(body_bytes::<RotateRequest>(None), [] as [u8; 0]);
     }
 }

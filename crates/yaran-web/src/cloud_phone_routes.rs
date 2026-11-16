@@ -111,7 +111,7 @@ fn refuse(status: StatusCode, message: &str) -> Response {
 
 /// The whole decision, for a given source (or none installed).
 pub(crate) fn phone_qr_response(source: Option<&dyn PhoneQrSource>) -> Response {
-    let Some(url) = source.and_then(|s| s.org_url()) else {
+    let Some(url) = source.and_then(PhoneQrSource::org_url) else {
         return refuse(
             StatusCode::CONFLICT,
             "This machine is not connected to a yaran org, so there is no phone code to show. Connect it with yaran cloud login, then try again.",

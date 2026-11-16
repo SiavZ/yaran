@@ -42,7 +42,7 @@ pub const WATCH_RESCAN_INTERVAL: Duration = Duration::from_millis(200);
 /// The rescan budget of one tick is the tab count split over this many ticks,
 /// so a herd of tabs that fall due together is drained in at most this many
 /// ticks. At the UI's tick rate that stays well inside one more
-/// WATCH_RESCAN_INTERVAL.
+/// `WATCH_RESCAN_INTERVAL`.
 pub const WATCH_RESCAN_SPREAD_TICKS: usize = 4;
 
 /// Fewer tabs than this are all rescanned in one tick: spreading a handful
@@ -455,14 +455,14 @@ impl Engine {
                         WatchSnapshot {
                             generation,
                             scanned_at: now,
-                            text: text.clone(),
+                            text: std::sync::Arc::<str>::clone(&text),
                             key,
                         },
                     );
                     (text, key)
                 }
                 None => match self.watch.last_snapshot.get(&tab) {
-                    Some(c) => (c.text.clone(), c.key),
+                    Some(c) => (std::sync::Arc::<str>::clone(&c.text), c.key),
                     None => continue,
                 },
             };

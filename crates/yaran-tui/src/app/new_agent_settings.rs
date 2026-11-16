@@ -362,7 +362,7 @@ impl App {
     /// Draw the block into `area` and return each row's hit rect.
     pub(crate) fn render_new_agent_extras(
         &self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         area: Rect,
         lines: &[ExtrasLine],
     ) -> Vec<(Rect, NameNewAgentFocus)> {
@@ -591,7 +591,7 @@ mod tests {
     }
 
     /// Mode, YOLO and verify rows reuse the settings modal's toggle, and the
-    /// draft reaches the new session through SetSessionSettings.
+    /// draft reaches the new session through `SetSessionSettings`.
     #[test]
     fn advanced_draft_is_applied_to_the_created_session() {
         let mut app = test_app(default_bindings());

@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn backup_worker_runs_on_schedule_and_zero_disables() {
         assert_eq!(backup_interval(0), None);
-        assert_eq!(backup_interval(30), Some(Duration::from_secs(1800)));
+        assert_eq!(backup_interval(30), Some(Duration::from_mins(30)));
 
         let (mut engine, _tmp) = test_engine();
         let bak = backup_path(&engine.paths.sessions_db_path);

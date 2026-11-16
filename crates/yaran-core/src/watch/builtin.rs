@@ -277,7 +277,7 @@ mod tests {
                 assert_eq!(text, "/clear");
                 assert!(append_enter);
             }
-            _ => panic!("expected SendText action"),
+            WatchAction::WaitUntilCapture { .. } => panic!("expected SendText action"),
         }
     }
 
@@ -409,7 +409,7 @@ mod tests {
                 assert_eq!(text, "/compact keep the card");
                 assert!(append_enter);
             }
-            _ => panic!("expected SendText action"),
+            WatchAction::WaitUntilCapture { .. } => panic!("expected SendText action"),
         }
     }
 

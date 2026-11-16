@@ -236,7 +236,10 @@ mod tests {
     fn config(dir: &str, people: &[&str], me: &str, prefix: &str) -> BoardConfig {
         BoardConfig {
             dir: dir.to_string(),
-            people: people.iter().map(|p| p.to_string()).collect(),
+            people: people
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             me: me.to_string(),
             id_prefix: prefix.to_string(),
             ..BoardConfig::default()

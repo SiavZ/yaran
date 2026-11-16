@@ -99,7 +99,9 @@ mod tests {
             );
             assert_eq!(
                 pin.kind == pins::AssetKind::Tgz,
-                pin.asset.ends_with(".tgz"),
+                std::path::Path::new(pin.asset)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tgz")),
                 "{pin:?}"
             );
         }

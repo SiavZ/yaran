@@ -514,7 +514,7 @@ impl App {
 
     // ── render ───────────────────────────────────────────────────────
 
-    pub(super) fn render_session_settings(&mut self, frame: &mut Frame) {
+    pub(super) fn render_session_settings(&mut self, frame: &mut Frame<'_>) {
         let PromptState::SessionSettings(prompt) = &self.prompt else {
             return;
         };
@@ -540,7 +540,7 @@ impl App {
         let text = Style::default().fg(self.theme.text_fg);
         let focused_style = self.theme.selection_style();
 
-        let line = |frame: &mut Frame, y: &mut u16, content: Line<'static>| -> Rect {
+        let line = |frame: &mut Frame<'_>, y: &mut u16, content: Line<'static>| -> Rect {
             if *y >= rows_bottom {
                 return Rect::default();
             }
@@ -942,8 +942,7 @@ mod tests {
             .hit_rows
             .iter()
             .find(|(_, f)| *f == focus)
-            .map(|(r, _)| *r)
-            .unwrap_or_else(|| panic!("{focus:?} not published"))
+            .map_or_else(|| panic!("{focus:?} not published"), |(r, _)| *r)
     }
 
     fn open_rendered() -> App {
@@ -1013,7 +1012,7 @@ mod tests {
             saved.compact_instructions_path.as_deref(),
             Some("/srv/c.txt")
         );
-        let msg = app.status.message().to_string();
+        let msg = app.status.message().clone();
         assert!(msg.contains("auto-compact"), "{msg}");
     }
 
@@ -1042,7 +1041,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         let global = app
             .engine
@@ -1172,7 +1171,7 @@ mod tests {
             .draft_system_prompt
             .set_text("review pls".into());
         app.save_session_settings().unwrap();
-        let msg = app.status.message().to_string();
+        let msg = app.status.message().clone();
         assert!(msg.contains("system prompt"), "{msg}");
         assert!(msg.contains("Reconnect"), "{msg}");
     }
@@ -1182,7 +1181,7 @@ mod tests {
         let mut app = app();
         app.open_session_settings().unwrap();
         app.save_session_settings().unwrap();
-        let msg = app.status.message().to_string();
+        let msg = app.status.message().clone();
         assert!(msg.contains("no changes"), "{msg}");
     }
 
@@ -1269,7 +1268,7 @@ mod tests {
     #[test]
     fn palette_command_opens_the_modal() {
         let mut app = app();
-        app.execute_command("session-settings".into()).unwrap();
+        app.execute_command("session-settings").unwrap();
         assert!(matches!(app.prompt, PromptState::SessionSettings(_)));
     }
 

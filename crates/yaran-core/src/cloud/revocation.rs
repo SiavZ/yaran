@@ -42,7 +42,10 @@ impl RevocationSignal {
     /// Record a revocation and notify every live subscriber with the new generation.
     pub fn raise(&self) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut subs = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.retain(|tx| tx.send(generation).is_ok());
     }
 
@@ -56,7 +59,7 @@ impl RevocationSignal {
         let (tx, rx) = mpsc::channel();
         self.subscribers
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(tx);
         rx
     }

@@ -179,7 +179,7 @@ impl Default for CloudConfig {
             access_jwks_retry_cooldown_seconds: 30,
             handoff_requests_per_minute: 12,
             close_sockets_at_access_expiry: true,
-            push: Default::default(),
+            push: super::push_config::PushKeys::default(),
         }
     }
 }
@@ -244,9 +244,15 @@ mod tests {
             callback_urls_for_domain("app.example.dev"),
             vec!["https://app.example.dev/auth/callback".to_string()]
         );
-        assert!(callback_urls_for_domain("<publisher-domain>").is_empty());
-        assert!(callback_urls_for_domain("").is_empty());
-        assert!(callback_urls_for_domain("evil/path").is_empty());
+        assert_eq!(
+            callback_urls_for_domain("<publisher-domain>"),
+            [] as [std::string::String; 0]
+        );
+        assert_eq!(callback_urls_for_domain(""), [] as [std::string::String; 0]);
+        assert_eq!(
+            callback_urls_for_domain("evil/path"),
+            [] as [std::string::String; 0]
+        );
         assert_eq!(
             CloudConfig::default().app_callback_urls,
             callback_urls_for_domain(PUBLISHER_DOMAIN)

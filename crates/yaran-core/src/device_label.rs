@@ -11,7 +11,7 @@
 //! it. Both suites read one fixture, `tests/fixtures/device_label_cross_language.json`.
 //!
 //! The phone app's `YaranApp/…` token (Phase 02 §11) is read FIRST, before any OS
-//! check, because an iPad's WKWebView sends a Mac User-Agent.
+//! check, because an iPad's `WKWebView` sends a Mac User-Agent.
 //!
 //! The two deliberately differ on an unparseable string: `deviceLabel.ts`
 //! returns `null` because it renders into HTML, where echoing an

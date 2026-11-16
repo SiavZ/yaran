@@ -360,8 +360,7 @@ fn parse_messages(lines: &[&str], fallback: DateTime<Utc>) -> Option<Vec<Message
         let draft = drafts.last_mut()?;
         let unescaped = quoted
             .strip_prefix("\\[!")
-            .map(|rest| format!("[!{rest}"))
-            .unwrap_or_else(|| quoted.to_string());
+            .map_or_else(|| quoted.to_string(), |rest| format!("[!{rest}"));
         draft.text.push(unescaped);
     }
     let mut thread: Vec<Message> = drafts
@@ -860,7 +859,7 @@ mod tests {
     fn a_conversation_heading_followed_by_prose_stays_in_the_detail() {
         let note = "---\nkind: task\ntitle: \"Notes\"\n---\n\nIntro.\n\n## Conversation\n\nWe talked about it on the phone.\n";
         let card = parse(note, "S-4", at(0)).unwrap().unwrap();
-        assert!(card.thread.is_empty());
+        assert_eq!(card.thread, [] as [crate::human_board::Message; 0]);
         assert_eq!(
             card.detail.as_deref(),
             Some("Intro.\n\n## Conversation\n\nWe talked about it on the phone.")

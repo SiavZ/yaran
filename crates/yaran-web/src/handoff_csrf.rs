@@ -71,7 +71,10 @@ impl CsrfStore {
         let mut raw = [0u8; 32];
         SystemRandom::new().fill(&mut raw).ok()?;
         let token = yaran_core::cloud::protocol::rules::b64url_encode(&raw);
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while pending.len() >= CSRF_MAX_PENDING {
             pending.pop_front();
         }
@@ -89,7 +92,10 @@ impl CsrfStore {
         dk_fp24: &str,
         now: u64,
     ) -> Option<bool> {
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let at = pending.iter().position(|(t, _, _)| t == token)?;
         let (_, binding, minted) = pending.remove(at)?;
         let fresh = now >= minted && now - minted < CSRF_TTL_SECS;

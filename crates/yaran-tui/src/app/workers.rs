@@ -3940,7 +3940,7 @@ mod tests {
         );
     }
 
-    /// The slot tab's id is not the session id (test_support: "session-1-slot"), and
+    /// The slot tab's id is not the session id (`test_support`: "session-1-slot"), and
     /// a real reconnect reports its launch under that slot tab id. The op is stashed
     /// under the session id, so the ready must still find it: before the fix the
     /// keyed "Launching…" spinner stayed up beside an anonymous final until the
@@ -4185,7 +4185,7 @@ mod tests {
             },
             wants_fullscreen: false,
             status_quiet: yaran_core::statusline::QuietSurfaces::LOUD,
-            provider_session: Default::default(),
+            provider_session: yaran_core::resume_recovery::ProviderSessionLaunch::default(),
             yolo_args: Vec::new(),
         };
 
@@ -4382,7 +4382,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: BTreeMap::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
@@ -4717,7 +4717,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: BTreeMap::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,

@@ -168,7 +168,7 @@ fn each_cloud_modal_declares_its_family() {
 fn each_palette_command_opens_its_modal() {
     let mut app = test_app(default_bindings());
     app.engine.config.cloud.org_url = SAMPLE_ORG.into();
-    app.execute_command("cloud-login".into()).unwrap();
+    app.execute_command("cloud-login").unwrap();
     let PromptState::Cloud(CloudPrompt::Login(login)) = &app.prompt else {
         panic!("{:?}", app.prompt);
     };
@@ -177,18 +177,18 @@ fn each_palette_command_opens_its_modal() {
         "pre-filled from [cloud] org_url"
     );
     for (name, rotate) in [("cloud-logout", false), ("cloud-rotate-token", true)] {
-        app.execute_command(name.into()).unwrap();
+        app.execute_command(name).unwrap();
         match &app.prompt {
             PromptState::Cloud(CloudPrompt::Logout(ConfirmFocus::Cancel)) if !rotate => {}
             PromptState::Cloud(CloudPrompt::Rotate(ConfirmFocus::Cancel)) if rotate => {}
             other => panic!("{name}: {other:?}"),
         }
     }
-    app.execute_command("cloud-status".into()).unwrap();
+    app.execute_command("cloud-status").unwrap();
     drain_until(&mut app, |app| {
         matches!(app.prompt, PromptState::Cloud(CloudPrompt::Status(Some(_))))
     });
-    app.execute_command("cloud-pair-phone".into()).unwrap();
+    app.execute_command("cloud-pair-phone").unwrap();
     drain_until(&mut app, |app| {
         matches!(
             app.prompt,
@@ -218,7 +218,7 @@ fn escape_cancels_a_running_login_and_closes_its_listener() {
         Ok(())
     });
     app.engine.config.cloud.org_url = SAMPLE_ORG.into();
-    app.execute_command("cloud-login".into()).unwrap();
+    app.execute_command("cloud-login").unwrap();
     app.handle_key(key(KeyCode::Enter)).unwrap();
     assert!(
         status_for(&app, KEY_LOGIN).is_some(),
@@ -246,13 +246,13 @@ fn escape_cancels_a_running_login_and_closes_its_listener() {
 fn space_activates_the_focused_button() {
     let mut app = test_app(default_bindings());
     // Cancel has focus: Space closes and runs nothing.
-    app.execute_command("cloud-logout".into()).unwrap();
+    app.execute_command("cloud-logout").unwrap();
     app.handle_key(key(KeyCode::Char(' '))).unwrap();
     assert!(matches!(app.prompt, PromptState::None));
     assert!(app.status.snapshot().iter().all(|s| s.key.is_none()));
 
     // Focus moved onto Rotate token: Space runs it, and the worker answers.
-    app.execute_command("cloud-rotate-token".into()).unwrap();
+    app.execute_command("cloud-rotate-token").unwrap();
     app.handle_key(key(KeyCode::Tab)).unwrap();
     assert!(matches!(
         app.prompt,

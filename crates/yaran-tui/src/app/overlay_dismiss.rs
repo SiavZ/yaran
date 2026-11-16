@@ -758,7 +758,7 @@ mod tests {
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         }
     }
 

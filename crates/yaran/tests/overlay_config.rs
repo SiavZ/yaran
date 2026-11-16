@@ -252,7 +252,7 @@ fn the_installer_sed_wraps_a_gemini_block_the_user_kept() {
 }
 
 /// Current yaran already renders `forward_mouse = false` for claude and codex,
-/// so a fresh config never exercises the overlay's forward_mouse rules. A
+/// so a fresh config never exercises the overlay's `forward_mouse` rules. A
 /// config the user edited can carry an explicit `true`; the overlay must still
 /// pin it off so plain drags stay in yaran and pane text can be copied
 /// (bc3a9eec). (A commented-out or absent key needs no rule: the loader fills

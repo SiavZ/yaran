@@ -278,7 +278,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::default(),
                     workspace_mode: None,
                 })
                 .collect(),
@@ -402,7 +402,10 @@ mod tests {
 
         let store = SessionStore::open(&paths.sessions_db_path).unwrap();
         store.upsert_session(&session_for(&managed)).unwrap();
-        assert!(inventory(&paths).unwrap().is_empty());
+        assert_eq!(
+            inventory(&paths).unwrap(),
+            [] as [crate::orphan_worktrees::OrphanWorktreeCandidate; 0]
+        );
         store.soft_delete_session("retained-row").unwrap();
         assert!(
             inventory(&paths).unwrap().is_empty(),

@@ -1,4 +1,4 @@
-//! Saves the `[cloud]` section into an existing `config.toml` (toml_edit, so the
+//! Saves the `[cloud]` section into an existing `config.toml` (`toml_edit`, so the
 //! user's comments survive).
 //!
 //! `config_write::apply_patches` is a hand list: a key missing here is never saved.

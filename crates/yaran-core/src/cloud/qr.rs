@@ -83,7 +83,7 @@ impl Qr {
     /// A standalone SVG, black on white, `module_px` pixels per module.
     pub fn to_svg(&self, module_px: u32) -> String {
         self.code
-            .render::<svg::Color>()
+            .render::<svg::Color<'_>>()
             .module_dimensions(module_px, module_px)
             .dark_color(svg::Color("#000000"))
             .light_color(svg::Color("#ffffff"))

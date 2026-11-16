@@ -1,10 +1,10 @@
 //! Opt-in repro: a double-click on a jcode agent row must open it the same way
 //! as any other harness. Real yaran binary, real jcode (offline replay, no model
-//! call), isolated YARAN_HOME and AMQ root under the artifacts directory.
+//! call), isolated `YARAN_HOME` and AMQ root under the artifacts directory.
 //!
-//! Environment: YARAN_ACCEPTANCE_JCODE, YARAN_ACCEPTANCE_SESSION,
-//! YARAN_ACCEPTANCE_ARTIFACTS, optional YARAN_ACCEPTANCE_YARAN (see
-//! jcode_mouse_acceptance.rs).
+//! Environment: `YARAN_ACCEPTANCE_JCODE`, `YARAN_ACCEPTANCE_SESSION`,
+//! `YARAN_ACCEPTANCE_ARTIFACTS`, optional `YARAN_ACCEPTANCE_YARAN` (see
+//! `jcode_mouse_acceptance.rs`).
 //! Run: `cargo test -p yaran --test jcode_doubleclick_acceptance -- --ignored --nocapture`.
 
 use std::{fs, path::Path, process::Command, thread, time::Duration};

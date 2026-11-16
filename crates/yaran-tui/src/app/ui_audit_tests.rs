@@ -243,7 +243,7 @@ fn tall_forms_leave_the_complete_status_footer_visible() {
     for macros in [false, true] {
         let mut app = test_app(default_bindings());
         if macros {
-            app.execute_command("edit-macros".into()).unwrap();
+            app.execute_command("edit-macros").unwrap();
         } else {
             app.prompt = configure_prompt(&app, false);
         }
@@ -254,7 +254,11 @@ fn tall_forms_leave_the_complete_status_footer_visible() {
         // read as one run of words.
         let footer: String = terminal.backend().buffer().content()[22 * 80..]
             .chunks(80)
-            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join(" ")
             .split_whitespace()
@@ -300,7 +304,7 @@ fn narrow_changed_file_rows_keep_stats_for_selected_and_wide_paths() {
         .buffer()
         .content()
         .iter()
-        .map(|cell| cell.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect();
     assert_eq!(screen.matches("+123 -45").count(), 2, "{screen}");
     let header = terminal
@@ -308,7 +312,11 @@ fn narrow_changed_file_rows_keep_stats_for_selected_and_wide_paths() {
         .buffer()
         .content()
         .chunks(80)
-        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
         .find_map(|row| row.find("Changes (2)").map(|at| row[at..].to_string()))
         .expect("the file count stays visible");
     assert!(

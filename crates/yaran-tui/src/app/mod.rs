@@ -6120,7 +6120,7 @@ impl App {
             providers: HashMap::new(),
             running_provider_pins: HashMap::new(),
             launched_drop_paste: HashMap::default(),
-            watch: Default::default(),
+            watch: yaran_core::watch::runtime::WatchRuntime::default(),
             companion_terminals: HashMap::new(),
             agent_tabs: agent_tabs
                 .into_iter()
@@ -6186,8 +6186,8 @@ impl App {
             pty_progress: HashMap::new(),
             agent_viewed: HashMap::new(),
             last_foreground_refresh: None,
-            limits: Default::default(),
-            amq: Default::default(),
+            limits: yaran_core::engine::limits::LimitsRuntime::default(),
+            amq: yaran_core::engine::amq::AmqRuntime::default(),
             pending_web_checkout_ops: HashMap::new(),
             pending_web_project_saves: std::collections::HashSet::new(),
             pending_change_base_ops: HashMap::new(),
@@ -6209,7 +6209,7 @@ impl App {
             deferred_operations: Vec::new(),
             deferred_policies: Vec::new(),
             created_session_by_op: HashMap::new(),
-            startup_launches: Default::default(),
+            startup_launches: yaran_core::auto_resume::StartupLaunchQueue::default(),
             removal_coordination: RemovalCoordination::default(),
         };
         Ok(Self::assemble(
@@ -6299,7 +6299,7 @@ impl App {
             pr_clone_awaiting: None,
             notes_fetch_rx: None,
             orphan_worktrees_rx: None,
-            cloud: Default::default(),
+            cloud: crate::app::cloud_commands::CloudState::default(),
             deferred_first_load_notes: None,
             notes_fetch_explicit_request: Arc::new(AtomicBool::new(false)),
             fullscreen_overlay: FullscreenOverlay::None,
@@ -6330,7 +6330,7 @@ impl App {
             armed_new_agent_settings: None,
             pending_pty_takeover: None,
             last_refused_pty_resize: None,
-            presize: Default::default(),
+            presize: crate::app::presize::PresizeState::default(),
             scroll_mode: std::collections::HashSet::new(),
             last_diff_height: 0,
             last_diff_visual_lines: 0,
@@ -7629,7 +7629,8 @@ impl App {
             }
         };
         let expected = handoff.ptys.len();
-        self.reload_selected_session = handoff.selected_session.clone();
+        self.reload_selected_session
+            .clone_from(&handoff.selected_session);
         // SAFETY: the descriptors were inherited through the exec that started
         // this process, which is exactly what the flag means.
         let adopted = unsafe { self.engine.restore_reload_handoff(handoff) };

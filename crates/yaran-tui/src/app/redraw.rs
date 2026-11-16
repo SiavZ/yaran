@@ -944,7 +944,7 @@ mod tests {
                 Ok(())
             }
         }
-        let out = Shared(wire.clone());
+        let out = Shared(std::sync::Arc::<std::sync::Mutex<std::vec::Vec<u8>>>::clone(&wire));
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _frame = FrameGuard::begin(out);
             panic!("render bug");

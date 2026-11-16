@@ -276,7 +276,7 @@ mod tests {
         assert!(section.contains("mode = \"auto\""));
         assert!(section.contains("request_timeout_seconds = 15"));
         // The first key of every group carries a comment.
-        assert!(section.lines().next().unwrap() == "[cloud]");
+        assert_eq!(section.lines().next().unwrap(), "[cloud]");
         assert!(section.lines().nth(1).unwrap().starts_with('#'));
         // D5: nothing secret is ever a config key.
         for secret in [

@@ -6,7 +6,7 @@
 //!   whatever is left. Called after every serve mode's wind-down, and before a reload exec.
 //! - `kill_all_now()` SIGKILLs at once, for the paths that call `exit` without running
 //!   destructors (a second signal, the quit watchdog).
-//! - `reap_stale(..)` handles the last case, a parent that was SIGKILLed: at the next start
+//! - `reap_stale(..)` handles the last case, a parent that was `SIGKILLed`: at the next start
 //!   a child recorded in `leg-state.json` is killed only if its pid still runs the same
 //!   executable with the same start time.
 //!
@@ -36,7 +36,9 @@ use rustix::process::{Pid, Signal, kill_process_group};
 static GROUPS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 
 fn groups() -> std::sync::MutexGuard<'static, Vec<i32>> {
-    GROUPS.lock().unwrap_or_else(|p| p.into_inner())
+    GROUPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn signal_group(pgid: i32, sig: Signal) {
@@ -182,9 +184,9 @@ mod tests {
 
     #[test]
     fn the_registry_records_and_forgets() {
-        register(-424242);
-        assert!(live().contains(&-424242));
-        unregister(-424242);
-        assert!(!live().contains(&-424242));
+        register(-424_242);
+        assert!(live().contains(&-424_242));
+        unregister(-424_242);
+        assert!(!live().contains(&-424_242));
     }
 }

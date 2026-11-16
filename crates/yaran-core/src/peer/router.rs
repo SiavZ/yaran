@@ -128,7 +128,7 @@ pub fn run_peer(
     paths: &YaranPaths,
     fetch: &dyn Fn() -> Result<PeerSnapshot>,
 ) -> Result<()> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    let sub = args.first().map_or("", String::as_str);
     match sub {
         "send" => run_peer_send(&args[1..], paths, fetch),
         "list" => run_peer_list(&args[1..], paths, fetch),
@@ -535,8 +535,7 @@ fn ensure_claude_peers_target(target: &PeerTarget) -> Result<()> {
         let provider = target
             .session
             .as_ref()
-            .map(|s| s.provider.as_str())
-            .unwrap_or("unknown");
+            .map_or("unknown", |s| s.provider.as_str());
         bail!("Claude Peers transport cannot target provider {provider}; use AMQ");
     }
     Ok(())
@@ -814,7 +813,7 @@ fn select_claude_peer_id(
 
     let key = |peer: &ClaudePeer| {
         (
-            peer.pid.map(&host_of).unwrap_or(PeerHost::Client),
+            peer.pid.map_or(PeerHost::Client, &host_of),
             peer.registered_at.clone(),
             peer.last_seen.clone(),
         )

@@ -9477,7 +9477,7 @@ mod tests {
         let wt = repo.join(format!("wt-{branch}"));
         let out = test_support::git_command()
             .arg("-C")
-            .arg(&repo)
+            .arg(repo)
             .args([
                 "worktree",
                 "add",
@@ -13629,7 +13629,7 @@ mod tests {
     fn branch_list(repo_path: &Path) -> String {
         let listed = std::process::Command::new("git")
             .arg("-C")
-            .arg(&repo_path)
+            .arg(repo_path)
             .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
             .output()
             .unwrap();
@@ -16777,7 +16777,7 @@ mod tests {
 
         let author = test_support::git_command()
             .arg("-C")
-            .arg(&repo)
+            .arg(repo)
             .args(["log", "-1", "--format=%an <%ae>"])
             .output()
             .unwrap();

@@ -71,7 +71,10 @@ pub fn judge(status: u16, body: &str) -> Readiness {
     }
     let connections = serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|v| v.get("readyConnections").and_then(|n| n.as_u64()))
+        .and_then(|v| {
+            v.get("readyConnections")
+                .and_then(serde_json::Value::as_u64)
+        })
         .unwrap_or(0);
     match u32::try_from(connections) {
         Ok(0) => Readiness::NotReady,

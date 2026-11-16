@@ -4337,7 +4337,7 @@ impl App {
                 && self.selection_is_unmoved_click();
             self.handle_terminal_selection_mouse(mouse);
             if replay_click {
-                self.replay_click_to_center_child(&mouse);
+                self.replay_click_to_center_child(mouse);
             }
         } else if !dispatch.is_scrolled_back {
             // SGR coordinates are screen-absolute; the child expects them
@@ -11124,7 +11124,7 @@ impl App {
 
     /// The wheel over an open card scrolls its text, wherever the pointer is
     /// on the dialog: a long card is read, not steered.
-    fn handle_human_board_card_mouse(&mut self, mouse: &MouseEvent) -> Option<bool> {
+    fn handle_human_board_card_mouse(&mut self, mouse: MouseEvent) -> Option<bool> {
         if !matches!(self.prompt, PromptState::HumanBoardCard { .. }) {
             return None;
         }
@@ -11375,10 +11375,10 @@ impl App {
     }
 
     fn dispatch_prompt_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if let Some(result) = self.handle_cloud_mouse(&mouse) {
+        if let Some(result) = self.handle_cloud_mouse(mouse) {
             return result;
         }
-        if let Some(result) = self.handle_human_board_card_mouse(&mouse) {
+        if let Some(result) = self.handle_human_board_card_mouse(mouse) {
             return result;
         }
         if let Some(result) = self.handle_first_load_prompt_mouse(mouse) {
@@ -12835,7 +12835,7 @@ impl App {
     /// surface's child, at the release position. Used by `forward_mouse = false`,
     /// where the press was held back as a possible selection and only turned out
     /// to be a click when the button came up.
-    fn replay_click_to_center_child(&mut self, mouse: &MouseEvent) {
+    fn replay_click_to_center_child(&mut self, mouse: MouseEvent) {
         let cb = sgr_button_code(MouseButton::Left);
         self.write_center_mouse_report(cb, b'M', mouse.column, mouse.row);
         self.write_center_mouse_report(cb, b'm', mouse.column, mouse.row);
@@ -13077,7 +13077,7 @@ impl App {
     /// right border column, which is also a divider column; the divider stays
     /// reachable from the rows beside the hint lane and from the right pane's
     /// own border.
-    fn begin_center_scrollbar_drag(&mut self, mouse: &MouseEvent) -> bool {
+    fn begin_center_scrollbar_drag(&mut self, mouse: MouseEvent) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             || !self.center_scrollbar_at_mouse(mouse.column, mouse.row)
         {
@@ -13623,7 +13623,7 @@ impl App {
         self.row_drag = None;
         self.tab_drag = None;
         self.end_terminal_selection_drag();
-        if self.begin_center_scrollbar_drag(&mouse) {
+        if self.begin_center_scrollbar_drag(mouse) {
             return;
         }
         // The layout control can sit on the divider's own row, and a press on
@@ -13739,7 +13739,7 @@ impl App {
                         .is_some_and(yaran_core::pty::PtyClient::has_mouse_mode);
                 self.handle_terminal_selection_mouse(mouse);
                 if replay_click {
-                    self.replay_click_to_center_child(&mouse);
+                    self.replay_click_to_center_child(mouse);
                 }
             }
             // The divider drag returns before the sidebar hit-test ever runs, so
@@ -19446,7 +19446,7 @@ not_a_real_action = ["x"]
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         };
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -19496,7 +19496,7 @@ not_a_real_action = ["x"]
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         };
 
         app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))
@@ -19548,7 +19548,7 @@ not_a_real_action = ["x"]
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         };
 
         let focus_now = |app: &App| match &app.prompt {
@@ -19609,7 +19609,7 @@ not_a_real_action = ["x"]
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         };
 
         for c in ['h', 'l'] {
@@ -19655,7 +19655,7 @@ not_a_real_action = ["x"]
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         };
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -20672,7 +20672,7 @@ not_a_real_action = ["x"]
             .unwrap();
         match &app.prompt {
             PromptState::NameNewAgent { focus, .. } => {
-                assert_eq!(*focus, NameNewAgentFocus::Provider)
+                assert_eq!(*focus, NameNewAgentFocus::Provider);
             }
             other => panic!("expected NameNewAgent prompt, got {other:?}"),
         }
@@ -20703,7 +20703,7 @@ not_a_real_action = ["x"]
             copy_changes: true,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         };
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -26078,7 +26078,7 @@ not_a_real_action = ["x"]
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(rendered.contains("No watch rules are loaded"), "{rendered}");
     }
@@ -26110,7 +26110,7 @@ not_a_real_action = ["x"]
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(rendered.contains("armed"), "{rendered}");
         assert!(rendered.contains("usage-limit"), "{rendered}");
@@ -28181,7 +28181,7 @@ cyan = "#00ffff"
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         }
     }
 
@@ -38005,7 +38005,7 @@ cyan = "#00ffff"
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(std::fs::read_to_string(output).unwrap().trim(), "27");
-        assert!(app.raw_input_buf.is_empty());
+        assert_eq!(app.raw_input_buf, [] as [u8; 0]);
     }
 
     #[test]
@@ -41634,7 +41634,7 @@ cyan = "#00ffff"
             copy_changes: false,
             review_copy: None,
             focus,
-            extras: Default::default(),
+            extras: Box::default(),
         }
     }
 
@@ -42628,7 +42628,7 @@ cyan = "#00ffff"
             copy_changes: false,
             review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         };
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -44224,7 +44224,7 @@ cyan = "#00ffff"
                     copy_changes: false,
                     review_copy: None,
                     focus: NameNewAgentFocus::Input,
-                    extras: Default::default(),
+                    extras: Box::default(),
                 };
                 tap(&mut app, KeyCode::Enter);
                 crate::app::test_support::finish_ui_jobs(&mut app);
@@ -45129,10 +45129,10 @@ cyan = "#00ffff"
         );
     }
 
-    /// Fork 55ce75f3 + e92a4dff (+ bc3a9eec's `forward_mouse`): OpenCode turns
+    /// Fork 55ce75f3 + e92a4dff (+ bc3a9eec's `forward_mouse`): `OpenCode` turns
     /// on mouse reporting, and with its shipped `forward_mouse = false` a plain
     /// drag selects text in yaran, a click that did not move still reaches
-    /// OpenCode as a translated press+release, and the wheel is forwarded.
+    /// `OpenCode` as a translated press+release, and the wheel is forwarded.
     #[test]
     fn opencode_clicks_selects_text_and_forwards_scroll() {
         let mut app = test_app(default_bindings());
@@ -45239,7 +45239,7 @@ cyan = "#00ffff"
     /// Fork fc57e65b: Codex keeps its scrollback in yaran. It shipped as
     /// `forward_scroll = false` there; upstream's auto mode gets the same
     /// answer from the child itself, because Codex never raises the alt screen
-    /// (measured: it emits only ?1004h/?2004h/?2026h), so a PgUp at the live
+    /// (measured: it emits only ?1004h/?2004h/?2026h), so a `PgUp` at the live
     /// edge pages yaran's own scrollback.
     #[test]
     fn codex_page_up_at_bottom_uses_host_scrollback() {
@@ -45264,7 +45264,7 @@ cyan = "#00ffff"
     }
 
     /// Fork 0d6fa312: a provider that owns its scrollback (`forward_scroll =
-    /// true`) gets PgUp at the live edge; yaran does not page its own history.
+    /// true`) gets `PgUp` at the live edge; yaran does not page its own history.
     #[test]
     fn forward_scroll_provider_page_up_at_bottom_does_not_use_host_scrollback() {
         let mut app = app_with_scrolled_back_pty();
@@ -45294,10 +45294,10 @@ cyan = "#00ffff"
     ///
     /// - Claude and Codex emit no mouse or alt-screen mode (measured on claude
     ///   2.x and codex 0.155: only ?1004h/?2004h/?2026h), so auto keeps the
-    ///   wheel and PgUp in yaran host scrollback, which is what fork fc57e65b
+    ///   wheel and `PgUp` in yaran host scrollback, which is what fork fc57e65b
     ///   settled on for both. Forwarding a wheel to them is dropped on the
     ///   floor, as the fork found.
-    /// - OpenCode and jcode raise ?1049h plus mouse reporting, so auto forwards
+    /// - `OpenCode` and jcode raise ?1049h plus mouse reporting, so auto forwards
     ///   to them; jcode pins `Some(true)` so the wheel works before its first
     ///   frame.
     #[test]

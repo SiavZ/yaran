@@ -138,7 +138,7 @@ impl App {
 
     /// One card of the human board, whole: what it asks, who posted it and
     /// when, its detail and conversation, a reply field, and its actions.
-    pub(super) fn render_human_board_card_prompt(&mut self, frame: &mut Frame) {
+    pub(super) fn render_human_board_card_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::HumanBoardCard {
             card,
             focus,
@@ -633,7 +633,7 @@ impl App {
     }
 
     /// The Assign picker: one row per person, the card's current one marked.
-    pub(super) fn render_assign_board_card_prompt(&mut self, frame: &mut Frame) {
+    pub(super) fn render_assign_board_card_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::AssignBoardCard(picker) = &self.prompt else {
             return;
         };
@@ -786,7 +786,7 @@ impl App {
     /// A press, drag or release of the left button over the card dialog's
     /// text: select it, and copy the selection when the button comes up.
     /// `None` for anything else, which goes to the dialog's controls.
-    pub(super) fn handle_card_text_selection(&mut self, mouse: &MouseEvent) -> Option<bool> {
+    pub(super) fn handle_card_text_selection(&mut self, mouse: MouseEvent) -> Option<bool> {
         let view = &self.human_board.card_view;
         let inside = |column: u16, row: u16| {
             column >= view.body.x

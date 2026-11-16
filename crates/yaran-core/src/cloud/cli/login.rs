@@ -119,7 +119,7 @@ pub(super) fn run(
         origin_port: deps.server_port,
         timeout: Duration::from_secs(deps.config.login_timeout_seconds.max(1)),
         paths: deps.paths.clone(),
-        api: deps.api.clone(),
+        api: std::sync::Arc::clone(&deps.api),
     };
     let outcome = {
         let mut io = CliIo {

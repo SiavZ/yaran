@@ -223,8 +223,8 @@ mod tests {
         // optional arguments are allowed to be null.
         let rc = unsafe {
             libc::openpty(
-                &mut master,
-                &mut slave,
+                &raw mut master,
+                &raw mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
