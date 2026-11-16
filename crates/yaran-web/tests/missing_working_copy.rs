@@ -227,37 +227,24 @@ async fn a_deleted_working_copy_answers_with_its_own_verdict() {
         "and says what it takes to get the agent running again: {reason}"
     );
 
-    // The read settles into a success with nothing in it: the panel is quiet and
-    // the sentence above is what explains it. The ONE cycle that ran before yaran
-    // had looked is a real error and reports as one; what this pins is that it
-    // does not repeat, which is the whole bug.
-    let mut settled = false;
-    for _ in 0..200 {
-        let resp = client
-            .get(format!("http://{addr}/api/v1/sessions/s1/changes"))
-            .send()
-            .await
-            .unwrap();
-        if resp.status() == 200 {
-            let body: serde_json::Value = resp.json().await.unwrap();
-            assert!(body["staged"].as_array().unwrap().is_empty());
-            assert!(body["unstaged"].as_array().unwrap().is_empty());
-            settled = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(
-        settled,
-        "a directory that is gone must stop being reported as a git error"
-    );
+    // Every read from here on is a success with nothing in it: the panel is quiet
+    // and the sentence above explains it. That includes the poll cycle that asked
+    // before yaran had looked: its git run fails in a directory that is gone, and
+    // that is the same quiet verdict, never a 409 landing after the 200s began.
     for _ in 0..5 {
         let resp = client
             .get(format!("http://{addr}/api/v1/sessions/s1/changes"))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), 200, "and must stay settled");
+        assert_eq!(
+            resp.status(),
+            200,
+            "a directory that is gone is no git error"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body["staged"].as_array().unwrap().is_empty());
+        assert!(body["unstaged"].as_array().unwrap().is_empty());
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 

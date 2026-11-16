@@ -502,20 +502,12 @@ impl ChangesService {
         // is recognizably older than a generation a waiting `invalidate()` requires.
         let generation = self.invalidation_gen.load(Ordering::SeqCst);
 
-        // Stage 1: resolve the worktree. An unknown session (no worktree) is NOT a
-        // git error: storing one would recreate a phantom SQLite rev row every
-        // poll tick, strand a permanent All-scoped warning, and make GETs return
-        // 409 instead of 404. So leave no cache entry at all: `get` distinguishes
-        // "no entry, session gone" (404) from a real git error (409).
-        //
-        // The resolution is FOLDER-DRIVEN for a standalone agent: it yields a
-        // directory only when that folder is itself a repository. A plain
-        // folder stores an empty-but-successful result instead of running git
-        // in it, because running git there answers with an error every poll
-        // cycle and surfaces as "the repository is busy", which is a lie about
-        // a folder that simply has no repository. The honest sentence travels
-        // with the agent's workspace on the wire, so the panel can say what is
-        // actually going on without this ever producing an error.
+        // Stage 1: resolve the worktree. An unknown session is NOT a git error:
+        // storing one would recreate a phantom SQLite rev row every poll tick and
+        // strand an All-scoped warning, so it leaves no entry and `get` answers 404.
+        // A plain folder or a working copy that is gone stores an empty success
+        // instead of running git, which would fail every cycle as "the repository
+        // is busy"; the honest sentence travels with the agent's workspace.
         let worktree = match self.engine.session_git_access(session_id.to_string()).await {
             Some(access) if access.changes_panel_works() => access.directory().to_path_buf(),
             Some(_) => {
@@ -526,10 +518,17 @@ impl ChangesService {
             None => return,
         };
 
-        // Stage 2: the git work, off the reactor.
+        // Stage 2: git, off the reactor. The verdict above predates the probe it
+        // spawned, so git failing in a directory deleted since is quiet, not a 409.
         let wt = worktree.clone();
-        let computed =
-            tokio::task::spawn_blocking(move || yaran_core::git::changed_files(&wt)).await;
+        let computed = tokio::task::spawn_blocking(move || {
+            use yaran_core::git::{DirectoryPresence, changed_files, directory_presence};
+            changed_files(&wt).or_else(|e| match directory_presence(&wt) {
+                DirectoryPresence::Missing => Ok(Default::default()),
+                _ => Err(e),
+            })
+        })
+        .await;
 
         match computed {
             Ok(Ok((staged_raw, unstaged_raw))) => {
