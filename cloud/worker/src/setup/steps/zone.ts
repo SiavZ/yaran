@@ -17,6 +17,7 @@
  *
  * Used by:
  * src/setup/steps/zone.ts
+ * ├── scripts/org-setup/run.ts
  * ├── src/setup/pages-steps.tsx
  * ├── src/setup/routes.ts
  * └── test/setup-steps.test.ts

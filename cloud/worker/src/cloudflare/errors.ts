@@ -19,6 +19,8 @@
  *
  * Used by:
  * src/cloudflare/errors.ts
+ * ├── scripts/org-setup/cloudflare.ts
+ * ├── scripts/org-setup/run.ts
  * ├── src/cloudflare/budget.ts
  * ├── src/cloudflare/client.ts
  * ├── src/cloudflare/paginate.ts
@@ -51,17 +53,23 @@ export interface CfErrorItem {
 
 export class CfApiError extends Error {
   override readonly name = "CfApiError";
-  constructor(
-    readonly kind: CfErrorKind,
-    readonly status: number | null,
-    /** `METHOD /path` without the query string. */
-    readonly endpoint: string,
-    readonly cfErrors: readonly CfErrorItem[] = [],
-    /** Seconds, from `retry-after` or the known block. */
-    readonly retryAfter: number | null = null,
-    message?: string,
-  ) {
+  readonly kind: CfErrorKind;
+  readonly status: number | null;
+  /** `METHOD /path` without the query string. */
+  readonly endpoint: string;
+  readonly cfErrors: readonly CfErrorItem[];
+  /** Seconds, from `retry-after` or the known block. */
+  readonly retryAfter: number | null;
+
+  // Plain fields, not parameter properties: Node's type stripping runs the org installer
+  // (scripts/setup.ts), which imports the setup probe that throws this.
+  constructor(kind: CfErrorKind, status: number | null, endpoint: string, cfErrors: readonly CfErrorItem[] = [], retryAfter: number | null = null, message?: string) {
     super(message ?? `${endpoint} failed (${kind}${status === null ? "" : `, HTTP ${status}`})`);
+    this.kind = kind;
+    this.status = status;
+    this.endpoint = endpoint;
+    this.cfErrors = cfErrors;
+    this.retryAfter = retryAfter;
   }
 }
 

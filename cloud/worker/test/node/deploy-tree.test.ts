@@ -8,6 +8,7 @@
  * Uses:
  * test/node/deploy-tree.test.ts
  * ├── scripts/assemble-deploy-tree.ts
+ * ├── scripts/callback-urls.ts
  * ├── scripts/update/merge-wrangler.ts
  * ├── src/update/release-manifest.ts
  * └── test/node/helpers/tree.ts
@@ -21,7 +22,8 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync, w
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "vitest";
-import { callbackUrls, writeManifest } from "../../scripts/assemble-deploy-tree.ts";
+import { writeManifest } from "../../scripts/assemble-deploy-tree.ts";
+import { callbackUrls } from "../../scripts/callback-urls.ts";
 import { assembleAt, WORKER } from "./helpers/tree.ts";
 import { parseJsonc } from "../../scripts/update/merge-wrangler.ts";
 import { parseManifest } from "../../src/update/release-manifest.ts";

@@ -20,6 +20,7 @@
  *
  * Used by:
  * src/setup/capability-probe.ts
+ * ├── scripts/org-setup/run.ts
  * ├── src/admin/api-token.ts
  * ├── src/console/admin-pages-2.tsx
  * ├── src/setup/pages.tsx

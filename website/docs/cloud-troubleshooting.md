@@ -135,6 +135,67 @@ wizard is closed." instead. Setup has already been completed for this control pl
 `<org-control-plane>` and sign in. If the only admin has left, see the operations guide
 for your control plane.
 
+## Running the setup command
+
+These come from `node cloud/worker/scripts/setup.ts`. Each one stops the command before
+it changes anything that a rerun cannot finish, and rerunning resumes.
+
+### "Setup is locked for this address after wrong setup codes."
+
+Open the recovery file whose path the command printed and remove only its `setupCode`
+property. Keep `dataKey` and every other value unchanged, and do not delete the file.
+Rerun the same command: it generates and uploads a new setup code, which resets the
+address lock. Never paste the recovery file into a support message.
+
+### "The Worker refused the saved setup code"
+
+The Worker's `SETUP_CODE` differs from the recovery file. Rerun the same command to
+upload the saved code again. If the address becomes locked, follow the section above.
+Keep the recovery file's `dataKey` unchanged.
+
+### "The control plane needs its own Cloudflare API token"
+
+Your Wrangler login cannot grant the control plane Access, DNS or Tunnel rights. Create the
+token from the link the command prints, limit the two zone rows to your zone, then rerun
+with `--token` and paste it.
+
+### "That API token lacks: …" or "The control plane's API token … lacks: …"
+
+The token is missing the permissions listed. Edit it in the dashboard or create a new one
+from the printed link, then rerun with `--token`.
+
+### "Zero Trust has no sign-in method besides Cloudflare account login."
+
+Add your company's identity provider under Zero Trust, Settings, Authentication and rerun,
+or rerun with `--one-time-pin`.
+
+### "Cloudflare would not create the Zero Trust organization by API."
+
+Open Zero Trust in the dashboard and choose the Free plan, then rerun. If the team name is
+taken, rerun with `--team <another name>`.
+
+### "Another installer run holds … .lock"
+
+Another run of the command for this control plane is still going. Wait for it to finish.
+If none is running (a run that was killed can leave the lock behind), delete the `.lock`
+file the message names, then rerun.
+
+### "… already exists, but no Worker named … uses it"
+
+The command was about to create a new Worker and found a D1 database or queue of the same
+name that its recovery file does not account for. It may belong to another deployment. Rerun
+with `--name <another name>` to give this control plane its own Worker, database and queue,
+or delete the leftover in the dashboard if it is yours and unused.
+
+### "Setup already names … as the first admin, and a resume cannot change it."
+
+Rerun without `--admin-email`, or with the address the message names.
+
+### "Pass --app-callback with the phone app's https sign-in callback URL"
+
+The command needs the publisher's sign-in callback for a new Worker. Take it from
+`APP_CALLBACK_URLS` in the `wrangler.jsonc` of the release's `cloud-deploy` branch.
+
 ## On the phone
 
 ### "This control plane hasn't finished setup yet."

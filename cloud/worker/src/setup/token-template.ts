@@ -19,6 +19,8 @@
  *
  * Used by:
  * src/setup/token-template.ts
+ * ├── scripts/org-setup/run.ts
+ * ├── scripts/org-setup/wizard.ts
  * ├── scripts/token-url.ts
  * ├── src/setup/capability-probe.ts
  * ├── src/setup/pages.tsx

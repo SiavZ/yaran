@@ -23,7 +23,8 @@
  * ├── src/setup/steps/claim.ts
  * ├── test/admin-services.test.ts
  * ├── test/console.test.ts
- * └── test/setup-flow.test.ts
+ * ├── test/setup-flow.test.ts
+ * └── test/setup-installer.test.ts
  * <module-headers:end>
  */
 import { readKey, writeStatements } from "../../admin/settings-store.ts";

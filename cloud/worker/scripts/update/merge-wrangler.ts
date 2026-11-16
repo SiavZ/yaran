@@ -16,6 +16,7 @@
  *
  * Used by:
  * scripts/update/merge-wrangler.ts
+ * ├── scripts/org-setup/run.ts
  * ├── scripts/update/update.ts
  * ├── test/node/deploy-tree.test.ts
  * └── test/node/update-job.test.ts

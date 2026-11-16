@@ -16,6 +16,7 @@
  *
  * Used by:
  * src/setup/steps/idp.ts
+ * ├── scripts/org-setup/run.ts
  * ├── src/admin/health.ts
  * ├── src/setup/pages-steps.tsx
  * ├── src/setup/routes.ts
