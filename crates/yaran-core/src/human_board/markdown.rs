@@ -33,6 +33,7 @@
 //! through the same cleaning and length bounds a posted card does.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 
@@ -129,28 +130,29 @@ fn render_message(out: &mut String, message: &Message) {
         quote(&message.from)
     );
     if let Some(side) = &message.side {
-        meta.push_str(&format!(" side={}", quote(side)));
+        let _ = write!(meta, " side={}", quote(side));
     }
     if message.done {
         meta.push_str(" done");
     }
     if let Some(relayed_at) = message.relayed_at {
-        meta.push_str(&format!(" relayed={}", precise_timestamp(relayed_at)));
+        let _ = write!(meta, " relayed={}", precise_timestamp(relayed_at));
     }
     meta.push_str(" -->");
-    out.push_str(&format!(
-        "> {MESSAGE_CALLOUT} {} \u{b7} {when}{done} {meta}\n",
+    let _ = writeln!(
+        out,
+        "> {MESSAGE_CALLOUT} {} \u{b7} {when}{done} {meta}",
         message.from
-    ));
+    );
     for line in message.text.lines() {
         if line.is_empty() {
             out.push_str(">\n");
         } else if line.trim_start().starts_with("[!") {
             // A line that would open a callout of its own is escaped, so it
             // stays part of this message when the note is read back.
-            out.push_str(&format!("> \\{line}\n"));
+            let _ = writeln!(out, "> \\{line}");
         } else {
-            out.push_str(&format!("> {line}\n"));
+            let _ = writeln!(out, "> {line}");
         }
     }
 }
@@ -178,6 +180,15 @@ fn quote(value: &str) -> String {
 /// or one with neither a kind nor a title: an ordinary note living in the
 /// folder). `file_stem` is the id when the note does not name one, and
 /// `modified` stands in for a timestamp it does not carry.
+///
+/// # Errors
+///
+/// Fails, saying which line, when the note is a card whose properties or
+/// conversation do not read back.
+#[expect(
+    clippy::too_many_lines,
+    reason = "every card property is read and checked in the order the note lays them out"
+)]
 pub fn parse(
     text: &str,
     file_stem: &str,
@@ -513,7 +524,14 @@ fn parse_properties(lines: &[&str]) -> Result<BTreeMap<String, String>, ParseErr
             {
                 at += 1;
             }
-            block_scalar(&lines[start..at], style == '>')
+            block_scalar(
+                &lines[start..at],
+                if style == '>' {
+                    Scalar::Folded
+                } else {
+                    Scalar::Literal
+                },
+            )
         } else {
             scalar(raw).map_err(|why| format!("its {name} {why}"))?
         };
@@ -530,7 +548,17 @@ fn parse_properties(lines: &[&str]) -> Result<BTreeMap<String, String>, ParseErr
 }
 
 /// A `|` (literal) or `>` (folded) block scalar's lines, de-indented.
-fn block_scalar(lines: &[&str], folded: bool) -> Option<String> {
+/// A YAML block scalar's style.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scalar {
+    /// `|`: lines kept as written.
+    Literal,
+    /// `>`: lines folded into one.
+    Folded,
+}
+
+fn block_scalar(lines: &[&str], style: Scalar) -> Option<String> {
+    let folded = style == Scalar::Folded;
     let indent = lines
         .iter()
         .filter(|line| !line.trim().is_empty())

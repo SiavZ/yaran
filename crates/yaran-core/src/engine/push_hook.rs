@@ -102,10 +102,10 @@ impl PushHook {
 /// The emitter's settings from config: on while `push_notifications` and mode is not `no`.
 pub(crate) fn push_settings(config: &Config) -> PushSettings {
     let cloud = &config.cloud;
-    PushSettings::new(
-        cloud.push_notifications && cloud.mode() != CloudMode::No,
-        &cloud.push,
-    )
+    PushSettings {
+        enabled: cloud.push_notifications && cloud.mode() != CloudMode::No,
+        ..PushSettings::new(&cloud.push)
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -797,6 +797,7 @@ pub enum CreateAgentRequest {
     /// so branch and PR display keep working while every teardown path keeps
     /// its hands off the checkout.
     SharedWorkspace {
+        /// The project whose checkout the agent runs in.
         project: Project,
         /// The agent's title, and the seed for its AMQ handle.
         custom_name: Option<String>,
@@ -1316,15 +1317,20 @@ pub enum WorkerEvent {
     /// A live `[cloud] mode` change the BACKGROUND web server carried out, on this
     /// lane for the same reason as `TailscaleModeApplied`.
     CloudModeApplied {
+        /// The mode now in force.
         mode: crate::cloud::leg_identity::CloudMode,
+        /// What applying it did.
         outcome: crate::cloud::leg_outcome::CloudModeOutcome,
     },
     /// A provider conversation id was captured for an agent (the UUID a fresh
     /// Claude launch was given, or the rollout a fresh Codex launch wrote), or
     /// the capture failed closed. Persisting it is the engine's job.
     ProviderSessionCaptured {
+        /// The agent.
         session_id: String,
+        /// The provider whose conversation it is.
         provider: String,
+        /// The conversation id, or why it could not be captured.
         result: Result<String, String>,
     },
     /// The one-time recovery of provider histories stranded under old per-agent
@@ -1336,7 +1342,9 @@ pub enum WorkerEvent {
     /// entry it fills is the one the watch engine looks up; the auto-compact
     /// rule attaches once its file has been read.
     CompactInstructionsLoaded {
+        /// The path as the settings name it.
         raw_path: String,
+        /// What the read produced.
         load: crate::watch::builtin::CompactCommandLoad,
     },
     /// The AMQ inject-queue watcher (or its polling fallback) noticed a
