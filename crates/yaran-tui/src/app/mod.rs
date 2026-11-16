@@ -499,15 +499,6 @@ pub(crate) enum FieldEngagement {
     Unengaged,
 }
 
-/// Whether the changes pane lists any staged files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StagedFiles {
-    /// It does, so the staged list and the commit box are reachable.
-    Present,
-    /// It does not.
-    Absent,
-}
-
 /// Whether a worker-fed list has its answer yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Listing {
@@ -5752,7 +5743,7 @@ pub(crate) fn build_left_items(
 /// stay under their own project instead of being collected in a global tail).
 ///
 /// A header lists all agents in `agent_count` whatever the filter. While a
-/// filter is live (`filter_active`), a group with no visible agent is dropped
+/// filter is live (`filter` is its query), a group with no visible agent is dropped
 /// and every surviving group renders expanded so a hit is never hidden behind
 /// a collapsed header. Projects with no agents still get a header (like the
 /// fork) so the tree shows every project the user registered, but only when no
@@ -5761,16 +5752,21 @@ pub(crate) fn build_left_items(
     clippy::too_many_arguments,
     reason = "the grouped list's inputs mirror build_left_items' plus the groups' own state"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass that buckets, orders and filters the groups together"
+)]
 pub(crate) fn build_grouped_left_items(
     projects: &[Project],
     sessions: &[AgentSession],
     collapsed: &HashSet<String>,
-    filter_active: bool,
+    filter: Option<&str>,
     sort_mode: AgentSortMode,
     is_hot: &dyn Fn(usize) -> bool,
     is_visible: &dyn Fn(usize) -> bool,
     terminals: &GroupedTerminals<'_>,
 ) -> (Vec<LeftItem>, Vec<LeftGroup>) {
+    let filter_active = filter.is_some();
     let model = yaran_core::sidebar::build_sidebar(projects, sessions, &HashSet::new(), 0);
     let order = yaran_core::flat_list::order_sessions(
         sessions,
@@ -8686,6 +8682,10 @@ impl App {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "builds the list once for the grouped and flat layouts, which share every input"
+    )]
     pub(crate) fn rebuild_left_items(&mut self) {
         // Until the user toggles the Inactive section by hand, auto-manage it:
         // expand when every agent is inactive (don't hide a wholly-dormant
@@ -8796,7 +8796,7 @@ impl App {
                     &self.engine.projects,
                     &self.engine.sessions,
                     &self.collapsed_groups,
-                    current_query.is_some(),
+                    current_query.as_deref(),
                     mode,
                     &|i| hot[i],
                     &|i| visible[i],

@@ -35,6 +35,10 @@ pub fn optional_amq_root(paths: &YaranPaths) -> Option<PathBuf> {
 
 /// Read-only: whether `session` exactly owns its inbox under `root`. Used by
 /// reset to inventory every handle before freeing any of them.
+///
+/// # Errors
+///
+/// Fails when the inbox or its owner marker cannot be read.
 pub fn amq_handle_is_exact_owner_at_root(
     root: &Path,
     store_id: &str,
@@ -46,6 +50,10 @@ pub fn amq_handle_is_exact_owner_at_root(
 /// Release `session`'s inbox under `root` after exact owner verification,
 /// stopping its recorded wake process first. An already-absent inbox is a
 /// no-op.
+///
+/// # Errors
+///
+/// Fails when the owner cannot be verified or the inbox cannot be removed.
 pub fn free_amq_handle_at_root(root: &Path, store_id: &str, session: &AgentSession) -> Result<()> {
     crate::peer::free_amq_handle_at_root(root, store_id, &peer_view(session))
 }
@@ -133,7 +141,7 @@ mod tests {
         let stopped = exited_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .is_ok();
-        if !stopped && let Some(p) = rustix::process::Pid::from_raw(pid as i32) {
+        if !stopped && let Some(p) = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()) {
             let _ = rustix::process::kill_process(p, rustix::process::Signal::KILL);
         }
 

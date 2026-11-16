@@ -47,7 +47,12 @@ pub const MAX_RULES_PER_PROVIDER: usize = 32;
 #[derive(Clone, Debug, PartialEq)]
 pub enum WatchEffect {
     /// Write `text` (optionally followed by `\r`) to the agent's PTY.
-    SendText { text: String, append_enter: bool },
+    SendText {
+        /// What to type.
+        text: String,
+        /// Whether Enter follows it.
+        append_enter: bool,
+    },
     /// Post an informational status-line message.
     StatusInfo(String),
     /// Post a warning status-line message.
@@ -161,6 +166,15 @@ pub struct WatchEngine {
     session_id: String,
     rules: Vec<RuleRuntime>,
     rng: SmallRng,
+}
+
+impl std::fmt::Debug for WatchEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchEngine")
+            .field("session_id", &self.session_id)
+            .field("rules", &self.rules.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl WatchEngine {
@@ -687,7 +701,7 @@ mod tests {
         for attempt in 0..4_u32 {
             // Each iteration adds another occurrence so the match count
             // increases, which is what triggers Idle → Pending.
-            let snapshot = "rate ".repeat((attempt + 1) as usize);
+            let snapshot = "rate ".repeat(usize::try_from(attempt + 1).unwrap());
             engine.observe(&snapshot, now);
             let fire_at = match engine.rules[0].state {
                 RuleState::Pending { fire_at } => fire_at,
@@ -696,7 +710,7 @@ mod tests {
             // Deterministic floor: initial * 2^attempt; jitter adds at
             // most jitter_ms.
             let det = 100 * 2_u64.pow(attempt);
-            let elapsed = fire_at.duration_since(now).as_millis() as u64;
+            let elapsed = u64::try_from(fire_at.duration_since(now).as_millis()).unwrap();
             assert!(
                 (det..=det + 50).contains(&elapsed),
                 "attempt {attempt}: expected delay in [{det}, {}], got {elapsed}",

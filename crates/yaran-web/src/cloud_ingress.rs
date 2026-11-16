@@ -195,6 +195,10 @@ pub use yaran_core::cloud::credentials::HandoffConsentKey as ConsentKey;
 /// never cached. `Ok(None)` means unpaired. Production reads the credentials file.
 pub trait ConsentKeySource: Send + Sync + 'static {
     /// The current consent key, `Ok(None)` when unpaired.
+    ///
+    /// # Errors
+    ///
+    /// Fails, with the reason, when the credentials cannot be read.
     fn read_handoff_consent_key(&self) -> Result<Option<ConsentKey>, String>;
 }
 
@@ -275,6 +279,11 @@ impl CloudIngress {
 
     /// Binds after cloudflared reports ready: validates, swaps the binding in, and
     /// pre-warms the JWKS on the current runtime, handing the outcome to `report`.
+    ///
+    /// # Errors
+    ///
+    /// Refuses, naming the field, when the hostname, team domain, audience or
+    /// owner is not usable.
     pub fn bind(
         &self,
         input: CloudBindingInput,
@@ -373,7 +382,7 @@ impl CloudIngress {
     pub(crate) fn now_secs(&self) -> i64 {
         self.now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
     }
 
     pub(crate) fn csrf(&self) -> &CsrfStore {
@@ -514,8 +523,15 @@ pub(crate) struct SessionDeadline(pub Option<tokio::time::Instant>);
 impl<S: Send + Sync> FromRequestParts<S> for SessionDeadline {
     type Rejection = Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Infallible> {
-        Ok(parts.extensions.get::<Self>().copied().unwrap_or_default())
+    fn from_request_parts(
+        parts: &mut Parts,
+        _: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Infallible>> + Send {
+        std::future::ready(Ok(parts
+            .extensions
+            .get::<Self>()
+            .copied()
+            .unwrap_or_default()))
     }
 }
 

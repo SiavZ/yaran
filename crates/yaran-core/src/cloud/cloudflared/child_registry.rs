@@ -93,9 +93,13 @@ pub fn kill_all_now() {
 /// What `leg-state.json` says about the child a previous yaran ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaleChild<'a> {
+    /// The recorded process id.
     pub pid: u32,
+    /// The recorded process group.
     pub pgid: u32,
+    /// The binary the record says was spawned.
     pub exe: &'a Path,
+    /// The recorded start time, which tells a reused pid apart.
     pub start_time: u64,
 }
 

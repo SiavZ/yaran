@@ -39,6 +39,7 @@ use super::log_lines::{self, LogSignal, MAX_LINE_BYTES};
 use super::policy::ChildExit;
 
 /// A live cloudflared.
+#[derive(Debug)]
 pub struct RunningChild {
     child: Child,
     pgid: i32,
@@ -48,6 +49,10 @@ pub struct RunningChild {
 }
 
 /// Spawn the child described by `spec`. `token` is only used to redact log lines.
+///
+/// # Errors
+///
+/// Fails when the binary cannot be started.
 pub fn spawn(spec: &ChildSpec, token: &str) -> std::io::Result<RunningChild> {
     let mut child = spec.command().spawn()?;
     let pgid = i32::try_from(child.id()).unwrap_or(i32::MAX);
@@ -78,7 +83,11 @@ fn read_stderr(stderr: impl Read, token: &str, tx: &Sender<LogSignal>) {
     loop {
         line.clear();
         match (&mut reader)
-            .take(MAX_LINE_BYTES as u64 + 1)
+            .take(
+                u64::try_from(MAX_LINE_BYTES)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
             .read_until(b'\n', &mut line)
         {
             Ok(0) | Err(_) => return,
@@ -106,6 +115,7 @@ fn exit_of(status: ExitStatus) -> ChildExit {
 }
 
 impl RunningChild {
+    /// The child's process id.
     pub fn pid(&self) -> u32 {
         self.child.id()
     }

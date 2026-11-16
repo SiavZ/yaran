@@ -52,6 +52,7 @@ use crate::cloud::machine_api::{ApiFactory, default_api_factory};
 use crate::cloud::outcome::CloudActionOutcome;
 use crate::cloud::paths::CloudPaths;
 
+/// The help text of `yaran cloud`.
 pub const CLOUD_HELP: &str = "\
 Usage: yaran cloud <command> [OPTIONS]
 
@@ -147,13 +148,17 @@ pub type BrowserOpener = Box<dyn FnMut(&str) -> Result<(), String>>;
 
 /// Everything `run_with` needs from the outside world.
 pub struct CloudDeps {
+    /// Where the cloud files live.
     pub paths: CloudPaths,
+    /// The `[cloud]` settings.
     pub config: CloudConfig,
     /// The effective `[server] port`, sent as `origin_port` at login.
     pub server_port: u16,
+    /// Builds the control-plane client.
     pub api: ApiFactory,
     /// Whether stdin is a terminal (confirms are asked only there).
     pub is_tty: bool,
+    /// Opens the approval address in a browser.
     pub open_browser: BrowserOpener,
     /// How long login waits after pairing for a running yaran to pick it up.
     pub pickup_wait: Duration,
@@ -185,6 +190,16 @@ pub fn run_cloud(args: &[String], paths: &crate::config::YaranPaths) -> i32 {
     };
     let stdin: Box<dyn BufRead + Send> = Box::new(std::io::BufReader::new(std::io::stdin()));
     run_with(args, deps, stdin, &mut std::io::stdout())
+}
+
+impl std::fmt::Debug for CloudDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudDeps")
+            .field("paths", &self.paths)
+            .field("server_port", &self.server_port)
+            .field("is_tty", &self.is_tty)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The testable body of [`run_cloud`].

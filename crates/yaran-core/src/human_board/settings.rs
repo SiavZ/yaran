@@ -26,13 +26,16 @@ const NOBODY: &[&str] = &[
 /// `[board]`, resolved.
 #[derive(Clone, Debug)]
 pub struct BoardSettings {
+    /// Where the board lives.
     pub store: BoardStore,
     /// The people with a queue, as configured, without blanks or repeats.
     pub people: Vec<String>,
     /// Who runs this yaran: one of `people` (in its configured spelling), or
     /// any name when `people` is empty. `None` when unset.
     pub me: Option<String>,
+    /// How the board is shared with other machines.
     pub sync: SyncMode,
+    /// How often a sync runs.
     pub sync_every: Duration,
     /// Pass replies from other people to this machine's agents (see
     /// `[board] relay`).
@@ -173,6 +176,10 @@ impl BoardSettings {
     /// cleaned name when no people are configured. A name that is not one of
     /// the configured people is refused with the list, so a typo never parks a
     /// card in a queue nobody reads.
+    ///
+    /// # Errors
+    ///
+    /// Fails, naming the configured people, when the name is not one of them.
     pub fn person(&self, value: &str) -> Result<Option<String>> {
         let trimmed = value.trim();
         if NOBODY.iter().any(|word| trimmed.eq_ignore_ascii_case(word)) {

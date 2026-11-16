@@ -57,6 +57,7 @@ pub const CONFIG_RECHECK: Duration = Duration::from_mins(15);
 /// The bound on `Drop`'s join, mirroring `ConfigWriteQueue`.
 pub const SHUTDOWN_JOIN: Duration = Duration::from_secs(2);
 
+/// Builds the link the emitter sends through, once per start.
 pub type LinkFactory = Arc<dyn Fn() -> Box<dyn MachineLink> + Send + Sync>;
 
 #[derive(Debug)]
@@ -75,6 +76,15 @@ pub struct PushEmitter {
     dropped: u64,
 }
 
+impl std::fmt::Debug for PushEmitter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushEmitter")
+            .field("on", &self.is_on())
+            .field("dropped", &self.dropped)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PushEmitter {
     /// An emitter with no identity behind it (test engines): every retune leaves it off.
     pub fn off() -> Self {
@@ -87,6 +97,8 @@ impl PushEmitter {
         }
     }
 
+    /// An emitter that sends through links `factory` builds, started or not
+    /// as `settings` say.
     pub fn with_link(
         settings: PushSettings,
         status_lane: Option<Sender<WorkerEvent>>,
@@ -112,6 +124,7 @@ impl PushEmitter {
         (emitter, rx)
     }
 
+    /// Whether the emitter is running.
     pub fn is_on(&self) -> bool {
         self.tx.is_some()
     }

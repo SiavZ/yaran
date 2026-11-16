@@ -36,6 +36,7 @@ pub struct SeenCard {
 /// What the person running this yaran has read, card by card.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeenState {
+    /// What was read on each card, by card id.
     #[serde(default)]
     pub cards: BTreeMap<String, SeenCard>,
 }
@@ -68,6 +69,10 @@ impl SeenState {
     /// Read the file. `Ok(None)` when there is none yet; a damaged file is
     /// an error, and the caller starts from a fresh baseline rather than
     /// lighting up every card.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file exists and cannot be read or parsed.
     pub fn load(path: &Path) -> Result<Option<Self>> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
@@ -82,6 +87,10 @@ impl SeenState {
     }
 
     /// Write the file whole, owner-only.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<()> {
         let body = serde_json::to_vec_pretty(self)?;
         super::store::write_private(path, &body)
@@ -212,8 +221,9 @@ mod tests {
         seen.save(&path).unwrap();
         let mut read = SeenState::load(&path).unwrap().unwrap();
         assert_eq!(read, seen);
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let mode =
+            std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&path).unwrap().permissions())
+                & 0o777;
         assert_eq!(mode, 0o600);
         assert!(!read.prune(&board));
         board.cards.clear();

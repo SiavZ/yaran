@@ -27,9 +27,12 @@ use std::time::Duration;
 /// What one probe found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
+    /// cloudflared reports ready.
     Ready {
+        /// How many edge connections it holds.
         connections: u32,
     },
+    /// cloudflared answers but is not ready yet.
     NotReady,
     /// Nothing answered (cloudflared still starting, or gone).
     Unreachable,
@@ -37,6 +40,7 @@ pub enum Readiness {
 
 /// Poll every second until Ready, every five after.
 pub const POLL_UNTIL_READY: Duration = Duration::from_secs(1);
+/// Poll interval once ready.
 pub const POLL_WHILE_READY: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
