@@ -791,6 +791,10 @@ fn commit_tree(
 ///
 /// Fails when the index holds staged changes, git's state cannot be determined, HEAD is detached,
 /// another writer created the first commit meanwhile, or a git step fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "each refusal is checked before anything is written, in the order git would trip on them"
+)]
 pub fn create_initial_commit(path: &Path) -> Result<String> {
     let repo = path.as_os_str();
     // Fail closed on commit state: only bootstrap a confirmed-unborn repo. A
@@ -4137,6 +4141,10 @@ pub const PROJECT_WORKTREES_EXCLUDE_PATTERN: &str = "/dux-worktrees";
 /// change. (This is the opposite of the upload directory, which lives inside
 /// an agent worktree and so must never write the shared exclude; see
 /// `file_drop::UPLOADS_GITIGNORE`.)
+///
+/// # Errors
+///
+/// Fails when the link or the exclude entry cannot be written.
 pub fn ensure_project_worktrees_link(
     repo_path: &Path,
     worktrees_root: &Path,
@@ -4289,6 +4297,10 @@ fn ensure_project_worktrees_link_ignored(repo_path: &Path) -> Result<()> {
 /// not expand to a safe absolute path makes the whole inventory an error,
 /// because a guard run against a partial inventory would silently stop
 /// protecting the project it could not read.
+///
+/// # Errors
+///
+/// Fails when any path is not a safe absolute path.
 pub fn registered_project_paths<'a>(
     project_paths: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<PathBuf>> {
@@ -4326,6 +4338,10 @@ pub fn registered_project_paths<'a>(
 /// [`remove_worktree`]), so every caller is guarded. It is deliberately NOT
 /// applied to contained-file operations such as discarding an untracked
 /// directory inside a checkout, which stay possible.
+///
+/// # Errors
+///
+/// Fails, refusing the removal, when `target` is or contains a registered project.
 pub fn guard_whole_workspace_removal(target: &Path, registered_projects: &[PathBuf]) -> Result<()> {
     let target = resolve_for_removal(target)?;
     for project in registered_projects {
@@ -4343,6 +4359,10 @@ pub fn guard_whole_workspace_removal(target: &Path, registered_projects: &[PathB
 
 /// Symlink-aware "strictly inside `root`" for whole-worktree inventories, that
 /// also works for targets already absent from disk.
+///
+/// # Errors
+///
+/// Fails when either path cannot be resolved.
 pub fn whole_workspace_target_is_within(root: &Path, target: &Path) -> Result<bool> {
     let root = resolve_for_removal(root)?;
     let target = resolve_for_removal(target)?;
@@ -5194,6 +5214,11 @@ thread_local! {
     static CHANGED_FILES_GIT_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// The working copy's changed files as the changes panel lists them.
+///
+/// # Errors
+///
+/// Fails when git cannot report the status.
 pub fn changed_files_for_display(
     worktree_path: &Path,
 ) -> Result<(Vec<ChangedFile>, Vec<ChangedFile>)> {
@@ -7622,6 +7647,10 @@ pub fn push(worktree_path: &Path, timeout: Option<std::time::Duration>) -> Resul
 /// `cat-file`: a git failure (not a repository, a corrupt object store, git
 /// missing) is an `Err`, never `None`. Collapsing the two would render every
 /// file of a broken checkout as fully added (fork 24deeeee, audit03 P1-22).
+///
+/// # Errors
+///
+/// Fails when git cannot be asked, as in a corrupt or missing repository.
 pub fn file_bytes_at_head(worktree_path: &Path, path: &str) -> Result<Option<Vec<u8>>> {
     let listing = Command::new("git")
         .arg("-C")
@@ -17953,6 +17982,7 @@ mod tests {
     /// and no link appears.
     #[test]
     fn ensure_project_worktrees_link_leaves_an_unreadable_exclude_untouched() {
+        // SAFETY: `geteuid` only reads this process's effective user id.
         if unsafe { libc::geteuid() } == 0 {
             return; // root reads through a 0o000 mode
         }

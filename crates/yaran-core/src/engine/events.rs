@@ -588,7 +588,9 @@ pub enum EventReaction {
     },
     /// The background web server finished applying a live `[cloud] mode` change.
     CloudModeApplied {
+        /// The mode now in force.
         mode: crate::cloud::leg_identity::CloudMode,
+        /// What applying it did.
         outcome: crate::cloud::leg_outcome::CloudModeOutcome,
     },
     /// Whether GitHub features work has CHANGED (a probe answered differently
@@ -997,6 +999,10 @@ pub(crate) struct RemovalCoordinationInputs<'a> {
 /// A leading claim is finished on every exit, success and failure alike, so a
 /// joiner always gets an answer and the path never stays "being removed".
 /// Blocking: a worker thread's call. A panic becomes an `Err`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the removal re-checks every guard against live state before it deletes anything, in order"
+)]
 pub(crate) fn perform_deferred_removal(
     session_id: &str,
     project_path: &str,
@@ -1576,7 +1582,7 @@ pub fn survivors_kept_worktree_message(
 /// The refusal for a worktree-removing delete of an agent whose directory yaran
 /// never removes: a standalone agent's folder, or a shared agent's registered
 /// project checkout.
-pub fn delete_directory_refusal(session: &AgentSession) -> crate::status_text::StatusText {
+pub(crate) fn delete_directory_refusal(session: &AgentSession) -> crate::status_text::StatusText {
     if session.shared_workspace() {
         return shared_delete_directory_refusal(&session.display_label(), session.directory());
     }
@@ -1584,7 +1590,7 @@ pub fn delete_directory_refusal(session: &AgentSession) -> crate::status_text::S
 }
 
 /// Shared main-workspace mode: the agent runs in the project's own checkout.
-pub fn shared_delete_directory_refusal(agent_name: &str, checkout: &str) -> StatusText {
+pub(crate) fn shared_delete_directory_refusal(agent_name: &str, checkout: &str) -> StatusText {
     crate::status_text![
         "Agent ",
         q(agent_name),
@@ -1597,7 +1603,7 @@ pub fn shared_delete_directory_refusal(agent_name: &str, checkout: &str) -> Stat
     ]
 }
 
-pub fn standalone_delete_directory_refusal(agent_name: &str, folder: &str) -> StatusText {
+pub(crate) fn standalone_delete_directory_refusal(agent_name: &str, folder: &str) -> StatusText {
     crate::status_text![
         "Agent ",
         q(agent_name),
@@ -2209,6 +2215,10 @@ impl Engine {
     /// agent's rows, take over its tab and resolve the create op, or take
     /// back what the launch made when its project is gone or its rows cannot
     /// be written. The create keeps its folder held until this returns.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a create commits its rows, its process and its status in one ordered step"
+    )]
     fn process_create_launch_ready(
         &mut self,
         request: crate::worker::AgentLaunchRequest,
@@ -2748,6 +2758,10 @@ impl Engine {
     /// Every registered project checkout, for the whole-worktree removal guard
     /// (`git::guard_whole_workspace_removal`). Fails closed on a project path
     /// that does not expand to a safe absolute one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a registered project's path is not a safe absolute path.
     pub fn registered_project_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>> {
         crate::git::registered_project_paths(self.projects.iter().map(|p| p.path.as_str()))
     }
@@ -3570,6 +3584,10 @@ impl Engine {
         busy_message
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one failure sentence per launch kind, with the cleanup each needs"
+    )]
     pub(crate) fn process_agent_launch_failed(
         &mut self,
         data: AgentLaunchFailedData,
@@ -10685,6 +10703,10 @@ mod tests {
     /// nothing would point at after a restart. A branch yaran did not mint
     /// survives (`attached_branch_survives` below).
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "two runs, a minted branch and an attached one, each driven to its removal"
+    )]
     fn create_agent_db_failure_removes_owned_worktree_without_success() {
         let (mut engine, tmp) = test_engine();
         let repo = tmp.path().join("repo");
