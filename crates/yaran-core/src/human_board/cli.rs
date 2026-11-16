@@ -902,7 +902,7 @@ mod tests {
         assert!(format!("{err}").contains("unknown flag"), "{err}");
         assert_eq!(
             store.load().unwrap().cards,
-            [] as [crate::human_board::Card; 0]
+            Vec::<crate::human_board::Card>::new()
         );
     }
 
@@ -931,7 +931,7 @@ mod tests {
             "no open card is about ticket 1\n"
         );
         let board = store.load().unwrap();
-        assert_eq!(board.open_cards(), [] as [&crate::human_board::Card; 0]);
+        assert_eq!(board.open_cards(), Vec::<&crate::human_board::Card>::new());
         assert_eq!(
             board.card(1).unwrap().resolution.as_deref(),
             Some("shipped")

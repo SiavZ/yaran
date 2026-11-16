@@ -9659,7 +9659,10 @@ mod tests {
         let handoff = engine
             .prepare_reload_handoff()
             .expect("an idle engine has nothing to fail at");
-        assert_eq!(handoff.ptys, [] as [crate::reload_handoff::HandoffPty; 0]);
+        assert_eq!(
+            handoff.ptys,
+            Vec::<crate::reload_handoff::HandoffPty>::new()
+        );
     }
 
     #[test]

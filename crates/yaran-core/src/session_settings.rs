@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(s.effective_system_prompt(), None);
         assert_eq!(
             s.yolo_launch_args(&ProviderKind::from_str("opencode")),
-            [] as [std::string::String; 0]
+            Vec::<std::string::String>::new()
         );
     }
 
@@ -279,7 +279,7 @@ mod tests {
         };
         assert_eq!(
             SessionSettings::default().yolo_launch_args(&opencode),
-            [] as [std::string::String; 0]
+            Vec::<std::string::String>::new()
         );
         assert_eq!(yolo.yolo_launch_args(&opencode), vec!["--auto"]);
         let mut resumed = vec!["--continue".to_string()];
@@ -288,7 +288,7 @@ mod tests {
         for other in ["claude", "codex", "jcode"] {
             assert_eq!(
                 yolo.yolo_launch_args(&ProviderKind::from_str(other)),
-                [] as [std::string::String; 0]
+                Vec::<std::string::String>::new()
             );
         }
     }

@@ -187,7 +187,7 @@ fn flat_mode_is_unchanged_by_the_grouped_default() {
         &|_| true,
     );
     assert_eq!(app.left_items(), expected.as_slice());
-    assert_eq!(app.left_groups_cache, [] as [crate::app::LeftGroup; 0]);
+    assert_eq!(app.left_groups_cache, Vec::<crate::app::LeftGroup>::new());
     assert!(
         app.left_items()
             .iter()

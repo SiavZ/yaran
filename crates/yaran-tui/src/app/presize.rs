@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use ratatui::layout::Rect;
 
 use super::pty_ownership::PtyDriver;
-use super::render::minimized_agent_term_size;
+use super::render::{BannerRow, TabStrip, minimized_agent_term_size};
 use super::{App, FullscreenOverlay, InputTarget, SessionIdRef, SessionSurface, TabId, TabIdRef};
 
 /// How long the windowed center pane must keep one geometry before background
@@ -124,9 +124,16 @@ impl App {
                 .engine
                 .ordered_tab_ids_for_session(SessionIdRef::new(&session_id))
                 .len();
-            let Some((rows, cols)) =
-                minimized_agent_term_size(area, banner, tab_count, always_show)
-            else {
+            let Some((rows, cols)) = minimized_agent_term_size(
+                area,
+                if banner {
+                    BannerRow::Top
+                } else {
+                    BannerRow::None
+                },
+                tab_count,
+                always_show.into(),
+            ) else {
                 continue;
             };
             if client.grid_size() == Some((rows, cols)) {
@@ -290,7 +297,7 @@ mod tests {
                 .expect("the terminal was drawn");
             let tabs = app.session_tab_ids("session-1").len();
             assert_eq!(
-                minimized_agent_term_size(area, false, tabs, false),
+                minimized_agent_term_size(area, BannerRow::None, tabs, TabStrip::WhenSeveral),
                 Some((rendered.height, rendered.width)),
                 "tab strip shown: {extra_tab}"
             );

@@ -542,7 +542,7 @@ mod tests {
         fs::write(store.path().join("README.md"), "# The board\n").unwrap();
         fs::write(store.path().join("notes.txt"), "not a note").unwrap();
         let board = store.load().unwrap();
-        assert_eq!(board.cards, [] as [crate::human_board::Card; 0]);
+        assert_eq!(board.cards, Vec::<crate::human_board::Card>::new());
         assert_eq!(board.problems.len(), 1, "{:?}", board.problems);
         assert!(board.problems[0].contains("G-7.md"), "{:?}", board.problems);
 
@@ -603,7 +603,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, store.path().join("G-1.md")).unwrap();
         assert_eq!(
             store.load().unwrap().cards,
-            [] as [crate::human_board::Card; 0]
+            Vec::<crate::human_board::Card>::new()
         );
     }
 
@@ -616,7 +616,7 @@ mod tests {
         let wait = Duration::from_secs(5);
         assert_eq!(
             watcher.next_within(wait).unwrap().board.unwrap().cards,
-            [] as [crate::human_board::Card; 0]
+            Vec::<crate::human_board::Card>::new()
         );
         store.update(|b| b.post(task("a"), at(0))).unwrap();
         assert_eq!(

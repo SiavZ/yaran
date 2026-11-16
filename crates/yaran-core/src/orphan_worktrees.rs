@@ -404,7 +404,7 @@ mod tests {
         store.upsert_session(&session_for(&managed)).unwrap();
         assert_eq!(
             inventory(&paths).unwrap(),
-            [] as [crate::orphan_worktrees::OrphanWorktreeCandidate; 0]
+            Vec::<crate::orphan_worktrees::OrphanWorktreeCandidate>::new()
         );
         store.soft_delete_session("retained-row").unwrap();
         assert!(

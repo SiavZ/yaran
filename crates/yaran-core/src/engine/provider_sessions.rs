@@ -610,7 +610,7 @@ mod tests {
         engine.sessions.push(session);
         assert_eq!(
             engine.claude_session_follow_targets(),
-            [] as [crate::resume_recovery::ClaudeLiveSessionTarget; 0]
+            Vec::<crate::resume_recovery::ClaudeLiveSessionTarget>::new()
         );
         engine.handle_claude_session_follow_tick();
         assert!(!engine.is_in_flight(&InFlightKey::ClaudeSessionFollow));

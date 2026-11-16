@@ -12038,7 +12038,7 @@ mod tests {
             .expect_err("a shared registration never switches the checkout");
         assert!(format!("{err:#}").contains("shared mode"), "{err:#}");
         assert_eq!(current_git_branch(&work), before);
-        assert_eq!(engine.projects, [] as [crate::model::Project; 0]);
+        assert_eq!(engine.projects, Vec::<crate::model::Project>::new());
     }
 
     #[test]

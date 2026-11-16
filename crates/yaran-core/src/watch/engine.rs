@@ -591,7 +591,7 @@ mod tests {
         for _ in 0..50 {
             assert_eq!(
                 engine.observe(quiet, now),
-                [] as [crate::watch::engine::WatchEffect; 0]
+                Vec::<crate::watch::engine::WatchEffect>::new()
             );
         }
         let key = SnapshotKey::of(quiet);
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(near.len(), hit.len());
         assert_eq!(
             engine.observe(near, now),
-            [] as [crate::watch::engine::WatchEffect; 0]
+            Vec::<crate::watch::engine::WatchEffect>::new()
         );
         assert_eq!(engine.rules[0].count_cache.map(|(_, c)| c), Some(0));
 
@@ -636,7 +636,7 @@ mod tests {
 
         // Just before fire_at, still pending.
         let effects = engine.observe("you are rate limited", t0 + Duration::from_millis(999));
-        assert_eq!(effects, [] as [crate::watch::engine::WatchEffect; 0]);
+        assert_eq!(effects, Vec::<crate::watch::engine::WatchEffect>::new());
 
         // At fire_at, sends text + status info.
         let effects = engine.observe("you are rate limited", t0 + Duration::from_millis(1_000));
@@ -751,7 +751,7 @@ mod tests {
 
         // Subsequent ticks are silent.
         let effects = engine.observe("rate\nrate\nrate", now + Duration::from_secs(60));
-        assert_eq!(effects, [] as [crate::watch::engine::WatchEffect; 0]);
+        assert_eq!(effects, Vec::<crate::watch::engine::WatchEffect>::new());
     }
 
     #[test]
@@ -874,7 +874,7 @@ mod tests {
             0,
             "oversized pattern should be rejected"
         );
-        assert_ne!(errors, [] as [std::string::String; 0]);
+        assert_ne!(errors, Vec::<std::string::String>::new());
     }
 
     #[test]
@@ -954,7 +954,7 @@ mod tests {
         };
 
         let (mut engine, errors) = WatchEngine::new("s1", &[r]);
-        assert_eq!(errors, [] as [std::string::String; 0]);
+        assert_eq!(errors, Vec::<std::string::String>::new());
         let t0 = Instant::now();
         let effects = engine.observe("limit reached | not-a-timestamp", t0);
         assert!(

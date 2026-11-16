@@ -6351,7 +6351,7 @@ args = [\"-l\"]
                 .expect("parse migrated config");
         assert_eq!(
             persisted.keys.bindings["open_worktree_in_editor"],
-            [] as [std::string::String; 0]
+            Vec::<std::string::String>::new()
         );
 
         for custom in ["[\"ctrl-o\"]", "[\"o\", \"ctrl-o\"]"] {
@@ -7121,7 +7121,7 @@ mod web_dragdrop_paste_render_tests {
         let parsed: Config = toml::from_str(&rendered).expect("default parses");
         assert_eq!(
             parsed.providers.commands["claude"].watch,
-            [] as [yaran_core::watch::WatchRule; 0]
+            Vec::<yaran_core::watch::WatchRule>::new()
         );
     }
 

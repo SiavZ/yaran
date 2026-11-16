@@ -233,7 +233,7 @@ fn push_emitter_off_drops_offers_without_a_thread() {
     assert_eq!(built.load(Ordering::SeqCst), 0);
     assert_eq!(
         calls.lock().unwrap().batches,
-        [] as [crate::cloud::protocol::machine::EventBatch; 0]
+        Vec::<crate::cloud::protocol::machine::EventBatch>::new()
     );
 }
 

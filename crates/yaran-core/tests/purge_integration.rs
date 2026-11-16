@@ -637,7 +637,7 @@ fn purge_all_retains_shared_provider_history_without_workspace_consent() {
     h.storage.upsert_session(&shared).unwrap();
 
     let (plans, failures) = build_plans_for_all(&h.storage, &h.paths, &h.config).unwrap();
-    assert_eq!(failures, [] as [std::string::String; 0]);
+    assert_eq!(failures, Vec::<std::string::String>::new());
     assert_eq!(plans.len(), 1);
     assert!(plans[0].items.iter().any(|item| matches!(
         item,

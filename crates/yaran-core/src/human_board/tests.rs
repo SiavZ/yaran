@@ -176,7 +176,7 @@ fn a_post_needs_a_kind_and_a_title() {
             .post(card(CardKind::Task, None, " \n "), at(0))
             .is_err()
     );
-    assert_eq!(board.cards, [] as [crate::human_board::Card; 0]);
+    assert_eq!(board.cards, Vec::<crate::human_board::Card>::new());
 }
 
 #[test]

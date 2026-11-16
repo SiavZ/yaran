@@ -783,10 +783,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let queue = dir.path().join("inject-queue");
         let outcome = scan_queue_dir(&queue).unwrap();
-        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
         assert_eq!(
             outcome.rejections,
-            [] as [(std::path::PathBuf, crate::amq::queue::InjectRejection); 0]
+            Vec::<(std::path::PathBuf, crate::amq::queue::InjectRejection)>::new()
         );
     }
 
@@ -863,7 +866,10 @@ mod tests {
         fs::create_dir_all(&bad).unwrap();
         fs::write(bad.join("001.msg"), b"steal\n").unwrap();
         let outcome = scan_queue_dir(&queue).unwrap();
-        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
         assert_eq!(outcome.rejections.len(), 1);
         assert!(matches!(
             outcome.rejections[0].1,
@@ -930,7 +936,10 @@ mod tests {
         assert_eq!(rejected, receiver.join(".rejected/.inflight.001.msg"));
         assert_eq!(fs::read(&rejected).unwrap(), b"\x03\n");
         let outcome = scan_queue_dir(dir.path()).unwrap();
-        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
     }
 
     #[test]
@@ -947,7 +956,10 @@ mod tests {
         assert_eq!(expired, receiver.join(".expired/001.msg"));
         assert_eq!(fs::read(&expired).unwrap(), b"old wake\n");
         let outcome = scan_queue_dir(dir.path()).unwrap();
-        assert_eq!(outcome.messages, [] as [crate::amq::queue::PendingFile; 0]);
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
     }
 
     #[test]

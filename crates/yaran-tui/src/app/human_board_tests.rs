@@ -157,8 +157,8 @@ fn rows_group_open_cards_by_kind_then_show_recent_done() {
 #[test]
 fn an_empty_board_has_no_rows() {
     let (rows, slots) = board_rows(&Board::default(), &Audience::Everyone);
-    assert_eq!(rows, [] as [crate::app::human_board::BoardRow; 0]);
-    assert_eq!(slots, [] as [yaran_core::human_board::CardId; 0]);
+    assert_eq!(rows, Vec::<crate::app::human_board::BoardRow>::new());
+    assert_eq!(slots, Vec::<yaran_core::human_board::CardId>::new());
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
     let board = sample_board();
     assert_eq!(
         state.apply_snapshot(Ok(board.clone())),
-        [] as [yaran_core::human_board::Card; 0]
+        Vec::<yaran_core::human_board::Card>::new()
     );
     assert_eq!(
         state.selected,
@@ -290,7 +290,7 @@ fn an_unreadable_board_keeps_no_selection_and_announces_nothing() {
     let mut state = HumanBoardState::default();
     assert_eq!(
         state.apply_snapshot(Err("broken".to_string())),
-        [] as [yaran_core::human_board::Card; 0]
+        Vec::<yaran_core::human_board::Card>::new()
     );
     assert_eq!(state.selected, None);
     assert!(state.readable().is_none());

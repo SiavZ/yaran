@@ -176,11 +176,50 @@ const DIFF_WRAP_INLINE_LINES: usize = 5_000;
 /// The agent list's frame title, the same words the web sidebar uses.
 const AGENT_SIDEBAR_TITLE: &str = "Agents & Terminals";
 
+/// Where the center lane's pull-request banner row goes, when it has one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BannerRow {
+    /// No banner: the pane takes the whole lane.
+    None,
+    /// One row above the pane.
+    Top,
+    /// One row below the pane.
+    Bottom,
+}
+
+/// Whether the agent tab strip shows for a single tab too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabStrip {
+    /// Only with two or more tabs.
+    WhenSeveral,
+    /// Always, the `[ui] always_show_tab_strip` setting.
+    Always,
+}
+
+impl From<bool> for TabStrip {
+    fn from(always: bool) -> Self {
+        if always {
+            Self::Always
+        } else {
+            Self::WhenSeveral
+        }
+    }
+}
+
+/// Whether a compact agent row names its project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectTag {
+    /// It does: the list is not grouped by project.
+    Shown,
+    /// It does not: the group header above it already says.
+    Hidden,
+}
+
 /// Split the center lane into `(pr_banner_area, pane_area)`. The banner row is
-/// one row tall when `banner` is set and zero rows otherwise.
-pub(crate) fn center_pane_split(area: Rect, banner: bool, at_bottom: bool) -> (Rect, Rect) {
-    let banner_height: u16 = u16::from(banner);
-    if at_bottom {
+/// one row tall, at the edge `banner` names, or zero rows for none.
+pub(crate) fn center_pane_split(area: Rect, banner: BannerRow) -> (Rect, Rect) {
+    let banner_height: u16 = u16::from(banner != BannerRow::None);
+    if banner == BannerRow::Bottom {
         let [pane_area, pr_area] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(banner_height)])
@@ -197,8 +236,8 @@ pub(crate) fn center_pane_split(area: Rect, banner: bool, at_bottom: bool) -> (R
 
 /// Whether the agent tab strip is drawn over `area`: two or more tabs (or the
 /// always-show setting), and room for the 3-row band above a usable terminal.
-pub(crate) fn tab_strip_visible(tab_count: usize, always_show: bool, area: Rect) -> bool {
-    (tab_count >= 2 || always_show) && area.height >= 6 && area.width >= 12
+pub(crate) fn tab_strip_visible(tab_count: usize, strip: TabStrip, area: Rect) -> bool {
+    (tab_count >= 2 || strip == TabStrip::Always) && area.height >= 6 && area.width >= 12
 }
 
 /// Split `area` into the 3-row tab strip and the terminal block below it.
@@ -231,13 +270,12 @@ pub(crate) fn agent_term_hint_split(inner: Rect) -> Option<[Rect; 2]> {
 /// `center`. `None` when the pane is too small to hold a grid.
 pub(crate) fn minimized_agent_term_size(
     center: Rect,
-    banner: bool,
+    banner: BannerRow,
     tab_count: usize,
-    always_show_tab_strip: bool,
+    strip: TabStrip,
 ) -> Option<(u16, u16)> {
-    // The banner row costs the same height at either edge.
-    let (_, pane_area) = center_pane_split(center, banner, false);
-    let block_area = if tab_strip_visible(tab_count, always_show_tab_strip, pane_area) {
+    let (_, pane_area) = center_pane_split(center, banner);
+    let block_area = if tab_strip_visible(tab_count, strip, pane_area) {
         tab_strip_split(pane_area)[1]
     } else {
         pane_area
@@ -1140,15 +1178,15 @@ pub(crate) const ASCII_LOGO: &[&str] = &[
 ];
 /// Display width of each line in `ASCII_LOGO` (all lines are equal width).
 pub(crate) const ASCII_LOGO_WIDTH: u16 = 39;
-/// Number of lines in `ASCII_LOGO`.
-const ASCII_LOGO_HEIGHT: u16 = ASCII_LOGO.len() as u16;
+/// Number of lines in `ASCII_LOGO`; a test holds it to the art.
+const ASCII_LOGO_HEIGHT: u16 = 5;
 
 /// Connected peers forming a Y, shared with the first-load dialogs.
 const ASCII_LOGO_ALT: &[&str] = super::first_load::PEER_MARK;
 /// Display width of each line in `ASCII_LOGO_ALT`.
 const ASCII_LOGO_ALT_WIDTH: u16 = super::first_load::ART_WIDTH;
-/// Number of lines in `ASCII_LOGO_ALT`.
-const ASCII_LOGO_ALT_HEIGHT: u16 = ASCII_LOGO_ALT.len() as u16;
+/// Number of lines in `ASCII_LOGO_ALT`; a test holds it to the art.
+const ASCII_LOGO_ALT_HEIGHT: u16 = 15;
 
 /// Maximum display width for a tip line (logo width + padding on each side).
 const TIP_MAX_WIDTH: u16 = 47;
@@ -1224,6 +1262,8 @@ const HEADER_PATH_SEPARATOR: &str = " › ";
 /// crumbs already in `left`. The commit goes first when the bar is narrow, then
 /// the version; the crumbs are never cut to make room for either.
 fn header_version_spans(left: &[Span<'static>], width: u16, style: Style) -> Vec<Span<'static>> {
+    /// Columns between the crumbs and the version.
+    const GAP: usize = 3;
     let used: usize = left.iter().map(|s| display_width(s.content.as_ref())).sum();
     let full = format!(
         "{} · {} ",
@@ -1231,7 +1271,6 @@ fn header_version_spans(left: &[Span<'static>], width: u16, style: Style) -> Vec
         yaran_core::version::GIT_COMMIT
     );
     let short = format!("{} ", env!("YARAN_DISPLAY_VERSION"));
-    const GAP: usize = 3;
     let width = usize::from(width);
     let Some(text) = [full, short]
         .into_iter()
@@ -2681,6 +2720,10 @@ impl App {
         self.reconcile_startup_log_wrap_width();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the header's crumbs, serving mark and version are laid out against one shared width"
+    )]
     fn render_header(&self, frame: &mut Frame<'_>, area: Rect) {
         let bg = self.theme.header_bg;
         let label_fg = self.theme.header_label_fg;
@@ -3055,6 +3098,10 @@ impl App {
     /// line one is the status glyph + name + PR badge; line two is the dim
     /// `project · state word · branch (when it diverges from the name) · tabs`.
     /// The working spinner and attention pulse stay on the line-one glyph.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "both lines of the row share one budget of columns, so they are built together"
+    )]
     fn render_agent_row(&self, session: &AgentSession, text_width: u16) -> ListItem<'static> {
         let label = session.display_label();
         let cues = self.agent_row_cues(session);
@@ -3331,7 +3378,7 @@ impl App {
             // sidebar has the keys and the quiet border tone while it does not.
             if let Some(rel) = map.iter().position(|&i| i == sel) {
                 let tint = self.theme.selection_bar_tint();
-                let y = list_inner.y + rel as u16;
+                let y = list_inner.y + u16::try_from(rel).unwrap_or(u16::MAX);
                 for x in list_inner.x..list_inner.x + list_inner.width {
                     buf[(x, y)].set_bg(tint);
                 }
@@ -3576,7 +3623,7 @@ impl App {
             if !matches!(items.get(index), Some(LeftItem::Group(_))) || selected == Some(index) {
                 continue;
             }
-            let y = list_content.y + rel as u16;
+            let y = list_content.y + u16::try_from(rel).unwrap_or(u16::MAX);
             let Some(text_end) = (x0..x1).rev().find(|&x| buf[(x, y)].symbol() != " ") else {
                 // A spacer row of the header, not its label.
                 continue;
@@ -3875,11 +3922,22 @@ impl App {
             .iter()
             .enumerate()
             .map(|(pos, item)| match item {
-                LeftItem::Group(_) if pos > 0 => 3,
-                LeftItem::Group(_) => 2,
+                // A header below another row carries a blank row above it.
+                LeftItem::Group(_) => {
+                    if pos > 0 {
+                        3
+                    } else {
+                        2
+                    }
+                }
                 LeftItem::Session(_) | LeftItem::Terminal(_) => 3,
-                LeftItem::InactiveToggle if (active == ActiveSection::Present) => 3,
-                LeftItem::InactiveToggle => 2,
+                LeftItem::InactiveToggle => {
+                    if active == ActiveSection::Present {
+                        3
+                    } else {
+                        2
+                    }
+                }
             })
             .collect();
         (items, heights)
@@ -3927,7 +3985,11 @@ impl App {
                                 session,
                                 row_text_width,
                                 connector,
-                                !grouped,
+                                if grouped {
+                                    ProjectTag::Hidden
+                                } else {
+                                    ProjectTag::Shown
+                                },
                             ))
                         },
                     )
@@ -3959,12 +4021,16 @@ impl App {
     /// pull-request and missing-working-copy badges pinned right only when they
     /// fit beside the full left run; otherwise they are dropped rather than
     /// cutting the name.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the one-line row fits the same cues as the two-line row into one budget"
+    )]
     fn render_compact_agent_row(
         &self,
         session: &AgentSession,
         text_width: u16,
         connector: Option<&'static str>,
-        show_project: bool,
+        project: ProjectTag,
     ) -> Line<'static> {
         let label = session.display_label();
         let cues = self.agent_row_cues(session);
@@ -4036,7 +4102,7 @@ impl App {
         let owner_tag = agent_row_owner_tag(session, found, self.working_copy_of(&session.id));
         // Flat style names the project (or folder, or warning) after the
         // harness, since no header carries it.
-        let project_spans: Vec<Span<'static>> = if show_project {
+        let project_spans: Vec<Span<'static>> = if project == ProjectTag::Shown {
             let (marker, name) = self.agent_row_owner_spans(session, found, muted);
             let marker = Span::styled(
                 format!(" {}", marker.span.content.trim_start()),
@@ -4087,7 +4153,9 @@ impl App {
                 Style::default().fg(pr_color),
             ));
         }
-        if !show_project && matches!(owner_tag, AgentRowOwnerTag::WorkingCopyMissing) {
+        if project == ProjectTag::Hidden
+            && matches!(owner_tag, AgentRowOwnerTag::WorkingCopyMissing)
+        {
             if !right.is_empty() {
                 right.push(Span::raw(" "));
             }
@@ -4341,8 +4409,14 @@ impl App {
             self.note_minimized_center_area(area);
         }
 
-        let (pr_area, pane_area) =
-            center_pane_split(area, pr_info.is_some(), self.view_prefs.pr_banner_at_bottom);
+        let (pr_area, pane_area) = center_pane_split(
+            area,
+            match (pr_info.is_some(), self.view_prefs.pr_banner_at_bottom) {
+                (false, _) => BannerRow::None,
+                (true, false) => BannerRow::Top,
+                (true, true) => BannerRow::Bottom,
+            },
+        );
 
         if let Some((ref pr, index, count)) = pr_info {
             self.render_pr_banner(frame, pr_area, pr, BandPlace { index, count });
@@ -6365,6 +6439,10 @@ impl App {
     /// files changed. Publishes each tab's rect for clicks; tabs are separated
     /// by a divider cell with a space either side, so a click cannot land on
     /// the neighbour.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every right-column tab is measured and placed against the others in one pass"
+    )]
     fn render_right_tabs(&mut self, frame: &mut Frame<'_>, area: Rect) {
         use super::human_board::RightTab;
         let tabs = self.right_column_tabs();
@@ -6460,10 +6538,11 @@ impl App {
                     Style::default().fg(self.theme.diff_add),
                 ));
             }
-            let rect = Rect::new(x, area.y, width as u16, 1);
+            let width = u16::try_from(width).unwrap_or(u16::MAX);
+            let rect = Rect::new(x, area.y, width, 1);
             Paragraph::new(Line::from(spans)).render(rect, buf);
             self.mouse_layout.right_tabs.push((rect, tab.clone()));
-            x = x.saturating_add(width as u16);
+            x = x.saturating_add(width);
             if index + 1 < tabs.len() && right.saturating_sub(x) >= 3 {
                 buf[(x + 1, area.y)]
                     .set_symbol("\u{2502}")
@@ -6687,6 +6766,10 @@ impl App {
 
     /// [`Self::render_file_list`] with a quiet note after the title's recap,
     /// such as the count of staged files the human board is standing over.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "rows, stats, notes and the scroll marker share one viewport computation"
+    )]
     fn render_file_list_noted(
         &self,
         frame: &mut Frame<'_>,
@@ -6832,13 +6915,13 @@ impl App {
     /// person and how many are news, when there are any. A narrow column gives
     /// up the news count first, then the word "waiting" (leaving the count in
     /// parentheses), so the one number that matters is never cut in half.
-    fn human_board_title(&self, focused: bool, max_width: usize) -> Line<'static> {
+    fn human_board_title(&self, focused: FocusState, max_width: usize) -> Line<'static> {
         let view = self.human_board.view();
         let name = match view {
             yaran_core::human_board::Audience::Person(person) => format!("Tasks for {person}"),
             yaran_core::human_board::Audience::Everyone => "Tasks for Human".to_string(),
         };
-        let name = Span::styled(name, self.theme.title_style(focused.into()));
+        let name = Span::styled(name, self.theme.title_style(focused));
         let max_w = u16::try_from(max_width).unwrap_or(u16::MAX);
         let Some(board) = self.human_board.readable() else {
             return Line::from(ellipsize_spans(vec![name], max_w));
@@ -6929,7 +7012,8 @@ impl App {
     fn render_human_board(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let pane_focused = self.focus == FocusPane::Files;
         let active = pane_focused && self.right_section == RightSection::Board;
-        let title = self.human_board_title(active, usize::from(area.width.saturating_sub(4)));
+        let title =
+            self.human_board_title(active.into(), usize::from(area.width.saturating_sub(4)));
         let mut block = self.themed_block_line(title, active.into());
         let (problems, sync) = self.human_board_footer();
         if let Some(problems) = problems {
@@ -6975,7 +7059,7 @@ impl App {
             }
             Some(Ok(board)) => {
                 let selected_slot = self.human_board.selected_slot_in(board);
-                self.render_human_board_rows(frame, list_area, board, selected_slot, active);
+                self.render_human_board_rows(frame, list_area, board, selected_slot, active.into());
             }
         }
         self.human_board.board = snapshot;
@@ -6999,13 +7083,17 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "headings, cards and the selection share one viewport computation"
+    )]
     fn render_human_board_rows(
         &mut self,
         frame: &mut Frame<'_>,
         area: Rect,
         board: &yaran_core::human_board::Board,
         selected_slot: Option<usize>,
-        active: bool,
+        focus: FocusState,
     ) {
         use super::human_board::{BoardRow, DONE_HEADING, board_rows, fit_width};
 
@@ -7057,7 +7145,7 @@ impl App {
         let selection = Style::default().bg(self.theme.selection_bar_tint());
 
         for (offset, row) in rows[start..end].iter().enumerate() {
-            let y = area.y + offset as u16;
+            let y = area.y + u16::try_from(offset).unwrap_or(u16::MAX);
             let row_area = Rect::new(area.x, y, area.width, 1);
             let line = match row {
                 BoardRow::Heading { kind, count } => {
@@ -7088,7 +7176,7 @@ impl App {
                     let Some(card) = board.card(id) else {
                         continue;
                     };
-                    let selected = active && Some(*slot) == selected_slot;
+                    let selected = focus == FocusState::Focused && Some(*slot) == selected_slot;
                     let base = if selected {
                         selection
                     } else {
@@ -13903,6 +13991,10 @@ impl App {
         body_inner
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the dialog lists every running program with its own focus and scroll state"
+    )]
     fn render_kill_running_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::KillRunning(prompt) = &self.prompt else {
             return;
@@ -14713,6 +14805,10 @@ impl App {
         [checkbox, branch, others]
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the dialog's fields, notes and buttons are laid out against one height"
+    )]
     fn render_name_new_agent_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::NameNewAgent {
             request,
@@ -15207,6 +15303,10 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the macro list, its editor and its confirm share one layout"
+    )]
     fn render_edit_macros(&mut self, frame: &mut Frame<'_>) {
         // Pre-compute the popup layout so we can set the display width for
         // soft-wrapping before taking the immutable borrow on self.prompt.
@@ -17791,9 +17891,9 @@ mod tests {
             (ASCII_LOGO, ASCII_LOGO_WIDTH, ASCII_LOGO_HEIGHT),
             (ASCII_LOGO_ALT, ASCII_LOGO_ALT_WIDTH, ASCII_LOGO_ALT_HEIGHT),
         ] {
-            assert_eq!(logo.len(), height as usize);
+            assert_eq!(logo.len(), usize::from(height));
             for row in logo {
-                assert_eq!(display_width(row), width as usize, "{row}");
+                assert_eq!(display_width(row), usize::from(width), "{row}");
             }
         }
         assert_eq!(ASCII_LOGO_ALT, super::super::first_load::PEER_MARK);
@@ -23895,14 +23995,17 @@ mod tests {
         let crumbs = wide[..wide.find(version).unwrap()].trim_end().to_string();
         let crumbs_w = display_width(&crumbs);
         // Room for the crumbs and the bare version only.
-        let narrow = header_row(&mut app, (crumbs_w + 3 + display_width(version) + 1) as u16);
+        let narrow = header_row(
+            &mut app,
+            u16::try_from(crumbs_w + 3 + display_width(version) + 1).unwrap(),
+        );
         assert!(narrow.starts_with(&crumbs), "{narrow}");
         assert!(
             narrow.contains(version) && !narrow.contains(commit),
             "{narrow}"
         );
         // No room for either: the crumbs stand alone, uncut.
-        let tight = header_row(&mut app, crumbs_w as u16 + 1);
+        let tight = header_row(&mut app, u16::try_from(crumbs_w).unwrap() + 1);
         assert!(
             tight.starts_with(&crumbs) && !tight.contains(version),
             "{tight}"
@@ -23993,7 +24096,7 @@ mod tests {
             let x = rows[y].find(text).unwrap();
             for column in x..x + text.len() {
                 assert_eq!(
-                    buffer[(column as u16, y as u16)].fg,
+                    buffer[(u16::try_from(column).unwrap(), u16::try_from(y).unwrap())].fg,
                     app.theme.text_fg,
                     "{text} must remain readable on the light surface"
                 );
@@ -25532,6 +25635,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of every confirmation dialog at every short height"
+    )]
     fn confirmation_context_and_warnings_fit_short_screens() {
         use ratatui::{Terminal, backend::TestBackend};
 
@@ -30923,6 +31030,10 @@ mod tests {
     /// says: forcible removal, the uncommitted-work sentence when dirty, and
     /// what happens to the branch, with the checkbox naming it.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one journey through every state of the dialog"
+    )]
     fn the_worktree_removal_dialog_warns_and_names_the_branch() {
         fn confirm(
             app: &App,

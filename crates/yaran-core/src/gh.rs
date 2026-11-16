@@ -5769,7 +5769,7 @@ headRefOid repository { nameWithOwner } headRepository { nameWithOwner } } }"
         assert_eq!(plan.entries.len(), 2);
         assert_eq!(
             plan.followers,
-            [] as [(std::string::String, std::string::String); 0]
+            Vec::<(std::string::String, std::string::String)>::new()
         );
         let questions = plan_entries(
             &plan.entries,

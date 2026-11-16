@@ -246,12 +246,15 @@ mod tests {
         );
         assert_eq!(
             callback_urls_for_domain("<publisher-domain>"),
-            [] as [std::string::String; 0]
+            Vec::<std::string::String>::new()
         );
-        assert_eq!(callback_urls_for_domain(""), [] as [std::string::String; 0]);
+        assert_eq!(
+            callback_urls_for_domain(""),
+            Vec::<std::string::String>::new()
+        );
         assert_eq!(
             callback_urls_for_domain("evil/path"),
-            [] as [std::string::String; 0]
+            Vec::<std::string::String>::new()
         );
         assert_eq!(
             CloudConfig::default().app_callback_urls,

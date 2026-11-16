@@ -372,7 +372,7 @@ mod tests {
         board.mark_relayed(&id, (at, &from, &text), at).unwrap();
         assert_eq!(
             plan(&board, &sam, &here),
-            [] as [crate::human_board::relay::RelayJob; 0]
+            Vec::<crate::human_board::relay::RelayJob>::new()
         );
     }
 
@@ -428,13 +428,13 @@ mod tests {
         }
         assert_eq!(
             plan(&board, &sam, &here),
-            [] as [crate::human_board::relay::RelayJob; 0]
+            Vec::<crate::human_board::relay::RelayJob>::new()
         );
 
         // Alex's own board never relays Alex's card back to an agent there.
         assert_eq!(
             plan(&board, &settings("Alex", Some("hub")), &|_| true),
-            [] as [crate::human_board::relay::RelayJob; 0]
+            Vec::<crate::human_board::relay::RelayJob>::new()
         );
     }
 
@@ -482,7 +482,7 @@ mod tests {
         assert!(card.thread[0].relayed_at.is_some());
         assert_eq!(
             plan(&store.load().unwrap(), &settings("Sam", None), &here),
-            [] as [crate::human_board::relay::RelayJob; 0]
+            Vec::<crate::human_board::relay::RelayJob>::new()
         );
 
         // A send that fails records nothing: the job comes back next time.
@@ -513,7 +513,7 @@ mod tests {
         off.relay = false;
         assert_eq!(
             plan(&board, &off, &here),
-            [] as [crate::human_board::relay::RelayJob; 0]
+            Vec::<crate::human_board::relay::RelayJob>::new()
         );
         assert!(
             plan(&board, &settings("Sam", None), &|_| false).is_empty(),
@@ -523,7 +523,7 @@ mod tests {
         nobody.me = None;
         assert_eq!(
             plan(&board, &nobody, &here),
-            [] as [crate::human_board::relay::RelayJob; 0]
+            Vec::<crate::human_board::relay::RelayJob>::new()
         );
     }
 }

@@ -332,7 +332,7 @@ mod tests {
     fn successful_native_set_does_not_emit_osc52() {
         let (result, seen) = run_one::<Setter>(Ok(|_| Ok(())), true);
         assert!(result.is_ok());
-        assert_eq!(seen, [] as [std::string::String; 0]);
+        assert_eq!(seen, Vec::<std::string::String>::new());
     }
 
     #[test]

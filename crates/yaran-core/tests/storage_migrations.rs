@@ -310,7 +310,7 @@ fn migration_0005_preserves_session_pr_foreign_key() {
     store.delete_session("session").expect("hard delete parent");
     assert_eq!(
         store.load_agent_prs_of("session").expect("load"),
-        [] as [yaran_core::model::AgentPr; 0]
+        Vec::<yaran_core::model::AgentPr>::new()
     );
 }
 

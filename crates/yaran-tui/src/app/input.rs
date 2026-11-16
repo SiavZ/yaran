@@ -38005,7 +38005,7 @@ cyan = "#00ffff"
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(std::fs::read_to_string(output).unwrap().trim(), "27");
-        assert_eq!(app.raw_input_buf, [] as [u8; 0]);
+        assert_eq!(app.raw_input_buf, Vec::<u8>::new());
     }
 
     #[test]

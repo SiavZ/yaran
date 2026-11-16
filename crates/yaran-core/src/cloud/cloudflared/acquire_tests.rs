@@ -177,7 +177,7 @@ fn a_cancelled_download_leaves_nothing() {
         false
     });
     assert_eq!(result, Err(BinaryUnavailable::Cancelled));
-    assert_eq!(bin_files(dir.path()), [] as [std::string::String; 0]);
+    assert_eq!(bin_files(dir.path()), Vec::<std::string::String>::new());
 }
 
 #[test]

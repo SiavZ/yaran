@@ -993,12 +993,18 @@ mod tests {
             b"\x1b[?1002l",
         ];
         for seq in csi {
-            assert_eq!(capture_once(seq), [] as [crate::attention::CapturedSeq; 0]);
+            assert_eq!(
+                capture_once(seq),
+                Vec::<crate::attention::CapturedSeq>::new()
+            );
             assert_eq!(
                 capture_once(&tmux_wrap(seq)),
-                [] as [crate::attention::CapturedSeq; 0]
+                Vec::<crate::attention::CapturedSeq>::new()
             );
-            assert_eq!(scan_once(seq), [] as [crate::attention::AttentionEvent; 0]);
+            assert_eq!(
+                scan_once(seq),
+                Vec::<crate::attention::AttentionEvent>::new()
+            );
         }
         // Next to a real capture, only the OSC is recorded.
         let caps = capture_once(b"\x1b[?1002h\x1b]9;done\x07\x1b[?1006h");

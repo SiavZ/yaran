@@ -42,24 +42,36 @@ use serde::{Deserialize, Serialize};
 use super::concat_kdf::concat_kdf;
 use super::rules::{self, Checked, Invalid, Validate, b64url_encode, check, check_opt};
 
+/// The JWE key agreement the handoff envelope uses.
 pub const HANDOFF_ALG: &str = "ECDH-ES";
+/// The JWE content encryption the handoff envelope uses.
 pub const HANDOFF_ENC: &str = "A256GCM";
+/// The envelope's `typ` header.
 pub const HANDOFF_TYP: &str = "yaran-handoff+jwe";
+/// The envelope's `cty` header: what the plaintext is.
 pub const HANDOFF_CTY: &str = "yaran-handoff+json";
+/// The largest plaintext a handoff envelope may seal.
 pub const HANDOFF_MAX_PLAINTEXT_BYTES: usize = 6144;
+/// The longest a sealed envelope may be, so it fits a redirect.
 pub const HANDOFF_MAX_JWE_CHARS: usize = 8192;
 
+/// Which build of the phone app asks for the handoff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffBuild {
+    /// A release build, which only takes the verified https callback.
     Release,
+    /// A development build, which may take the custom-scheme callback.
     Dev,
 }
 
+/// Where the sealed envelope rides on the redirect back to the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffMode {
+    /// In the query string.
     Query,
+    /// In the fragment, which never reaches a server.
     Fragment,
 }
 
@@ -68,17 +80,27 @@ pub enum HandoffMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HandoffQuery {
+    /// The handoff protocol version.
     pub v: i64,
+    /// The phone's ephemeral P-256 public key the envelope is sealed to.
     pub pk: String,
+    /// The app's state value, echoed back and bound into the key derivation.
     pub state: String,
+    /// The callback the envelope is delivered to.
     pub redirect: String,
+    /// The app build asking; absent means a release build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<HandoffBuild>,
+    /// Where the envelope rides; absent means the query string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<HandoffMode>,
+    /// The device name the consent page shows.
     pub device: String,
+    /// The install's device public key, which remembered consent is tied to.
     pub dk: String,
+    /// When the device signed the request, in Unix seconds.
     pub dts: String,
+    /// The device key's signature over the request.
     pub dsig: String,
 }
 
@@ -95,10 +117,13 @@ impl Validate for HandoffQuery {
     }
 }
 
+/// What the person chose on the consent page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffDecision {
+    /// Hand the sign-in to the app.
     Continue,
+    /// Refuse it.
     Cancel,
 }
 
@@ -106,17 +131,27 @@ pub enum HandoffDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HandoffConsent {
+    /// The handoff protocol version.
     pub v: i64,
+    /// The phone's ephemeral P-256 public key the envelope is sealed to.
     pub pk: String,
+    /// The app's state value.
     pub state: String,
+    /// The callback the envelope is delivered to.
     pub redirect: String,
+    /// The app build asking; absent means a release build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<HandoffBuild>,
+    /// Where the envelope rides; absent means the query string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<HandoffMode>,
+    /// The device name the consent page showed.
     pub device: String,
+    /// The install's device public key.
     pub dk: String,
+    /// The token the consent page was served with.
     pub csrf: String,
+    /// What the person chose.
     pub decision: HandoffDecision,
 }
 
@@ -132,10 +167,13 @@ impl Validate for HandoffConsent {
     }
 }
 
+/// Which side seals the handoff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffKind {
+    /// A paired machine, for its own hostname.
     Machine,
+    /// The organization's control plane.
     ControlPlane,
 }
 
@@ -143,13 +181,19 @@ pub enum HandoffKind {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HandoffPayload {
+    /// The payload version; always 1.
     pub v: i64,
+    /// Which side sealed it.
     pub kind: HandoffKind,
+    /// The host the sign-in is for, which must be the sealer's own.
     pub host: String,
     /// The `Cf-Access-Jwt-Assertion` value exactly as Access attached it.
     pub jwt: String,
+    /// The signed-in identity's email.
     pub email: String,
+    /// When the assertion expires, in Unix seconds.
     pub exp: i64,
+    /// When the assertion was issued, in Unix seconds.
     pub iat: i64,
     /// The raw `CF_Authorization` cookie value, when the request carried one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +209,8 @@ impl fmt::Debug for HandoffPayload {
             .field("exp", &self.exp)
             .field("jwt", &"<redacted>")
             .field("cookie", &self.cookie.as_ref().map(|_| "<redacted>"))
+            .field("v", &self.v)
+            .field("iat", &self.iat)
             .finish()
     }
 }
@@ -189,6 +235,7 @@ impl Validate for HandoffPayload {
     }
 }
 
+/// Why a handoff could not be sealed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandoffError {
     /// `pk` is not an on-curve uncompressed P-256 point.
@@ -224,6 +271,11 @@ impl fmt::Display for HandoffError {
 impl std::error::Error for HandoffError {}
 
 /// Decodes and validates the phone's recipient key (`pk`).
+///
+/// # Errors
+///
+/// Fails with [`HandoffError::RecipientKey`] when `pk` is not an on-curve
+/// uncompressed P-256 point.
 pub fn parse_recipient_point(pk: &str) -> Result<[u8; 65], HandoffError> {
     rules::decode_p256_point(pk).ok_or(HandoffError::RecipientKey)
 }
@@ -253,6 +305,11 @@ pub fn protected_header(recipient: &[u8; 65], epk: &[u8], host: &str, state: &st
 
 /// The deterministic core: seals `plaintext` given the ECDH secret `z`, the exact
 /// protected-header JSON, and the IV. `host` and `state` are the KDF's apu and apv.
+///
+/// # Errors
+///
+/// Fails when the plaintext or the sealed envelope is over its limit, or the
+/// encryption fails.
 pub fn seal_with_secret(
     z: &[u8],
     protected_header_json: &str,
@@ -290,6 +347,11 @@ pub fn seal_with_secret(
 
 /// Seals `payload` to the phone's ephemeral key `pk` for this machine's `host` and the
 /// handoff `state`, with a fresh ephemeral key and IV.
+///
+/// # Errors
+///
+/// Fails when `pk` is not a valid key, the payload fails its rules or names
+/// another host, or the envelope would be over its limit.
 pub fn seal(
     pk: &str,
     host: &str,
