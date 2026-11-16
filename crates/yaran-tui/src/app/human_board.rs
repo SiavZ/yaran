@@ -533,8 +533,8 @@ impl HumanBoardState {
             self.selected = None;
             return;
         }
-        let current = self.selected_slot().unwrap_or(0) as isize;
-        let next = (current + delta).clamp(0, slots.len() as isize - 1) as usize;
+        let current = self.selected_slot().unwrap_or(0);
+        let next = current.saturating_add_signed(delta).min(slots.len() - 1);
         self.selected = Some(slots[next].clone());
     }
 
@@ -909,9 +909,11 @@ impl App {
             .tab
             .as_ref()
             .and_then(|tab| tabs.iter().position(|t| t == tab))
-            .unwrap_or(0) as isize;
-        let len = tabs.len() as isize;
-        let next = (at + delta).rem_euclid(len) as usize;
+            .unwrap_or(0);
+        let len = tabs.len();
+        // A step of any size, either way, lands on a tab: wrap it into 0..len first.
+        let step = delta.rem_euclid(isize::try_from(len).unwrap_or(isize::MAX));
+        let next = (at + step.unsigned_abs()) % len;
         self.show_right_tab(tabs[next].clone());
     }
 
@@ -1437,13 +1439,16 @@ impl App {
                     &typed,
                 );
                 if from_elsewhere {
-                    prompt.push_str(&format!(
-                        " (Read the whole card with yaran board show {id}; report back on it with \
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut prompt,
+                        format_args!(
+                            " (Read the whole card with yaran board show {id}; report back on it with \
                          yaran board reply {id}.)",
-                        id = card.id
-                    ));
+                            id = card.id
+                        ),
+                    );
                 }
-                self.type_board_reply(target, &card, prompt, text, after);
+                self.type_board_reply(target, &card, &prompt, text, after);
             }
         }
     }
@@ -1454,7 +1459,7 @@ impl App {
         &mut self,
         target: ReplyTarget,
         card: &Card,
-        prompt: String,
+        prompt: &str,
         reply: String,
         after: AfterSubmit,
     ) {
@@ -1624,7 +1629,7 @@ impl App {
         );
         let (tx, rx) = mpsc::channel();
         let store = self.human_board_store();
-        let worker_job = job.clone();
+        let worker_job = job;
         let spawned = std::thread::Builder::new()
             .name("yaran-human-board-job".into())
             .spawn(move || {
@@ -1670,6 +1675,10 @@ impl App {
         self.apply_board_job_answer(answer);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one status sentence per job kind and outcome, kept in one match"
+    )]
     pub(crate) fn apply_board_job_answer(&mut self, answer: BoardJobAnswer) {
         self.status.clear(BOARD_JOB_STATUS_KEY, None);
         self.mark_frame_dirty();

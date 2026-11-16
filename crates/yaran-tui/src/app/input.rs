@@ -111,6 +111,8 @@ use yaran_core::text::count_of;
 /// mouse-tracking app is never over-scrolled. Keyboard scrolling is unaffected.
 /// Must match xterm's `scrollSensitivity` in the web's TerminalPane.tsx.
 pub(super) const MOUSE_WHEEL_LINES: usize = 3;
+/// [`MOUSE_WHEEL_LINES`] for scrolls measured in signed lines.
+const WHEEL_LINES_I32: i32 = 3;
 
 /// The furthest a diff of `visual_lines` wrapped rows scrolls in a pane
 /// `height` rows tall: its last row on the pane's last row.
@@ -1605,7 +1607,8 @@ impl App {
     /// at the ends. On a grouped project header it steps into that project.
     /// Works in both sidebar styles; rows a filter or a collapsed Inactive tail
     /// hides are skipped, because the cursor can only land on a visible row.
-    pub(crate) fn select_sibling_agent(&mut self, forward: bool) {
+    pub(crate) fn select_sibling_agent(&mut self, direction: FocusStep) {
+        let forward = direction == FocusStep::Forward;
         let project_key = match self.left_items().get(self.selected_left) {
             Some(LeftItem::Session(i)) => self
                 .engine
@@ -1728,8 +1731,8 @@ impl App {
                 }
                 Action::MoveProjectUp => self.move_selected_project(super::reorder::MoveDir::Up),
                 Action::NewTerminal => self.new_companion_terminal(),
-                Action::NextSiblingAgent => self.select_sibling_agent(true),
-                Action::PrevSiblingAgent => self.select_sibling_agent(false),
+                Action::NextSiblingAgent => self.select_sibling_agent(FocusStep::Forward),
+                Action::PrevSiblingAgent => self.select_sibling_agent(FocusStep::Backward),
                 Action::ToggleProject => self.toggle_collapse_selected_project(),
                 Action::InteractAgent => {
                     if self.selected_session().is_some()
@@ -2323,8 +2326,6 @@ impl App {
             return;
         }
         match &mut self.prompt {
-            // Handled above: it needs `&mut self` for the engage state.
-            PromptState::SessionSettings(_) => {}
 
             // Type-immediately: the palette query.
             PromptState::Command { input, selected } => {
@@ -2482,7 +2483,9 @@ impl App {
             | PromptState::PullRequests(_)
             | PromptState::ProjectActions(_)
             | PromptState::ProjectInfo(_)
-            | PromptState::ConfirmChangeBaseBranch(_) => {}
+            | PromptState::ConfirmChangeBaseBranch(_)
+            // Handled above: it needs `&mut self` for the engage state.
+            | PromptState::SessionSettings(_) => {}
 
             PromptState::ChangeBaseBranch(prompt) => {
                 if prompt.list.searching {
@@ -11153,11 +11156,11 @@ impl App {
         }
         match mouse.kind {
             MouseEventKind::ScrollDown => {
-                self.scroll_error_dialog(MOUSE_WHEEL_LINES as i32);
+                self.scroll_error_dialog(WHEEL_LINES_I32);
                 Some(false)
             }
             MouseEventKind::ScrollUp => {
-                self.scroll_error_dialog(-(MOUSE_WHEEL_LINES as i32));
+                self.scroll_error_dialog(-WHEEL_LINES_I32);
                 Some(false)
             }
             _ => None,
@@ -11787,7 +11790,6 @@ impl App {
             PromptMouseTarget::NameStandaloneAgentInput => {
                 self.set_standalone_name_cursor_from_mouse(mouse.column);
             }
-            PromptMouseTarget::PullRequestChooseProject => {}
             PromptMouseTarget::StartupCommandInput => {
                 self.click_startup_command_input(mouse);
             }
@@ -11796,7 +11798,9 @@ impl App {
                     self.set_error(format!("{err:#}"));
                 }
             }
-            PromptMouseTarget::SessionSettingsCancel | PromptMouseTarget::SessionSettingsSave => {}
+            PromptMouseTarget::SessionSettingsCancel
+            | PromptMouseTarget::SessionSettingsSave
+            | PromptMouseTarget::PullRequestChooseProject => {}
             PromptMouseTarget::MacroNameInput => {
                 self.focus_macro_edit_control(MacroEditFocus::Name);
                 self.set_macro_name_cursor_from_mouse(mouse.column);
@@ -12224,10 +12228,11 @@ impl App {
                     }
                 }
             }
-            // Enter/activate on the Inactive tail toggles it open/closed.
-            Some(LeftItem::InactiveToggle) => self.toggle_collapse_selected_project(),
-            // Enter/activate (and a double click) on a project header folds it.
-            Some(LeftItem::Group(_)) => self.toggle_collapse_selected_project(),
+            // Enter/activate on the Inactive tail toggles it open/closed, and
+            // on a project header (a double click too) folds the project.
+            Some(LeftItem::InactiveToggle | LeftItem::Group(_)) => {
+                self.toggle_collapse_selected_project();
+            }
             None => {}
         }
         Ok(())
@@ -22099,7 +22104,7 @@ not_a_real_action = ["x"]
     /// presses (`forward_mouse = true`); see the next test for `false`.
     #[test]
     fn mouse_double_click_does_not_maximize_a_mouse_mode_child() {
-        mouse_mode_child_double_click(true);
+        mouse_mode_child_double_click(MouseForward::ToChild);
     }
 
     /// With `forward_mouse = false` (how yaran-amq ships jcode) the presses were
@@ -22108,10 +22113,19 @@ not_a_real_action = ["x"]
     /// tracking on, and was the one agent a double click would not open.
     #[test]
     fn mouse_double_click_maximizes_a_mouse_mode_child_that_does_not_forward_presses() {
-        mouse_mode_child_double_click(false);
+        mouse_mode_child_double_click(MouseForward::Kept);
     }
 
-    fn mouse_double_click_mouse_mode_setup(forward_mouse: bool) -> App {
+    /// The provider's `forward_mouse` setting, for the tests that pin it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum MouseForward {
+        /// `forward_mouse = true`: a mouse-reporting child gets the gestures.
+        ToChild,
+        /// `forward_mouse = false`: yaran keeps plain left gestures.
+        Kept,
+    }
+
+    fn mouse_double_click_mouse_mode_setup(forward_mouse: MouseForward) -> App {
         let mut app = test_app(default_bindings());
         install_mouse_layout(&mut app);
         pin_forward_mouse(&mut app, forward_mouse);
@@ -22152,7 +22166,7 @@ not_a_real_action = ["x"]
         app
     }
 
-    fn mouse_mode_child_double_click(forward_mouse: bool) {
+    fn mouse_mode_child_double_click(forward_mouse: MouseForward) {
         let mut app = mouse_double_click_mouse_mode_setup(forward_mouse);
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 30, 5));
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 30, 5));
@@ -22162,7 +22176,7 @@ not_a_real_action = ["x"]
             FocusPane::Center,
             "the clicks still focus the pane"
         );
-        if forward_mouse {
+        if forward_mouse == MouseForward::ToChild {
             assert_eq!(
                 app.fullscreen_overlay,
                 FullscreenOverlay::None,
@@ -22187,7 +22201,7 @@ not_a_real_action = ["x"]
     /// every byte the child receives in caret notation, so the child's own
     /// grid is the proof of what was forwarded.
     fn install_mouse_forward_child(app: &mut App, decsets: &str) {
-        pin_forward_mouse(app, true);
+        pin_forward_mouse(app, MouseForward::ToChild);
         let slot_tab = app.engine.sessions[0].slot_tab_id().to_string();
         let cmd = format!("stty raw -echo; printf '{decsets}'; exec cat -v");
         let client = PtyClient::spawn(
@@ -22227,7 +22241,7 @@ not_a_real_action = ["x"]
     /// fixture provider (codex) ships `forward_mouse = false`, which holds a
     /// plain left press back for yaran's selection; the windowed forwarding
     /// tests exercise a provider that forwards it.
-    fn pin_forward_mouse(app: &mut App, forward: bool) {
+    fn pin_forward_mouse(app: &mut App, forward: MouseForward) {
         let provider = app.engine.sessions[0].provider.as_str().to_string();
         app.engine
             .config
@@ -22238,7 +22252,7 @@ not_a_real_action = ["x"]
                 command: provider,
                 ..Default::default()
             })
-            .forward_mouse = Some(forward);
+            .forward_mouse = Some(forward == MouseForward::ToChild);
     }
 
     fn forwarded_echo(app: &App) -> String {
@@ -23853,7 +23867,7 @@ not_a_real_action = ["x"]
     #[test]
     fn release_is_not_written_when_the_child_dropped_mouse_mode_mid_drag() {
         let mut app = test_app(default_bindings());
-        pin_forward_mouse(&mut app, true);
+        pin_forward_mouse(&mut app, MouseForward::ToChild);
         let slot_tab = app.engine.sessions[0].slot_tab_id().to_string();
         // Enable tracking, swallow the 10-byte press report, then DISABLE
         // tracking, then echo everything else: the release (if wrongly
