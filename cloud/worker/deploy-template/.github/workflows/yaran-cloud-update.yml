@@ -1,0 +1,51 @@
+# Opens a pull request that updates this yaran control plane to the newest yaran-cloud release.
+#
+# Weekly and on demand. Verifies the release tarball's SHA-256 and its GitHub provenance
+# attestation before touching anything, replaces only the files yaran owns, keeps your
+# Wrangler values, and opens a pull request. Merging it deploys (migrations first).
+#
+# Needs: Settings > Actions > General > "Allow GitHub Actions to create and approve pull
+# requests", and optionally the repository variable YARAN_CONTROL_PLANE_URL.
+name: yaran-cloud-update
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to update to (empty for the newest)"
+        required: false
+permissions:
+  contents: write
+  pull-requests: write
+  attestations: read
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Prepare the update branch
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          YARAN_CONTROL_PLANE_URL: ${{ vars.YARAN_CONTROL_PLANE_URL }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/update/update.ts --attest --version "$VERSION" --github-output "$GITHUB_OUTPUT"
+      - name: Open the pull request
+        if: steps.update.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.update.outputs.branch }}
+          TITLE: ${{ steps.update.outputs.title }}
+          BODY_FILE: ${{ steps.update.outputs.body_file }}
+        run: |
+          git push --force-with-lease origin "$BRANCH"
+          gh pr create --head "$BRANCH" --title "$TITLE" --body-file "$BODY_FILE" \
+            || { echo "::error::Creating the pull request was refused. Turn on Settings > Actions > General > Allow GitHub Actions to create and approve pull requests, then re-run this workflow."; exit 1; }

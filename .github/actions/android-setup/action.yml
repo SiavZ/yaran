@@ -1,0 +1,50 @@
+# Android build setup shared by every Android CI and release job (phone-app plan, Phase 18).
+#
+# Loads mobile/toolchain.env into the job environment, installs the pinned Node, JDK
+# and Gradle (wrapper validated first, so a tampered gradle-wrapper.jar never runs),
+# makes sure build-tools ANDROID_BUILD_TOOLS (apksigner 34) is present and puts it on
+# PATH, then builds the web shell and syncs it into the Android project.
+name: Android setup
+description: Toolchain pins, Gradle wrapper validation, web build and cap sync android.
+inputs:
+  root:
+    description: Checkout directory to set up (the reproducibility job uses two).
+    default: "."
+runs:
+  using: composite
+  steps:
+    - name: Load toolchain pins
+      shell: bash
+      run: grep -E '^[A-Z0-9_]+=' "${{ inputs.root }}/mobile/toolchain.env" >> "$GITHUB_ENV"
+
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      with:
+        node-version-file: ${{ inputs.root }}/.node-version
+
+    - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      with:
+        distribution: temurin
+        java-version: ${{ env.JAVA_VERSION }}
+
+    - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+    - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+    - name: Build-tools ${{ env.ANDROID_BUILD_TOOLS }} (apksigner) on PATH
+      shell: bash
+      run: |
+        set -euo pipefail
+        bt="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS"
+        [ -x "$bt/apksigner" ] || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$ANDROID_BUILD_TOOLS"
+        echo "$bt" >> "$GITHUB_PATH"
+
+    # file: dependencies do not install their own dependencies: link targets go first.
+    - name: Web build and cap sync android
+      shell: bash
+      working-directory: ${{ inputs.root }}
+      run: |
+        set -euo pipefail
+        for d in cloud/protocol packages/ui-kit mobile/plugins/*/ mobile/app; do
+          if [ -f "$d/package-lock.json" ]; then npm ci --prefix "$d"; fi
+        done
+        cd mobile/app && npm run build && npx cap sync android

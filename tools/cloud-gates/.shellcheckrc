@@ -1,0 +1,6 @@
+# Gate scripts share state through sourced libraries (variables set in one file
+# are read in another), keep perl/jq programs in single quotes on purpose, use
+# `a && ok || fail` where the middle command cannot fail, and
+# read GATE_* settings from the operator's environment (env.example).
+external-sources=true
+disable=SC2034,SC2016,SC2153,SC2015

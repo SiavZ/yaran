@@ -14,6 +14,31 @@
 //! A status the terminal UI sets by hand stays on its own status line; a status
 //! carried by a drained worker event crosses the seam and reaches browsers too.
 //! Web-originated statuses stay scoped per connection, decided in `handle_request`.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! background.rs
+//! ├── cloud_mode
+//! ├── console
+//! ├── crate
+//! ├── engine_actor
+//! ├── ownership_publish
+//! ├── serve_legs
+//! ├── test_support
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::leg_identity
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::logger
+//! └── yaran-core::worker
+//! External: anyhow, std, tempfile
+//!
+//! Used by:
+//! background.rs
+//! ├── crate
+//! ├── yaran-web[test background_serve_claims]
+//! └── yaran[bin yaran]::companion
+//! <module-headers:end>
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -113,6 +138,7 @@ impl BackgroundServer {
             handle,
             listeners,
             &engine.config,
+            &engine.paths.root,
             console,
             // The access log would print to a console that writes nowhere, and it
             // is never wanted over a terminal UI's frame regardless.
@@ -182,6 +208,26 @@ impl BackgroundServer {
                 let _ = worker_tx
                     .send(yaran_core::worker::WorkerEvent::TailscaleModeApplied { mode, outcome });
             });
+    }
+
+    /// Ask this serve to change `[cloud] mode`, reporting through the terminal UI's
+    /// worker event lane (never blocks, like `set_tailscale_mode`).
+    pub fn set_cloud_mode(
+        &self,
+        mode: yaran_core::cloud::leg_identity::CloudMode,
+        worker_tx: std::sync::mpsc::Sender<yaran_core::worker::WorkerEvent>,
+    ) {
+        self.core
+            .cloud_mode()
+            .set_mode_detached(mode, move |outcome| {
+                let _ = worker_tx
+                    .send(yaran_core::worker::WorkerEvent::CloudModeApplied { mode, outcome });
+            });
+    }
+
+    /// This serve's cloud lane (view snapshot, settings changes).
+    pub fn cloud_mode(&self) -> &crate::cloud_mode::CloudModeControl {
+        self.core.cloud_mode()
     }
 
     /// Stop serving and release everything, bounded. Returns the first listener

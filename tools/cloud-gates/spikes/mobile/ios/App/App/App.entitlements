@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- G4: APNs sandbox. -->
+	<key>aps-environment</key>
+	<string>development</string>
+	<!-- G13: applinks for Universal Links, webcredentials for ASWebAuthenticationSession .https.
+	     The host is the GATE_CALLBACK_HOST build setting (gate.xcconfig); no real domain here.
+	     G13 asks for one run WITHOUT webcredentials: delete that line for that run only. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:$(GATE_CALLBACK_HOST)</string>
+		<string>webcredentials:$(GATE_CALLBACK_HOST)</string>
+	</array>
+</dict>
+</plist>

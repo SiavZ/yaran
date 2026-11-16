@@ -1,0 +1,32 @@
+{
+  "type": "Timestamp",
+  "schema": "common.schema.json#/$defs/Timestamp",
+  "valid": [
+    {
+      "name": "utc seconds",
+      "value": "2026-11-14T12:00:00Z"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "fractional seconds",
+      "keyword": "pattern",
+      "value": "2026-11-14T12:00:00.123Z"
+    },
+    {
+      "name": "offset",
+      "keyword": "pattern",
+      "value": "2026-11-14T12:00:00+01:00"
+    },
+    {
+      "name": "date only",
+      "keyword": "pattern",
+      "value": "2026-11-14"
+    },
+    {
+      "name": "month 13",
+      "keyword": "format",
+      "value": "2026-13-14T12:00:00Z"
+    }
+  ]
+}

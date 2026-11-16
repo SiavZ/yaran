@@ -24,8 +24,9 @@ function walk(dir: string): string[] {
 const PROSE_IMPORT = /from\s+["'](?:\.\/prose|@\/lib\/prose)["']/
 
 // A file that renders a modal imports one of the two dialog primitives, which
-// finds a modal whose file is not named like one.
-const DIALOG_IMPORT = /from\s+["']@\/components\/ui\/(?:alert-)?dialog["']/
+// finds a modal whose file is not named like one. The dialog lives in the shared
+// kit (`@yaran/ui-kit/dialog`); an alert dialog would still be vendored locally.
+const DIALOG_IMPORT = /from\s+["'](?:@\/components\/ui|@yaran\/ui-kit)\/(?:alert-)?dialog["']/
 
 // Which files the guard reads, by rule rather than by list: every dialog under
 // components/ (subdirectories included), found by its name or by the dialog
@@ -218,7 +219,7 @@ describe("every name a modal shows is the shared chip", () => {
     expect(
       isScanned(
         "components/terminal/TakeOverCard.tsx",
-        'import { Dialog, DialogContent } from "@/components/ui/dialog"',
+        'import { Dialog, DialogContent } from "@yaran/ui-kit/dialog"',
       ),
     ).toBe(true)
     expect(

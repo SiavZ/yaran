@@ -1,0 +1,5 @@
+Yaran is the phone companion for yaran, the terminal orchestrator that runs AI coding agents, one per git worktree, on your own machine.
+
+Pair the app with a machine you run yaran on, then follow your agents from your phone: see which ones are working, which are waiting for you, and open a session to read its terminal and answer it.
+
+Yaran is free and open source under the MIT license.

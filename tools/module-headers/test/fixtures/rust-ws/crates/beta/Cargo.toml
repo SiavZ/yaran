@@ -1,0 +1,6 @@
+[package]
+name = "beta-app"
+version = "0.1.0"
+
+[dependencies]
+alpha-core = { path = "../alpha" }

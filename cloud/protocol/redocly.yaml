@@ -1,0 +1,9 @@
+extends:
+  - recommended-strict
+apis:
+  worker:
+    root: openapi/worker.openapi.yaml
+  yaran-machine:
+    root: openapi/yaran-machine.openapi.yaml
+  relay:
+    root: openapi/relay.openapi.yaml

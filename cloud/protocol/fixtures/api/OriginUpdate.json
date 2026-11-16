@@ -1,0 +1,34 @@
+{
+  "type": "OriginUpdate",
+  "schema": "machine.schema.json#/$defs/OriginUpdate",
+  "valid": [
+    {
+      "name": "port",
+      "value": {
+        "origin_port": 3891
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "port zero",
+      "keyword": "minimum",
+      "value": {
+        "origin_port": 0
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "origin_port": 1,
+        "extra": 1
+      }
+    },
+    {
+      "name": "empty",
+      "keyword": "required",
+      "value": {}
+    }
+  ]
+}

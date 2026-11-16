@@ -8,13 +8,13 @@ import { PaneActionCluster } from "@/components/PaneActionCluster"
 import { PaneMenu, type PaneMenuSubject } from "@/components/PaneMenu"
 import { PaneInputGroup } from "@/components/PaneInputGroup"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import { useIsCoarsePointer } from "@/hooks/use-coarse-pointer"
 import { usePrefersReducedMotion } from "@/hooks/use-reduced-motion"
 import { useTheaterPillFocus } from "@/hooks/use-theater"
@@ -50,7 +50,7 @@ import {
   type PillSize,
 } from "@/lib/theaterPill"
 import type { SessionView } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 import { theaterPillBox } from "./theaterPillBox"
 

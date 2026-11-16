@@ -1,7 +1,7 @@
-import { useRef, useState, useMemo, useCallback, useEffect } from "react"
+import { useRef, useState, useMemo, useCallback, useEffect, useLayoutEffect } from "react"
 import { ChevronRight, Loader2, RotateCw } from "lucide-react"
-import { cn } from "@/lib/utils"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { cn } from "@yaran/ui-kit/cn"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { FileStatusIcon } from "@/components/FileStatusIcon"
 import { FileTreeContextMenu } from "@/components/FileTreeContextMenu"
@@ -272,9 +272,9 @@ export function FileTree({
     dirsRef.current = dirs
   })
 
-  // The loaded directories, reported up for the caller's refresh policy. Only
-  // the resolved ones: a dir still loading, or errored, has no listing that a
-  // background refetch could keep.
+  // The loaded directories, reported up for the caller's refresh policy, in
+  // the commit that paints them (a revisit in that gap must not read a stale
+  // list). Only the resolved ones: a dir loading or errored has none to keep.
   const loadedDirsKey = useMemo(
     () =>
       JSON.stringify(
@@ -289,12 +289,12 @@ export function FileTree({
   // cannot re-fire these effects on every render of the editor.
   const onLoadedDirsChangeRef = useRef(onLoadedDirsChange)
   const onRefreshSettledRef = useRef(onRefreshSettled)
-  useEffect(() => {
+  useLayoutEffect(() => {
     onLoadedDirsChangeRef.current = onLoadedDirsChange
     onRefreshSettledRef.current = onRefreshSettled
   })
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     onLoadedDirsChangeRef.current?.(JSON.parse(loadedDirsKey) as string[])
   }, [loadedDirsKey])
 

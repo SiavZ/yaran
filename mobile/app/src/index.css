@@ -1,0 +1,22 @@
+/* The phone app shell's styles: Tailwind v4 over the shared @yaran/ui-kit tokens (dark-only). */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/geist";
+@import "@yaran/ui-kit/theme.css";
+
+@source "../node_modules/@yaran/ui-kit/src";
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    /* iOS: rem units follow Dynamic Type (UNVERIFIED on device; Phase 19). Android sets textZoom natively. */
+    font: -apple-system-body;
+    font-family: var(--font-sans);
+  }
+  body {
+    @apply bg-background text-foreground;
+    -webkit-tap-highlight-color: transparent;
+  }
+}

@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -6,7 +6,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@yaran/ui-kit/dialog"
 import { removeProjectProse } from "@/lib/projectConfirm"
 import { renderProse } from "@/lib/prose"
 import { closeRemoveProject, removeProject, useYaran } from "@/lib/store"

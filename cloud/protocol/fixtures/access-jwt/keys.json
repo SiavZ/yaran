@@ -1,0 +1,61 @@
+{
+  "description": "SYNTHETIC RSA-2048 test keys for the access-jwt fixtures. Never used anywhere real.",
+  "keys": [
+    {
+      "kty": "RSA",
+      "n": "ziEIWuEzhUO4dJN8tBdonOFDcJDNwzD-VJL3qoSC3PTxAx4oQhkNJqcnKYfCdmgICzCgM4fkMyhenILkxpESsO9dFKaNjXnDdk9DlAQ7nqPmWvSinYJ14Lp9ENSzIDuWMNGG8y9M0zyuvg36c7uA82vYUMfYlPzaOOxr9waD9RYMe5rxSeGI0QeWUFiHlhXCTSxn7A6WTcmaGaepF1cB6_cqVW33UY-l2DITEPtOxt7Hw7K27nqo02uGtfWa4ly26Ce8zTQq-HdF7ADIEE7kG6H1hEVlhqo01Nj9O_cdPKYoE9B8WWmq9D3Nq6kC0Rz5Gy9OuNbgZeztyABTxMJ4ow",
+      "e": "AQAB",
+      "d": "CwZr8qXGTQPI7eilluGu-r_MYkzxydWTr4-yJ4YG6dfqvDFKE0mmZmwyWrT5ixPCumEoxcN9n9mHlfTPqmnqsgQGL9XouanK8Ue0DvVbAFU2kPmHaR1Sk2k7dJcBLbbXhazvUY_fcBJNgQ-GVy0EQgDWr8YV_iy4D1YLQEnc7P2JpTiA32uzuFJg3Z2PGVo3D3Ea7scLLA4smUOiwJtGU-SvvDfqsN7182XqkflNE_f23BW_LqVNxPoxOkQnQFcO05OSL_2vIIfh2flpPH2TzTWBnWdaWWXaa83EQ1lV38ZQwR4lZXCizm1bz0Vhf2FKsEPydUqnjeJaNBiQbHG-YQ",
+      "p": "8ZY2OHDP8BrxPIuDG6YBbeNPZwi_gfGLc59Cu87RnTQJ625rTJwb1DihmMSS5E-zStLN5cFw4R118sYQAYAFR6IsWV5Nvau_w-MIRjDoOJvz_EjpJaietzb7jRJNY4oWU1SoaO27vltq-vcznLCijABb0_8irFldQ445ALoL5O8",
+      "q": "2m1FHe3dd09M5Dy4cu5T-65OXqtFZPSiZjPgl6wuzqBWJWvbHVwJ3PD63Nm1glO_GO7N_MV-HQoxG6Ub69M5y8hKOybaBv24Z7SZn7m0vmF-vCjivjSxuUi-wo7qAE-dU9zvtOY5WQtTMf1OS5XOgT7CiCuNSetQdj5AIRyqr40",
+      "dp": "BqV2Smk4H0fueRbxfXI8udQ2HASOmDmX949bG6Wd-LA00ahRBWOKFHWWZIiL7gIPUbCo_3gp7deMpigyyofGHWllxPOmOeCevvnhAWVZDi2kMb2jxGh2LV4y33ewb1ueL561n2Vi8-K597uTTO1DG4zq-dMcFhfDTBd-k_mKWDs",
+      "dq": "rqVp-zlCt-_3KhMG5BZ9niJL1VQaY1NbOl7GeF-a-WmoF7m6dCowVLF10_pbL_6oMFZY64A5ixyoEVOeFJxKfQ8Dk3JIKAjcVkdIAjdpNkQcInSKf80AQYbRyByfK2p9AB4Kp9jhB7qPZcwEu1jnyd2Vi21PRkhZiIHTouYZ780",
+      "qi": "hiHkM6sjoqvxmLSmdebuUVLvxkeIWl8CSKsIlBrgRPyttKxf7A8ZOTwVIXO94hfEICiizKTZMAzVyK31cXStyy5QagCo05swJhcF0WWhUrY5Lq2m_HLKzH73vkLj8Sc3Pm2yXqeenVyPR7E_PG30wFyIktx7iYRDj0VcBt4N9M8",
+      "kid": "fixture-current",
+      "alg": "RS256",
+      "use": "sig"
+    },
+    {
+      "kty": "RSA",
+      "n": "xXpFiqexQziZcz5q2qpdEioSy2-thLh7xqdvp6fRnppINKmMVH1moxGht7Gp2LmR0QftmOfmtOtos8Uj_NhDwerpRZucsRb9i6lhUQcKoF5gyKvPpZokLZ_AC1uGkqza2v9frd5A_tLr23XNXpQA5ZhiDuUSJsAopy2xiQ3C6U5mr6Ktz6TjodKz7Nha8xjA6tnvVAqQC-HLVp9S2_ly9K80PGjs3JkAk5Y3pjRwTH0wpF3GtpEq3GKjSjIW0ogfgIc8X5BrArQBUNkfX6xqbcaLVBuZAHN_4DvxTXFwbFF2_1C2Qz_iCx0LbYC22wkfpMq0lLRr3vWIivPSbvepBQ",
+      "e": "AQAB",
+      "d": "I3m19PTvl_0aufSAUyRwQFNdGX1IPXO7zqHlIcf41QZvysAbpND7R3ejJuIMelHJ43SKZyHf1OgGYOcdMi6yq2s1OUs9cKXJ6hVFVX5PlyQlPF97F8uTTLvqTtAEIqTZUya1zEEFSZHgC4aD3IX3jEdd9EGMC3iRRQklH9MgTPN2pF2dvPvTVqvAZZHrNUb8OcDVhosA8QKhtTmL4bbujOMp28FLHrHm2OhzoRbQ4Il189lxBZ0CugVnOVnSTDPoh3CPYYHdhMDG3CVGrwebJ9L5jgLgzTT1NTG03diSpW9T_Rg4AVMBiHkfRFLylZHI7Gj60Su5QNHkg9DERIYLkQ",
+      "p": "-sksmvFw-PhtTxvp7iS_fAFY3yqOnwp21AD7AlZjv23SvnpYDNEoD4i4fGNDYfJAqI_OH3EY8Ljnh_cBhXZOB6XoUqiUdqOyv-EGlnVN1Uw6QnB-rF4Nw14FI8EVmaayrGhUV0ffSqCVyiqGzwGu65oOu4JtER5nHdacGE06uzU",
+      "q": "yZVcT1uyt2e-L1AeAvkEe6dGgsMbOTkiwn_NxH6LMAhaqdkcickhufwck65C6E2ma6-_FfQhGJpXwDHklbr2QzRRsTowV1vqjsFl9XYc-eq-iy039Y2WhttgyMNuxdw37_83tXPJHnWAFyZS0z2XL2EF2AyvJCmSffRVz9C5IJE",
+      "dp": "7aM1njjNGU6mncDQoXW28PWB1i5IaRIMWYX4VFWyPVH-0bmyt6p18IpYbp3M2wIoHNHvusF7pZdA5gi8K1BYTkz64WCXFfi2R7YefPH45_ZMemqIziJtnkP4UNIE-s0IH_DYgsA7KUcTyTcU-REaRGx-K1ZCrWcGxTJ4RVrhHUU",
+      "dq": "iIQ1Sq0gICMK4oHQgVThG1jSYLX_FsbB6pSg5oSIgJP3ynT1Zb6nr4u0UrM-LpJ_tQgFUbnOPBoyeT-QvXIrWqHw_SQaHt9pvxnskcpWn03BkwGhlxM3MMcbCXuI5khYPZlKwgDS4GTUxVi32MUqQPTk_0a_ya65vcEd6CpDZXE",
+      "qi": "JYBoHIJceCcmJccZwZqlhrGhEJ9fC-FXg_v9H89rpXnVhoeo2BFfJM04P035VqB7DEKsKz2H2V-ocT2yEIPD3g3SH2kc5hPQsmZH9Y6mirBw_CllaZmMdw9fiPCrXRaraMJiaMfCfv5rpW9uiRzKbVPE_95bQMj2cSIvv2oAFNo",
+      "kid": "fixture-previous",
+      "alg": "RS256",
+      "use": "sig"
+    },
+    {
+      "kty": "RSA",
+      "n": "vHyhbhQpUUe8JoriehOCou3H1-Pb4mvO5J76OV7-Q43yDhYFfDWpEas6e45ci5LCihp46m5Bzobcj5cMgJadCtmmCh85XuOJ1VeP4DNKAv5xoUF8d9LSW-oXUQuLdhglZ3VlX3iPNVl5mq9VjQmKfEAuWZ3nf7JcGLz9dPCzXKaIZ2z2YRRGpR6l2ndt0pgq1MDgRwlEeYpgc5QrNWjy_VWSQ_blKeHJfGgih9caqmsYEJgeZHn3gL6ugPRT2UOUUoXYpRBBiCdvgh_LnA-81Z3JvjUe_hSzcTHt8CvHbSWkD3ZzjlZRcfvmrbh--x_gv-47BvBh_o9DulTBV0Cv8Q",
+      "e": "AQAB",
+      "d": "BhibUX-8Lt1stcvp44QgRmP9octENDRjrIQCSIr8mwN7I869Rm1HXrOMqIycDGUWnugYh0-B2BvHRCsg28NTSLOtobftD3c5QOHMPNZ30zU2yF4BeDAkvtWJQ8UlcXA6PHiA6vevnQx76P94-z7m4FokjaA0aa5DeYbaRTcYO_u2IGexSaPHErap64ORuLU_nLQHM3e8vbVGLrj8rL-o0HdY4mT-AVo6s-iHiIYTv_d0-I9igUs54ntFXGb-aHQeor_wl4OAK6PZi1js5MF0LXrvUmkwyLz3K1c-yCdMwGTM1hvTqnTQeATQsSkd5V6aMfewM4GH9Xw_tultyw4_wQ",
+      "p": "7BoCnKiNJ0pdbHh9keKBVtnBxqH3v0S4yc1HZwNg9JazmG1Cagp8Op5gSYTtFQgOl7TClJxgTBcP3MmLoXDk_7qNkb1bu5Ary7-aa-Mf-VLeakJBVzmx7UlQvfLEgxyFPCoGxQr1gQjtY_KI9_5xC7ajSoLkcdYOkal9-5VJjGE",
+      "q": "zF9P6E1YpK1h3tMRqztKfyQecCLVf-YWAZjjaq_epolGpFhnOf9wLgDcklX6yrxJwiofO-PCoPxkVaDXZV--51dM2r2agQeyTmw-yAk18VKx_aD_stIzG96rYcrCFjsIGDHtnjRVJzVI8NoJbkKBvqOVSXlgDDyWOt7dmg2_TZE",
+      "dp": "D66Wl9M2NPLii67hIEx8LMmf7lKZwxGMeJLy-CuoR_aujSRMsgBqSfZ1DM0QdkInvfnapsZQOx2ZByA37wwxma7JcnGyYx3rWsgqOJpIaGYRsdseve1uHQWuoD88wDynuNxNwM6-iciPBAF7CYXT-mQyKmPRSqJeK1ynqos67GE",
+      "dq": "Xq21HiBe9YNhONI9eD8yhu4br8VjdSoJfdnvWSh6lFo6QL63q7W7qYQ6qwxr7-oEnY_YAm3EZ8IlVUn7H3qYvSHDd_6oiigfoZciCpfBxreRv7cLXjNk-_9PFDHTcmsMl_DhbQ4_eLeFwBaykcL7ym6MJYq2RVT4H_PJY6oEuxE",
+      "qi": "jmx8flrvH25QEb2X9ljOKLqlIZ9iXl0eX_BxFN_XGUWxQAucdsYc6xiwtEchFawMGwIoEWOuWkN6wMg-r2hgjZbvI8OOJwcru1Vsd4dToFFVyKAauPOrMV7Y0PUxqEaYrtWwvkMhiCH0YSplP48cci9o9cwZ3minSCTCIkU8rf0",
+      "kid": "fixture-rotated",
+      "alg": "RS256",
+      "use": "sig"
+    },
+    {
+      "kty": "RSA",
+      "n": "y4_HqDRSHL1oUo6dCYzqHg59wCU-ITirgOFiWF6e6pUqm36I9dsLL4B9L4QVECPQB_g0XR9khbnkDs5KwZtPknaKZGyKk6RPKUVw5VAeXhWV_ePtyRnUGEjSzgOJCGhelLAT2PKWEPjdeS2Ri9aCzoRT5A6AMgXoYpv-HCuX3wd0eE704WeW-n89tIbjDstaJs_oKugkKXXd3MIDnKT73Foy0afwVAraL3D6dLnbGFfcGc4GgKmiUnlsFJG_n-MY2fERhFBANFgfgnA7Li9-t_DIl2j9xDcgl9P2qMxwBg-MLoSxjzbuBFhOS7I9ifyVF17pYSox0dJscKa1ymhvGw",
+      "e": "AQAB",
+      "d": "AcoqbWsp8ackqXbBhxnEqsdiPNpwkmaaJp1UrQXTJdxyR6dNv8OeQVupPhq0lYC-TbBvKjmiO57BYSclKlCZ2xkzT32FnMiycK1z0aa24NYVv7az54AhO9ls3EAIG2Y3g3bADFJ0FhzqByyEZBNaiqnh-iMg5px9fFupjBV1PCu9MTJrD3vGyYGcrbDAH4prjSPLFQYWUtIr0sbq6J2CKyVn_kxnW8hQe_cSpTXsqs0Wqb6tXtRPDm0R8zN4r5AXeIRXmcBuwfGJasSBNrUmdpoNN2Syo5YPgp-qDeWmPk4y9EQEj8U2M7ZiMPZOYWejszJ-DXYgvmcW464nTNLk8Q",
+      "p": "7C9jKCHlFbVjrDUvwf0qjxpe1WjccreS8ix2oP5QPLcDfRc05ji1_0U56Ubd6GaTKvBQ1wLx9_kNzwOKmP5bAmA18YelxZCAcFTj3jPXV4B1ZOhXbw0zgN4FcWHBOOaivJm0sH5OLBE6zAt1SIfB_DMWvo1VUyFLU79mq-lrpJk",
+      "q": "3KO6uYJyqCcptBtF-ThOeEAugkRp_rQLJ1Xc_EiqDr0H1LF52zIitaXnAFkOvYBiB_Yn1KF99V_ZzuJeMXTYlAcv68kdDrAm39NkYqjJ54beuYAwjfd7GFuKJ3XqL8SBIgNGh1X2uHm92fpaN4OY6vrxr7DUgxuWQBHonGp0DdM",
+      "dp": "XSB-N4fN3VZtW6yJDTN2wYBDXmB_c9hAX676g5ZjKt16yasJ17EKygGQyROBUi6H3sltBqqJoB4avMKHtrWsSu6Gtpqm2ZSVoDVIuAe25DCpmUUnnIkXArwIZ2GFH5uJFVaB8YmL50JP7b6i2xt0eK3oTPBLcYDSQ85XfHeIUxk",
+      "dq": "iHk5sS9P7lSzBfVstbevSdAhNHBOw73nvD_u_ZmQnqcr5dKVFhEPyR3CIcP0SyDTAiuu_WWafKD6H26DZsHoiL9dU9HFCGXK1d1ylVfj8zLIJyN0ZQuz9x__92KHJV69pSUzhdiVUAv1c5PYI8hhWM85mTueZy40JJMvNzjdagM",
+      "qi": "OTkQt-Z-ltT4qsL8soTbZNRJg8VPf9R0DE_wMgnKUcWdZ_awIVeER7y_yr0N3CxE8z2Fq8rqP6si_S6F2CxX2rVWIUxnQ5Ho4eF2K8X72uhpYmvXHXKa94CJGEXdfifnX4JVBfhQVW5uSiB7Iml5Zrug556MvGFIUSv0LpTdP8c",
+      "kid": "fixture-unpublished",
+      "alg": "RS256",
+      "use": "sig"
+    }
+  ]
+}

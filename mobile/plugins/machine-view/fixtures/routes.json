@@ -1,0 +1,153 @@
+{
+  "description": "Agent route accepted by MachineView.open (store.ts parseRoute grammar, restricted): #/agent/<seg> with an optional /tab/<seg>. A raw segment is 1+ of [A-Za-z0-9-_.!~*'()] or %XX; the percent-decoded segment must be 1-128 bytes of printable ASCII (0x20-0x7E, YaranId).",
+  "cases": [
+    {
+      "route": "#/agent/abc",
+      "expect": true
+    },
+    {
+      "route": "#/agent/abc/tab/t1",
+      "expect": true
+    },
+    {
+      "route": "#/agent/a.b_c-d~e",
+      "expect": true
+    },
+    {
+      "route": "#/agent/sess%20one",
+      "expect": true
+    },
+    {
+      "route": "#/agent/sess%2Fslash/tab/t%2F2",
+      "expect": true
+    },
+    {
+      "route": "#/agent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect": true
+    },
+    {
+      "route": "#/agent/(x)!*'",
+      "expect": true
+    },
+    {
+      "route": "#/agent/1/tab/2",
+      "expect": true
+    },
+    {
+      "route": "#/agent/%7E",
+      "expect": true
+    },
+    {
+      "route": "",
+      "expect": false
+    },
+    {
+      "route": "#/agent/",
+      "expect": false
+    },
+    {
+      "route": "#/agent",
+      "expect": false
+    },
+    {
+      "route": "#/agent//tab/x",
+      "expect": false
+    },
+    {
+      "route": "#/agent/abc/tab/",
+      "expect": false
+    },
+    {
+      "route": "#/agent/abc/tab",
+      "expect": false
+    },
+    {
+      "route": "#/agent/abc/terminal/t1",
+      "expect": false
+    },
+    {
+      "route": "#/agent/abc/tab/t1/extra",
+      "expect": false
+    },
+    {
+      "route": "#/project/p/terminal/t",
+      "expect": false
+    },
+    {
+      "route": "#/terminal/t",
+      "expect": false
+    },
+    {
+      "route": "#agent/abc",
+      "expect": false
+    },
+    {
+      "route": "/#/agent/abc",
+      "expect": false
+    },
+    {
+      "route": "#/agent/a b",
+      "expect": false
+    },
+    {
+      "route": "#/agent/a/b",
+      "expect": false
+    },
+    {
+      "route": "#/agent/%ZZ",
+      "expect": false
+    },
+    {
+      "route": "#/agent/%2",
+      "expect": false
+    },
+    {
+      "route": "#/agent/%00",
+      "expect": false
+    },
+    {
+      "route": "#/agent/%0A",
+      "expect": false
+    },
+    {
+      "route": "#/agent/%7F",
+      "expect": false
+    },
+    {
+      "route": "#/agent/%C3%A9",
+      "expect": false
+    },
+    {
+      "route": "#/agent/é",
+      "expect": false
+    },
+    {
+      "route": "#/agent/abc?x=1",
+      "expect": false
+    },
+    {
+      "route": "#/agent/abc#x",
+      "expect": false
+    },
+    {
+      "route": "#/agent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect": false
+    },
+    {
+      "route": "#/Agent/abc",
+      "expect": false
+    },
+    {
+      "route": "#/agent/abc/TAB/t1",
+      "expect": false
+    },
+    {
+      "route": "javascript:alert(1)",
+      "expect": false
+    },
+    {
+      "route": "#/agent/<script>",
+      "expect": false
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "description": "DeviceKeyFingerprint (Design §8.1): the §7.1 construction with its own tag over the 65-byte point; fp24 is the cookie form.",
+  "tag": "yaran-device-key-v1\n",
+  "cases": [
+    {
+      "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+      "dk_hex": "04a5253d48fbece46a10548495568513b7e05c15a0c118f2f4e63b7a05fd0d41edcd01be2bcebc7b09ae422e65d14ff46e91399c7b70bfc93713bf3d0fb2077284",
+      "digest_hex": "d1499cca7ff7e903fdcacdd5a7b08054d3d7311945f6f861e208a078f9f93929",
+      "fp24": "2FEZZST767UQH7OKZXK2PMEA",
+      "fingerprint": "2FEZ-ZST7-67UQ-H7OK-ZXK2-PMEA"
+    },
+    {
+      "dk": "BH1BPqHKo_nFUt-jK6EebKxsI7GzDOJsrf9US4o_9oTPFGeDa949bx5A6E6Sa_gNaXap_n70GlfX4rVfxA-_4O8",
+      "dk_hex": "047d413ea1caa3f9c552dfa32ba11e6cac6c23b1b30ce26cadff544b8a3ff684cf1467836bde3d6f1e40e84e926bf80d6976a9fe7ef41a57d7e2b55fc40fbfe0ef",
+      "digest_hex": "743f2bb654be53d10116d10e1e3948a25bde0e23b72bdc31b289a14a428fe4ce",
+      "fp24": "OQ7SXNSUXZJ5CAIW2EHB4OKI",
+      "fingerprint": "OQ7S-XNSU-XZJ5-CAIW-2EHB-4OKI"
+    },
+    {
+      "dk": "BLJKJHvShB8vUbItCmtSGYoEOi87x9W6FuKKFD_znZ3MC-gdhdiIxaVqfwMw9mVZsUTRYw19G9mUK3UJsrWz8y4",
+      "dk_hex": "04b24a247bd2841f2f51b22d0a6b52198a043a2f3bc7d5ba16e28a143ff39d9dcc0be81d85d888c5a56a7f0330f66559b144d1630d7d1bd9942b7509b2b5b3f32e",
+      "digest_hex": "147b6adf771e6e5f4c2e3109c1a0306432609e5f907303f4fdf4c245eed9280f",
+      "fp24": "CR5WVX3XDZXF6TBOGEE4DIBQ",
+      "fingerprint": "CR5W-VX3X-DZXF-6TBO-GEE4-DIBQ"
+    }
+  ]
+}

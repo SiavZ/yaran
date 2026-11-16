@@ -2,7 +2,7 @@ import { GitPullRequest } from "lucide-react"
 
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { prBannerClass, prStateLabel } from "@/lib/pr"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import type { PrView } from "@/lib/types"
 
 // A slim, one-line PR info strip mirroring the TUI's PR banner lane

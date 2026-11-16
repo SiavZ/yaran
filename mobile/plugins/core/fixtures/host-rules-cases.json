@@ -1,0 +1,307 @@
+{
+  "description": "HostRules cases (mobile/plugins/core). orgUrl: input -> {ok: canonical 02 OrgUrl} or {refused: code}. host: input -> {ok: hostname} or {refused: code}. Read by the Kotlin, Swift and mobile/app TS suites.",
+  "orgUrl": [
+    {
+      "input": "https://cp.example.com",
+      "expect": {
+        "ok": "https://cp.example.com"
+      }
+    },
+    {
+      "input": "https://CP.Example.COM",
+      "expect": {
+        "ok": "https://cp.example.com"
+      }
+    },
+    {
+      "input": "HTTPS://cp.example.com",
+      "expect": {
+        "ok": "https://cp.example.com"
+      }
+    },
+    {
+      "input": "https://cp.example.com/",
+      "expect": {
+        "ok": "https://cp.example.com"
+      }
+    },
+    {
+      "input": "https://cp.example.com:443",
+      "expect": {
+        "ok": "https://cp.example.com"
+      }
+    },
+    {
+      "input": "https://cp.example.com:443/",
+      "expect": {
+        "ok": "https://cp.example.com"
+      }
+    },
+    {
+      "input": "https://yaran.cp.example.org",
+      "expect": {
+        "ok": "https://yaran.cp.example.org"
+      }
+    },
+    {
+      "input": "  https://cp.example.com  ",
+      "expect": {
+        "ok": "https://cp.example.com"
+      }
+    },
+    {
+      "input": "",
+      "expect": {
+        "refused": "empty"
+      }
+    },
+    {
+      "input": "   ",
+      "expect": {
+        "refused": "empty"
+      }
+    },
+    {
+      "input": "http://cp.example.com",
+      "expect": {
+        "refused": "not_https"
+      }
+    },
+    {
+      "input": "ftp://cp.example.com",
+      "expect": {
+        "refused": "not_https"
+      }
+    },
+    {
+      "input": "cp.example.com",
+      "expect": {
+        "refused": "not_https"
+      }
+    },
+    {
+      "input": "javascript:alert(1)",
+      "expect": {
+        "refused": "not_https"
+      }
+    },
+    {
+      "input": "https://user@cp.example.com",
+      "expect": {
+        "refused": "userinfo"
+      }
+    },
+    {
+      "input": "https://user:pw@cp.example.com",
+      "expect": {
+        "refused": "userinfo"
+      }
+    },
+    {
+      "input": "https://cp.example.com@evil.example",
+      "expect": {
+        "refused": "userinfo"
+      }
+    },
+    {
+      "input": "https://192.168.1.10",
+      "expect": {
+        "refused": "ip_literal"
+      }
+    },
+    {
+      "input": "https://1.2.3",
+      "expect": {
+        "refused": "ip_literal"
+      }
+    },
+    {
+      "input": "https://[::1]",
+      "expect": {
+        "refused": "ip_literal"
+      }
+    },
+    {
+      "input": "https://[2001:db8::1]:443",
+      "expect": {
+        "refused": "ip_literal"
+      }
+    },
+    {
+      "input": "https://xn--80ak6aa92e.com",
+      "expect": {
+        "refused": "idn"
+      }
+    },
+    {
+      "input": "https://аpple.com",
+      "expect": {
+        "refused": "idn"
+      }
+    },
+    {
+      "input": "https://cp.exämple.com",
+      "expect": {
+        "refused": "idn"
+      }
+    },
+    {
+      "input": "https://cp.example.com:8443",
+      "expect": {
+        "refused": "port"
+      }
+    },
+    {
+      "input": "https://cp.example.com:",
+      "expect": {
+        "refused": "port"
+      }
+    },
+    {
+      "input": "https://cp.example.com/org",
+      "expect": {
+        "refused": "path"
+      }
+    },
+    {
+      "input": "https://cp.example.com//",
+      "expect": {
+        "refused": "path"
+      }
+    },
+    {
+      "input": "https://cp.example.com?x=1",
+      "expect": {
+        "refused": "query"
+      }
+    },
+    {
+      "input": "https://cp.example.com/?x=1",
+      "expect": {
+        "refused": "query"
+      }
+    },
+    {
+      "input": "https://cp.example.com#frag",
+      "expect": {
+        "refused": "fragment"
+      }
+    },
+    {
+      "input": "https://localhost",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "https://-cp.example.com",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "https://cp_x.example.com",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "https://cp.example.c0m",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "https://",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "https://cp..example.com",
+      "expect": {
+        "refused": "invalid"
+      }
+    }
+  ],
+  "host": [
+    {
+      "input": "m1.example.com",
+      "expect": {
+        "ok": "m1.example.com"
+      }
+    },
+    {
+      "input": "M1.Example.com",
+      "expect": {
+        "ok": "m1.example.com"
+      }
+    },
+    {
+      "input": "",
+      "expect": {
+        "refused": "empty"
+      }
+    },
+    {
+      "input": "https://m1.example.com",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "m1.example.com:443",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "m1.example.com/x",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "user@m1.example.com",
+      "expect": {
+        "refused": "userinfo"
+      }
+    },
+    {
+      "input": "10.0.0.1",
+      "expect": {
+        "refused": "ip_literal"
+      }
+    },
+    {
+      "input": "[::1]",
+      "expect": {
+        "refused": "ip_literal"
+      }
+    },
+    {
+      "input": "xn--80ak6aa92e.com",
+      "expect": {
+        "refused": "idn"
+      }
+    },
+    {
+      "input": "mä.example.com",
+      "expect": {
+        "refused": "idn"
+      }
+    },
+    {
+      "input": "localhost",
+      "expect": {
+        "refused": "invalid"
+      }
+    },
+    {
+      "input": "m1..example.com",
+      "expect": {
+        "refused": "invalid"
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 import { act, cleanup, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeAll, describe, expect, it } from "vitest"
 
-import { Toaster } from "@/components/ui/sonner"
+import { Toaster } from "@yaran/ui-kit/sonner"
 
 import { chip, quotedChip } from "./prose"
 import { notifyBusy, notifyError, notifyStatus, setStatusClearSeconds } from "./notify"

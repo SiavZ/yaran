@@ -1,3 +1,255 @@
+/**
+ * The web UI's global store: connection, view model and UI state.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/lib/store.ts
+ * ├── @yaran/ui-kit:src/use-mobile.ts
+ * ├── src/lib/agentName.ts
+ * ├── src/lib/agentTabs.ts
+ * ├── src/lib/agentWorkspace.ts
+ * ├── src/lib/appSocketGiveUp.ts
+ * ├── src/lib/assertNever.ts
+ * ├── src/lib/attention.ts
+ * ├── src/lib/bootstrapApi.ts
+ * ├── src/lib/browseApi.ts
+ * ├── src/lib/buildApi.ts
+ * ├── src/lib/changesApi.ts
+ * ├── src/lib/composeInsert.ts
+ * ├── src/lib/configApi.ts
+ * ├── src/lib/connection.ts
+ * ├── src/lib/connectionTiming.ts
+ * ├── src/lib/editorDrafts.ts
+ * ├── src/lib/editorPreview.ts
+ * ├── src/lib/editorRoot.ts
+ * ├── src/lib/editorTabs.ts
+ * ├── src/lib/eventsSocket.ts
+ * ├── src/lib/favicon.ts
+ * ├── src/lib/firstLoadApi.ts
+ * ├── src/lib/flatList.ts
+ * ├── src/lib/git.ts
+ * ├── src/lib/instanceTitle.ts
+ * ├── src/lib/macros.ts
+ * ├── src/lib/native/accessSession.ts
+ * ├── src/lib/notify.ts
+ * ├── src/lib/pageLifecycle.ts
+ * ├── src/lib/paneDivider.ts
+ * ├── src/lib/projectsApi.ts
+ * ├── src/lib/prose.tsx
+ * ├── src/lib/ptyOwnership.ts
+ * ├── src/lib/ptySocket.ts
+ * ├── src/lib/reconnectingSocket.ts
+ * ├── src/lib/reloadPage.ts
+ * ├── src/lib/reorder.ts
+ * ├── src/lib/serverRun.ts
+ * ├── src/lib/serverValidated.ts
+ * ├── src/lib/sessionsApi.ts
+ * ├── src/lib/sidebarResize.ts
+ * ├── src/lib/sortSessions.ts
+ * ├── src/lib/statusRouting.ts
+ * ├── src/lib/tabsApi.ts
+ * ├── src/lib/terminalOwner.ts
+ * ├── src/lib/terminals.ts
+ * ├── src/lib/terminalsApi.ts
+ * ├── src/lib/theater.ts
+ * ├── src/lib/types.ts
+ * ├── src/lib/uid.ts
+ * ├── src/lib/workspaceApi.ts
+ * └── src/lib/worktreeDelete.ts
+ * External: react
+ *
+ * Used by:
+ * src/lib/store.ts
+ * ├── src/App.test.tsx
+ * ├── src/App.tsx
+ * ├── src/TheaterDesktop.test.tsx
+ * ├── src/TheaterDesktopCover.test.tsx
+ * ├── src/components/AddProjectDialog.test.tsx
+ * ├── src/components/AddProjectDialog.tsx
+ * ├── src/components/AgentActionsMenu.test.tsx
+ * ├── src/components/AgentActionsMenu.tsx
+ * ├── src/components/AgentEnvDialog.test.tsx
+ * ├── src/components/AgentEnvDialog.tsx
+ * ├── src/components/AgentInfoDialog.test.tsx
+ * ├── src/components/AgentInfoDialog.tsx
+ * ├── src/components/AgentNotFound.tsx
+ * ├── src/components/AgentStartupCommandDialog.tsx
+ * ├── src/components/AgentTabsStrip.test.tsx
+ * ├── src/components/AgentTabsStrip.tsx
+ * ├── src/components/AttachPullRequestDialog.test.tsx
+ * ├── src/components/AttachPullRequestDialog.tsx
+ * ├── src/components/ChangeProviderDialog.tsx
+ * ├── src/components/ChangedFiles.test.tsx
+ * ├── src/components/ChangedFiles.tsx
+ * ├── src/components/CheckoutDefaultBranchDialog.test.tsx
+ * ├── src/components/CheckoutDefaultBranchDialog.tsx
+ * ├── src/components/CommitDialog.tsx
+ * ├── src/components/ConfigEditorDialog.test.tsx
+ * ├── src/components/ConfigEditorDialog.tsx
+ * ├── src/components/ConfirmCloseEditorTabDialog.test.tsx
+ * ├── src/components/ConfirmCloseEditorTabDialog.tsx
+ * ├── src/components/ConfirmCloseTabDialog.test.tsx
+ * ├── src/components/ConfirmCloseTabDialog.tsx
+ * ├── src/components/ConfirmDeleteTerminalDialog.test.tsx
+ * ├── src/components/ConfirmDeleteTerminalDialog.tsx
+ * ├── src/components/ConfirmDetachAgentDialog.test.tsx
+ * ├── src/components/ConfirmDetachAgentDialog.tsx
+ * ├── src/components/ConfirmDiscardFileDialog.tsx
+ * ├── src/components/ConfirmForceReconnectDialog.test.tsx
+ * ├── src/components/ConfirmForceReconnectDialog.tsx
+ * ├── src/components/ConfirmForceStopAgentDialog.test.tsx
+ * ├── src/components/ConfirmForceStopAgentDialog.tsx
+ * ├── src/components/ConfirmRecreateWorkingCopyDialog.test.tsx
+ * ├── src/components/ConfirmRecreateWorkingCopyDialog.tsx
+ * ├── src/components/ConfirmUseExistingBranchDialog.tsx
+ * ├── src/components/ConfirmVanishedEditorDialog.test.tsx
+ * ├── src/components/ConfirmVanishedEditorDialog.tsx
+ * ├── src/components/ConnDot.tsx
+ * ├── src/components/ConnectPhoneDialog.test.tsx
+ * ├── src/components/ConnectPhoneDialog.tsx
+ * ├── src/components/CreateAgentDialog.test.tsx
+ * ├── src/components/CreateAgentDialog.tsx
+ * ├── src/components/CreationOverflowMenuItems.tsx
+ * ├── src/components/CustomizeWebappDialog.test.tsx
+ * ├── src/components/CustomizeWebappDialog.tsx
+ * ├── src/components/DeleteProjectDialog.test.tsx
+ * ├── src/components/DeleteProjectDialog.tsx
+ * ├── src/components/DeleteSessionDialog.test.tsx
+ * ├── src/components/DeleteSessionDialog.tsx
+ * ├── src/components/DormantTabCard.tsx
+ * ├── src/components/DormantTabSurface.tsx
+ * ├── src/components/EditorBody.tsx
+ * ├── src/components/EditorOverlay.test.tsx
+ * ├── src/components/EditorOverlay.tsx
+ * ├── src/components/EditorTabsStrip.test.tsx
+ * ├── src/components/EditorTabsStrip.tsx
+ * ├── src/components/FirstLoadDialog.test.tsx
+ * ├── src/components/FirstLoadDialog.tsx
+ * ├── src/components/FlatAgentList.test.tsx
+ * ├── src/components/FlatAgentList.tsx
+ * ├── src/components/GlobalEnvDialog.tsx
+ * ├── src/components/InputMenu.test.tsx
+ * ├── src/components/InputMenuItems.tsx
+ * ├── src/components/InsetHeader.test.tsx
+ * ├── src/components/InsetHeader.tsx
+ * ├── src/components/LauncherCorner.tsx
+ * ├── src/components/MacroPopover.test.tsx
+ * ├── src/components/MacroPopover.tsx
+ * ├── src/components/MacrosDialog.test.tsx
+ * ├── src/components/MacrosDialog.tsx
+ * ├── src/components/MobileActionFlap.test.tsx
+ * ├── src/components/MobileActionFlap.tsx
+ * ├── src/components/MobileShell.test.tsx
+ * ├── src/components/MobileShell.tsx
+ * ├── src/components/NewAgentPickerDialog.test.tsx
+ * ├── src/components/NewAgentPickerDialog.tsx
+ * ├── src/components/OfflineOverlay.dom.test.tsx
+ * ├── src/components/OfflineOverlay.test.tsx
+ * ├── src/components/OfflineOverlay.tsx
+ * ├── src/components/PaneActionCluster.tsx
+ * ├── src/components/PaneMenu.test.tsx
+ * ├── src/components/PaneMenu.tsx
+ * ├── src/components/ProjectInfoDialog.tsx
+ * ├── src/components/ProjectMenuItems.tsx
+ * ├── src/components/ProjectSettingsDialog.tsx
+ * ├── src/components/RemoveProjectDialog.tsx
+ * ├── src/components/RenameSessionDialog.tsx
+ * ├── src/components/Sidebar.test.tsx
+ * ├── src/components/Sidebar.tsx
+ * ├── src/components/StandaloneAgentDialog.tsx
+ * ├── src/components/StandaloneEditor.test.tsx
+ * ├── src/components/StandaloneEditor.tsx
+ * ├── src/components/StartupLogsDialog.test.tsx
+ * ├── src/components/StartupLogsDialog.tsx
+ * ├── src/components/TaskManagerDialog.test.tsx
+ * ├── src/components/TaskManagerDialog.tsx
+ * ├── src/components/TerminalActionsMenu.test.tsx
+ * ├── src/components/TerminalActionsMenu.tsx
+ * ├── src/components/TerminalArea.test.tsx
+ * ├── src/components/TerminalArea.tsx
+ * ├── src/components/TerminalPane.clipboard.test.tsx
+ * ├── src/components/TerminalPane.filedrop.test.tsx
+ * ├── src/components/TerminalPane.strictMode.test.tsx
+ * ├── src/components/TerminalPane.test.tsx
+ * ├── src/components/TerminalPane.tsx
+ * ├── src/components/TerminalPaneLinks.test.tsx
+ * ├── src/components/Theater.test.tsx
+ * ├── src/components/TheaterFlight.test.tsx
+ * ├── src/components/TheaterPill.test.tsx
+ * ├── src/components/TheaterPill.tsx
+ * ├── src/components/TheaterToggle.tsx
+ * ├── src/components/Welcome.tsx
+ * ├── src/components/WorktreesDialog.test.tsx
+ * ├── src/components/WorktreesDialog.tsx
+ * ├── src/components/cloud/CloudDialog.tsx
+ * ├── src/components/createAgentDialogView.ts
+ * ├── src/components/inputWayBack.test.tsx
+ * ├── src/components/insetHeaderView.test.ts
+ * ├── src/components/insetHeaderView.ts
+ * ├── src/components/paneDividerParity.test.tsx
+ * ├── src/components/projectDialogNames.test.tsx
+ * ├── src/components/startupLogsCopy.ts
+ * ├── src/components/terminal/inputSurface.ts
+ * ├── src/components/terminal/ownership.ts
+ * ├── src/components/terminal/socketCallbacks.ts
+ * ├── src/components/terminal/useTerminalLifecycle.ts
+ * ├── src/components/terminalAreaModel.ts
+ * ├── src/components/useChangedFilesController.ts
+ * ├── src/components/useEditorFileReads.ts
+ * ├── src/components/useEditorSave.ts
+ * ├── src/hooks/use-changes-pane-controller.ts
+ * ├── src/hooks/use-theater-flight.test.tsx
+ * ├── src/hooks/use-theater-flight.ts
+ * ├── src/hooks/use-theater.test.tsx
+ * ├── src/hooks/use-theater.ts
+ * ├── src/lib/agentTabs.test.ts
+ * ├── src/lib/agentTabs.ts
+ * ├── src/lib/agentVitals.ts
+ * ├── src/lib/appMenu.ts
+ * ├── src/lib/changesSummary.test.ts
+ * ├── src/lib/changesSummary.ts
+ * ├── src/lib/creationMenus.ts
+ * ├── src/lib/macros.test.ts
+ * ├── src/lib/macros.ts
+ * ├── src/lib/restActionsStore.test.ts
+ * ├── src/lib/storeAddProject.test.ts
+ * ├── src/lib/storeAttentionChrome.test.tsx
+ * ├── src/lib/storeBootNoAuth.test.ts
+ * ├── src/lib/storeBootstrap.test.ts
+ * ├── src/lib/storeChanges.test.ts
+ * ├── src/lib/storeChangesPane.test.ts
+ * ├── src/lib/storeCreateFocus.test.ts
+ * ├── src/lib/storeDeepLink.test.ts
+ * ├── src/lib/storeEditorTabs.test.ts
+ * ├── src/lib/storeFavicon.test.tsx
+ * ├── src/lib/storeFirstLoad.test.ts
+ * ├── src/lib/storeFocusMemory.test.ts
+ * ├── src/lib/storeForceRefreshChanges.test.ts
+ * ├── src/lib/storeHashchange.dom.test.ts
+ * ├── src/lib/storeMacros.test.ts
+ * ├── src/lib/storeMobileBars.test.ts
+ * ├── src/lib/storeOffline.test.ts
+ * ├── src/lib/storePrReference.test.ts
+ * ├── src/lib/storePtyOwnership.test.ts
+ * ├── src/lib/storeReconnectDeepLink.test.ts
+ * ├── src/lib/storeRouting.test.ts
+ * ├── src/lib/storeServerReload.test.ts
+ * ├── src/lib/storeServerValidated.test.ts
+ * ├── src/lib/storeSpine.test.ts
+ * ├── src/lib/storeSpineRace.test.ts
+ * ├── src/lib/storeStartupLogs.test.ts
+ * ├── src/lib/storeStatusToasts.test.ts
+ * ├── src/lib/storeTabs.test.ts
+ * ├── src/lib/storeTerminals.test.ts
+ * ├── src/lib/storeTheater.test.ts
+ * ├── src/lib/storeWorkspacePush.test.ts
+ * ├── src/lib/theater.ts
+ * ├── src/lib/useAppMenuContext.ts
+ * ├── yaran-website:src/figure/WebUIFigure.tsx
+ * └── yaran-website:src/figure/seed.ts
+ * <module-headers:end>
+ */
+
 import { useSyncExternalStore } from "react"
 import { sanitizeAgentName } from "./agentName"
 import { git } from "./git"
@@ -11,7 +263,7 @@ import { existingBranchConflict, sessionsApi, SessionsApiError } from "./session
 import { ordersMatch, reorderById } from "./reorder"
 import { sortedSessionIds, type SortKey } from "./sortSessions"
 import { nextActiveSessionId, type FlatSortKey } from "./flatList"
-import { isMobileViewport } from "@/hooks/use-mobile"
+import { isMobileViewport } from "@yaran/ui-kit/use-mobile"
 import { EventsSocket } from "./eventsSocket"
 import { getActivePtySocket } from "./ptySocket"
 import type { ReconnectPlanEvent } from "./reconnectingSocket"
@@ -148,6 +400,7 @@ import type {
   TerminalView,
 } from "./types"
 import { workspaceProjectId } from "@/lib/agentWorkspace"
+import { accessSession, configureAccessSession } from "@/lib/native/accessSession"
 
 // Who a companion terminal belongs to, defined in `lib/terminalOwner.ts`
 // alongside the exhaustive switches that consume it and re-exported here for
@@ -541,6 +794,11 @@ export interface YaranState {
   // The rows are derived live from the spine joined to the polled stats, so the
   // dialog needs no state beyond this open flag.
   taskManagerOpen: boolean
+  // The Yaran Cloud dialog (the app menu's "Yaran Cloud…"). It fetches its own
+  // status while open, so the store holds only this gate.
+  cloudDialogOpen: boolean
+  // The app menu's "Connect a phone…" dialog (the phone QR code of a paired machine).
+  connectPhoneOpen: boolean
   // Whether the "Force stop everything…" confirmation (nested inside the Task
   // Manager) is up.
   // Every stop confirms, the bulk one most of all: it ends every agent and
@@ -974,6 +1232,8 @@ let state: YaranState = {
   createAgentNamePending: false,
   createAgentPrInput: "",
   taskManagerOpen: false,
+  cloudDialogOpen: false,
+  connectPhoneOpen: false,
   stopAllOpen: false,
   configEditorOpen: false,
   configEditorContent: "",
@@ -1096,6 +1356,13 @@ eventsSocket.subscribe(["sessions", "projects", "config"])
 // does, so the registration is never retired.
 registerPageLifecycle(eventsSocket)
 
+// A recognised sign-in resumes the events socket (refilling a spent budget, never
+// touching a live socket); the cloud hostname gates the overlay's Access wording.
+configureAccessSession({
+  resume: () => eventsSocket.resumeNow(),
+  cloudHostname: () => state.bootstrap?.cloud?.hostname,
+})
+
 function handleStatusEvent(event: EventsServerMessage): void {
   if (event.tone === "error") setState({ ...clearPendingClientIntent() })
   if (!statusToastAllowed(event.scope, state.standaloneEditor)) return
@@ -1143,6 +1410,8 @@ function routeEvent(event: EventsServerMessage): void {
     case "status_cleared":
       dismissNotification(event.key ?? ANON_TOAST_ID)
       return
+    // The cloud leg's live snapshot rides the bootstrap too (pairing, tunnel state).
+    case "cloud.changed":
     case "config.changed":
       loadBootstrap()
       return
@@ -1981,6 +2250,8 @@ eventsSocket.onConn = (conn) => {
   // the server may have been replaced in the gap. The next `onOpen`'s probe
   // re-publishes it.
   if (conn === "closed" || conn === "failed") clearServerValidated()
+  // A failed attempt may be an expired Access session rather than an outage.
+  if (conn === "closed" || conn === "failed") accessSession.noteConnectionTrouble()
   // The per-session changed-files subscription re-establishes on reconnect in
   // `eventsSocket.onOpen` (which also refetches); nothing to re-arm here.
 }
@@ -6025,6 +6296,23 @@ export function openTaskManager(): void {
 
 export function closeTaskManager(): void {
   setState({ taskManagerOpen: false, stopAllOpen: false })
+}
+
+// The Yaran Cloud dialog: open/close just flip the gate.
+export function openCloudDialog(): void {
+  setState({ cloudDialogOpen: true })
+}
+
+export function closeCloudDialog(): void {
+  setState({ cloudDialogOpen: false })
+}
+
+export function openConnectPhone(): void {
+  setState({ connectPhoneOpen: true })
+}
+
+export function closeConnectPhone(): void {
+  setState({ connectPhoneOpen: false })
 }
 
 // The "Force stop everything…" confirmation nested inside the Task Manager.

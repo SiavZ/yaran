@@ -1,6 +1,6 @@
 import { FolderGit2, ExternalLink } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -8,8 +8,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { useIsMobile } from "@/hooks/use-mobile"
+} from "@yaran/ui-kit/dialog"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import {
   closeFirstLoad,
   openAddProject,

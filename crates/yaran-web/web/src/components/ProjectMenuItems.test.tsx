@@ -31,7 +31,7 @@ const {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} = await import("@/components/ui/dropdown-menu")
+} = await import("@yaran/ui-kit/dropdown-menu")
 
 function openMenu() {
   render(

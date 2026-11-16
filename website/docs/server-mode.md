@@ -191,6 +191,9 @@ yaran is a single-tenant, trusted-access tool.
 > turn on in config. Access control is delegated entirely to where you bind and who can
 > reach it.
 
+yaran has no login of its own. If you use [Cloud Connect](/docs/cloud-connect),
+Cloudflare Access is the login for that one machine address, and yaran double-checks it.
+
 > [!CAUTION]
 > **Everyone who can reach the server shares one workspace.** They can attach to any
 > agent or terminal, browse the server's filesystem through the project picker, run git
@@ -208,17 +211,24 @@ Where yaran binds:
   restart. See [Reaching yaran over Tailscale](/docs/tailscale).
 - **A background listener lasts as long as yaran does.** `serve_while_tui = true` means a
   server runs for the whole time your terminal UI is open.
+- **Cloud Connect adds no listener.** When the machine is
+  [paired](/docs/cloud-connect-machine), yaran runs `cloudflared`, which dials out to
+  Cloudflare and forwards requests to yaran's own loopback address. That is why it is not
+  a fourth way to serve: it rides whichever of the three is running.
 
 > [!CAUTION]
 > **Anything wider is on you.** Binding a LAN or public address (say
 > `--bind 0.0.0.0:3890`) puts your agents and worktrees in reach of anyone who can hit
 > that address, with no login in front. yaran prints a loud warning before it does this.
-> Put it behind a trusted reverse proxy or keep it on Tailscale.
-> [Hosting yaran behind a login](/docs/public-hosting) is one worked example: TLS,
-> `oauth2-proxy` with GitHub, and yaran on a private network.
+> Put it behind a trusted reverse proxy, keep it on Tailscale, or use
+> [Cloud Connect](/docs/cloud-connect), which puts your org's Cloudflare Access sign-in in
+> front of one address per machine.
+> [Hosting yaran behind a login](/docs/public-hosting) is one worked example of a proxy:
+> TLS, `oauth2-proxy` with GitHub, and yaran on a private network.
 
 Two automatic defenses always run. They are about browser attacks, not user
-authentication:
+authentication. The one place yaran also checks who you are is a Cloud Connect machine
+address, where it verifies the Cloudflare Access sign-in on every request:
 
 - A **Host-header allowlist**, so a malicious page cannot DNS-rebind your browser into
   the server.
@@ -325,6 +335,9 @@ itself (see [The workspace in the browser](/docs/web-workspace)).
 What dropping or pasting a file does, and where it lands, is in
 [Dropping and pasting files onto an agent](/docs/dropping-files).
 
+The `[cloud]` keys that control Cloud Connect are listed in
+[Connecting a machine](/docs/cloud-connect-machine#the-cloud-config-keys).
+
 Server mode shares the rest of your config with the TUI. The `[capabilities]` switches
 that bridge an agent's notifications and clipboard writes into the browser are covered in
 [Terminal capabilities](/docs/terminal-capabilities), and the general config file lives
@@ -364,3 +377,5 @@ You do not need shell access to the machine to change settings:
   bound, why a MagicDNS name needs `allowed_hosts`, and what plain HTTP costs you.
 - [Hosting yaran behind a login](/docs/public-hosting): a reverse proxy plus
   `oauth2-proxy` with GitHub in one Compose file.
+- [Cloud Connect](/docs/cloud-connect): your org's Cloudflare Access sign-in in front of
+  each machine, and the yaran phone app.

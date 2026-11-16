@@ -1,3 +1,62 @@
+//! Project and session CRUD for the terminal UI: create, delete, reconnect, refresh, project browser.
+//! Terminal UI project and agent-session CRUD: create, delete, reconnect, refresh.
+//!
+//! The `impl App` block for session lifecycle; blocking git and provider work is handed
+//! to background workers.
+//! Project and agent-session CRUD for the TUI: create, delete, reconnect, refresh, and
+//! the project browser.
+//! - An `impl App` block; blocking git and provider work goes to background workers.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/sessions.rs
+//! ├── app
+//! ├── app::pty_ownership
+//! ├── app::render
+//! ├── app::test_support
+//! ├── app::workers
+//! ├── config
+//! ├── crate
+//! ├── diff
+//! ├── keybindings
+//! ├── raw_input
+//! ├── theme
+//! ├── yaran-core::add_project_plan
+//! ├── yaran-core::agent_tabs
+//! ├── yaran-core::config
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::home_path
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
+//! ├── yaran-core::model
+//! ├── yaran-core::pr_reference
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::project_order
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::sanitize
+//! ├── yaran-core::sidebar
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
+//! ├── yaran-core::tailscale
+//! ├── yaran-core::term_identity
+//! ├── yaran-core::terminal_title
+//! ├── yaran-core::test_git
+//! ├── yaran-core::test_provider
+//! ├── yaran-core::wire
+//! ├── yaran-core::worker
+//! └── yaran-core::working_copy
+//! External: chrono, crossterm, ratatui, std, tempfile
+//!
+//! Used by:
+//! app/sessions.rs
+//! ├── app
+//! └── app::background_server
+//! <module-headers:end>
+
 use super::*;
 use crate::editor;
 use yaran_core::engine::{Command, EventReaction, FinishDeleteSessionOutcome, WorktreeRemoval};
@@ -4600,6 +4659,7 @@ mod tests {
             worker_tx,
             worker_rx,
             config_writer,
+            push: yaran_core::engine::PushHook::off(),
             surface: Box::new(crate::TuiConfigSurface),
             reloading: false,
             command_applies: 0,
@@ -4712,6 +4772,7 @@ mod tests {
             unpushed_count_rx: None,
             notes_fetch_rx: None,
             orphan_worktrees_rx: None,
+            cloud: Default::default(),
             deferred_first_load_notes: None,
             notes_fetch_explicit_request: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
@@ -4810,6 +4871,7 @@ mod tests {
             companion_followup_ran: false,
             pending_background_server_start: None,
             pending_tailscale_mode_op: None,
+            pending_cloud_mode_op: None,
             server_flip_preflight_pending: false,
             pending_persist_ops: std::collections::HashMap::new(),
             configure_save_op: None,
@@ -4964,6 +5026,7 @@ mod tests {
             worker_tx,
             worker_rx,
             config_writer,
+            push: yaran_core::engine::PushHook::off(),
             surface: Box::new(crate::TuiConfigSurface),
             reloading: false,
             command_applies: 0,

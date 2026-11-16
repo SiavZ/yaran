@@ -43,12 +43,39 @@
 //! commit-message pane (`App::commit_input`) and the startup-log viewer
 //! (`App::startup_log_viewer`) are dual-mode text surfaces that are not
 //! `PromptState` variants, so nothing here guards them.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/modal.rs
+//! ├── app
+//! ├── app::cloud_commands
+//! ├── app::cloud_tests
+//! ├── app::first_load
+//! ├── app::input
+//! ├── app::test_support
+//! ├── app::text_input
+//! ├── config
+//! ├── crate
+//! ├── keybindings
+//! ├── theme
+//! └── yaran-core::worker
+//! External: ratatui, std
+//!
+//! Used by:
+//! app/modal.rs
+//! ├── app
+//! ├── app::cloud_input
+//! ├── app::cloud_render
+//! ├── app::cloud_tests
+//! └── app::input
+//! <module-headers:end>
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
+use super::cloud_commands::CloudPrompt;
 use super::input::contains_point;
 use super::text_input::TextInput;
 use super::{App, OverlayMouseLayout, PromptState};
@@ -219,6 +246,7 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // Three modes, the saved one marked, and picking one applies it. Rows and
         // nothing else, so no buttons and no focus concept.
         | PromptState::SetTailscaleMode(_)
+        | PromptState::SetCloudMode(_)
         // The board's Assign: one row per person, and picking one assigns the
         // card. Rows and nothing else.
         | PromptState::AssignBoardCard(_)
@@ -254,6 +282,19 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // editor, radios and checkboxes, and Cancel/Save. The Save button is
         // what keeps it dual-mode compliant.
         PromptState::SessionSettings(_) => ModalSpec::new(Form, true, true),
+
+        // ── Yaran Cloud: one variant, five modals ───────────────────────
+        // Login: one single-line field at a time (the org address, then the
+        // pasted landing address) and no buttons, so Enter submits.
+        PromptState::Cloud(CloudPrompt::Login(_)) => ModalSpec::new(Form, false, false),
+        // Disconnect / Rotate token: prose and Cancel (focused) plus the act.
+        PromptState::Cloud(CloudPrompt::Logout(_) | CloudPrompt::Rotate(_)) => {
+            ModalSpec::new(Confirm, false, true)
+        }
+        // Status and the phone QR: read-only.
+        PromptState::Cloud(CloudPrompt::Status(_) | CloudPrompt::PairPhone(_)) => {
+            ModalSpec::new(Report, false, false)
+        }
 
         // ── The one variant that is two modals ──────────────────────────
         // `EditMacros` serves two families depending on its own state, so the
@@ -316,6 +357,7 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
         | PromptState::SetTailscaleMode(_)
+        | PromptState::SetCloudMode(_)
         | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_) => Vec::new(),
 
@@ -331,6 +373,13 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         PromptState::HumanBoardCard {
             reply: Some(reply), ..
         } => vec![&reply.input],
+        PromptState::Cloud(CloudPrompt::Login(login)) => vec![login.field()],
+        PromptState::Cloud(
+            CloudPrompt::Logout(_)
+            | CloudPrompt::Rotate(_)
+            | CloudPrompt::Status(_)
+            | CloudPrompt::PairPhone(_),
+        ) => Vec::new(),
 
         PromptState::StartupCommandLogs(prompt) => vec![&prompt.filter],
         PromptState::SessionSettings(prompt) => {
@@ -375,6 +424,7 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::ChangeDefaultProvider { .. }
         | OverlayMouseLayout::ChangeProjectDefaultProvider { .. }
         | OverlayMouseLayout::SetTailscaleMode { .. }
+        | OverlayMouseLayout::SetCloudMode { .. }
         | OverlayMouseLayout::AssignBoardCard { .. }
         | OverlayMouseLayout::AddProjectFailed { .. }
         | OverlayMouseLayout::AgentInfo { .. }
@@ -424,6 +474,9 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::ConfigureStartupCommand { .. }
         | OverlayMouseLayout::SessionSettings { .. }
         | OverlayMouseLayout::EditMacros { .. } => true,
+
+        // The confirms publish their act; the login and the reports have none.
+        OverlayMouseLayout::Cloud { confirm, .. } => confirm.is_some(),
     }
 }
 
@@ -762,7 +815,7 @@ mod tests {
 
     fn every_prompt(app: &App) -> Vec<(&'static str, PromptState)> {
         let project = app.engine.projects[0].clone();
-        vec![
+        let mut prompts = vec![
             (
                 "Command",
                 PromptState::Command {
@@ -870,6 +923,18 @@ mod tests {
                     current: yaran_core::config::TailscaleMode::Auto,
                     options: vec![crate::app::SetTailscaleModeOption {
                         mode: yaran_core::config::TailscaleMode::Auto,
+                        is_current: true,
+                    }],
+                    selected: 0,
+                    serving: false,
+                }),
+            ),
+            (
+                "SetCloudMode",
+                PromptState::SetCloudMode(crate::app::SetCloudModePrompt {
+                    current: yaran_core::cloud::leg_identity::CloudMode::Auto,
+                    options: vec![crate::app::cloud_mode::SetCloudModeOption {
+                        mode: yaran_core::cloud::leg_identity::CloudMode::Auto,
                         is_current: true,
                     }],
                     selected: 0,
@@ -1369,7 +1434,9 @@ mod tests {
                     short_window_sample: false,
                 },
             ),
-        ]
+        ];
+        prompts.extend(crate::app::cloud_tests::fixtures());
+        prompts
     }
 
     /// Render one prompt and report what it published as its mouse layout.

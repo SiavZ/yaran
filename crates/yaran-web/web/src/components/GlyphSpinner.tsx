@@ -6,7 +6,7 @@ import {
   SPINNER_FRAMES,
   SPINNER_FRAME_MS,
 } from "@/lib/spinnerFrames"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The one text spinner in the web UI, in the glyphs and cadence of
 // `spinnerFrames.ts`, so the fixed-width slot and the reduced-motion behavior

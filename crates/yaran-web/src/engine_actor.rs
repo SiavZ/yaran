@@ -4,6 +4,77 @@
 //! without limit (see [`REQ_CHANNEL_CAPACITY`]); replies over tokio oneshots. The
 //! engine thread `try_recv`s on a tick, so it also drains worker events and fires
 //! the coarse spine-change, status and commit signals.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine_actor.rs
+//! ├── cloud_mode
+//! ├── cloud_routes
+//! ├── crate
+//! ├── serve_legs
+//! ├── test_support
+//! ├── yaran-core
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::config
+//! ├── yaran-core::config_reload_status
+//! ├── yaran-core::config_write
+//! ├── yaran-core::engine
+//! ├── yaran-core::file_drop
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
+//! ├── yaran-core::model
+//! ├── yaran-core::poller_status
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::provider
+//! ├── yaran-core::pty
+//! ├── yaran-core::sidebar
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! ├── yaran-core::tab_verdict
+//! ├── yaran-core::tailscale
+//! ├── yaran-core::viewmodel
+//! ├── yaran-core::wire
+//! └── yaran-core::worker
+//! External: chrono, serde_json, std, tempfile, tokio
+//!
+//! Used by:
+//! engine_actor.rs
+//! ├── background
+//! ├── browse_routes
+//! ├── changes
+//! ├── cloud_loop
+//! ├── cloud_routes
+//! ├── crate
+//! ├── file_drop_routes
+//! ├── file_routes
+//! ├── first_load_routes
+//! ├── git_routes
+//! ├── project_actions
+//! ├── resource_routes
+//! ├── rest_common
+//! ├── serve_legs
+//! ├── server
+//! ├── session_actions
+//! ├── test_support
+//! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test changes_events]
+//! ├── yaran-web[test file_move_and_info_routes]
+//! ├── yaran-web[test file_tree_routes]
+//! ├── yaran-web[test first_load_routes]
+//! ├── yaran-web[test live_server_limits]
+//! ├── yaran-web[test missing_working_copy]
+//! ├── yaran-web[test project_worktrees_routes]
+//! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test session_branch_routes]
+//! ├── yaran-web[test static_serving]
+//! ├── yaran-web[test tab_routes]
+//! ├── yaran-web[test terminal_file_routes]
+//! ├── yaran-web[test workspace_push]
+//! └── yaran-web[test ws_transport]
+//! <module-headers:end>
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -278,6 +349,10 @@ pub enum EngineRequest {
     /// "cursor"/"vscode"/"zed"). Instant clone; the detect + launch I/O for the
     /// "open in editor" action runs off-thread in the server handler.
     EditorDefault(oneshot::Sender<String>),
+    /// What the Yaran Cloud routes need from the engine: the cloud paths, the
+    /// live `[cloud]` section, the serving port and the status liveness set.
+    /// Instant clones; the routes do their network and file work off-thread.
+    CloudInputs(oneshot::Sender<crate::cloud_routes::CloudInputs>),
     /// Resolve the directory the add-project picker opens at from
     /// `defaults.start_directory` in the live config, so a reload changes the answer
     /// and a raw save that has not been reloaded does not. An instant clone; the
@@ -437,6 +512,8 @@ pub(crate) struct ActorLoopEnds {
     /// `[server] tailscale` to the running listener; empty means nothing is
     /// serving and the reload only saved the value.
     tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>>,
+    /// The serve's live `[cloud] mode` lane, filled like the Tailscale slot.
+    cloud_mode_control: crate::cloud_mode::CloudControlSlot,
 }
 
 /// Extract the reloaded `Config` from a reload follow-up reaction, consuming it.
@@ -625,6 +702,7 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
     // what a reload on a TUI-only run sees.
     let tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>> =
         Arc::new(std::sync::OnceLock::new());
+    let cloud_mode_control: crate::cloud_mode::CloudControlSlot = Arc::default();
     (
         EngineHandle {
             req_tx,
@@ -640,6 +718,7 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
             pty_input_owners: Arc::clone(&pty_input_owners),
             live_limits: Arc::clone(&live_limits),
             tailscale_mode_control: Arc::clone(&tailscale_mode_control),
+            cloud_mode_control: Arc::clone(&cloud_mode_control),
             #[cfg(test)]
             refresh_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
         },
@@ -656,6 +735,7 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
             pty_input_owners,
             live_limits,
             tailscale_mode_control: Arc::clone(&tailscale_mode_control),
+            cloud_mode_control,
         },
     )
 }
@@ -753,6 +833,8 @@ pub struct EngineHandle {
     /// path can hand the actor its live Tailscale-mode handle after the actor is
     /// already running (which it always is on `yaran server`).
     tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>>,
+    /// The serve's live `[cloud] mode` lane, filled like the Tailscale slot.
+    cloud_mode_control: crate::cloud_mode::CloudControlSlot,
     #[cfg(test)]
     refresh_requests: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -773,6 +855,11 @@ impl EngineHandle {
         control: crate::serve_legs::TailscaleModeControl,
     ) {
         let _ = self.tailscale_mode_control.set(control);
+    }
+
+    /// Hand the actor this serve's live `[cloud] mode` lane (once per serve).
+    pub(crate) fn set_cloud_mode_control(&self, control: crate::cloud_mode::CloudModeControl) {
+        let _ = self.cloud_mode_control.set(control);
     }
 
     /// The teardown flag PTY forwarders poll. Cloned into each forwarder so a
@@ -1529,6 +1616,16 @@ impl EngineHandle {
         rx.await.unwrap_or_default()
     }
 
+    /// The inputs the Yaran Cloud routes read; `None` when the engine is gone.
+    pub async fn cloud_inputs(&self) -> Option<crate::cloud_routes::CloudInputs> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::CloudInputs(tx))
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
     /// The directory the add-project picker should open at, resolved from the
     /// live config. `None` if the engine is gone, in which case the browse handler falls
     /// back to `$HOME` on its own.
@@ -1929,6 +2026,7 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         | EngineRequest::SessionStartupLogContext(..)
         | EngineRequest::ProjectStartupLogContext(..)
         | EngineRequest::EditorDefault(..)
+        | EngineRequest::CloudInputs(..)
         | EngineRequest::BrowseStartDir(..) => false,
 
         // Attach to an ALREADY-RUNNING PTY, or push bytes at one. Deliberately
@@ -2162,6 +2260,8 @@ pub(crate) struct EngineService {
     /// serving. Every serve fills it, background mode included; background mode
     /// simply does not run this loop, so its reload is the terminal UI's.
     tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>>,
+    /// The serve's live `[cloud] mode` lane, filled like the Tailscale slot.
+    cloud_mode_control: crate::cloud_mode::CloudControlSlot,
 }
 
 /// How long [`EngineService`]'s drop waits for a sender that already holds a
@@ -2216,6 +2316,7 @@ impl EngineService {
             pty_input_owners,
             live_limits,
             tailscale_mode_control,
+            cloud_mode_control,
         } = ends;
         let spine_check = SpineCheck::new(engine, &pty_input_owners, &workspace_tx);
         Self {
@@ -2234,6 +2335,7 @@ impl EngineService {
             pty_input_owners,
             live_limits,
             tailscale_mode_control,
+            cloud_mode_control,
             pending: Vec::new(),
             last_pr_foregrounded: None,
             spine_check,
@@ -2856,6 +2958,8 @@ pub(crate) fn run_engine_loop(
                 // have their listener stopped and started for nothing.
                 let previous_tailscale = engine.config.server.tailscale_mode();
                 let next_tailscale = config.server.tailscale_mode();
+                let previous_cloud = engine.config.cloud.clone();
+                let next_cloud = config.cloud.clone();
                 match engine.apply_reloaded_config(*config) {
                     Ok(()) => {
                         // Memory now matches disk: any pending raw "Save" has been
@@ -2904,6 +3008,17 @@ pub(crate) fn run_engine_loop(
                                 ));
                             });
                         }
+                        // `[cloud]` is live too (mode, restart keys, ingress keys); the
+                        // same one-owner rule applies (background mode never runs this).
+                        let status = svc.status.tx.clone();
+                        crate::cloud_mode::apply_reload(
+                            svc.cloud_mode_control.get(),
+                            &previous_cloud,
+                            &next_cloud,
+                            move |update| {
+                                let _ = status.send(WireStatus::from_update(&update));
+                            },
+                        );
                     }
                     Err(e) => {
                         let _ = svc.status.send(WireStatus::from_update(
@@ -3914,6 +4029,9 @@ fn handle_request(
         }
         EngineRequest::EditorDefault(reply) => {
             let _ = reply.send(engine.config.editor.default.clone());
+        }
+        EngineRequest::CloudInputs(reply) => {
+            let _ = reply.send(crate::cloud_routes::CloudInputs::from_engine(engine));
         }
         EngineRequest::BrowseStartDir(reply) => {
             let dir = yaran_core::project_browser::resolve_start_dir(&engine.config)
@@ -7296,6 +7414,11 @@ mod tests {
                 false,
             ),
             (
+                "CloudInputs",
+                EngineRequest::CloudInputs(dead_reply()),
+                false,
+            ),
+            (
                 "RegisteredProjectPaths",
                 EngineRequest::RegisteredProjectPaths(dead_reply()),
                 false,
@@ -7448,7 +7571,7 @@ mod tests {
         // through with a copied-from-its-neighbour `false` that nothing reads.
         assert_eq!(
             request_kind_answers().len(),
-            44,
+            45,
             "every EngineRequest kind needs a row in request_kind_answers; \
              update the count deliberately when adding one"
         );

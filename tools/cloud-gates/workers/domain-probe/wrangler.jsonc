@@ -1,0 +1,16 @@
+// Gate G14 probe: attaches its own custom domain and toggles its own workers.dev route.
+// Deployed by tools/cloud-gates/g14-custom-domain.sh with the shipped deploy tree's settings (D19):
+// workers.dev on, preview URLs off, and no route or custom domain in this file.
+{
+  "name": "yaran-gate-domain-probe",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    // "open" serves only /setup* and /v1/meta on workers.dev; "closed" serves only CP_HOST (421 elsewhere).
+    "SETUP_STATE": "open",
+    // Placeholder; the gate script passes the real control-plane hostname with --var CP_HOST:<host>.
+    "CP_HOST": "gate-cp.example.invalid"
+  }
+}

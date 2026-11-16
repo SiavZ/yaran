@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "Common",
+  "description": "Shared value types of the yaran cloud protocol (Phase 02 Design §2). Every other schema file references these by relative $ref.",
+  "$defs": {
+    "Uuid": {
+      "title": "Uuid",
+      "description": "Lowercase UUID v4, minted by the Worker.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "YaranId": {
+      "title": "YaranId",
+      "description": "Opaque yaran agent or tab id, 1-128 printable ASCII characters.",
+      "type": "string",
+      "pattern": "^[\\x21-\\x7e]{1,128}$"
+    },
+    "Timestamp": {
+      "title": "Timestamp",
+      "description": "RFC 3339 UTC timestamp with seconds precision and a Z suffix.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "B64url": {
+      "title": "B64url",
+      "description": "base64url without padding.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]*$"
+    },
+    "P256Point": {
+      "title": "P256Point",
+      "description": "base64url of a 65-byte uncompressed SEC1 P-256 point (0x04 || x || y). The 'B' prefix is the encoding of the 0x04 tag; on-curve is checked in code.",
+      "type": "string",
+      "pattern": "^B[A-Za-z0-9_-]{85}[AEIMQUYcgkosw048]$"
+    },
+    "Ed25519PublicKey": {
+      "title": "Ed25519PublicKey",
+      "description": "base64url of a 32-byte raw Ed25519 public key.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "Email": {
+      "title": "Email",
+      "description": "Email address, compared lowercase.",
+      "type": "string",
+      "format": "email",
+      "maxLength": 254
+    },
+    "OrgUrl": {
+      "title": "OrgUrl",
+      "description": "An https origin with no port, path or query.",
+      "type": "string",
+      "pattern": "^https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"
+    },
+    "Hostname": {
+      "title": "Hostname",
+      "description": "Lowercase DNS name.",
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$"
+    },
+    "MachineName": {
+      "title": "MachineName",
+      "description": "Machine name, at most 32 characters, one DNS label fragment.",
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$"
+    },
+    "UserSlug": {
+      "title": "UserSlug",
+      "description": "The user's hostname slug, at most 30 characters (Phase 05 owns slugging).",
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$"
+    },
+    "SemVer": {
+      "title": "SemVer",
+      "type": "string",
+      "pattern": "^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}(?:-[0-9A-Za-z.-]{1,32})?$"
+    },
+    "OriginPort": {
+      "title": "OriginPort",
+      "description": "The machine's loopback yaran port ([server] port, default 3890).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "MachineKeyFingerprint": {
+      "title": "MachineKeyFingerprint",
+      "description": "Display fingerprint of an Ed25519PublicKey (Design §7.1).",
+      "type": "string",
+      "pattern": "^[A-Z2-7]{4}(?:-[A-Z2-7]{4}){5}$"
+    },
+    "DeviceKeyFingerprint": {
+      "title": "DeviceKeyFingerprint",
+      "description": "Display fingerprint of a device key P256Point (Design §8.1).",
+      "type": "string",
+      "pattern": "^[A-Z2-7]{4}(?:-[A-Z2-7]{4}){5}$"
+    },
+    "EcdsaP256Sig": {
+      "title": "EcdsaP256Sig",
+      "description": "base64url of a 64-byte raw r || s ECDSA P-256 signature (JWS ES256 form).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+    },
+    "RequestId": {
+      "title": "RequestId",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]{1,64}$"
+    },
+    "InstallId": {
+      "title": "InstallId",
+      "description": "A Uuid the app mints once per org registration on this install.",
+      "$ref": "#/$defs/Uuid"
+    },
+    "Cursor": {
+      "title": "Cursor",
+      "description": "Opaque page cursor.",
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_-]*$"
+    },
+    "ProtocolRange": {
+      "title": "ProtocolRange",
+      "description": "A server's supported protocol versions; max >= min is checked in code.",
+      "type": "object",
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer", "minimum": 1 },
+        "max": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "OrgRef": {
+      "title": "OrgRef",
+      "type": "object",
+      "required": ["name", "url"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "url": { "$ref": "#/$defs/OrgUrl" }
+      }
+    },
+    "NullableTimestamp": {
+      "title": "NullableTimestamp",
+      "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+    },
+    "NullableString": {
+      "title": "NullableString",
+      "oneOf": [{ "type": "string" }, { "type": "null" }]
+    },
+    "NullableP256Point": {
+      "title": "NullableP256Point",
+      "oneOf": [{ "$ref": "#/$defs/P256Point" }, { "type": "null" }]
+    },
+    "Platform": { "title": "Platform", "enum": ["android", "ios"] },
+    "Flavor": { "title": "Flavor", "enum": ["foss", "play", "appstore", "dev"] },
+    "FormFactor": { "title": "FormFactor", "enum": ["phone", "tablet"] },
+    "Role": { "title": "Role", "enum": ["user", "admin"] },
+    "PushChannel": {
+      "title": "PushChannel",
+      "enum": ["unifiedpush", "fcm_embedded", "apns_relay", "fcm_relay"]
+    },
+    "RowStateToken": {
+      "title": "RowStateToken",
+      "description": "yaran RowState wire token (row_state.rs), never prose.",
+      "enum": ["needs_attention", "typing", "busy", "idle", "detached", "exited"]
+    },
+    "EndingToken": {
+      "title": "EndingToken",
+      "description": "TabRunEnding wire kinds (tab_verdict.rs).",
+      "enum": ["launch_failed", "exited", "exited_unknown", "rapid_clean_exit"]
+    }
+  }
+}

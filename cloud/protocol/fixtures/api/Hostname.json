@@ -1,0 +1,36 @@
+{
+  "type": "Hostname",
+  "schema": "common.schema.json#/$defs/Hostname",
+  "valid": [
+    {
+      "name": "machine host",
+      "value": "laptop-ada.example.com"
+    },
+    {
+      "name": "single label",
+      "value": "localhost"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "uppercase",
+      "keyword": "pattern",
+      "value": "Laptop.example.com"
+    },
+    {
+      "name": "leading hyphen",
+      "keyword": "pattern",
+      "value": "-a.example.com"
+    },
+    {
+      "name": "empty label",
+      "keyword": "pattern",
+      "value": "a..example.com"
+    },
+    {
+      "name": "254 chars",
+      "keyword": "maxLength",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ]
+}

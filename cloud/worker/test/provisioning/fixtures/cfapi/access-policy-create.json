@@ -1,0 +1,40 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "POST",
+    "path": "/accounts/{account}/access/policies",
+    "body": {
+      "name": "yaran:a1b2c3d4:owner:x",
+      "decision": "allow",
+      "include": [
+        {
+          "email": {
+            "email": "user@example.com"
+          }
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "f174e90a-fafe-4643-bbbc-4a0ed4fc8415",
+        "name": "yaran:a1b2c3d4:owner:x",
+        "decision": "allow",
+        "include": [
+          {
+            "email": {
+              "email": "user@example.com"
+            }
+          }
+        ],
+        "app_count": 0
+      }
+    }
+  }
+}

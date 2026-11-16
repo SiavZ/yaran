@@ -1,0 +1,22 @@
+# detekt overrides for yaran's Kotlin modules (defaults otherwise, buildUponDefaultConfig).
+style:
+  MaxLineLength:
+    maxLineLength: 140
+    # Generated module-header trees (tools/module-headers) may run long inside KDoc.
+    excludeCommentStatements: true
+  # Validation code reads as an ordered list of guard clauses that mirrors the shared
+  # contract (HostRules check order, vault preconditions); early returns keep it auditable.
+  ReturnCount:
+    active: false
+  ThrowsCount:
+    max: 4
+  MagicNumber:
+    ignoreEnums: true
+complexity:
+  # The vault and app lock are deliberately one cohesive class each (phase 14 line budgets).
+  TooManyFunctions:
+    thresholdInClasses: 30
+  CyclomaticComplexMethod:
+    threshold: 20
+  ComplexCondition:
+    threshold: 5

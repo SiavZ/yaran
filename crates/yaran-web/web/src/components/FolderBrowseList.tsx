@@ -2,7 +2,7 @@ import { CornerLeftUp, Folder, FolderGit2, FolderOpen } from "lucide-react"
 
 import { GlyphSpinner } from "@/components/GlyphSpinner"
 import { Badge } from "@/components/ui/badge"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import { baseName } from "@/lib/paths"
 import type { DirEntryView } from "@/lib/types"
 

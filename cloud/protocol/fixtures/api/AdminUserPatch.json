@@ -1,0 +1,62 @@
+{
+  "type": "AdminUserPatch",
+  "schema": "admin.schema.json#/$defs/AdminUserPatch",
+  "valid": [
+    {
+      "name": "promote",
+      "value": {
+        "role": "admin"
+      }
+    },
+    {
+      "name": "disable and revoke",
+      "value": {
+        "disabled": true,
+        "revoke_all": true
+      }
+    },
+    {
+      "name": "enable",
+      "value": {
+        "disabled": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty",
+      "keyword": "minProperties",
+      "value": {}
+    },
+    {
+      "name": "revoke while enabling",
+      "keyword": "dependentSchemas",
+      "value": {
+        "disabled": false,
+        "revoke_all": true
+      }
+    },
+    {
+      "name": "revoke alone",
+      "keyword": "dependentSchemas",
+      "value": {
+        "revoke_all": true
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "role": "user",
+        "extra": 1
+      }
+    },
+    {
+      "name": "unknown role",
+      "keyword": "enum",
+      "value": {
+        "role": "owner"
+      }
+    }
+  ]
+}

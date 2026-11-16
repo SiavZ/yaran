@@ -1,0 +1,30 @@
+{
+  "type": "TeardownStarted",
+  "schema": "machine.schema.json#/$defs/TeardownStarted",
+  "valid": [
+    {
+      "name": "teardown",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "state": "tearing_down"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "other state",
+      "keyword": "const",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "state": "deleted"
+      }
+    },
+    {
+      "name": "missing machine_id",
+      "keyword": "required",
+      "value": {
+        "state": "tearing_down"
+      }
+    }
+  ]
+}

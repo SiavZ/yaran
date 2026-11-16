@@ -1,0 +1,27 @@
+{
+  "type": "RequestId",
+  "schema": "common.schema.json#/$defs/RequestId",
+  "valid": [
+    {
+      "name": "cf-ray",
+      "value": "8d1f2c3b4a5e6f70-LHR"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "underscore",
+      "keyword": "pattern",
+      "value": "a_b"
+    },
+    {
+      "name": "65 chars",
+      "keyword": "pattern",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "empty",
+      "keyword": "pattern",
+      "value": ""
+    }
+  ]
+}

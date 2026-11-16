@@ -1,0 +1,46 @@
+{
+  "type": "MachineStatus",
+  "schema": "me.schema.json#/$defs/MachineStatus",
+  "valid": [
+    {
+      "name": "online",
+      "value": "online"
+    },
+    {
+      "name": "degraded",
+      "value": "degraded"
+    },
+    {
+      "name": "offline",
+      "value": "offline"
+    },
+    {
+      "name": "never_connected",
+      "value": "never_connected"
+    },
+    {
+      "name": "provisioning",
+      "value": "provisioning"
+    },
+    {
+      "name": "tearing_down",
+      "value": "tearing_down"
+    },
+    {
+      "name": "unknown",
+      "value": "unknown"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "description": "UTF-8 truncation for p and l: over 24 bytes becomes at most 21 bytes on a character boundary plus U+2026 (3 bytes).",
+  "cases": [
+    {
+      "input": "short",
+      "input_bytes": 5,
+      "output": "short",
+      "output_bytes": 5
+    },
+    {
+      "input": "exactly-twenty-four-byte",
+      "input_bytes": 24,
+      "output": "exactly-twenty-four-byte",
+      "output_bytes": 24
+    },
+    {
+      "input": "twenty-five-bytes-of-text",
+      "input_bytes": 25,
+      "output": "twenty-five-bytes-of-…",
+      "output_bytes": 24
+    },
+    {
+      "input": "日本語のラベルで",
+      "input_bytes": 24,
+      "output": "日本語のラベルで",
+      "output_bytes": 24
+    },
+    {
+      "input": "日本語のラベルです",
+      "input_bytes": 27,
+      "output": "日本語のラベル…",
+      "output_bytes": 24
+    },
+    {
+      "input": "abcdefghijklmnopqrst😀",
+      "input_bytes": 24,
+      "output": "abcdefghijklmnopqrst😀",
+      "output_bytes": 24
+    },
+    {
+      "input": "abcdefghijklmnopqrst😀x",
+      "input_bytes": 25,
+      "output": "abcdefghijklmnopqrst…",
+      "output_bytes": 23
+    },
+    {
+      "input": "abcdefghijklmnopqrstu😀",
+      "input_bytes": 25,
+      "output": "abcdefghijklmnopqrstu…",
+      "output_bytes": 24
+    },
+    {
+      "input": "ééééééééééééé",
+      "input_bytes": 26,
+      "output": "éééééééééé…",
+      "output_bytes": 23
+    },
+    {
+      "input": "😀😀😀😀😀😀😀",
+      "input_bytes": 28,
+      "output": "😀😀😀😀😀…",
+      "output_bytes": 23
+    }
+  ]
+}

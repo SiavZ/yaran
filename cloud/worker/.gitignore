@@ -1,0 +1,9 @@
+# Local only: the Deploy-button clone of this directory has no repository-root .gitignore.
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+# Build outputs: copied from packages/ui-kit and emitted from enhance.ts by the build.
+assets/console/tokens.css
+assets/console/fonts/
+assets/console/enhance.js

@@ -1,6 +1,6 @@
 import { CircleAlert, RotateCw, Trash2, X } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import type { DiskState } from "@/lib/editorBuffers"
 
 interface FileDiskBannerProps {

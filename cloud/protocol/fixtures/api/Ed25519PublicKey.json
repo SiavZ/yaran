@@ -1,0 +1,22 @@
+{
+  "type": "Ed25519PublicKey",
+  "schema": "common.schema.json#/$defs/Ed25519PublicKey",
+  "valid": [
+    {
+      "name": "real key",
+      "value": "qZv1Zhd-E6GENQ0DnFKXLiD8H09ZLeutjV6OIOHXdh4"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "44 chars",
+      "keyword": "pattern",
+      "value": "qZv1Zhd-E6GENQ0DnFKXLiD8H09ZLeutjV6OIOHXdh4A"
+    },
+    {
+      "name": "non-canonical last char",
+      "keyword": "pattern",
+      "value": "qZv1Zhd-E6GENQ0DnFKXLiD8H09ZLeutjV6OIOHXdhB"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "error.schema.json",
+  "title": "ErrorSchemas",
+  "description": "The JSON error envelope (Design §4) of every non-2xx JSON response from the Worker, the relay and yaran's /__yaran/handoff. code is the stable contract (registry/errors.json); an unknown code falls back to its status class.",
+  "$defs": {
+    "ErrorEnvelope": {
+      "title": "ErrorEnvelope",
+      "type": "object",
+      "required": ["error", "request_id"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "retryable": { "type": "boolean" },
+            "details": { "type": "object" }
+          }
+        },
+        "request_id": { "$ref": "common.schema.json#/$defs/RequestId" }
+      }
+    },
+    "ValidationErrorDetails": {
+      "title": "ValidationErrorDetails",
+      "description": "details of validation_failed.",
+      "type": "object",
+      "required": ["errors"],
+      "properties": {
+        "errors": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["path", "message"],
+            "properties": { "path": { "type": "string" }, "message": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}

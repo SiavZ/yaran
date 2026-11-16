@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">yaran</string>
+    <string name="title_activity_main">yaran</string>
+    <string name="lock_cover_message">yaran is locked</string>
+    <string name="lock_cover_unlock">Unlock</string>
+</resources>

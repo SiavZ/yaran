@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">yaran gate spike</string>
+    <string name="title_activity_main">yaran gate spike</string>
+    <string name="package_name">io.github.siavz.yaran.gatespike</string>
+    <string name="custom_url_scheme">io.github.siavz.yaran.gatespike</string>
+</resources>

@@ -1,0 +1,753 @@
+{
+  "description": "CallbackUrl: form check for the build, then params (query if non-empty, else fragment; duplicate keys or a bad escape -> malformed), then exact shape (success = exactly state+jwe; error = state+error, min/max only with protocol_unsupported, server_time only with handoff_timestamp_skewed; HandoffCallback schema patterns), then pending (null -> no_pending), then constant-time state compare, then age (now - created_at > ttl -> expired). Order of checks is the order listed. mode https expects https://<domain>/auth/callback (host compared case-insensitively, no port/userinfo); mode dev expects yaranapp://auth/callback (scheme case-insensitive).",
+  "ttl_s": 600,
+  "cases": [
+    {
+      "name": "https query success",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "https fragment success",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback#state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "https params reversed",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn&state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "dev query success",
+      "mode": "dev",
+      "domain": null,
+      "uri": "yaranapp://auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "dev fragment success",
+      "mode": "dev",
+      "domain": null,
+      "uri": "yaranapp://auth/callback#state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "dev upper case scheme",
+      "mode": "dev",
+      "domain": null,
+      "uri": "YARANAPP://auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "https host upper case",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://APP.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "dev callback in release build",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "yaranapp://auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "https callback in dev build",
+      "mode": "dev",
+      "domain": null,
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "https other domain",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://evil.example.net/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "https other path",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback2?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "https trailing slash",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback/?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "https oauth path",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/oauth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "https with port",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com:443/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "https userinfo",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://u@app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "http scheme",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "http://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "dev other command",
+      "mode": "dev",
+      "domain": null,
+      "uri": "yaranapp://add-org?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "dev with path suffix",
+      "mode": "dev",
+      "domain": null,
+      "uri": "yaranapp://auth/callback/x?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "wrong_form"
+      }
+    },
+    {
+      "name": "no params",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "state only",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "jwe and error together",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn&error=rate_limited",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "duplicate state",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "unknown param",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn&x=1",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "bad state shape",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=short&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "jwe four parts",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=a..b.c",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "jwe with encrypted key",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=a.k.b.c.d",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "jwe too long",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=a..b.cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.d",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "bad percent escape",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=%ZZ",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "error upper case",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=RATE",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "min without error",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn&min=1",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "no pending",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": null,
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "no_pending"
+      }
+    },
+    {
+      "name": "replayed after use",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": null,
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "no_pending"
+      }
+    },
+    {
+      "name": "state mismatch",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW90aGVy&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "state_mismatch"
+      }
+    },
+    {
+      "name": "state mismatch on error",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW90aGVy&error=handoff_declined",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "state_mismatch"
+      }
+    },
+    {
+      "name": "pending at ttl",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731570900
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "success",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn"
+      }
+    },
+    {
+      "name": "pending expired",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&jwe=eyJhbGciOiJFQ0RILUVTIn0..SDE1TE96S3ZXM1RBTWZwbQ.Y2lwaGVydGV4dA.dGFn",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731570899
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "expired"
+      }
+    },
+    {
+      "name": "error handoff_declined",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_declined",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_declined"
+      }
+    },
+    {
+      "name": "error rate_limited",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=rate_limited",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "rate_limited"
+      }
+    },
+    {
+      "name": "error handoff_request_invalid",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_request_invalid",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_request_invalid"
+      }
+    },
+    {
+      "name": "error handoff_device_key_invalid",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_device_key_invalid",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_device_key_invalid"
+      }
+    },
+    {
+      "name": "error handoff_signature_malformed",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_signature_malformed",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "error handoff_owner_mismatch",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_owner_mismatch",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_owner_mismatch"
+      }
+    },
+    {
+      "name": "error handoff_jwt_missing",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_jwt_missing",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_jwt_missing"
+      }
+    },
+    {
+      "name": "error unavailable",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=unavailable",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "unavailable"
+      }
+    },
+    {
+      "name": "error protocol_unsupported with range",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=protocol_unsupported&min=2&max=3",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "protocol_unsupported",
+        "min": 2,
+        "max": 3
+      }
+    },
+    {
+      "name": "error protocol_unsupported without range",
+      "mode": "dev",
+      "domain": null,
+      "uri": "yaranapp://auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=protocol_unsupported",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "protocol_unsupported"
+      }
+    },
+    {
+      "name": "error timestamp skewed",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_timestamp_skewed&server_time=1731571900",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_timestamp_skewed",
+        "server_time": 1731571900
+      }
+    },
+    {
+      "name": "error in fragment",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback#state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=handoff_declined",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "error",
+        "code": "handoff_declined"
+      }
+    },
+    {
+      "name": "min with leading zero",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=protocol_unsupported&min=01",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    },
+    {
+      "name": "server_time on other error",
+      "mode": "https",
+      "domain": "app.example.com",
+      "uri": "https://app.example.com/auth/callback?state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&error=rate_limited&server_time=1",
+      "pending": {
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "created_at": 1731571470
+      },
+      "now": 1731571500,
+      "expect": {
+        "result": "refused",
+        "reason": "malformed"
+      }
+    }
+  ]
+}

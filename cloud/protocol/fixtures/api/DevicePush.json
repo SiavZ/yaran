@@ -1,0 +1,49 @@
+{
+  "type": "DevicePush",
+  "schema": "devices.schema.json#/$defs/DevicePush",
+  "valid": [
+    {
+      "name": "none",
+      "value": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "webpush",
+      "value": {
+        "kind": "webpush",
+        "channel": "apns_relay",
+        "endpoint_host": "relay.example.com",
+        "last_success_at": "2026-11-14T12:00:00Z",
+        "last_error_code": null,
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown kind",
+      "keyword": "enum",
+      "value": {
+        "kind": "sms"
+      }
+    },
+    {
+      "name": "uppercase host",
+      "keyword": "pattern",
+      "value": {
+        "kind": "webpush",
+        "channel": "apns_relay",
+        "endpoint_host": "Relay.example.com",
+        "last_success_at": "2026-11-14T12:00:00Z",
+        "last_error_code": null,
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+      }
+    },
+    {
+      "name": "missing kind",
+      "keyword": "required",
+      "value": {}
+    }
+  ]
+}

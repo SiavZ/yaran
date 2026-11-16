@@ -1,3 +1,45 @@
+//! Background worker management for the terminal UI: draining events and spawning jobs.
+//! Terminal UI background work: draining worker events and spawning workers.
+//!
+//! Applies every engine reaction the run loop drains and starts the background jobs
+//! that keep blocking work off the UI thread.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/workers.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::render
+//! ├── app::test_support
+//! ├── config
+//! ├── crate
+//! ├── raw_input
+//! ├── yaran-core::agent_job
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::bidi
+//! ├── yaran-core::changes_status
+//! ├── yaran-core::config
+//! ├── yaran-core::config_reload_status
+//! ├── yaran-core::engine
+//! ├── yaran-core::git
+//! ├── yaran-core::ids
+//! ├── yaran-core::model
+//! ├── yaran-core::pty
+//! ├── yaran-core::startup
+//! ├── yaran-core::statusline
+//! ├── yaran-core::tab_verdict
+//! ├── yaran-core::term_identity
+//! ├── yaran-core::test_provider
+//! ├── yaran-core::worker
+//! └── yaran-core::worktree_manager
+//! External: chrono, std, tempfile
+//!
+//! Used by:
+//! app/workers.rs
+//! ├── app
+//! └── app::sessions
+//! <module-headers:end>
+
 use std::sync::mpsc::Sender;
 
 use yaran_core::engine::{
@@ -103,6 +145,7 @@ impl App {
         self.drain_notes_fetch();
         self.drain_unpushed_count();
         self.drain_orphan_worktrees();
+        self.drain_cloud();
         self.drain_pending_diff();
         self.drain_changes_job();
         self.drain_human_board();
@@ -702,6 +745,9 @@ impl App {
 
             EventReaction::TailscaleModeApplied { mode, outcome } => {
                 self.apply_tailscale_mode_outcome(mode, outcome);
+            }
+            EventReaction::CloudModeApplied { mode, outcome } => {
+                self.apply_cloud_mode_outcome(mode, outcome);
             }
             EventReaction::ApplyReloadedConfig(boxed) => {
                 self.apply_reloaded_config_reaction(*boxed);

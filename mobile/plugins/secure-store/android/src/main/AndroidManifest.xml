@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Shares only cacheDir/diag-export/ (the sanitized diagnostics copy) with the
+             app the user picks in the share sheet; never exported, grants are per share. -->
+        <provider
+            android:name="io.github.siavz.yaran.securestore.DiagnosticsFileProvider"
+            android:authorities="${applicationId}.yaran.diagnostics"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

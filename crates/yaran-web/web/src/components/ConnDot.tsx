@@ -1,7 +1,7 @@
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { useYaran } from "@/lib/store"
 import type { ConnState } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The one connection indicator, an at-a-glance health signal beside the logo; the
 // actionable connection-lost case belongs to OfflineOverlay. "closed" is amber

@@ -1,0 +1,744 @@
+{
+  "description": "Design §4 error codes. Never reused; reserved codes are never emitted; local codes are used by openers and decoders only (no HTTP). status null = no HTTP status of its own (callback-only or local).",
+  "codes": [
+    {
+      "code": "bad_request",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Malformed request."
+    },
+    {
+      "code": "validation_failed",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Schema validation failed; details.errors lists up to 20 {path, message}."
+    },
+    {
+      "code": "protocol_unsupported",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "No protocol version both sides support; details {min, max}."
+    },
+    {
+      "code": "unauthenticated",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Access assertion missing or invalid."
+    },
+    {
+      "code": "service_token_rejected",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "A service-token JWT on a user route."
+    },
+    {
+      "code": "forbidden",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The caller's role does not allow this."
+    },
+    {
+      "code": "user_disabled",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The signed-in user's row is disabled."
+    },
+    {
+      "code": "device_revoked",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The request's Yaran-Install-Id names a revoked device; the app wipes that org's data."
+    },
+    {
+      "code": "origin_mismatch",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "CSRF rule: Origin present and not the control-plane origin."
+    },
+    {
+      "code": "misdirected_host",
+      "status": 421,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "After setup, a Host other than the recorded control-plane host."
+    },
+    {
+      "code": "not_found",
+      "status": 404,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "No such resource."
+    },
+    {
+      "code": "method_not_allowed",
+      "status": 405,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Method not allowed on this path."
+    },
+    {
+      "code": "conflict",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Generic state conflict."
+    },
+    {
+      "code": "payload_too_large",
+      "status": 413,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Request body over 64 KiB."
+    },
+    {
+      "code": "unsupported_media_type",
+      "status": 415,
+      "retryable": false,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Content-Type is not application/json."
+    },
+    {
+      "code": "rate_limited",
+      "status": 429,
+      "retryable": true,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Too many requests; Retry-After says when to retry."
+    },
+    {
+      "code": "internal",
+      "status": 500,
+      "retryable": true,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Unexpected server failure."
+    },
+    {
+      "code": "cloudflare_api_failed",
+      "status": 502,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Cloudflare API refused; details.cf_errors [{code, message}] sanitized."
+    },
+    {
+      "code": "cloudflare_unavailable",
+      "status": 502,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Cloudflare API 5xx or network failure."
+    },
+    {
+      "code": "cloudflare_rate_limited",
+      "status": 503,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Cloudflare API budget exhausted or 429; carries Retry-After."
+    },
+    {
+      "code": "cloudflare_permission_denied",
+      "status": 502,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The API token lacks a permission; details.permission names it."
+    },
+    {
+      "code": "unavailable",
+      "status": 503,
+      "retryable": true,
+      "emitted_by": [
+        "any"
+      ],
+      "summary": "Temporarily unavailable; carries Retry-After."
+    },
+    {
+      "code": "identity_unavailable",
+      "status": 503,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Access JWKS unreachable; fails closed."
+    },
+    {
+      "code": "setup_incomplete",
+      "status": 503,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The setup wizard is not finished."
+    },
+    {
+      "code": "setup_closed",
+      "status": 410,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "/setup* after setup completed."
+    },
+    {
+      "code": "setup_code_invalid",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Wrong setup code (setup HTML)."
+    },
+    {
+      "code": "setup_locked",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Too many wrong setup codes; locked until SETUP_CODE changes."
+    },
+    {
+      "code": "setup_claim_invalid",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Admin claim link unknown, used, expired, or for another email."
+    },
+    {
+      "code": "signature_missing",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Machine signature headers absent or malformed."
+    },
+    {
+      "code": "signature_invalid",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Ed25519 check or body hash failed."
+    },
+    {
+      "code": "signature_expired",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Timestamp outside +-300 s; details.server_time."
+    },
+    {
+      "code": "nonce_replayed",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The nonce was already used inside its window."
+    },
+    {
+      "code": "machine_unknown",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "No machine with that id."
+    },
+    {
+      "code": "machine_revoked",
+      "status": 410,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The machine was revoked; yaran stops the cloud leg out loud."
+    },
+    {
+      "code": "machine_not_ready",
+      "status": 409,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Machine provisioning or failed on a non-claim machine route."
+    },
+    {
+      "code": "pairing_not_allowed",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The admin pairing policy excludes this user."
+    },
+    {
+      "code": "pair_request_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Bad authorize parameters."
+    },
+    {
+      "code": "pair_callback_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Callback is not http://127.0.0.1:<port>/callback."
+    },
+    {
+      "code": "pair_denied",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The user pressed Deny."
+    },
+    {
+      "code": "pair_request_expired",
+      "status": 410,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The pair request expired."
+    },
+    {
+      "code": "pair_code_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Unknown, used or expired pair code."
+    },
+    {
+      "code": "pkce_mismatch",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "code_verifier does not match code_challenge."
+    },
+    {
+      "code": "machine_name_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Machine name fails the MachineName rule."
+    },
+    {
+      "code": "machine_cap_reached",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Per-user machine cap reached; details {limit}."
+    },
+    {
+      "code": "account_quota_reached",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Cloudflare account quota guard; details {resource, used, limit}."
+    },
+    {
+      "code": "hostname_conflict",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The derived hostname is taken by a record yaran does not own."
+    },
+    {
+      "code": "provisioning_in_progress",
+      "status": 409,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Another provisioning op is live for this machine."
+    },
+    {
+      "code": "provisioning_failed",
+      "status": 502,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The provisioning saga failed and compensated."
+    },
+    {
+      "code": "tunnel_delete_blocked",
+      "status": 502,
+      "retryable": true,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Teardown could not delete the tunnel; admin retry."
+    },
+    {
+      "code": "origin_port_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "origin_port outside 1-65535."
+    },
+    {
+      "code": "handoff_request_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker",
+        "yaran"
+      ],
+      "summary": "Bad handoff parameter; also sent as error= on a valid redirect."
+    },
+    {
+      "code": "handoff_declined",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "worker",
+        "yaran"
+      ],
+      "summary": "Callback error= only: the person pressed Cancel on the consent page."
+    },
+    {
+      "code": "handoff_device_key_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker",
+        "yaran"
+      ],
+      "summary": "dk missing, not a P256Point, or off P-256; also sent as error=."
+    },
+    {
+      "code": "handoff_signature_malformed",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker",
+        "yaran"
+      ],
+      "summary": "dts or dsig missing or malformed; also sent as error=."
+    },
+    {
+      "code": "handoff_timestamp_skewed",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker",
+        "yaran"
+      ],
+      "summary": "dts outside +-300 s; details.server_time or &server_time on the redirect."
+    },
+    {
+      "code": "handoff_jwt_missing",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "yaran"
+      ],
+      "summary": "Superseded by Yaran-Refusal: access-missing.",
+      "reserved": true
+    },
+    {
+      "code": "handoff_owner_mismatch",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "yaran"
+      ],
+      "summary": "Superseded by Yaran-Refusal: access-not-owner.",
+      "reserved": true
+    },
+    {
+      "code": "device_cap_reached",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Per-user device cap reached; details {limit}."
+    },
+    {
+      "code": "push_endpoint_invalid",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "The push endpoint is not acceptable."
+    },
+    {
+      "code": "push_relay_disallowed",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Relay channel refused; details.reason disabled or not_allowlisted."
+    },
+    {
+      "code": "push_disabled",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Org push is off."
+    },
+    {
+      "code": "last_admin",
+      "status": 409,
+      "retryable": false,
+      "emitted_by": [
+        "worker"
+      ],
+      "summary": "Cannot demote or delete the last admin."
+    },
+    {
+      "code": "relay_app_unknown",
+      "status": 400,
+      "retryable": false,
+      "emitted_by": [
+        "relay"
+      ],
+      "summary": "App id not served by this relay."
+    },
+    {
+      "code": "relay_vapid_invalid",
+      "status": 401,
+      "retryable": false,
+      "emitted_by": [
+        "relay"
+      ],
+      "summary": "VAPID header missing, JWT bad, wrong aud, expired or exp more than 24 h ahead."
+    },
+    {
+      "code": "relay_vapid_mismatch",
+      "status": 403,
+      "retryable": false,
+      "emitted_by": [
+        "relay"
+      ],
+      "summary": "VAPID k differs from the key bound at mint."
+    },
+    {
+      "code": "relay_endpoint_invalid",
+      "status": 404,
+      "retryable": false,
+      "emitted_by": [
+        "relay"
+      ],
+      "summary": "Unknown key id or bad tag."
+    },
+    {
+      "code": "relay_upstream_failed",
+      "status": 502,
+      "retryable": false,
+      "emitted_by": [
+        "relay"
+      ],
+      "summary": "APNs/FCM refused the relay's own credentials."
+    },
+    {
+      "code": "push_endpoint_gone",
+      "status": 410,
+      "retryable": false,
+      "emitted_by": [
+        "relay"
+      ],
+      "summary": "APNs/FCM said unregistered; the org marks the device gone."
+    },
+    {
+      "code": "jwe_malformed",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "Not five parts, part 2 not empty, or header not JSON.",
+      "local": true
+    },
+    {
+      "code": "jwe_unsupported",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "alg, enc, typ or cty differ from the profile.",
+      "local": true
+    },
+    {
+      "code": "jwe_kid_mismatch",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "kid is not the thumbprint of this handoff's key.",
+      "local": true
+    },
+    {
+      "code": "jwe_point_invalid",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "epk is not a valid P-256 point.",
+      "local": true
+    },
+    {
+      "code": "jwe_decrypt_failed",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "AES-GCM authentication failed.",
+      "local": true
+    },
+    {
+      "code": "jwe_state_mismatch",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "apv does not decode to the stored state.",
+      "local": true
+    },
+    {
+      "code": "jwe_host_mismatch",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "apu or the plaintext host is not the expected host.",
+      "local": true
+    },
+    {
+      "code": "jwe_kind_mismatch",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "Plaintext kind is not the expected kind.",
+      "local": true
+    },
+    {
+      "code": "jwe_expired",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "Plaintext exp is not more than 60 s in the future.",
+      "local": true
+    },
+    {
+      "code": "push_payload_invalid",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "The push plaintext fails the PushPayload rules.",
+      "local": true
+    },
+    {
+      "code": "push_decrypt_failed",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "RFC 8291 decryption failed.",
+      "local": true
+    },
+    {
+      "code": "uri_invalid",
+      "status": null,
+      "retryable": false,
+      "emitted_by": [
+        "local"
+      ],
+      "summary": "A yaranapp URI that cannot be honoured.",
+      "local": true
+    }
+  ]
+}

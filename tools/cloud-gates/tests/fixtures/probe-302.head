@@ -1,0 +1,4 @@
+HTTP/2 302 
+location: https://team.cloudflareaccess.com/cdn-cgi/access/login/gate-m1.example.invalid?kid=abc&redirect_url=%2F
+content-type: text/html
+

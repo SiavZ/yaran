@@ -1,0 +1,129 @@
+{
+  "type": "RelayFcmMessage",
+  "schema": "relay.schema.json#/$defs/RelayFcmMessage",
+  "valid": [
+    {
+      "name": "high",
+      "value": {
+        "data": {
+          "v": "1",
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+        },
+        "android": {
+          "priority": "high",
+          "ttl": "3600s",
+          "collapse_key": "abcdefghijklmnopqrstuvwxyz012345"
+        }
+      }
+    },
+    {
+      "name": "normal without collapse",
+      "value": {
+        "data": {
+          "v": "1",
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+        },
+        "android": {
+          "priority": "normal",
+          "ttl": "3600s"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "numeric v",
+      "keyword": "const",
+      "value": {
+        "data": {
+          "v": 1,
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+        },
+        "android": {
+          "priority": "high",
+          "ttl": "3600s",
+          "collapse_key": "abcdefghijklmnopqrstuvwxyz012345"
+        }
+      }
+    },
+    {
+      "name": "unknown priority",
+      "keyword": "enum",
+      "value": {
+        "data": {
+          "v": "1",
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+        },
+        "android": {
+          "priority": "max",
+          "ttl": "3600s",
+          "collapse_key": "abcdefghijklmnopqrstuvwxyz012345"
+        }
+      }
+    },
+    {
+      "name": "ttl without unit",
+      "keyword": "pattern",
+      "value": {
+        "data": {
+          "v": "1",
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+        },
+        "android": {
+          "priority": "high",
+          "ttl": "3600",
+          "collapse_key": "abcdefghijklmnopqrstuvwxyz012345"
+        }
+      }
+    },
+    {
+      "name": "31-char collapse key",
+      "keyword": "pattern",
+      "value": {
+        "data": {
+          "v": "1",
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+        },
+        "android": {
+          "priority": "high",
+          "ttl": "3600s",
+          "collapse_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    },
+    {
+      "name": "unknown data field",
+      "keyword": "additionalProperties",
+      "value": {
+        "data": {
+          "v": "1",
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd",
+          "extra": "x"
+        },
+        "android": {
+          "priority": "high",
+          "ttl": "3600s",
+          "collapse_key": "abcdefghijklmnopqrstuvwxyz012345"
+        }
+      }
+    },
+    {
+      "name": "missing android",
+      "keyword": "required",
+      "value": {
+        "data": {
+          "v": "1",
+          "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+        }
+      }
+    }
+  ]
+}

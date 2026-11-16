@@ -21,6 +21,16 @@
 //! against a config this build wrote. That needs two binaries, and only one
 //! exists in a checkout. The property tested instead is forward survival plus
 //! the round trip in mechanism 3, which is what an upgrade actually exercises.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! tests/upgrade_config.rs
+//! ├── yaran-core::config
+//! └── yaran-core::config_write
+//! External: std, tempfile
+//!
+//! Used by: entry point (cargo test -p yaran-core --test upgrade_config (integration test))
+//! <module-headers:end>
 
 use std::collections::BTreeMap;
 
@@ -217,6 +227,7 @@ fn keys_added_since_the_old_config_was_written_fall_back_to_their_defaults() {
     );
     assert_eq!(config.editor, fresh.editor);
     assert_eq!(config.capabilities, fresh.capabilities);
+    assert_eq!(config.cloud, fresh.cloud);
     // Keys added inside sections the old file DID mention: the one the user set
     // wins, every sibling defaults.
     assert_eq!(config.ui.agent_tabs_max, fresh.ui.agent_tabs_max);

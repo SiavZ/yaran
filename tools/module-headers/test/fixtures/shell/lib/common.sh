@@ -1,0 +1,2 @@
+#!/bin/sh
+# Shared helpers.

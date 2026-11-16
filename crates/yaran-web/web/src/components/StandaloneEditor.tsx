@@ -2,7 +2,7 @@ import { FileCode2, Loader2, SquareTerminal } from "lucide-react"
 
 import { AgentNotFound } from "@/components/AgentNotFound"
 import { LazyEditorBody } from "@/components/LazyEditorBody"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { useVisualViewportHeight } from "@/hooks/use-visual-viewport"
 import { swallowMissedFileDrop } from "@/lib/editorDrop"
 import { useYaran } from "@/lib/store"

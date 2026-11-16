@@ -2,7 +2,7 @@ import * as React from "react"
 import { useEffect, useRef } from "react"
 import { CornerDownLeft } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { composeBoxHeight } from "@/lib/composebar"
 import { composeHardwareKeyForwards } from "@/lib/termkeys"
 

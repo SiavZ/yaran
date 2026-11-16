@@ -2,7 +2,7 @@ import type * as React from "react"
 
 import { flightOwnsPosition, type FlightPhase } from "@/lib/theaterFlight"
 import { PILL_GRIPLESS_CLASS, type PillPosition } from "@/lib/theaterPill"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // How the pill's own box is painted and placed: the flight stage, the drag, and
 // the settle between them are the only things that decide it, and they decide it

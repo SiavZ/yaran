@@ -1,6 +1,6 @@
 import { SearchX } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Empty,
   EmptyContent,
@@ -8,8 +8,8 @@ import {
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
-} from "@/components/ui/empty"
-import { InlineCode } from "@/components/ui/inline-code"
+} from "@yaran/ui-kit/empty"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 import { navigateUp } from "@/lib/store"
 
 // What a URL naming an agent this workspace does not have renders. Saying so is

@@ -1,0 +1,128 @@
+{
+  "type": "PushWebpush",
+  "schema": "devices.schema.json#/$defs/PushWebpush",
+  "valid": [
+    {
+      "name": "unifiedpush",
+      "value": {
+        "kind": "webpush",
+        "channel": "unifiedpush",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "https://push.example.org/up/abc",
+        "keys": {
+          "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+          "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+        }
+      }
+    },
+    {
+      "name": "relay without distributor",
+      "value": {
+        "kind": "webpush",
+        "channel": "apns_relay",
+        "endpoint": "https://push.example.org/up/abc",
+        "keys": {
+          "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+          "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "http endpoint",
+      "keyword": "pattern",
+      "value": {
+        "kind": "webpush",
+        "channel": "unifiedpush",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "http://push.example.org/x",
+        "keys": {
+          "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+          "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+        }
+      }
+    },
+    {
+      "name": "2049-char endpoint",
+      "keyword": "maxLength",
+      "value": {
+        "kind": "webpush",
+        "channel": "unifiedpush",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "https://push.example.org/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "keys": {
+          "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+          "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+        }
+      }
+    },
+    {
+      "name": "21-char auth",
+      "keyword": "pattern",
+      "value": {
+        "kind": "webpush",
+        "channel": "unifiedpush",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "https://push.example.org/up/abc",
+        "keys": {
+          "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+          "auth": "BTBZMqHH6r4Tts7J_aSIg"
+        }
+      }
+    },
+    {
+      "name": "unknown key field",
+      "keyword": "additionalProperties",
+      "value": {
+        "kind": "webpush",
+        "channel": "unifiedpush",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "https://push.example.org/up/abc",
+        "keys": {
+          "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+          "auth": "BTBZMqHH6r4Tts7J_aSIgg",
+          "extra": "x"
+        }
+      }
+    },
+    {
+      "name": "unknown channel",
+      "keyword": "enum",
+      "value": {
+        "kind": "webpush",
+        "channel": "sms",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "https://push.example.org/up/abc",
+        "keys": {
+          "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+          "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+        }
+      }
+    },
+    {
+      "name": "missing keys",
+      "keyword": "required",
+      "value": {
+        "kind": "webpush",
+        "channel": "unifiedpush",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "https://push.example.org/up/abc"
+      }
+    },
+    {
+      "name": "bad p256dh",
+      "keyword": "pattern",
+      "value": {
+        "kind": "webpush",
+        "channel": "unifiedpush",
+        "distributor": "io.heckel.ntfy",
+        "endpoint": "https://push.example.org/up/abc",
+        "keys": {
+          "p256dh": "abc",
+          "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+        }
+      }
+    }
+  ]
+}

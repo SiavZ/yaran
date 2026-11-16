@@ -1,0 +1,60 @@
+{
+  "description": "Device-side parse of decrypted push bytes. Any failure is push_payload_invalid and the generic notification stays.",
+  "cases": [
+    {
+      "name": "attention raised",
+      "utf8": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200}",
+      "expect": "ok"
+    },
+    {
+      "name": "test",
+      "utf8": "{\"v\":1,\"k\":\"test\",\"ts\":1731571200}",
+      "expect": "ok"
+    },
+    {
+      "name": "unknown s token is accepted (worded generically)",
+      "utf8": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"brand_new_state\",\"ts\":1731571200}",
+      "expect": "ok"
+    },
+    {
+      "name": "unknown extra field is ignored",
+      "utf8": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200,\"z\":1}",
+      "expect": "ok"
+    },
+    {
+      "name": "test carrying m",
+      "utf8": "{\"v\":1,\"k\":\"test\",\"ts\":1,\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\"}",
+      "expect": "push_payload_invalid"
+    },
+    {
+      "name": "unknown k",
+      "utf8": "{\"v\":1,\"k\":\"brand_new_kind\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200}",
+      "expect": "push_payload_invalid"
+    },
+    {
+      "name": "missing a",
+      "utf8": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"s\":\"needs_attention\",\"ts\":1}",
+      "expect": "push_payload_invalid"
+    },
+    {
+      "name": "v is 2",
+      "utf8": "{\"v\":2,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200}",
+      "expect": "push_payload_invalid"
+    },
+    {
+      "name": "l over 24 bytes in 9 characters",
+      "utf8": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200,\"l\":\"日本語のラベルです\"}",
+      "expect": "push_payload_invalid"
+    },
+    {
+      "name": "not JSON",
+      "utf8": "{\"v\":1,",
+      "expect": "push_payload_invalid"
+    },
+    {
+      "name": "over 320 bytes",
+      "utf8": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"s\":\"needs_attention\",\"ts\":1731571200,\"l\":\"xxxxxxxxxxxxxxxxxxxxxxxx\",\"p\":\"yyyyyyyyyyyyyyyyyyyyyyyy\",\"t\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"}",
+      "expect": "push_payload_invalid"
+    }
+  ]
+}

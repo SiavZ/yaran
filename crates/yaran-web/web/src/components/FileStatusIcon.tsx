@@ -8,7 +8,7 @@ import {
 } from "@primer/octicons-react"
 
 import { fileStatusMeta, type FileStatusKind } from "@/lib/changedFiles"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 
 // One marker for a file's git status, shared by the changes pane and the

@@ -198,7 +198,7 @@ pub const FINAL_REPLAY_WINDOW: Duration = Duration::from_secs(30);
 /// the single window an `Info` gets.
 ///
 /// Must stay equal to `WARNING_DURATION_FACTOR` in
-/// `crates/yaran-web/web/src/lib/notify.ts` so the status line and the browser
+/// `packages/ui-kit/src/toast-policy.ts` so the status line and the browser
 /// toast agree; `the_web_mirrors_the_warning_clear_factor` reads that file and
 /// fails if they drift.
 pub const WARNING_CLEAR_FACTOR: u32 = 3;
@@ -368,7 +368,7 @@ pub struct StatusTickChanges {
     /// `busy` status.
     ///
     /// The re-broadcast is required: a browser holds its own leak guard on every
-    /// spinner (`BUSY_TOAST_MAX_MS` in `crates/yaran-web/web/src/lib/notify.ts`),
+    /// spinner (`BUSY_TOAST_MAX_MS` in `packages/ui-kit/src/toast-policy.ts`),
     /// and only another frame on the same key re-arms it.
     pub refreshed: Vec<KeyedWireStatus>,
     /// How many finals aged out of the replay window under
@@ -2092,20 +2092,20 @@ mod tests {
     fn the_web_mirrors_the_warning_clear_factor() {
         // The status line and the browser toast must agree on how much longer a
         // warning lasts than an info.
-        const NOTIFY_TS: &str = include_str!("../../yaran-web/web/src/lib/notify.ts");
-        let declared = NOTIFY_TS
+        const TOAST_POLICY_TS: &str = include_str!("../../../packages/ui-kit/src/toast-policy.ts");
+        let declared = TOAST_POLICY_TS
             .lines()
             .find_map(|line| {
                 line.trim()
                     .strip_prefix("export const WARNING_DURATION_FACTOR = ")
             })
-            .expect("notify.ts must declare WARNING_DURATION_FACTOR");
+            .expect("toast-policy.ts must declare WARNING_DURATION_FACTOR");
         assert_eq!(
             // The declaration may or may not end in a semicolon depending on how
             // the file was last formatted; the number is what must match.
             declared.trim().trim_end_matches(';').trim(),
             super::WARNING_CLEAR_FACTOR.to_string(),
-            "notify.ts WARNING_DURATION_FACTOR must match WARNING_CLEAR_FACTOR"
+            "toast-policy.ts WARNING_DURATION_FACTOR must match WARNING_CLEAR_FACTOR"
         );
     }
 

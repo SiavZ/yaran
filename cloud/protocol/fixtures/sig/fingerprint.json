@@ -1,0 +1,34 @@
+{
+  "description": "MachineKeyFingerprint (Design §7.1): base32(SHA-256(tag || 32-byte key)[0..15]) in six dashed groups.",
+  "tag": "yaran-machine-key-v1\n",
+  "cases": [
+    {
+      "public_key": "FLTLr2dQl8mCtz2azjQem5EyNsyp5xb3kPFlDU8p4Cs",
+      "public_key_hex": "14b4cbaf675097c982b73d9ace341e9b913236cca9e716f790f1650d4f29e02b",
+      "digest_hex": "aa659dbc49a9fe7228a093a7c511731d2f38c50e914130be700bd9e92925a203",
+      "fp24": "VJSZ3PCJVH7HEKFASOT4KELT",
+      "fingerprint": "VJSZ-3PCJ-VH7H-EKFA-SOT4-KELT"
+    },
+    {
+      "public_key": "9RCRdAy4gDZsOjH-qXRXsI3PxPzHaPOZBVpGfNf2238",
+      "public_key_hex": "f51091740cb880366c3a31fea97457b08dcfc4fcc768f399055a467cd7f6db7f",
+      "digest_hex": "bfead2728e5925b9faf66a7e8cc137145d1bddf1ac804a50ccd5071991e57d6f",
+      "fp24": "X7VNE4UOLES3T6XWNJ7IZQJX",
+      "fingerprint": "X7VN-E4UO-LES3-T6XW-NJ7I-ZQJX"
+    },
+    {
+      "public_key": "CYVG7G3Pz2-8O0DKAX7doULBhyI3SzwU5GV79vT_G10",
+      "public_key_hex": "098546ec6dcfcf6fbc3b40ca017edda142c18722374b3c14e4657bf6f4ff1b5d",
+      "digest_hex": "a310c9a21029cfbf06c04ee005760d4873c36ea3f082e1554ef81a8e786ecb92",
+      "fp24": "UMIMTIQQFHH36BWAJ3QAK5QN",
+      "fingerprint": "UMIM-TIQQ-FHH3-6BWA-J3QA-K5QN"
+    },
+    {
+      "public_key": "6CGYzlJi_MsoT-H5GLzn9mY0VP7D2Ea-2A6c7vCcZkk",
+      "public_key_hex": "e82198ce5262fccb284fe1f918bce7f6663454fec3d846bed80e9ceef09c6649",
+      "digest_hex": "15698c8ad6aeb706c802db12aac8b4a32da44dee41556e64defee10eef952297",
+      "fp24": "CVUYZCWWV23QNSAC3MJKVSFU",
+      "fingerprint": "CVUY-ZCWW-V23Q-NSAC-3MJK-VSFU"
+    }
+  ]
+}

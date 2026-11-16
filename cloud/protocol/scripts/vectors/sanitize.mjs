@@ -1,0 +1,42 @@
+/**
+ * Generates `sanitize_cross_language.json`: the decision table that pins the Worker's
+ * `security/sanitize.ts` to `yaran_core::sanitize::for_terminal` (keep `\n` and `\t`,
+ * escape every other control character, C1 and DEL included, as `\xNN`).
+ *
+ * The expected outputs are written here by hand from the Rust function, not computed, so
+ * the file is a statement of the rule rather than a copy of either implementation.
+ *
+ * <module-headers:begin>
+ * Uses: none
+ * External: none
+ *
+ * Used by:
+ * scripts/vectors/sanitize.mjs
+ * └── scripts/gen-vectors.mjs
+ * <module-headers:end>
+ */
+
+export async function generate() {
+  return {
+    "sanitize_cross_language.json": {
+      description: "for_terminal: keep \\n and \\t, replace every other control character (C0, DEL, C1 incl. 8-bit CSI \\u009b) with \\xNN (lowercase hex, two digits); everything else unchanged. Read by the Worker (cloud/worker) and yaran-core.",
+      cases: [
+        { name: "plain ascii", input: "hello world", output: "hello world" },
+        { name: "newline and tab kept", input: "a\nb\tc", output: "a\nb\tc" },
+        { name: "carriage return", input: "a\rb", output: "a\\x0db" },
+        { name: "nul", input: "a\u0000b", output: "a\\x00b" },
+        { name: "ansi colour", input: "\u001b[31mred\u001b[0m", output: "\\x1b[31mred\\x1b[0m" },
+        { name: "osc 8 hyperlink", input: "\u001b]8;;https://evil\u0007x\u001b]8;;\u0007", output: "\\x1b]8;;https://evil\\x07x\\x1b]8;;\\x07" },
+        { name: "osc 52 clipboard", input: "\u001b]52;c;cm0gLXJm\u001b\\", output: "\\x1b]52;c;cm0gLXJm\\x1b\\" },
+        { name: "dcs", input: "\u001bPq#0\u001b\\", output: "\\x1bPq#0\\x1b\\" },
+        { name: "del", input: "a\u007fb", output: "a\\x7fb" },
+        { name: "c1 csi", input: "\u009b31m", output: "\\x9b31m" },
+        { name: "c1 range edges", input: "\u0080\u009f\u00a0", output: "\\x80\\x9f\u00a0" },
+        { name: "unit separator", input: "\u001f", output: "\\x1f" },
+        { name: "non-latin text untouched", input: "Zoë 日本 🚀", output: "Zoë 日本 🚀" },
+        { name: "bidi override untouched (not a control character)", input: "a\u202eb", output: "a\u202eb" },
+        { name: "empty", input: "", output: "" },
+      ],
+    },
+  };
+}

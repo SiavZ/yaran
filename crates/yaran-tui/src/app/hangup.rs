@@ -17,6 +17,19 @@
 //!   its own thread, and if a quit was asked for and the run loop has not left
 //!   within the grace, it ends the process. Whatever the main thread is stuck
 //!   in, a signal that asks yaran to quit is never just swallowed.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/hangup.rs
+//! ├── crate
+//! └── yaran-core::cloud::cloudflared::child_registry
+//! External: libc, rustix, std
+//!
+//! Used by:
+//! app/hangup.rs
+//! ├── app
+//! └── app::input
+//! <module-headers:end>
 
 use std::os::fd::AsFd;
 use std::sync::Arc;
@@ -190,6 +203,7 @@ pub(crate) fn exit_because_wedged() {
          next start.",
         QUIT_WATCHDOG_GRACE.as_secs()
     ));
+    yaran_core::cloud::cloudflared::child_registry::kill_all_now();
     std::process::exit(129);
 }
 

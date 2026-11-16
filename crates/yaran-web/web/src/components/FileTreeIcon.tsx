@@ -13,7 +13,7 @@ import {
 } from "lucide-react"
 
 import type { FileIconKind } from "@/lib/fileIcons"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // Maps a pure `FileIconKind` (see lib/fileIcons.ts) to its lucide glyph. A
 // `Record` over the full union means adding a kind without adding it here is a

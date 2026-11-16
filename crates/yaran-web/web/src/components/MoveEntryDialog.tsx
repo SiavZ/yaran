@@ -2,16 +2,16 @@ import { useEffect, useRef, useState } from "react"
 import { ChevronRight, CornerLeftUp, Loader2, RotateCw } from "lucide-react"
 
 import { FileTreeIcon } from "@/components/FileTreeIcon"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
-import { ScrollArea } from "@/components/ui/scroll-area"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import { dirIconKind } from "@/lib/fileIcons"
 import { fileApi } from "@/lib/fileApi"
 import type { DirEntry } from "@/lib/fileTree"

@@ -1,0 +1,86 @@
+{
+  "type": "ExitEvent",
+  "schema": "machine.schema.json#/$defs/ExitEvent",
+  "valid": [
+    {
+      "name": "with status",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "kind": "agent_exited_badly",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ending": "exited",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      }
+    },
+    {
+      "name": "without status",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "kind": "agent_exited_badly",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ending": "exited"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "attention kind",
+      "keyword": "const",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "kind": "attention_raised",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ending": "exited",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      }
+    },
+    {
+      "name": "unknown ending",
+      "keyword": "enum",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "kind": "agent_exited_badly",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ending": "crashed",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      }
+    },
+    {
+      "name": "fractional status",
+      "keyword": "type",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "kind": "agent_exited_badly",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ending": "exited",
+        "exit_status": 1.5,
+        "project": "yaran",
+        "label": "agent"
+      }
+    },
+    {
+      "name": "missing ending",
+      "keyword": "required",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "kind": "agent_exited_badly",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      }
+    }
+  ]
+}

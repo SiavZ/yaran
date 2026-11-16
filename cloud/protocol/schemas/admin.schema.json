@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "admin.schema.json",
+  "title": "AdminSchemas",
+  "description": "W17-W28: admin console JSON API (role = admin).",
+  "$defs": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "type": "object",
+      "required": ["id", "email", "role", "disabled", "created_at", "last_seen_at", "machines", "devices"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "email": { "$ref": "common.schema.json#/$defs/Email" },
+        "role": { "$ref": "common.schema.json#/$defs/Role" },
+        "disabled": { "type": "boolean" },
+        "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "last_seen_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "machines": { "type": "integer", "minimum": 0 },
+        "devices": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "AdminUserPatch": {
+      "title": "AdminUserPatch",
+      "description": "revoke_all only with disabled: true; tears down their machines, revokes their devices and Access sessions.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "role": { "$ref": "common.schema.json#/$defs/Role" },
+        "disabled": { "type": "boolean" },
+        "revoke_all": { "type": "boolean" }
+      },
+      "dependentSchemas": {
+        "revoke_all": { "required": ["disabled"], "properties": { "disabled": { "const": true } } }
+      }
+    },
+    "AdminMachine": {
+      "title": "AdminMachine",
+      "description": "MachineSummary plus operator fields.",
+      "allOf": [{ "$ref": "me.schema.json#/$defs/MachineSummary" }],
+      "type": "object",
+      "required": ["owner_email", "tunnel_id", "access_app_id", "token_version", "provisioning", "key_fingerprint", "origin_port"],
+      "properties": {
+        "owner_email": { "$ref": "common.schema.json#/$defs/Email" },
+        "key_fingerprint": { "$ref": "common.schema.json#/$defs/MachineKeyFingerprint" },
+        "origin_port": { "$ref": "common.schema.json#/$defs/OriginPort" },
+        "tunnel_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "access_app_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "token_version": { "type": "integer", "minimum": 1 },
+        "provisioning": {
+          "type": "object",
+          "required": ["state"],
+          "properties": {
+            "state": { "enum": ["complete", "in_progress", "failed", "compensating"] },
+            "last_error_code": { "$ref": "common.schema.json#/$defs/NullableString" }
+          }
+        }
+      }
+    },
+    "AdminDevice": {
+      "title": "AdminDevice",
+      "allOf": [{ "$ref": "devices.schema.json#/$defs/Device" }],
+      "type": "object",
+      "required": ["owner_email"],
+      "properties": { "owner_email": { "$ref": "common.schema.json#/$defs/Email" } }
+    },
+    "AdminRotateRequest": {
+      "title": "AdminRotateRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kill_connections"],
+      "properties": { "kill_connections": { "type": "boolean" } }
+    },
+    "AuditEntry": {
+      "title": "AuditEntry",
+      "description": "action is an open enum from registry/audit-actions.json.",
+      "type": "object",
+      "required": ["id", "ts", "actor", "action", "target", "result"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "ts": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "actor": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["user", "machine", "system"] },
+            "id": { "type": "string" },
+            "email": { "$ref": "common.schema.json#/$defs/Email" }
+          }
+        },
+        "action": { "type": "string", "pattern": "^[a-z]+\\.[a-z_]+$" },
+        "target": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["org", "user", "machine", "device", "settings"] },
+            "id": { "type": "string" }
+          }
+        },
+        "result": { "enum": ["ok", "error"] },
+        "error_code": { "type": "string" },
+        "country": { "type": "string", "pattern": "^[A-Z]{2}$" }
+      }
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "W26; PUT replaces the whole object. Defaults: caps 10/10, ttl 3600, relay_allowed true, notify 30, revoke null, retention 365, quotas 500/500/1000, orphan_cleanup delete.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["org_name", "session_duration", "pairing_policy", "machine_cap_per_user", "device_cap_per_user", "push", "stale_machine_policy", "audit_retention_days", "quota_limits", "orphan_cleanup", "deployer_repo_url"],
+      "properties": {
+        "org_name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "session_duration": { "description": "Access format, 15m-720h (range checked in code).", "type": "string", "pattern": "^[1-9][0-9]{0,3}(?:m|h)$" },
+        "pairing_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "emails", "domains", "access_group_ids"],
+          "properties": {
+            "mode": { "enum": ["everyone", "allowlist"] },
+            "emails": { "type": "array", "maxItems": 500, "items": { "$ref": "common.schema.json#/$defs/Email" } },
+            "domains": { "type": "array", "maxItems": 100, "items": { "$ref": "common.schema.json#/$defs/Hostname" } },
+            "access_group_ids": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 64 } }
+          }
+        },
+        "machine_cap_per_user": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "device_cap_per_user": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "push": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "detail", "ttl_seconds", "relay_allowed", "allowed_relays"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "detail": { "enum": ["names", "minimal"] },
+            "ttl_seconds": { "type": "integer", "minimum": 60, "maximum": 86400 },
+            "relay_allowed": { "type": "boolean" },
+            "allowed_relays": { "description": "Empty = any https relay.", "type": "array", "maxItems": 20, "items": { "$ref": "common.schema.json#/$defs/OrgUrl" } }
+          }
+        },
+        "stale_machine_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["notify_after_days", "revoke_after_days"],
+          "properties": {
+            "notify_after_days": { "oneOf": [{ "type": "integer", "minimum": 1, "maximum": 365 }, { "type": "null" }] },
+            "revoke_after_days": { "oneOf": [{ "type": "integer", "minimum": 1, "maximum": 365 }, { "type": "null" }] }
+          }
+        },
+        "audit_retention_days": { "type": "integer", "minimum": 30, "maximum": 3650 },
+        "quota_limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["access_apps", "access_policies", "tunnels"],
+          "properties": {
+            "access_apps": { "type": "integer", "minimum": 1 },
+            "access_policies": { "type": "integer", "minimum": 1 },
+            "tunnels": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "orphan_cleanup": { "enum": ["delete", "report"] },
+        "deployer_repo_url": { "oneOf": [{ "type": "string", "maxLength": 512, "pattern": "^https://" }, { "type": "null" }] }
+      }
+    },
+    "UpdateStatus": {
+      "title": "UpdateStatus",
+      "description": "error set means 'could not check', never 'up to date'.",
+      "type": "object",
+      "required": ["current", "latest", "update_available", "security", "checked_at", "error"],
+      "properties": {
+        "current": { "$ref": "common.schema.json#/$defs/SemVer" },
+        "latest": { "oneOf": [{ "$ref": "common.schema.json#/$defs/SemVer" }, { "type": "null" }] },
+        "notes_url": { "$ref": "common.schema.json#/$defs/NullableString" },
+        "update_available": { "type": "boolean" },
+        "security": { "type": "boolean" },
+        "checked_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "error": { "oneOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }] }
+      }
+    },
+    "AdminUserPage": { "title": "AdminUserPage", "type": "object", "required": ["items", "next_cursor"], "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/AdminUser" } }, "next_cursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] } } },
+    "AdminMachinePage": { "title": "AdminMachinePage", "type": "object", "required": ["items", "next_cursor"], "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/AdminMachine" } }, "next_cursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] } } },
+    "AdminDevicePage": { "title": "AdminDevicePage", "type": "object", "required": ["items", "next_cursor"], "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/AdminDevice" } }, "next_cursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] } } },
+    "AuditPage": { "title": "AuditPage", "type": "object", "required": ["items", "next_cursor"], "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/AuditEntry" } }, "next_cursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] } } }
+  }
+}

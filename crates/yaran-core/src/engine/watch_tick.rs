@@ -379,15 +379,20 @@ impl Engine {
     /// Drive every live tab's watch rules one tick and return the status lines
     /// to show. Call once per tick from exactly one surface.
     pub fn tick_watch_rules(&mut self) -> Vec<StatusUpdate> {
+        self.tick_watch_rules_at(Instant::now())
+    }
+
+    /// [`Self::tick_watch_rules`] at a given instant, so tests can drive the
+    /// rescan schedule on logical time instead of the host's.
+    fn tick_watch_rules_at(&mut self, now: Instant) -> Vec<StatusUpdate> {
         let mut statuses = Vec::new();
         // Phase 2 of two-phase delivery first, so a submit key deferred last
         // tick lands before anything new is typed.
-        self.flush_pending_watch_enters(Instant::now());
+        self.flush_pending_watch_enters(now);
         self.sync_watch_engines(&mut statuses);
         if self.watch.attached.is_empty() {
             return statuses;
         }
-        let now = Instant::now();
         let tabs = self.watch_tabs_in_scan_order();
         // Rescans are capped per tick so tabs that all became due together
         // (they start, and so keep being rescanned, in step) are spread over
@@ -722,7 +727,7 @@ mod tests {
     use crate::watch::{WatchAction, WatchBackoff, WatchBudget};
 
     /// A rule that fires on the very next tick after its pattern appears.
-    fn instant_rule(pattern: &str, text: &str) -> WatchRule {
+    pub(super) fn instant_rule(pattern: &str, text: &str) -> WatchRule {
         WatchRule {
             pattern: pattern.to_string(),
             label: "retry".to_string(),
@@ -769,7 +774,7 @@ mod tests {
         .expect("spawn recording pty")
     }
 
-    fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
+    pub(super) fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if cond() {
@@ -798,7 +803,7 @@ mod tests {
 
     /// An engine with one claude agent whose slot tab runs `client`, and
     /// `rules` configured for claude.
-    fn engine_with_tab(
+    pub(super) fn engine_with_tab(
         client: PtyClient,
         rules: Vec<WatchRule>,
     ) -> (Engine, crate::test_scratch::ScratchDir) {
@@ -1380,195 +1385,8 @@ mod tests {
             "the rebuilt auto-clear rule must not schedule a clear"
         );
     }
-
-    /// A screen that changes on every tick (a working agent's spinner) is
-    /// rescanned at most once per WATCH_RESCAN_INTERVAL, and a match that
-    /// appears is still seen once the interval has passed.
-    #[test]
-    fn a_busy_screen_is_rescanned_at_most_once_per_interval() {
-        let tmp = crate::test_scratch::ScratchDir::new();
-        let go = tmp.path().join("go");
-        // A spinner redrawn every 20 ms, then, once `go` exists, a real hit.
-        let script = format!(
-            "i=0; while [ ! -e '{}' ]; do i=$((i+1)); printf '\\rspinner %d' $i; sleep 0.02; done; \
-             printf '\\nAPI Error: rate limited\\n'; exec sleep 30",
-            go.display()
-        );
-        let client = PtyClient::spawn(
-            "sh",
-            &["-c".to_string(), script],
-            &std::env::temp_dir(),
-            24,
-            80,
-            100,
-        )
-        .expect("spawn spinner pty");
-        let (mut engine, _guard) = engine_with_tab(
-            client,
-            vec![instant_rule("rate limited", "please continue")],
-        );
-        let tab = TabId::new("s1-slot");
-        assert!(wait_for(|| engine.providers[tab.as_ref_id()]
-            .scan_recent_lines(WATCH_SCAN_ROWS)
-            .contains("spinner")));
-
-        // Tick for about three intervals while the spinner keeps changing.
-        let started = Instant::now();
-        let mut scans = 0;
-        let mut last_seen = None;
-        while started.elapsed() < WATCH_RESCAN_INTERVAL * 3 {
-            engine.tick_watch_rules();
-            let at = engine.watch.last_snapshot.get(&tab).map(|c| c.scanned_at);
-            if at != last_seen {
-                scans += 1;
-                last_seen = at;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            (2..=4).contains(&scans),
-            "a busy screen was rescanned {scans} times in three intervals"
-        );
-
-        // A hit that appears is picked up within one interval and fires.
-        std::fs::write(&go, b"").unwrap();
-        assert!(wait_for(|| engine.providers[tab.as_ref_id()]
-            .scan_recent_lines(WATCH_SCAN_ROWS)
-            .contains("rate limited")));
-        let deadline = Instant::now() + WATCH_RESCAN_INTERVAL * 3;
-        let mut fired = false;
-        while Instant::now() < deadline && !fired {
-            fired = engine
-                .tick_watch_rules()
-                .iter()
-                .any(|s| s.message.contains("fired (attempt 1/3)"));
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(fired, "the rule must still fire on a busy screen");
-    }
-
-    /// A PTY whose screen changes every 20 ms, forever.
-    fn spinner_pty() -> PtyClient {
-        PtyClient::spawn(
-            "sh",
-            &[
-                "-c".to_string(),
-                "i=0; while :; do i=$((i+1)); printf '\\rspinner %d' $i; sleep 0.02; done"
-                    .to_string(),
-            ],
-            &std::env::temp_dir(),
-            24,
-            80,
-            100,
-        )
-        .expect("spawn spinner pty")
-    }
-
-    /// `n` agents whose slot tabs all run `spawn()` and one claude rule.
-    fn engine_with_tabs(
-        n: usize,
-        spawn: impl Fn() -> PtyClient,
-    ) -> (Engine, crate::test_scratch::ScratchDir, Vec<TabId>) {
-        let (mut engine, tmp) = engine_with_tab(
-            spawn(),
-            vec![instant_rule("rate limited", "please continue")],
-        );
-        let mut tabs = vec![TabId::new("s1-slot")];
-        for i in 2..=n {
-            let id = format!("s{i}");
-            engine
-                .sessions
-                .push(sample_session(&id, "p1", &format!("f{i}")));
-            let tab = TabId::new(format!("{id}-slot"));
-            engine.providers.insert(tab.clone(), spawn());
-            tabs.push(tab);
-        }
-        (engine, tmp, tabs)
-    }
-
-    #[test]
-    fn rescan_budget_scales_with_tab_count() {
-        assert_eq!(watch_rescans_per_tick(1), WATCH_MIN_RESCANS_PER_TICK);
-        assert_eq!(watch_rescans_per_tick(64), 16);
-        assert_eq!(watch_rescans_per_tick(65), 17);
-    }
-
-    /// Tabs that all change on every tick fall due together, but no tick
-    /// rescans more than the per-tick budget, and round-robin still rescans
-    /// every tab within two intervals of its last scan.
-    #[test]
-    fn busy_tabs_are_spread_across_ticks_and_none_starves() {
-        const N: usize = 12;
-        let (mut engine, _guard, tabs) = engine_with_tabs(N, spinner_pty);
-        for tab in &tabs {
-            assert!(wait_for(|| engine.providers[tab.as_ref_id()]
-                .scan_recent_lines(WATCH_SCAN_ROWS)
-                .contains("spinner")));
-        }
-        let cap = watch_rescans_per_tick(N);
-        assert!(cap < N, "the test needs the cap to bind");
-
-        let started = Instant::now();
-        let mut max_gap = Duration::ZERO;
-        let mut last: std::collections::HashMap<TabId, Instant> = Default::default();
-        while started.elapsed() < WATCH_RESCAN_INTERVAL * 6 {
-            let before = engine.watch.rescans;
-            engine.tick_watch_rules();
-            let did = engine.watch.rescans - before;
-            assert!(did <= cap, "one tick rescanned {did} tabs, cap {cap}");
-            for tab in &tabs {
-                let at = engine.watch.last_snapshot.get(tab).map(|c| c.scanned_at);
-                if let Some(at) = at
-                    && let Some(prev) = last.insert(tab.clone(), at)
-                    && prev != at
-                {
-                    max_gap = max_gap.max(at - prev);
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(last.len(), N, "every tab was scanned");
-        assert!(
-            max_gap <= WATCH_RESCAN_INTERVAL * 2,
-            "a busy tab waited {max_gap:?} between rescans"
-        );
-    }
-
-    /// A tab whose grid has not moved is never rescanned, however many ticks
-    /// pass after its interval.
-    #[test]
-    fn an_unchanged_tab_is_not_rescanned() {
-        let client = PtyClient::spawn(
-            "sh",
-            &[
-                "-c".to_string(),
-                "printf 'idle\\n'; exec sleep 30".to_string(),
-            ],
-            &std::env::temp_dir(),
-            24,
-            80,
-            100,
-        )
-        .expect("spawn idle pty");
-        let (mut engine, _guard) = engine_with_tab(
-            client,
-            vec![instant_rule("rate limited", "please continue")],
-        );
-        let tab = TabId::new("s1-slot");
-        assert!(wait_for(|| engine.providers[tab.as_ref_id()]
-            .scan_recent_lines(WATCH_SCAN_ROWS)
-            .contains("idle")));
-        std::thread::sleep(Duration::from_millis(100));
-        engine.tick_watch_rules();
-        let after_first = engine.watch.rescans;
-        assert_eq!(after_first, 1);
-        std::thread::sleep(WATCH_RESCAN_INTERVAL);
-        for _ in 0..50 {
-            engine.tick_watch_rules();
-        }
-        assert_eq!(
-            engine.watch.rescans, after_first,
-            "an idle tab was rescanned"
-        );
-    }
 }
+
+#[cfg(test)]
+#[path = "watch_tick_schedule_tests.rs"]
+mod schedule_tests;

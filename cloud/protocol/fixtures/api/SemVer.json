@@ -1,0 +1,31 @@
+{
+  "type": "SemVer",
+  "schema": "common.schema.json#/$defs/SemVer",
+  "valid": [
+    {
+      "name": "release",
+      "value": "1.2.3"
+    },
+    {
+      "name": "prerelease",
+      "value": "1.2.3-beta.1"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "two parts",
+      "keyword": "pattern",
+      "value": "1.2"
+    },
+    {
+      "name": "v prefix",
+      "keyword": "pattern",
+      "value": "v1.2.3"
+    },
+    {
+      "name": "five digits",
+      "keyword": "pattern",
+      "value": "12345.0.0"
+    }
+  ]
+}

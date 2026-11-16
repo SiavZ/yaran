@@ -1,0 +1,27 @@
+{
+  "type": "MachineKeyFingerprint",
+  "schema": "common.schema.json#/$defs/MachineKeyFingerprint",
+  "valid": [
+    {
+      "name": "display",
+      "value": "K7QF-3MZD-W2PA-HX5R-LC4N-TB6E"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "lowercase",
+      "keyword": "pattern",
+      "value": "k7qf-3mzd-w2pa-hx5r-lc4n-tb6e"
+    },
+    {
+      "name": "digit 0",
+      "keyword": "pattern",
+      "value": "K7QF-3MZD-W2PA-HX5R-LC4N-TB60"
+    },
+    {
+      "name": "no dashes",
+      "keyword": "pattern",
+      "value": "K7QF3MZDW2PAHX5RLC4NTB6E"
+    }
+  ]
+}

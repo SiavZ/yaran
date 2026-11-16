@@ -39,7 +39,8 @@ teardown() {
 # Fake curl serving a release. FAKE_SUMS_MODE picks how the checksum is
 # published: "sha256" (a per-archive .sha256, upstream's scheme), "sums" (only
 # a combined SHA256SUMS, this fork's historical dux-amq-v0.1.x releases), or "none".
-# API calls answer from FAKE_API_LATEST / FAKE_API_LIST ("404" means HTTP 404).
+# API calls answer from FAKE_API_LATEST (a tag) / FAKE_API_LIST (the raw JSON
+# array of the releases list); "404" means HTTP 404.
 install_fake_curl() {
   export FAKE_CHECKSUM="$1" FAKE_SUMS_MODE="${2:-sha256}"
   cat >"$FAKE_BIN/curl" <<'EOF'
@@ -64,9 +65,9 @@ case "$url" in
   */releases/latest)
     [[ "${FAKE_API_LATEST:-404}" == 404 ]] && answer 404 ""
     answer 200 "{\"tag_name\": \"${FAKE_API_LATEST}\"}" ;;
-  */releases\?per_page=1)
+  */releases\?per_page=30)
     [[ "${FAKE_API_LIST:-404}" == 404 ]] && answer 404 ""
-    answer 200 "[{\"tag_name\": \"${FAKE_API_LIST}\"}]" ;;
+    answer 200 "$FAKE_API_LIST" ;;
   *.tar.gz.sha256)
     [[ "$FAKE_SUMS_MODE" == sha256 ]] || answer 404 ""
     archive="${url##*/}"
@@ -166,18 +167,40 @@ archive_checksum() {
   [ ! -e "$TAR_LOG" ]
 }
 
+# One release object as GitHub lists it: tag_name, then draft, then prerelease.
+release_json() {  # tag draft prerelease
+  printf '{"tag_name": "%s", "draft": %s, "prerelease": %s, "assets": []}' "$1" "$2" "$3"
+}
+
 # 244b33c6: /releases/latest answers 404 when every release is a prerelease,
 # and the fork's first release was one. The installer must fall back to the
-# newest release in the list instead of dying.
-@test "root installer falls back to the newest release when there is no stable one" {
+# newest binary-train release in the list instead of dying, skipping the other
+# trains' releases that carry no yaran-<os>-<arch>.tar.gz.
+@test "root installer falls back to the newest binary prerelease when there is no stable one" {
   install_fake_curl "$(archive_checksum)"
   install_fake_tar
 
-  run env FAKE_API_LATEST=404 FAKE_API_LIST=yaran-v0.2.0-rc1 \
+  run env FAKE_API_LATEST=404 \
+    FAKE_API_LIST="[$(release_json yaran-mobile-v1.0.0-rc.1 false true), $(release_json yaran-v0.2.0-rc1 false true)]" \
     YARAN_INSTALL_DIR="$INSTALL_DIR" "$REPO_ROOT/install.sh"
   [ "$status" -eq 0 ]
-  grep -Fq -- "api.github.com/repos/SiavZ/yaran/releases?per_page=1" "$CURL_LOG"
-  grep -Fq -- "releases/download/yaran-v0.2.0-rc1/yaran-linux-amd64.tar.gz" "$CURL_LOG"
+  grep -Fxq -- "https://api.github.com/repos/SiavZ/yaran/releases?per_page=30" "$CURL_LOG"
+  grep -Fxq -- "https://github.com/SiavZ/yaran/releases/download/yaran-v0.2.0-rc1/yaran-linux-amd64.tar.gz" "$CURL_LOG"
+  ! grep -Fq -- "yaran-mobile-v" "$CURL_LOG" || false
+}
+
+# "latest" may name a cloud or mobile release. The list fallback must then take
+# the newest STABLE binary release, not a newer binary prerelease or a draft.
+@test "root installer prefers a stable binary release when latest is another train" {
+  install_fake_curl "$(archive_checksum)"
+  install_fake_tar
+
+  run env FAKE_API_LATEST=yaran-cloud-v1.1.0 \
+    FAKE_API_LIST="[$(release_json yaran-cloud-v1.1.0 false false), $(release_json yaran-v0.5.0 true false), $(release_json yaran-v0.4.0-rc.1 false true), $(release_json yaran-v0.3.0 false false)]" \
+    YARAN_INSTALL_DIR="$INSTALL_DIR" "$REPO_ROOT/install.sh"
+  [ "$status" -eq 0 ]
+  grep -Fxq -- "https://github.com/SiavZ/yaran/releases/download/yaran-v0.3.0/yaran-linux-amd64.tar.gz" "$CURL_LOG"
+  ! grep -Fq -- "releases/download/yaran-cloud-v" "$CURL_LOG" || false
 }
 
 # a0f84a7f: resolve_version runs inside $(...). A progress line on stdout was

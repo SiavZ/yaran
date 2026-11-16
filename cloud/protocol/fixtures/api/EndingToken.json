@@ -1,0 +1,34 @@
+{
+  "type": "EndingToken",
+  "schema": "common.schema.json#/$defs/EndingToken",
+  "valid": [
+    {
+      "name": "launch_failed",
+      "value": "launch_failed"
+    },
+    {
+      "name": "exited",
+      "value": "exited"
+    },
+    {
+      "name": "exited_unknown",
+      "value": "exited_unknown"
+    },
+    {
+      "name": "rapid_clean_exit",
+      "value": "rapid_clean_exit"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

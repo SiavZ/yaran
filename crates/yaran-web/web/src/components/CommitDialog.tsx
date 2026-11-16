@@ -2,14 +2,14 @@ import { useState } from "react"
 import { Loader2 } from "lucide-react"
 import { notifyError } from "@/lib/notify"
 import { git } from "@/lib/git"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@yaran/ui-kit/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { closeCommit, setCommitDraft, useYaran } from "@/lib/store"
 

@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "paths": { "@/*": ["./src/*"] },
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["src"]
+}

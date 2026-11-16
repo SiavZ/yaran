@@ -42,13 +42,21 @@ import { describe, expect, it } from "vitest"
 
 const SRC = join(fileURLToPath(new URL(".", import.meta.url)), "..")
 
+// The shared primitives moved to `packages/ui-kit`, outside this tree, yet they
+// ship in this bundle, so the boundary scans the kit's source too. Its files are
+// named `@yaran/ui-kit/<file>`, the way the web imports them; the web's own
+// files keep their `src/`-relative names. Read from the repository path rather
+// than through node_modules, so the scan does not depend on how npm linked it.
+const KIT = join(SRC, "../../../../packages/ui-kit/src")
+const KIT_PREFIX = "@yaran/ui-kit/"
+
 /// The only PRODUCTION modules that may import sonner.
 ///
-/// `lib/notify.ts` is the raiser. `components/ui/sonner.tsx` is the Toaster
+/// `lib/notify.ts` is the raiser. The kit's `sonner.tsx` is the Toaster
 /// component itself, which imports the React component and its types, never the
 /// raiser. There is no third entry, and adding one is the thing this test
 /// exists to stop.
-const SONNER_IMPORTERS = ["components/ui/sonner.tsx", "lib/notify.ts"]
+const SONNER_IMPORTERS = [`${KIT_PREFIX}sonner.tsx`, "lib/notify.ts"]
 
 /// Tests that reach sonner directly, each for a stated reason.
 ///
@@ -59,17 +67,17 @@ const SONNER_IMPORTERS = ["components/ui/sonner.tsx", "lib/notify.ts"]
 /// spy installed on sonner from a test covering some module that has no
 /// business notifying at all is worth a second look.
 ///
-/// The one exception to the mocking rule is `components/ui/sonner.test.tsx`,
+/// The one exception to the mocking rule is the kit's `sonner.test.tsx`,
 /// which renders the real Toaster and pins sonner's actual behavior.
 // Kept sorted, because the scan is.
 const SONNER_TEST_IMPORTERS = [
+  // Mounts the real Toaster and pins sonner's loading-toast limitations, so it
+  // has to raise through sonner to have anything to look at. It runs in the kit.
+  `${KIT_PREFIX}sonner.test.tsx`,
   // The drop-report and clipboard journeys: they assert which tone, id and
   // duration each report ends up with.
   "components/TerminalPane.clipboard.test.tsx",
   "components/TerminalPane.filedrop.test.tsx",
-  // Mounts the real Toaster and pins sonner's loading-toast limitations, so it
-  // has to raise through sonner to have anything to look at.
-  "components/ui/sonner.test.tsx",
   // The favicon migration notice.
   "lib/favicon.dom.test.tsx",
   "lib/favicon.test.ts",
@@ -108,11 +116,14 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "")
 }
 
-function importersOfSonner(): string[] {
-  return sourceFiles(SRC)
+function importersIn(root: string, prefix: string): string[] {
+  return sourceFiles(root)
     .filter((file) => IMPORTS_SONNER.test(stripComments(readFileSync(file, "utf8"))))
-    .map((file) => relative(SRC, file).split(sep).join("/"))
-    .sort()
+    .map((file) => prefix + relative(root, file).split(sep).join("/"))
+}
+
+function importersOfSonner(): string[] {
+  return [...importersIn(SRC, ""), ...importersIn(KIT, KIT_PREFIX)].sort()
 }
 
 const isTest = (path: string) => /\.test\.tsx?$/.test(path)
@@ -131,6 +142,7 @@ describe("the sonner import boundary", () => {
     // nothing, both assertions above go green on empty arrays, and the boundary
     // is unguarded while looking guarded.
     expect(sourceFiles(SRC).length).toBeGreaterThan(100)
+    expect(sourceFiles(KIT).length).toBeGreaterThan(10)
     expect(importersOfSonner().length).toBe(
       SONNER_IMPORTERS.length + SONNER_TEST_IMPORTERS.length,
     )

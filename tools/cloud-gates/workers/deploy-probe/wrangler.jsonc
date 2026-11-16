@@ -1,0 +1,18 @@
+// Gate G11 probe: deployed by the Deploy to Cloudflare button from a branch subdirectory.
+// The D1 binding deliberately has no database_id: the button provisions the database and
+// writes the id into the cloned repository's copy of this file.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "yaran-gate-deploy-probe",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "yaran-gate-deploy-probe",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

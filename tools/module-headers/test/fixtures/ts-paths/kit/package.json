@@ -1,0 +1,9 @@
+{
+  "name": "@yaran/ui-kit",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./src/index.ts" },
+    "./tokens": { "types": "./src/tokens.ts", "default": "./src/tokens.ts" }
+  }
+}

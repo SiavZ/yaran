@@ -1,0 +1,22 @@
+{
+  "type": "DeviceLabel",
+  "schema": "devices.schema.json#/$defs/DeviceLabel",
+  "valid": [
+    {
+      "name": "label",
+      "value": "Ada's Pixel"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty",
+      "keyword": "minLength",
+      "value": ""
+    },
+    {
+      "name": "65 chars",
+      "keyword": "maxLength",
+      "value": "lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll"
+    }
+  ]
+}

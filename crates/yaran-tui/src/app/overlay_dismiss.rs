@@ -17,7 +17,25 @@
 //! instead: a short, self-terminating blink of the modal's border ring, armed
 //! here and painted by `themed_overlay_block`. The click is still answered, just
 //! not with a close, since a swallowed click teaches the user nothing.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/overlay_dismiss.rs
+//! ├── app
+//! ├── app::cloud_commands
+//! ├── app::input
+//! ├── app::render
+//! ├── app::test_support
+//! ├── config
+//! └── yaran-core::welcome_screen
+//! External: crossterm, ratatui, std
+//!
+//! Used by:
+//! app/overlay_dismiss.rs
+//! └── app
+//! <module-headers:end>
 
+use super::cloud_commands::CloudPrompt;
 use super::input::contains_point;
 use super::*;
 
@@ -105,6 +123,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
         | PromptState::SetTailscaleMode(_)
+        | PromptState::SetCloudMode(_)
         | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_)
         | PromptState::ChangeTheme(_)
@@ -141,6 +160,17 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         // The worktree-removal confirm cancels back to the manager it was
         // raised from, exactly as its Esc arm does.
         | PromptState::ConfirmDeleteWorktree(_) => Cancel,
+
+        // A login holds a typed address or a running browser login, so a stray
+        // click blinks rather than cancelling it. The confirms default to
+        // Cancel and the reports hold nothing, so they dismiss.
+        PromptState::Cloud(CloudPrompt::Login(_)) => Blink,
+        PromptState::Cloud(
+            CloudPrompt::Logout(_)
+            | CloudPrompt::Rotate(_)
+            | CloudPrompt::Status(_)
+            | CloudPrompt::PairPhone(_),
+        ) => Cancel,
 
         // `EditMacros` is three modals in one variant, so it answers three
         // ways. Its nested delete-confirm is a confirmation like any other and
@@ -256,6 +286,7 @@ impl App {
             | PromptState::ChangeDefaultProvider(_)
             | PromptState::ChangeProjectDefaultProvider(_)
             | PromptState::SetTailscaleMode(_)
+            | PromptState::SetCloudMode(_)
             | PromptState::WatchRules(_)
             | PromptState::Command { .. }
             | PromptState::ConfirmNonDefaultBranch { .. } => {
@@ -358,6 +389,9 @@ impl App {
             PromptState::ConfirmSharedWriter { .. } => {
                 self.resolve_confirm_shared_writer(false);
             }
+
+            // Same path as Esc: a running login is cancelled, never left behind.
+            PromptState::Cloud(_) => self.cancel_cloud_prompt(),
 
             // The nested macro delete-confirm: clears the confirm and leaves
             // the macro editor open, exactly as its Esc and Cancel button do.

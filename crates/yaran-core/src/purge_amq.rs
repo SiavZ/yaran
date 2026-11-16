@@ -62,8 +62,6 @@ mod tests {
         SessionStatus,
     };
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::process::{Command, Stdio};
 
     fn session(id: &str, handle: &str) -> AgentSession {
         let now = chrono::Utc::now();
@@ -119,20 +117,8 @@ mod tests {
     fn purge_free_stops_the_recorded_wake_and_removes_the_owned_inbox() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("amq");
-        let fake_amq = dir.path().join("amq-wake-test");
-        fs::write(
-            &fake_amq,
-            "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do :; done\n",
-        )
-        .unwrap();
-        fs::set_permissions(&fake_amq, fs::Permissions::from_mode(0o755)).unwrap();
-        let child = Command::new(&fake_amq)
-            .args(["wake", "--me", "agent", "--root"])
-            .arg(&root)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let child =
+            crate::peer::test_support::spawn_ready_wake_stand_in(dir.path(), &root, "agent");
         let pid = child.id();
         // Reap concurrently, as a real parent would: an unreaped child stays a
         // zombie that still answers kill(0), so the free could never observe

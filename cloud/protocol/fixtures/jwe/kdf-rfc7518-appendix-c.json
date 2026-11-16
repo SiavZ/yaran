@@ -1,0 +1,25 @@
+{
+  "source": "RFC 7518 Appendix C (https://www.rfc-editor.org/rfc/rfc7518#appendix-C)",
+  "ephemeral_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "gI0GAILBdu7T53akrFmMyGcsF3n5dO7MmwNBHKW5SV0",
+    "y": "SLW_xSffzlPWrHEVI30DHM_4egVwt3NQqeUD7nMFpps",
+    "d": "0_NxaRPUMQoAJt50Gz8YiTr8gRTwyEaCumd-MToTmIo"
+  },
+  "recipient_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "weNJy2HscCSM6AEDTDg04biOvhFhyyWvOHQfeF_PxMQ",
+    "y": "e8lnCO-AlStT-NJVX-crhB7QRYhiix03illJOVAOyck",
+    "d": "VEmDZpDXXK8p8N0Cndsxs924q6nS1RXFASRl6BfUqdw"
+  },
+  "enc": "A128GCM",
+  "apu_utf8": "Alice",
+  "apv_utf8": "Bob",
+  "keydatalen": 128,
+  "z_hex": "9e56d91d817135d372834283bf84269cfb316ea3da806a48f6daa7798cfe90c4",
+  "other_info_hex": "000000074131323847434d00000005416c69636500000003426f6200000080",
+  "k_b64url": "VqqN6vgjbSBcIijNcacQGg",
+  "k_hex": "56aa8deaf8236d205c2228cd71a7101a"
+}

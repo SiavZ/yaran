@@ -1,0 +1,213 @@
+{
+  "description": "How the relay wraps one aes128gcm body (y) for APNs and for FCM (G5 fallback). Inputs: urgency, topic, ttl, registration id, app id, now.",
+  "registration_id": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+  "body_b64url": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI",
+  "app_id": "com.example.yaran",
+  "now": 1731571200,
+  "apns": [
+    {
+      "name": "high alert",
+      "urgency": "high",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re",
+      "ttl": 3600,
+      "headers": {
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "apns-expiration": "1731574800",
+        "apns-topic": "com.example.yaran",
+        "apns-collapse-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+      },
+      "payload": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+        },
+        "v": 1,
+        "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+      }
+    },
+    {
+      "name": "normal alert",
+      "urgency": "normal",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re",
+      "ttl": 3600,
+      "headers": {
+        "apns-push-type": "alert",
+        "apns-priority": "5",
+        "apns-expiration": "1731574800",
+        "apns-topic": "com.example.yaran",
+        "apns-collapse-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+      },
+      "payload": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+        },
+        "v": 1,
+        "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+      }
+    },
+    {
+      "name": "test alert has no topic",
+      "urgency": "normal",
+      "topic": null,
+      "ttl": 300,
+      "headers": {
+        "apns-push-type": "alert",
+        "apns-priority": "5",
+        "apns-expiration": "1731571500",
+        "apns-topic": "com.example.yaran"
+      },
+      "payload": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "yaran"
+        },
+        "v": 1,
+        "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+      }
+    },
+    {
+      "name": "low background",
+      "urgency": "low",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re",
+      "ttl": 3600,
+      "headers": {
+        "apns-push-type": "background",
+        "apns-priority": "5",
+        "apns-expiration": "1731574800",
+        "apns-topic": "com.example.yaran",
+        "apns-collapse-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+      },
+      "payload": {
+        "aps": {
+          "content-available": 1
+        },
+        "v": 1,
+        "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+      }
+    },
+    {
+      "name": "very-low background",
+      "urgency": "very-low",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re",
+      "ttl": 3600,
+      "headers": {
+        "apns-push-type": "background",
+        "apns-priority": "5",
+        "apns-expiration": "1731574800",
+        "apns-topic": "com.example.yaran",
+        "apns-collapse-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+      },
+      "payload": {
+        "aps": {
+          "content-available": 1
+        },
+        "v": 1,
+        "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+      }
+    },
+    {
+      "name": "ttl 0 stays 0",
+      "urgency": "high",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re",
+      "ttl": 0,
+      "headers": {
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "apns-expiration": "0",
+        "apns-topic": "com.example.yaran",
+        "apns-collapse-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+      },
+      "payload": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+        },
+        "v": 1,
+        "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+        "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+      }
+    }
+  ],
+  "fcm": [
+    {
+      "name": "high",
+      "urgency": "high",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re",
+      "ttl": 3600,
+      "message": {
+        "data": {
+          "v": "1",
+          "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+        },
+        "android": {
+          "priority": "high",
+          "ttl": "3600s",
+          "collapse_key": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+        }
+      }
+    },
+    {
+      "name": "very-low",
+      "urgency": "very-low",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re",
+      "ttl": 3600,
+      "message": {
+        "data": {
+          "v": "1",
+          "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+        },
+        "android": {
+          "priority": "normal",
+          "ttl": "3600s",
+          "collapse_key": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+        }
+      }
+    },
+    {
+      "name": "test",
+      "urgency": "normal",
+      "topic": null,
+      "ttl": 300,
+      "message": {
+        "data": {
+          "v": "1",
+          "r": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          "y": "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY_SI"
+        },
+        "android": {
+          "priority": "normal",
+          "ttl": "300s"
+        }
+      }
+    }
+  ]
+}

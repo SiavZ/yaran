@@ -1,0 +1,22 @@
+{
+  "type": "Email",
+  "schema": "common.schema.json#/$defs/Email",
+  "valid": [
+    {
+      "name": "plain",
+      "value": "ada@example.org"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no at sign",
+      "keyword": "format",
+      "value": "ada.example.org"
+    },
+    {
+      "name": "255 chars",
+      "keyword": "maxLength",
+      "value": "ada@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddd.org"
+    }
+  ]
+}

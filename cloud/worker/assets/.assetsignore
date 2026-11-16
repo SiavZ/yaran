@@ -1,0 +1,2 @@
+# TypeScript sources are compiled by `npm run build`; only the emitted .js is served.
+*.ts

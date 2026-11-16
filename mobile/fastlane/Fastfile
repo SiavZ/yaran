@@ -1,0 +1,19 @@
+# yaran mobile release lanes, run from mobile/ as `bundle exec fastlane <platform> <lane>`.
+#
+# Android: internal (Play internal track upload), promote (track promotion and rollout).
+# iOS: build (signed App Store IPA), beta (TestFlight upload), submit (App Review).
+# Called by .github/workflows/_mobile-android-release.yml, _mobile-ios-release.yml and
+# mobile-store-promote.yml; every input arrives as an environment variable.
+require_relative "lib/publisher"
+
+REPO_ROOT = File.expand_path("../..", __dir__)
+
+# Fetches a required environment variable or stops the lane naming it.
+def required_env(name)
+  value = ENV[name].to_s
+  UI.user_error!("#{name} is not set; the release workflow must provide it") if value.empty?
+  value
+end
+
+import "lanes/android.rb"
+import "lanes/ios.rb"

@@ -30,6 +30,10 @@
 import { assertNever } from "./assertNever"
 import { ReconnectingSocket } from "./reconnectingSocket"
 import { appSocketGivenUp } from "./appSocketGiveUp"
+import {
+  ACCESS_SESSION_EXPIRED_CLOSE,
+  accessSession,
+} from "./native/accessSession"
 import { onServerValidated, serverValidated } from "./serverValidated"
 import type { TerminalOwnerRef } from "./terminalOwner"
 
@@ -368,6 +372,13 @@ export class PtySocket extends ReconnectingSocket {
     if (closeCode === PROVIDER_UNAVAILABLE_CLOSE) {
       this.onConn("failed")
       return false
+    }
+    // An expired Access session is NOT a stop and NOT gone: an ordinary retry
+    // under the usual gate, so a renewed cookie reconnects and replays, and the
+    // probe decides whether the page needs a sign-in.
+    if (closeCode === ACCESS_SESSION_EXPIRED_CLOSE) {
+      accessSession.noteSessionExpired()
+      return true
     }
     // 2. The underlying route is gone (e.g. an extra tab another client deleted
     //    while this one was retrying): fire `onGone` once and stop.

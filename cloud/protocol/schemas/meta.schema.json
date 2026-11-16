@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "meta.schema.json",
+  "title": "MetaSchemas",
+  "description": "W1 GET /v1/meta: served before and after setup (D19).",
+  "$defs": {
+    "Meta": {
+      "title": "Meta",
+      "type": "object",
+      "required": ["service", "protocol", "worker", "setup"],
+      "properties": {
+        "service": { "const": "yaran-cloud" },
+        "protocol": { "$ref": "common.schema.json#/$defs/ProtocolRange" },
+        "setup": {
+          "description": "open: only the setup wizard works; other clients stop with setup_incomplete.",
+          "enum": ["open", "closed"]
+        },
+        "deprecations": { "type": "array", "items": { "$ref": "#/$defs/Deprecation" } },
+        "org": { "$ref": "common.schema.json#/$defs/OrgRef" },
+        "access": {
+          "type": "object",
+          "required": ["team_domain"],
+          "properties": { "team_domain": { "$ref": "common.schema.json#/$defs/Hostname" } }
+        },
+        "worker": {
+          "type": "object",
+          "required": ["version"],
+          "properties": { "version": { "$ref": "common.schema.json#/$defs/SemVer" } }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z_]+(?:\\.[a-z0-9_]+)*$" }
+        },
+        "push": {
+          "description": "vapid_public_key is the org's VAPID public key (raw point), or null while push is off.",
+          "type": "object",
+          "required": ["enabled", "vapid_public_key"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "vapid_public_key": { "$ref": "common.schema.json#/$defs/NullableP256Point" }
+          }
+        }
+      },
+      "if": { "required": ["setup"], "properties": { "setup": { "const": "closed" } } },
+      "then": {
+        "required": ["org", "access", "capabilities", "push"],
+        "properties": { "org": true, "access": true, "capabilities": true, "push": true }
+      }
+    },
+    "Deprecation": {
+      "title": "Deprecation",
+      "type": "object",
+      "required": ["protocol", "after"],
+      "properties": {
+        "protocol": { "type": "integer", "minimum": 1 },
+        "after": { "type": "string", "format": "date" }
+      }
+    }
+  }
+}

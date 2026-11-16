@@ -1,0 +1,26 @@
+{
+  "type": "Cursor",
+  "schema": "common.schema.json#/$defs/Cursor",
+  "valid": [
+    {
+      "name": "token",
+      "value": "abc_-1"
+    },
+    {
+      "name": "empty",
+      "value": ""
+    }
+  ],
+  "invalid": [
+    {
+      "name": "slash",
+      "keyword": "pattern",
+      "value": "a/b"
+    },
+    {
+      "name": "257 chars",
+      "keyword": "maxLength",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ]
+}

@@ -1,9 +1,9 @@
 import type * as React from "react"
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { YARAN_TERMINAL_FONT_STACK } from "@/lib/terminalFont"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // A viewport page-scroll intent from the PgUp/PgDn keys, driving xterm's scroll
 // API directly: the mobile scrollbar is a slim target that jumps a long way.

@@ -1,0 +1,33 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "POST",
+    "path": "/zones/{zone}/dns_records",
+    "body": {
+      "type": "CNAME",
+      "name": "laptop-bob.example.com",
+      "content": "00000000-0000-4000-8000-000000000001.cfargotunnel.com",
+      "proxied": true,
+      "ttl": 1,
+      "comment": "yaran:a1b2c3d4:m:00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "023e105f4ecef8ad9ca31a8372d0c353",
+        "type": "CNAME",
+        "name": "laptop-bob.example.com",
+        "content": "00000000-0000-4000-8000-000000000001.cfargotunnel.com",
+        "proxied": true,
+        "ttl": 1,
+        "comment": "yaran:a1b2c3d4:m:00000000-0000-4000-8000-000000000001"
+      }
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "description": "The §8 redirect allowlist. build null means the parameter was absent (release). expect true means the redirect may receive the handoff.",
+  "configured": [
+    "https://app.example.com/auth/callback"
+  ],
+  "cases": [
+    {
+      "redirect": "https://app.example.com/auth/callback",
+      "build": null,
+      "expect": true
+    },
+    {
+      "redirect": "https://app.example.com/auth/callback",
+      "build": "release",
+      "expect": true
+    },
+    {
+      "redirect": "yaranapp://auth/callback",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "yaranapp://auth/callback",
+      "build": null,
+      "expect": false
+    },
+    {
+      "redirect": "yaranapp://auth/callback",
+      "build": "dev",
+      "expect": true
+    },
+    {
+      "redirect": "https://app.example.com/auth/callback",
+      "build": "dev",
+      "expect": false
+    },
+    {
+      "redirect": "https://app.example.com/auth/callback/",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "https://APP.example.com/auth/callback",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "https://app.example.com/auth/Callback",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "https://app.example.com/auth/callback?x=1",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "https://user@app.example.com/auth/callback",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "http://app.example.com/auth/callback",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "https://app.example.com:443/auth/callback",
+      "build": "release",
+      "expect": false
+    },
+    {
+      "redirect": "YARANAPP://auth/callback",
+      "build": "dev",
+      "expect": false
+    },
+    {
+      "redirect": "yaranapp://auth/callback?x=1",
+      "build": "dev",
+      "expect": false
+    }
+  ]
+}

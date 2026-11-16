@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "machine.schema.json",
+  "title": "MachineSchemas",
+  "description": "The Ed25519-signed machine API (Design §7): W4-W8 and W32 under /v1/machine/*.",
+  "$defs": {
+    "TunnelCredentials": {
+      "title": "TunnelCredentials",
+      "description": "Contains a secret (the tunnel token).",
+      "type": "object",
+      "required": ["id", "token", "token_version"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "token": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "token_version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "MachineAccess": {
+      "title": "MachineAccess",
+      "type": "object",
+      "required": ["team_domain", "aud"],
+      "properties": {
+        "team_domain": { "$ref": "common.schema.json#/$defs/Hostname" },
+        "aud": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "ClaimRequest": {
+      "title": "ClaimRequest",
+      "description": "W4, signed with the key from machine_pubkey. origin_port is authoritative.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "code_verifier", "yaran_version", "origin_port"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "code_verifier": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{43,128}$" },
+        "yaran_version": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "origin_port": { "$ref": "common.schema.json#/$defs/OriginPort" }
+      }
+    },
+    "ClaimResponse": {
+      "title": "ClaimResponse",
+      "description": "W4 answer; contains a secret (tunnel.token).",
+      "type": "object",
+      "required": ["machine_id", "machine_name", "hostname", "url", "origin_port", "tunnel", "access", "owner_email", "user_slug", "org", "protocol"],
+      "properties": {
+        "machine_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "machine_name": { "$ref": "common.schema.json#/$defs/MachineName" },
+        "hostname": { "$ref": "common.schema.json#/$defs/Hostname" },
+        "url": { "type": "string", "pattern": "^https://" },
+        "origin_port": { "$ref": "common.schema.json#/$defs/OriginPort" },
+        "tunnel": { "$ref": "#/$defs/TunnelCredentials" },
+        "access": { "$ref": "#/$defs/MachineAccess" },
+        "owner_email": { "$ref": "common.schema.json#/$defs/Email" },
+        "user_slug": { "$ref": "common.schema.json#/$defs/UserSlug" },
+        "org": { "$ref": "common.schema.json#/$defs/OrgRef" },
+        "protocol": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "MachineConfig": {
+      "title": "MachineConfig",
+      "description": "W5; never contains the token. A higher tunnel.token_version than stored makes yaran call W7 with reason sync.",
+      "type": "object",
+      "required": ["machine_id", "hostname", "url", "origin_port", "access", "tunnel", "owner_email", "push", "events", "server_time"],
+      "properties": {
+        "machine_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "hostname": { "$ref": "common.schema.json#/$defs/Hostname" },
+        "url": { "type": "string", "pattern": "^https://" },
+        "origin_port": { "$ref": "common.schema.json#/$defs/OriginPort" },
+        "access": { "$ref": "#/$defs/MachineAccess" },
+        "tunnel": {
+          "type": "object",
+          "required": ["id", "token_version"],
+          "properties": {
+            "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+            "token_version": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "owner_email": { "$ref": "common.schema.json#/$defs/Email" },
+        "push": {
+          "type": "object",
+          "required": ["enabled", "detail"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "detail": { "enum": ["names", "minimal"] }
+          }
+        },
+        "events": {
+          "type": "object",
+          "required": ["max_batch", "min_interval_ms"],
+          "properties": {
+            "max_batch": { "type": "integer", "minimum": 1, "maximum": 16 },
+            "min_interval_ms": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "server_time": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "EventBatch": {
+      "title": "EventBatch",
+      "description": "W6; always a batch, even of one event.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events"],
+      "properties": {
+        "events": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/Event" } }
+      }
+    },
+    "Event": {
+      "title": "Event",
+      "oneOf": [{ "$ref": "#/$defs/AttentionEvent" }, { "$ref": "#/$defs/ExitEvent" }]
+    },
+    "AttentionEvent": {
+      "title": "AttentionEvent",
+      "description": "attention_raised carries needs_attention; attention_cleared carries the tab's RowState after the clear (idle when unknown). project and label are omitted when push.detail = minimal; tab_id is omitted for the slot tab.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "ts", "agent_id", "state"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "kind": { "enum": ["attention_raised", "attention_cleared"] },
+        "ts": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "agent_id": { "$ref": "common.schema.json#/$defs/YaranId" },
+        "tab_id": { "$ref": "common.schema.json#/$defs/YaranId" },
+        "state": { "$ref": "common.schema.json#/$defs/RowStateToken" },
+        "project": { "type": "string", "maxLength": 64 },
+        "label": { "type": "string", "maxLength": 64 }
+      },
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "attention_raised" } } },
+      "then": { "properties": { "state": { "const": "needs_attention" } } }
+    },
+    "ExitEvent": {
+      "title": "ExitEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "ts", "agent_id", "ending"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "kind": { "const": "agent_exited_badly" },
+        "ts": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "agent_id": { "$ref": "common.schema.json#/$defs/YaranId" },
+        "tab_id": { "$ref": "common.schema.json#/$defs/YaranId" },
+        "ending": { "$ref": "common.schema.json#/$defs/EndingToken" },
+        "exit_status": { "description": "Never copied into a push payload.", "type": "integer" },
+        "project": { "type": "string", "maxLength": 64 },
+        "label": { "type": "string", "maxLength": 64 }
+      }
+    },
+    "EventBatchResult": {
+      "title": "EventBatchResult",
+      "description": "202. Org push off is still 202 with push_enabled false.",
+      "type": "object",
+      "required": ["accepted", "duplicates", "push_enabled"],
+      "properties": {
+        "accepted": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/Uuid" } },
+        "duplicates": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/Uuid" } },
+        "push_enabled": { "type": "boolean" }
+      }
+    },
+    "RotateRequest": {
+      "title": "RotateRequest",
+      "description": "W7. user: rotate now; sync: fetch the current token if newer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["known_token_version", "reason"],
+      "properties": {
+        "known_token_version": { "type": "integer", "minimum": 1 },
+        "reason": { "enum": ["user", "sync"] }
+      }
+    },
+    "RotateResponse": {
+      "title": "RotateResponse",
+      "type": "object",
+      "required": ["tunnel", "rotated"],
+      "properties": {
+        "tunnel": { "$ref": "#/$defs/TunnelCredentials" },
+        "rotated": { "type": "boolean" }
+      }
+    },
+    "TeardownStarted": {
+      "title": "TeardownStarted",
+      "description": "202 from W8, W11, W21. yaran deletes its credentials on 202 or 410 machine_revoked.",
+      "type": "object",
+      "required": ["machine_id", "state"],
+      "properties": {
+        "machine_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "state": { "const": "tearing_down" }
+      }
+    },
+    "OriginUpdate": {
+      "title": "OriginUpdate",
+      "description": "W32, sent when yaran's serving port changes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin_port"],
+      "properties": { "origin_port": { "$ref": "common.schema.json#/$defs/OriginPort" } }
+    },
+    "OriginUpdateResult": {
+      "title": "OriginUpdateResult",
+      "description": "202; changed false means the ingress already targeted that port.",
+      "type": "object",
+      "required": ["origin_port", "changed"],
+      "properties": {
+        "origin_port": { "$ref": "common.schema.json#/$defs/OriginPort" },
+        "changed": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "description": "User-Agent to take-over-card label, read by both crates/yaran-core/src/device_label.rs and crates/yaran-web/web/src/lib/deviceLabel.test.ts. The phone app's YaranApp token (Phase 02 \u00a711) wins over OS detection; a malformed token falls through. Every label fits SHORT_LABEL_MAX_CHARS (24).",
+  "cases": [
+    {
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "label": "Chrome on macOS"
+    },
+    {
+      "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "label": "Chrome on Linux"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "label": "Chrome on Windows"
+    },
+    {
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+      "label": "Safari on macOS"
+    },
+    {
+      "ua": "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+      "label": "Firefox on Linux"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+      "label": "Edge on Windows"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+      "label": "Chrome on Android"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
+      "label": "Safari on iOS"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 EdgA/120.0.0.0",
+      "label": "Edge on Android"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 EdgiOS/120.0.0.0 Mobile/15E148 Safari/605.1.15",
+      "label": "Edge on iOS"
+    },
+    {
+      "ua": "SomeCrawler/2.0 (Windows NT 10.0; Win64; x64)",
+      "label": "Windows"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 YaranApp/1.2.0 (ios; phone)",
+      "label": "yaran on iPhone"
+    },
+    {
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) YaranApp/1.2.0 (ios; tablet)",
+      "label": "yaran on iPad"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 15; Pixel 9 Build/AP4A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36 YaranApp/1.2.0 (android; phone)",
+      "label": "yaran on Android phone"
+    },
+    {
+      "ua": "YaranApp/1.2.0 (android; tablet)",
+      "label": "yaran on Android tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1 YaranApp/1.2.0.4 (ios; phone)",
+      "label": "Safari on iOS"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1 YaranApp/1.2.0 (symbian; phone)",
+      "label": "Safari on iOS"
+    }
+  ]
+}

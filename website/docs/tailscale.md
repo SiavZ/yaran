@@ -10,8 +10,8 @@ yaran binds that address by default, and your phone opens a URL. No port forward
 dynamic DNS, no VPN client to babysit.
 
 > [!WARNING]
-> This is the point where yaran stops being reachable only by you. **There is no login.**
-> Read [the trust model](/docs/server-mode#the-trust-model-stated-plainly) first.
+> This is the point where yaran stops being reachable only by you. **There is no login on
+> the tailnet address.** Read [the trust model](/docs/server-mode#the-trust-model-stated-plainly) first.
 
 ## What yaran actually does
 
@@ -43,7 +43,8 @@ Tailscale's `100.64.0.0/10` range, falling back to the first IPv6 in Tailscale's
 That address joins the listen plan as an extra leg at the *same port* as your primary
 address, and never replaces your `host`. So the default is two listeners, loopback and
 tailnet, one URL each, both printed in the startup banner with the tailnet row labelled
-`Tailscale` and a note that other tailnet devices can reach it with no login. yaran skips the
+`Tailscale` and a note that other tailnet devices can reach it with no login on that
+address. yaran skips the
 extra leg when your primary is already `0.0.0.0` or already that same address.
 
 > [!IMPORTANT]
@@ -165,7 +166,7 @@ and `Host`.
 ## Plain HTTP costs you a few browser features
 
 yaran serves plain HTTP only, with no built-in TLS: certificates are delegated to a proxy in
-front of it. A tailnet address over plain HTTP is not a "secure context" as browsers define
+front of it, or to Cloudflare's edge for a [Cloud Connect](/docs/cloud-connect) address. A tailnet address over plain HTTP is not a "secure context" as browsers define
 it, and browsers switch off a handful of APIs there:
 
 - **Right-click paste stops working.** Reading your clipboard needs a secure context. yaran
@@ -201,8 +202,8 @@ a host check, not a certificate one.
 ## Caveats worth knowing
 
 > [!CAUTION]
-> **There is no login, so routing is your only access control.** Anyone who can reach the
-> port has your whole workspace: every agent, every terminal, every worktree, and the
+> **There is no login on the tailnet address, so routing is your only access control.**
+> Anyone who can reach the port has your whole workspace: every agent, every terminal, every worktree, and the
 > server's filesystem through the project picker. The terminal is read-write for whoever
 > holds input, so that includes typing into a session you are in the middle of using. Treat
 > "on my tailnet" as "holding a terminal on this machine".
@@ -223,7 +224,9 @@ console.
 
 > [!CAUTION]
 > **Do not use Tailscale Funnel for this.** Funnel publishes a service to the anonymous
-> public internet, and yaran has no login. yaran offers no support for it.
+> public internet, and the tailnet address has no login in front of it. yaran offers no
+> support for it. If you need the public internet, use [Cloud Connect](/docs/cloud-connect)
+> or [your own proxy](/docs/public-hosting).
 
 ## Putting the Tailscale HTTPS proxy in front
 
@@ -285,3 +288,6 @@ requested host"* is the allowlist, and *"cross-origin WebSocket upgrade rejected
   including the phone layout.
 - [Hosting yaran behind a login](/docs/public-hosting): the other answer, for when the machine
   is not on a private network.
+- [Cloud Connect](/docs/cloud-connect): the third answer, with your org's Cloudflare Access
+  sign-in in front of each machine and the yaran phone app. Cloudflare decrypts that
+  traffic at its edge, which Tailscale never does.

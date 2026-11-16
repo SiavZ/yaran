@@ -1,0 +1,48 @@
+{
+  "name": "@yaran/machine-view",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The yaran phone app's machine window (MachineView) and native sign-in and org API client (Session): Capacitor plugin with Android and iOS implementations.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./fixtures/*": "./fixtures/*"
+  },
+  "files": [
+    "src",
+    "fixtures",
+    "android/src/main",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift"
+  ],
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@yaran/protocol": "file:../../../cloud/protocol"
+  },
+  "peerDependencies": {
+    "@capacitor/core": "~8.6.2"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/core": "8.6.2",
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  }
+}

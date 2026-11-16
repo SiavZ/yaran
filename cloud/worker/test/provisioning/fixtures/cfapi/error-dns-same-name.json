@@ -1,0 +1,31 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "POST",
+    "path": "/zones/{zone}/dns_records",
+    "body": {
+      "type": "CNAME",
+      "name": "{record_name}",
+      "content": "x.cfargotunnel.com",
+      "proxied": true,
+      "ttl": 1,
+      "comment": "c"
+    }
+  },
+  "unverified": "error code 81053 comes from third-party sources only",
+  "response": {
+    "status": 400,
+    "body": {
+      "success": false,
+      "errors": [
+        {
+          "code": 81053,
+          "message": "An A, AAAA, or CNAME record with that host already exists."
+        }
+      ],
+      "messages": [],
+      "result": null
+    }
+  }
+}

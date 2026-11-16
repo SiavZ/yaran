@@ -34,7 +34,7 @@ import {
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import { defaultProviderForSession } from "@/lib/agentTabs"
 import {
   newTerminalLabel,

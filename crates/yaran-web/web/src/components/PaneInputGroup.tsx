@@ -3,7 +3,7 @@ import {
   DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import { useAttachCapability } from "@/lib/attachRegistry"
 import {
   paneInputGroupHasItems,

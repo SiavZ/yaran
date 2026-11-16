@@ -1,0 +1,178 @@
+{
+  "type": "AuditEntry",
+  "schema": "admin.schema.json#/$defs/AuditEntry",
+  "valid": [
+    {
+      "name": "user action",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "user",
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "email": "ada@example.org"
+        },
+        "action": "machine.claimed",
+        "target": {
+          "kind": "machine",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "ok",
+        "country": "GB"
+      }
+    },
+    {
+      "name": "system error",
+      "value": {
+        "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "system"
+        },
+        "action": "drift.repaired",
+        "target": {
+          "kind": "org"
+        },
+        "result": "error",
+        "error_code": "cloudflare_unavailable"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "camel action",
+      "keyword": "pattern",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "user",
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "email": "ada@example.org"
+        },
+        "action": "Machine.Claimed",
+        "target": {
+          "kind": "machine",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "ok",
+        "country": "GB"
+      }
+    },
+    {
+      "name": "unknown actor kind",
+      "keyword": "enum",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "robot",
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "email": "ada@example.org"
+        },
+        "action": "machine.claimed",
+        "target": {
+          "kind": "machine",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "ok",
+        "country": "GB"
+      }
+    },
+    {
+      "name": "unknown target kind",
+      "keyword": "enum",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "user",
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "email": "ada@example.org"
+        },
+        "action": "machine.claimed",
+        "target": {
+          "kind": "tunnel",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "ok",
+        "country": "GB"
+      }
+    },
+    {
+      "name": "unknown result",
+      "keyword": "enum",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "user",
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "email": "ada@example.org"
+        },
+        "action": "machine.claimed",
+        "target": {
+          "kind": "machine",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "maybe",
+        "country": "GB"
+      }
+    },
+    {
+      "name": "lowercase country",
+      "keyword": "pattern",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "user",
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "email": "ada@example.org"
+        },
+        "action": "machine.claimed",
+        "target": {
+          "kind": "machine",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "ok",
+        "country": "gb"
+      }
+    },
+    {
+      "name": "missing actor",
+      "keyword": "required",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "action": "machine.claimed",
+        "target": {
+          "kind": "machine",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "ok",
+        "country": "GB"
+      }
+    },
+    {
+      "name": "bad actor email",
+      "keyword": "format",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "ts": "2026-11-14T12:00:00Z",
+        "actor": {
+          "kind": "user",
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "email": "ada"
+        },
+        "action": "machine.claimed",
+        "target": {
+          "kind": "machine",
+          "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        },
+        "result": "ok",
+        "country": "GB"
+      }
+    }
+  ]
+}

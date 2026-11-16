@@ -10,7 +10,7 @@ import {
 } from "@/components/insetHeaderView"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { TheaterToggle } from "@/components/TheaterToggle"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { useIsTruncated } from "@/hooks/use-truncated"
 import { headerChipTooltip, type HeaderChip } from "@/lib/headerSubject"
 import { changesSummary } from "@/lib/changesSummary"

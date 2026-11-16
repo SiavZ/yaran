@@ -1,0 +1,21 @@
+{
+  "type": "NullableString",
+  "schema": "common.schema.json#/$defs/NullableString",
+  "valid": [
+    {
+      "name": "string",
+      "value": "x"
+    },
+    {
+      "name": "null",
+      "value": null
+    }
+  ],
+  "invalid": [
+    {
+      "name": "number",
+      "keyword": "oneOf",
+      "value": 1
+    }
+  ]
+}

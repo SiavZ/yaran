@@ -1,0 +1,22 @@
+{
+  "type": "DeviceKeyFingerprint",
+  "schema": "common.schema.json#/$defs/DeviceKeyFingerprint",
+  "valid": [
+    {
+      "name": "display",
+      "value": "K7QF-3MZD-W2PA-HX5R-LC4N-TB6E"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "lowercase",
+      "keyword": "pattern",
+      "value": "k7qf-3mzd-w2pa-hx5r-lc4n-tb6e"
+    },
+    {
+      "name": "five groups",
+      "keyword": "pattern",
+      "value": "K7QF-3MZD-W2PA-HX5R-LC4N"
+    }
+  ]
+}

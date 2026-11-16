@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="yaran_applock_unlock_title">Unlock yaran</string>
+    <string name="yaran_applock_enable_title">Turn on app lock</string>
+    <string name="yaran_applock_disable_title">Turn off app lock</string>
+    <string name="yaran_applock_subtitle">Confirm it is you to reach your orgs and machines.</string>
+    <string name="yaran_applock_cancel">Cancel</string>
+</resources>

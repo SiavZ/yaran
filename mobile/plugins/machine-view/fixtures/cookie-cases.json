@@ -1,0 +1,79 @@
+{
+  "description": "CookieSpec: the injected session cookie (no Expires, no Domain: host-only, never persisted), the value chosen by credential kind (G1 rung 1 uses cookie when present, else jwt plus a diagnostics line), and the clearing cookies. A value must be 1-4096 chars of [A-Za-z0-9._-].",
+  "cookie_url_template": "https://<host>/",
+  "clear": [
+    "CF_Authorization=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    "CF_AppSession=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+  ],
+  "cases": [
+    {
+      "name": "jwt rung",
+      "credential_kind": "accessJwt",
+      "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDB9.c2ln",
+      "cookie": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDAsImMiOjF9.c2ln",
+      "expect": {
+        "set_cookie": "CF_Authorization=eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDB9.c2ln; Path=/; Secure; HttpOnly; SameSite=Lax",
+        "used": "jwt",
+        "diagnostic": false
+      }
+    },
+    {
+      "name": "cookie rung with cookie",
+      "credential_kind": "accessCookie",
+      "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDB9.c2ln",
+      "cookie": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDAsImMiOjF9.c2ln",
+      "expect": {
+        "set_cookie": "CF_Authorization=eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDAsImMiOjF9.c2ln; Path=/; Secure; HttpOnly; SameSite=Lax",
+        "used": "cookie",
+        "diagnostic": false
+      }
+    },
+    {
+      "name": "cookie rung without cookie falls back",
+      "credential_kind": "accessCookie",
+      "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDB9.c2ln",
+      "cookie": null,
+      "expect": {
+        "set_cookie": "CF_Authorization=eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDB9.c2ln; Path=/; Secure; HttpOnly; SameSite=Lax",
+        "used": "jwt",
+        "diagnostic": true
+      }
+    },
+    {
+      "name": "value with semicolon refused",
+      "credential_kind": "accessJwt",
+      "jwt": "a.b.c; Domain=evil",
+      "cookie": null,
+      "expect": {
+        "error": "invalid_value"
+      }
+    },
+    {
+      "name": "value with space refused",
+      "credential_kind": "accessJwt",
+      "jwt": "a.b .c",
+      "cookie": null,
+      "expect": {
+        "error": "invalid_value"
+      }
+    },
+    {
+      "name": "empty refused",
+      "credential_kind": "accessJwt",
+      "jwt": "",
+      "cookie": null,
+      "expect": {
+        "error": "invalid_value"
+      }
+    },
+    {
+      "name": "cookie rung bad cookie refused",
+      "credential_kind": "accessCookie",
+      "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3MzE2NTc2MDB9.c2ln",
+      "cookie": "x\r\nSet-Cookie: a=b",
+      "expect": {
+        "error": "invalid_value"
+      }
+    }
+  ]
+}

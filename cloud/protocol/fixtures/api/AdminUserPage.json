@@ -1,0 +1,44 @@
+{
+  "type": "AdminUserPage",
+  "schema": "admin.schema.json#/$defs/AdminUserPage",
+  "valid": [
+    {
+      "name": "page",
+      "value": {
+        "items": [
+          {
+            "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+            "email": "ada@example.org",
+            "role": "admin",
+            "disabled": false,
+            "created_at": "2026-11-14T12:00:00Z",
+            "last_seen_at": "2026-11-15T08:30:00Z",
+            "machines": 2,
+            "devices": 1
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing next_cursor",
+      "keyword": "required",
+      "value": {
+        "items": [
+          {
+            "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+            "email": "ada@example.org",
+            "role": "admin",
+            "disabled": false,
+            "created_at": "2026-11-14T12:00:00Z",
+            "last_seen_at": "2026-11-15T08:30:00Z",
+            "machines": 2,
+            "devices": 1
+          }
+        ]
+      }
+    }
+  ]
+}

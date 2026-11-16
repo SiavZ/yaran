@@ -1,5 +1,5 @@
-import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Button } from "@yaran/ui-kit/button"
+import { Checkbox } from "@yaran/ui-kit/checkbox"
 import { GlyphSpinner } from "@/components/GlyphSpinner"
 import {
   Dialog,
@@ -8,8 +8,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
+} from "@yaran/ui-kit/dialog"
+import { Input } from "@yaran/ui-kit/input"
 import { sanitizeAgentName } from "@/lib/agentName"
 import { renderProse } from "@/lib/prose"
 import type { ChangeEvent, KeyboardEvent } from "react"

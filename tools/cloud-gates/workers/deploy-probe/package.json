@@ -1,0 +1,38 @@
+{
+  "name": "yaran-gate-deploy-probe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gate G11 probe: a self-contained Worker deployed by the Deploy to Cloudflare button from a branch subdirectory.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "deploy": "npm run db:migrations:apply && wrangler deploy",
+    "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261114.1",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0",
+    "wrangler": "4.162.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "D1 database for the gate probe. It holds one table, `gate_meta`, created by the migrations in `migrations/`; any name works."
+      },
+      "CF_API_TOKEN": {
+        "description": "Cloudflare API token. The probe only reports whether it was set; for the gate, any non-secret test value is fine."
+      },
+      "SETUP_CODE": {
+        "description": "One-time setup code. The probe only reports whether it was set; leave it blank to test whether a blank secret is accepted."
+      },
+      "DATA_KEY": {
+        "description": "Data encryption key. The probe only reports whether it was set; any non-secret test value is fine."
+      }
+    }
+  }
+}

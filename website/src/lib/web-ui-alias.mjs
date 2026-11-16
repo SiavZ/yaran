@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
 
@@ -24,6 +25,16 @@ export const WEB_UI_MODULES = here("../../../crates/yaran-web/web/node_modules")
 // just resolve into it: the components pull real assets out of the app's
 // dependencies, and Vite refuses to serve a file outside its root unless allowed.
 export const WEB_UI_ROOT = here("../../../crates/yaran-web/web")
+// `@yaran/ui-kit`, which the app installs as a `file:` link and whose source the
+// components import. Its real path and its link path inside the app both count.
+const UI_KIT = here("../../../packages/ui-kit/")
+const UI_KIT_DIRS = [UI_KIT, WEB_UI_MODULES + "/@yaran/ui-kit/"]
+// The kit's peers other than React, which the alias below already pins.
+const UI_KIT_PEERS = Object.keys(
+  JSON.parse(readFileSync(UI_KIT + "package.json", "utf8")).peerDependencies,
+).filter((name) => name !== "react" && name !== "react-dom")
+// Any file in the app's `src`: resolving from here is resolving as the app does.
+const WEB_UI_IMPORTER = WEB_UI_SRC + "/main.tsx"
 
 /**
  * Every React import, this project's and the app's components' alike, points at
@@ -73,6 +84,22 @@ export function webUiReactBridge() {
   return {
     name: "web-ui-react-bridge",
     enforce: "pre",
+    // The kit's bare imports (`@base-ui/react`, `clsx`…) are its PEER
+    // dependencies, so they resolve as if the app imported them: from the app's
+    // `node_modules`, the copies whose own React is the one the bridge serves. Plain
+    // resolution from the kit's real path would find nothing on a fresh clone, or a
+    // developer's install of the kit's own devDependencies and a second React.
+    // Vite's SSR runner resolves an EXTERNAL bare import itself, from the
+    // importer's real path and without asking plugins, so the peers are inlined
+    // for this hook to see them.
+    config() {
+      return { ssr: { noExternal: UI_KIT_PEERS } }
+    },
+    async resolveId(source, importer, options) {
+      if (!importer || !UI_KIT_DIRS.some((dir) => importer.startsWith(dir))) return
+      if (source.startsWith(".") || source.startsWith("/") || source.startsWith("\0")) return
+      return this.resolve(source, WEB_UI_IMPORTER, { ...options, skipSelf: true })
+    },
     transform(_code, id, options) {
       const target = reactEntries.get(id)
       if (!target || !options?.ssr) return

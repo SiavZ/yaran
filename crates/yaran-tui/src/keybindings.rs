@@ -1,3 +1,35 @@
+//! Keybinding definitions, parsing and the runtime binding table the terminal UI resolves keys through.
+//! Keybindings: the default binding table, config parsing and runtime lookup.
+//!
+//! Every action's default keys and scopes, the case-insensitive parser for user
+//! overrides, and the labels the help overlay and hint bars print.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! keybindings.rs
+//! ├── config
+//! ├── key_encode
+//! ├── yaran-core::action
+//! ├── yaran-core::config
+//! ├── yaran-core::palette
+//! └── yaran-core::palette::search
+//! External: crokey, crossterm, std
+//!
+//! Used by:
+//! keybindings.rs
+//! ├── app
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::render
+//! ├── app::session_settings
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── cli
+//! ├── config
+//! ├── config_saver
+//! └── crate
+//! <module-headers:end>
+
 use crokey::{KeyCombination, KeyCombinationFormat, key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -338,6 +370,14 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         // No default key: a tri-state a user changes when they move between
         // networks does not earn a chord, and the palette is where it lives.
         action: Action::SetTailscaleMode,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        // No default key, for the same reason as the Tailscale mode.
+        action: Action::SetCloudMode,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -1450,6 +1490,41 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     },
     BindingDef {
         action: Action::ToggleHumanBoard,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::CloudLogin,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::CloudLogout,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::CloudRotateToken,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::CloudStatus,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::CloudPairPhone,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -3392,6 +3467,11 @@ mod tests {
             "change-theme",
             "checkout-project-default-branch",
             "close-tab",
+            "cloud-login",
+            "cloud-logout",
+            "cloud-pair-phone",
+            "cloud-rotate-token",
+            "cloud-status",
             "configure-global-env",
             "configure-project-env",
             "configure-startup-command",
@@ -3447,6 +3527,7 @@ mod tests {
             "resource-monitor",
             "resume-pull-request-autodetection",
             "session-settings",
+            "set-cloud-mode",
             "set-tailscale-mode",
             "show-agent",
             "show-release-notes",

@@ -1,0 +1,6 @@
+{
+  "appId": "io.github.siavz.yaran.gatespike",
+  "appName": "yaran gate spike",
+  "webDir": "dist",
+  "android": { "flavor": "foss" }
+}

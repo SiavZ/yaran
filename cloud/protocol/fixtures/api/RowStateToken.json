@@ -1,0 +1,42 @@
+{
+  "type": "RowStateToken",
+  "schema": "common.schema.json#/$defs/RowStateToken",
+  "valid": [
+    {
+      "name": "needs_attention",
+      "value": "needs_attention"
+    },
+    {
+      "name": "typing",
+      "value": "typing"
+    },
+    {
+      "name": "busy",
+      "value": "busy"
+    },
+    {
+      "name": "idle",
+      "value": "idle"
+    },
+    {
+      "name": "detached",
+      "value": "detached"
+    },
+    {
+      "name": "exited",
+      "value": "exited"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

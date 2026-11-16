@@ -1,0 +1,51 @@
+// Push wiring for the app module (Phase 16). Phase 14's mobile/android/app/build.gradle(.kts) applies it
+// with one line:   apply from: "../../plugins/push/android/app-push.gradle"
+//
+// - foss: the UnifiedPush connector only (it arrives through the plugin); no Google artifact at all,
+//   which verifyFossPushClasspath proves on fossReleaseRuntimeClasspath (Phase 18's CI runs it).
+// - play: the transport is the build property yaran.playPushTransport, forwarded from the publisher
+//   build config (D16): embedded-fcm (default, the G5 primary path) adds the embedded FCM
+//   distributor, which needs no Firebase SDK and no google-services.json; relay-fcm (the G5 fallback)
+//   adds Firebase Messaging and the src/play/relay-fcm sources, and needs the publisher's
+//   google-services.json injected at build time (never committed) plus the google-services Gradle
+//   plugin on the root classpath.
+def pushTransport = (findProperty('yaran.playPushTransport') ?: 'embedded-fcm').toString()
+if (!(pushTransport in ['embedded-fcm', 'relay-fcm'])) {
+    throw new GradleException("yaran.playPushTransport must be embedded-fcm or relay-fcm, got: ${pushTransport}")
+}
+
+if (pushTransport == 'relay-fcm') {
+    android.sourceSets.play.java.srcDirs += 'src/play/relay-fcm/kotlin'
+    android.sourceSets.play.manifest.srcFile 'src/play/relay-fcm/AndroidManifest.xml'
+    if (file('google-services.json').exists()) {
+        apply plugin: 'com.google.gms.google-services'
+    } else {
+        def missing = tasks.register('requireGoogleServicesJson') {
+            doLast { throw new GradleException('relay-fcm needs the publisher google-services.json in mobile/android/app (injected at build time, never committed)') }
+        }
+        tasks.matching { it.name ==~ /(assemble|bundle)PlayRelease/ }.configureEach { dependsOn missing }
+    }
+}
+
+dependencies {
+    if (pushTransport == 'embedded-fcm') {
+        playImplementation 'org.unifiedpush.android:embedded-fcm-distributor:3.1.0'
+    } else {
+        playImplementation 'com.google.firebase:firebase-messaging:25.0.1'
+    }
+}
+
+// F-Droid forbids Google push libraries in foss (D13): fail if any reaches its release runtime classpath.
+tasks.register('verifyFossPushClasspath') {
+    def classpath = configurations.named('fossReleaseRuntimeClasspath')
+    doLast {
+        def forbidden = classpath.get().incoming.resolutionResult.allComponents
+            .collect { it.moduleVersion }
+            .findAll { it != null && (it.group.startsWith('com.google.firebase') || it.group.startsWith('com.google.android.gms') || it.name.contains('embedded-fcm')) }
+            .collect { "${it.group}:${it.name}:${it.version}" }
+        if (!forbidden.isEmpty()) {
+            throw new GradleException("fossReleaseRuntimeClasspath must hold no Google push artifact, found: ${forbidden.join(', ')}")
+        }
+        logger.lifecycle('verifyFossPushClasspath: no Firebase, GMS or embedded-FCM artifact in fossReleaseRuntimeClasspath')
+    }
+}

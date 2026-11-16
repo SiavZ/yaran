@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "me.schema.json",
+  "title": "MeSchemas",
+  "description": "W9-W11: the signed-in user's own view.",
+  "$defs": {
+    "Me": {
+      "title": "Me",
+      "description": "W9. session_exp is the verified control-plane JWT's exp; the app schedules renewal from it.",
+      "type": "object",
+      "required": ["email", "role", "user_slug", "org", "limits", "counts", "session_exp"],
+      "properties": {
+        "email": { "$ref": "common.schema.json#/$defs/Email" },
+        "session_exp": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "role": { "$ref": "common.schema.json#/$defs/Role" },
+        "user_slug": { "$ref": "common.schema.json#/$defs/UserSlug" },
+        "org": { "$ref": "common.schema.json#/$defs/OrgRef" },
+        "limits": { "$ref": "#/$defs/UserCounts" },
+        "counts": { "$ref": "#/$defs/UserCounts" }
+      }
+    },
+    "UserCounts": {
+      "title": "UserCounts",
+      "type": "object",
+      "required": ["machines", "devices"],
+      "properties": {
+        "machines": { "type": "integer", "minimum": 0 },
+        "devices": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "MachineStatus": {
+      "title": "MachineStatus",
+      "description": "Open enum: clients map unknown values to unknown.",
+      "enum": ["online", "degraded", "offline", "never_connected", "provisioning", "tearing_down", "unknown"]
+    },
+    "MachineSummary": {
+      "title": "MachineSummary",
+      "description": "W10 row. No connector count (Cloudflare removed it from the tunnel list).",
+      "type": "object",
+      "required": ["id", "name", "hostname", "url", "status", "status_checked_at", "paired_at"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "name": { "$ref": "common.schema.json#/$defs/MachineName" },
+        "hostname": { "$ref": "common.schema.json#/$defs/Hostname" },
+        "url": { "type": "string", "pattern": "^https://" },
+        "status": { "$ref": "#/$defs/MachineStatus" },
+        "reported_protocol": {
+          "description": "Last Yaran-Protocol seen from the machine.",
+          "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+        },
+        "status_checked_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "last_seen_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+        "paired_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "yaran_version": { "oneOf": [{ "type": "string", "maxLength": 40 }, { "type": "null" }] }
+      }
+    },
+    "MachinePage": {
+      "title": "MachinePage",
+      "type": "object",
+      "required": ["items", "next_cursor"],
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/$defs/MachineSummary" } },
+        "next_cursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    }
+  }
+}

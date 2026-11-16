@@ -1,0 +1,42 @@
+{
+  "type": "AdminMachinePage",
+  "schema": "admin.schema.json#/$defs/AdminMachinePage",
+  "valid": [
+    {
+      "name": "page",
+      "value": {
+        "items": [
+          {
+            "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+            "name": "laptop",
+            "hostname": "laptop-ada.example.com",
+            "url": "https://laptop-ada.example.com",
+            "status": "online",
+            "status_checked_at": "2026-11-14T12:00:00Z",
+            "paired_at": "2026-11-14T12:00:00Z",
+            "owner_email": "ada@example.org",
+            "key_fingerprint": "K7QF-3MZD-W2PA-HX5R-LC4N-TB6E",
+            "origin_port": 3890,
+            "tunnel_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+            "access_app_id": "0a1b2c3d-app",
+            "token_version": 2,
+            "provisioning": {
+              "state": "complete",
+              "last_error_code": null
+            }
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing next_cursor",
+      "keyword": "required",
+      "value": {
+        "items": []
+      }
+    }
+  ]
+}

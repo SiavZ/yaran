@@ -1,5 +1,5 @@
 import { useRef, useState } from "react"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -7,7 +7,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@yaran/ui-kit/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { envToText, parseEnv, validateEnv } from "@/lib/env"
 import { closeGlobalEnv, saveGlobalEnv, useYaran } from "@/lib/store"

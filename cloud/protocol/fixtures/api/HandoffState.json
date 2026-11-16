@@ -1,0 +1,22 @@
+{
+  "type": "HandoffState",
+  "schema": "handoff.schema.json#/$defs/HandoffState",
+  "valid": [
+    {
+      "name": "22 chars",
+      "value": "s3cr3tStateValue_abcde"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "129 chars",
+      "keyword": "pattern",
+      "value": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+    },
+    {
+      "name": "plus",
+      "keyword": "pattern",
+      "value": "s3cr3tStateValue_abcdefGHIJ+"
+    }
+  ]
+}

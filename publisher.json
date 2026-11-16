@@ -1,0 +1,4 @@
+{
+  "$comment": "The one committed home of the publisher domain (phone-app plan D8, D16, 02 section 8). Replace the placeholder with the real hostname (no scheme, no path) before any official release. Read by: the yaran-cloud-v* release (07's assembler writes APP_CALLBACK_URLS = https://<publisher_domain>/auth/callback into the deploy tree), the yaran build ([cloud] app_callback_urls default), mobile/scripts/publisher-config.mjs (App Link host and associated domain), and tools/release-trains/check-versions.mjs --publisher, which refuses an official cloud or mobile release while the placeholder remains or the mobile publisher config disagrees.",
+  "publisher_domain": "<publisher-domain>"
+}

@@ -379,3 +379,50 @@ describe("EventsSocket", () => {
     ])
   })
 })
+
+// Phase 13: the events socket's own beat, and the Access-expiry close.
+describe("EventsSocket beat and 4401", () => {
+  it("beats, and drops a socket that stops answering within the deadline", async () => {
+    vi.useFakeTimers()
+    const sock = new EventsSocket("ws://x/ws/events")
+    sock.connect()
+    const ws = last()
+    ws.open()
+    vi.advanceTimersByTime(15_000)
+    expect(lastFrame(ws)).toEqual({ beat: 1 })
+    // An answer keeps it alive.
+    ws.message({ event: "beat", n: 1 })
+    vi.advanceTimersByTime(30_000)
+    expect(ws.readyState).toBe(1)
+    // Silence past the deadline drops it for the ordinary retry.
+    vi.advanceTimersByTime(60_000)
+    expect(ws.readyState).toBe(3)
+    sock.dispose()
+  })
+
+  it("never forwards a beat answer to the consumer", () => {
+    const sock = new EventsSocket("ws://x/ws/events")
+    const seen: EventsServerMessage[] = []
+    sock.onEvent = (ev) => seen.push(ev)
+    sock.connect()
+    last().open()
+    last().message({ event: "beat", n: 4 })
+    expect(seen).toEqual([])
+    sock.dispose()
+  })
+
+  it("reconnects on 4401 and asks the access-session probe", async () => {
+    const { accessSession } = await import("./native/accessSession")
+    const spy = vi.spyOn(accessSession, "noteSessionExpired").mockImplementation(() => {})
+    vi.useFakeTimers()
+    const sock = new EventsSocket("ws://x/ws/events")
+    sock.connect()
+    last().open()
+    last().triggerClose(4401)
+    expect(spy).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(600)
+    expect(FakeWS.instances.length).toBe(2)
+    spy.mockRestore()
+    sock.dispose()
+  })
+})

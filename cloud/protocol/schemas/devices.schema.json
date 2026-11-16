@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "devices.schema.json",
+  "title": "DevicesSchemas",
+  "description": "W12-W15, W31: phone registrations. A push is sent only when !mute_all && (muted_until == null || now >= muted_until) && machine not in muted_machine_ids.",
+  "$defs": {
+    "MutedMachineIds": {
+      "title": "MutedMachineIds",
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/Uuid" }
+    },
+    "DeviceLabel": {
+      "title": "DeviceLabel",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "PushNone": {
+      "title": "PushNone",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": { "kind": { "const": "none" } }
+    },
+    "PushWebpush": {
+      "title": "PushWebpush",
+      "description": "endpoint must name a public host (checked in code); fcm_relay is the G5 fallback.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "channel", "endpoint", "keys"],
+      "properties": {
+        "kind": { "const": "webpush" },
+        "channel": { "$ref": "common.schema.json#/$defs/PushChannel" },
+        "distributor": { "type": "string", "maxLength": 128 },
+        "endpoint": { "type": "string", "maxLength": 2048, "pattern": "^https://" },
+        "keys": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p256dh", "auth"],
+          "properties": {
+            "p256dh": { "$ref": "common.schema.json#/$defs/P256Point" },
+            "auth": { "description": "16 bytes.", "type": "string", "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$" }
+          }
+        }
+      }
+    },
+    "DeviceRegistration": {
+      "title": "DeviceRegistration",
+      "description": "W12, upsert by install_id; the Yaran-Install-Id header must equal install_id. device_key is fixed for that install_id (a different key on upsert is 409 conflict).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["install_id", "device_key", "platform", "flavor", "form_factor", "app_version", "label", "push", "mute_all", "muted_until", "muted_machine_ids"],
+      "properties": {
+        "install_id": { "$ref": "common.schema.json#/$defs/InstallId" },
+        "device_key": { "$ref": "common.schema.json#/$defs/P256Point" },
+        "platform": { "$ref": "common.schema.json#/$defs/Platform" },
+        "flavor": { "$ref": "common.schema.json#/$defs/Flavor" },
+        "form_factor": { "$ref": "common.schema.json#/$defs/FormFactor" },
+        "app_version": { "$ref": "common.schema.json#/$defs/SemVer" },
+        "label": { "$ref": "#/$defs/DeviceLabel" },
+        "locale": { "type": "string", "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$" },
+        "push": { "oneOf": [{ "$ref": "#/$defs/PushNone" }, { "$ref": "#/$defs/PushWebpush" }] },
+        "mute_all": { "type": "boolean" },
+        "muted_until": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+        "muted_machine_ids": { "$ref": "#/$defs/MutedMachineIds" }
+      }
+    },
+    "DevicePatch": {
+      "title": "DevicePatch",
+      "description": "W31; changes only the fields present. muted_machine_ids replaces the list.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "label": { "$ref": "#/$defs/DeviceLabel" },
+        "mute_all": { "type": "boolean" },
+        "muted_until": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+        "muted_machine_ids": { "$ref": "#/$defs/MutedMachineIds" }
+      }
+    },
+    "PushState": {
+      "title": "PushState",
+      "description": "Open enum (Design §9 delivery outcomes).",
+      "enum": ["active", "gone", "auth_failed", "failing", "none"]
+    },
+    "DevicePush": {
+      "title": "DevicePush",
+      "description": "The endpoint itself is never echoed (it is a capability).",
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "webpush"] },
+        "channel": { "$ref": "common.schema.json#/$defs/PushChannel" },
+        "endpoint_host": { "$ref": "common.schema.json#/$defs/Hostname" },
+        "last_success_at": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+        "last_error_code": { "$ref": "common.schema.json#/$defs/NullableString" },
+        "vapid_public_key": { "$ref": "common.schema.json#/$defs/NullableP256Point" }
+      }
+    },
+    "Device": {
+      "title": "Device",
+      "description": "W12-W14, W31. current is true when install_id equals the request's Yaran-Install-Id.",
+      "type": "object",
+      "required": ["id", "install_id", "device_key_fingerprint", "platform", "flavor", "form_factor", "app_version", "label", "push", "push_state", "mute_all", "muted_until", "muted_machine_ids", "created_at", "last_seen_at", "current"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "install_id": { "$ref": "common.schema.json#/$defs/InstallId" },
+        "device_key_fingerprint": { "$ref": "common.schema.json#/$defs/DeviceKeyFingerprint" },
+        "platform": { "$ref": "common.schema.json#/$defs/Platform" },
+        "flavor": { "$ref": "common.schema.json#/$defs/Flavor" },
+        "form_factor": { "$ref": "common.schema.json#/$defs/FormFactor" },
+        "app_version": { "$ref": "common.schema.json#/$defs/SemVer" },
+        "label": { "type": "string" },
+        "push": { "$ref": "#/$defs/DevicePush" },
+        "push_state": { "$ref": "#/$defs/PushState" },
+        "mute_all": { "type": "boolean" },
+        "muted_until": { "$ref": "common.schema.json#/$defs/NullableTimestamp" },
+        "muted_machine_ids": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/Uuid" } },
+        "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "last_seen_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "current": { "type": "boolean" }
+      }
+    },
+    "DevicePage": {
+      "title": "DevicePage",
+      "type": "object",
+      "required": ["items", "next_cursor"],
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/$defs/Device" } },
+        "next_cursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] }
+      }
+    }
+  }
+}

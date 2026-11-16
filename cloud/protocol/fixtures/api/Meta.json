@@ -1,0 +1,309 @@
+{
+  "type": "Meta",
+  "schema": "meta.schema.json#/$defs/Meta",
+  "valid": [
+    {
+      "name": "closed",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "closed",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "access": {
+          "team_domain": "ada-team.example.com"
+        },
+        "capabilities": [
+          "pairing.v1",
+          "handoff.v1",
+          "push.webpush"
+        ],
+        "push": {
+          "enabled": true,
+          "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+        }
+      }
+    },
+    {
+      "name": "open with only the required fields",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "open",
+        "worker": {
+          "version": "1.0.0"
+        }
+      }
+    },
+    {
+      "name": "closed, push off, with deprecations",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "closed",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "access": {
+          "team_domain": "ada-team.example.com"
+        },
+        "capabilities": [
+          "pairing.v1",
+          "handoff.v1",
+          "push.webpush"
+        ],
+        "push": {
+          "enabled": false,
+          "vapid_public_key": null
+        },
+        "deprecations": [
+          {
+            "protocol": 1,
+            "after": "2027-11-14"
+          }
+        ]
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "closed without org",
+      "keyword": "required",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "closed",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "access": {
+          "team_domain": "ada-team.example.com"
+        },
+        "capabilities": [
+          "pairing.v1",
+          "handoff.v1",
+          "push.webpush"
+        ],
+        "push": {
+          "enabled": true,
+          "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+        }
+      }
+    },
+    {
+      "name": "closed without push",
+      "keyword": "required",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "closed",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "access": {
+          "team_domain": "ada-team.example.com"
+        },
+        "capabilities": [
+          "pairing.v1",
+          "handoff.v1",
+          "push.webpush"
+        ]
+      }
+    },
+    {
+      "name": "wrong service",
+      "keyword": "const",
+      "value": {
+        "service": "yaran",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "open",
+        "worker": {
+          "version": "1.0.0"
+        }
+      }
+    },
+    {
+      "name": "unknown setup",
+      "keyword": "enum",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "pending",
+        "worker": {
+          "version": "1.0.0"
+        }
+      }
+    },
+    {
+      "name": "missing protocol",
+      "keyword": "required",
+      "value": {
+        "service": "yaran-cloud",
+        "setup": "open",
+        "worker": {
+          "version": "1.0.0"
+        }
+      }
+    },
+    {
+      "name": "bad worker version",
+      "keyword": "pattern",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "open",
+        "worker": {
+          "version": "1"
+        }
+      }
+    },
+    {
+      "name": "bad capability",
+      "keyword": "pattern",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "closed",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "access": {
+          "team_domain": "ada-team.example.com"
+        },
+        "capabilities": [
+          "Pairing"
+        ],
+        "push": {
+          "enabled": true,
+          "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+        }
+      }
+    },
+    {
+      "name": "bad deprecation date",
+      "keyword": "format",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "open",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "deprecations": [
+          {
+            "protocol": 1,
+            "after": "2027-13-01"
+          }
+        ]
+      }
+    },
+    {
+      "name": "uppercase team domain",
+      "keyword": "pattern",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "closed",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "access": {
+          "team_domain": "Team.example.com"
+        },
+        "capabilities": [
+          "pairing.v1",
+          "handoff.v1",
+          "push.webpush"
+        ],
+        "push": {
+          "enabled": true,
+          "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+        }
+      }
+    },
+    {
+      "name": "push without key field",
+      "keyword": "required",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "setup": "closed",
+        "worker": {
+          "version": "1.0.0"
+        },
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "access": {
+          "team_domain": "ada-team.example.com"
+        },
+        "capabilities": [
+          "pairing.v1",
+          "handoff.v1",
+          "push.webpush"
+        ],
+        "push": {
+          "enabled": true
+        }
+      }
+    }
+  ]
+}

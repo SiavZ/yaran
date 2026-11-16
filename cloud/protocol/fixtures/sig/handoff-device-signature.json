@@ -1,0 +1,338 @@
+{
+  "description": "Handoff device signature (Design §8.1): ES256 over the canonical string, raw r||s. dsig values are committed once (ECDSA is randomized). expect is {verified} after the field checks pass, or {code} from the field checks.",
+  "device_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "pSU9SPvs5GoQVISVVoUTt-BcFaDBGPL05jt6Bf0NQe0",
+    "y": "zQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+    "d": "nXGFmimkQYPQJ48gC99GB4gH8Pp0gwQjpeD_SMhrn8Q"
+  },
+  "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+  "host": "laptop-ada.example.com",
+  "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+  "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+  "dts": "1731571200",
+  "now": 1731571200,
+  "canonical_utf8": "yaran-handoff-device-v1\nlaptop-ada.example.com\nBPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM\naGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU\n1731571200\n",
+  "canonical_hex": "796172616e2d68616e646f66662d6465766963652d76310a6c6170746f702d6164612e6578616d706c652e636f6d0a42504657712d427349312d414a5f64376b45753076534d6a484157335a64436e2d356457395a575a4a39354e55756733655641646f50746443732d434e41694a314866503041644964594169794d724c4b584b6452764d0a614746755a47396d5a69317a644746305a53316d6158683064584a6c4c57316859326870626d550a313733313537313230300a",
+  "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g",
+  "cases": [
+    {
+      "name": "valid",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "verified": true
+      }
+    },
+    {
+      "name": "wrong host",
+      "fields": {
+        "host": "cp.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "verified": false
+      }
+    },
+    {
+      "name": "wrong pk",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BDC-Jf8F5Jp5LU7iJFLZH3igr0Psn3B5Zm2YmeICpzvAsH4AbkAHS3VXleYUDEuSzWX1DJjNDeBc-Ta6iEcgwQo",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "verified": false
+      }
+    },
+    {
+      "name": "wrong state",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW90aGVy",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "verified": false
+      }
+    },
+    {
+      "name": "dts plus one",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571201",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "verified": false
+      }
+    },
+    {
+      "name": "dts minus one",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571199",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "verified": false
+      }
+    },
+    {
+      "name": "other key's signature",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "teuLWje_ZIzrHbTAWPi6mBeGNGU6_rq5QpxZX68PcxGfJ1A2I-kBTbhaxlFP0OY_tEjmTSk2XjmPJPAuc9hmXw"
+      },
+      "now": 1731571200,
+      "expect": {
+        "verified": false
+      }
+    },
+    {
+      "name": "DER signature",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "MEYCIQDMJryvquLzG1kkFyqK0KPdXHRyRTJzMaXS9yPc5f1ljAIhAPxZlrarLjHMkSFiNbh92WSU4O4-Ry1gcA61lKeBqqnW"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "85 characters",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "87 characters",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1gA"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "r is zero",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "s is n",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz_____AAAAAP__________vOb6racXnoTzucrC_GMlUQ"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "dsig missing",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": null
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "dts with a leading zero",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "01731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_signature_malformed"
+      }
+    },
+    {
+      "name": "compressed dk",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "AqUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHt",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_device_key_invalid"
+      }
+    },
+    {
+      "name": "off-curve dk",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoU",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_device_key_invalid"
+      }
+    },
+    {
+      "name": "dk missing",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": null,
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571200,
+      "expect": {
+        "code": "handoff_device_key_invalid"
+      }
+    },
+    {
+      "name": "server 300 s ahead accepted",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571500,
+      "expect": {
+        "verified": true
+      }
+    },
+    {
+      "name": "server 300 s behind accepted",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731570900,
+      "expect": {
+        "verified": true
+      }
+    },
+    {
+      "name": "server 301 s ahead refused",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731571501,
+      "expect": {
+        "code": "handoff_timestamp_skewed",
+        "server_time": 1731571501
+      }
+    },
+    {
+      "name": "server 301 s behind refused",
+      "fields": {
+        "host": "laptop-ada.example.com",
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dts": "1731571200",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "now": 1731570899,
+      "expect": {
+        "code": "handoff_timestamp_skewed",
+        "server_time": 1731570899
+      }
+    }
+  ]
+}

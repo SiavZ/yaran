@@ -1,0 +1,54 @@
+{
+  "name": "@yaran/ui-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "yaran's shared design tokens and UI primitives, consumed as source by the web UI, the phone app shell and (tokens.css only) the Worker console.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "exports": {
+    "./tokens.css": "./src/tokens.css",
+    "./theme.css": "./src/theme.css",
+    "./cn": "./src/cn.ts",
+    "./popupSheet": "./src/popupSheet.ts",
+    "./toast-policy": "./src/toast-policy.ts",
+    "./use-mobile": "./src/use-mobile.ts",
+    "./*": "./src/*.tsx"
+  },
+  "scripts": {
+    "test": "vitest run && node scripts/export-native-colors.mjs --check",
+    "colors": "node scripts/export-native-colors.mjs"
+  },
+  "peerDependencies": {
+    "@base-ui/react": "^1.5.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.17.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@base-ui/react": "^1.5.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^24.12.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "jsdom": "^29.1.1",
+    "lucide-react": "^1.17.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.6.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.8"
+  }
+}

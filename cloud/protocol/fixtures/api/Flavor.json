@@ -1,0 +1,34 @@
+{
+  "type": "Flavor",
+  "schema": "common.schema.json#/$defs/Flavor",
+  "valid": [
+    {
+      "name": "foss",
+      "value": "foss"
+    },
+    {
+      "name": "play",
+      "value": "play"
+    },
+    {
+      "name": "appstore",
+      "value": "appstore"
+    },
+    {
+      "name": "dev",
+      "value": "dev"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

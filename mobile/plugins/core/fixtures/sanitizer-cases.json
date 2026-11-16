@@ -1,0 +1,85 @@
+{
+  "description": "Diagnostics sanitizer cases (mobile/plugins/core). Read by the Kotlin and Swift core suites; every case must pass on both. input -> expect, rules in the order documented on Sanitizer.",
+  "cases": [
+    {
+      "name": "plain text passes",
+      "input": "opened machine list for 2 orgs",
+      "expect": "opened machine list for 2 orgs"
+    },
+    {
+      "name": "newline and tab kept",
+      "input": "a\tb\nc",
+      "expect": "a\tb\nc"
+    },
+    {
+      "name": "ansi color stripped",
+      "input": "\u001b[31merror\u001b[0m here",
+      "expect": "error here"
+    },
+    {
+      "name": "osc title with BEL stripped",
+      "input": "\u001b]0;evil title\u0007after",
+      "expect": "after"
+    },
+    {
+      "name": "osc 8 hyperlink with ST stripped",
+      "input": "\u001b]8;;https://x.example/?t=1\u001b\\link\u001b]8;;\u001b\\",
+      "expect": "link"
+    },
+    {
+      "name": "other C0 controls stripped",
+      "input": "a\u0000b\bc\rd",
+      "expect": "abcd"
+    },
+    {
+      "name": "authorization header",
+      "input": "Authorization: Bearer abc.def",
+      "expect": "Authorization: [redacted]"
+    },
+    {
+      "name": "cookie header lowercase",
+      "input": "cookie: CF_Authorization=xyz; other=1",
+      "expect": "cookie: [redacted]"
+    },
+    {
+      "name": "set-cookie header mid-text",
+      "input": "resp 302\nSet-Cookie: a=b; Secure\nnext line",
+      "expect": "resp 302\nSet-Cookie: [redacted]\nnext line"
+    },
+    {
+      "name": "jwt redacted",
+      "input": "token eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl done",
+      "expect": "token [jwt] done"
+    },
+    {
+      "name": "jwt with empty signature",
+      "input": "eyJhbGciOiJub25lIn0.eyJhIjoxfQ.",
+      "expect": "[jwt]"
+    },
+    {
+      "name": "query string dropped",
+      "input": "GET https://cp.example.com/v1/handoff?state=abc&pk=def failed",
+      "expect": "GET https://cp.example.com/v1/handoff failed"
+    },
+    {
+      "name": "fragment dropped",
+      "input": "callback yaranapp://auth/callback#jwe=secret",
+      "expect": "callback yaranapp://auth/callback"
+    },
+    {
+      "name": "url without query untouched",
+      "input": "https://m1.example.com/__yaran/handoff",
+      "expect": "https://m1.example.com/__yaran/handoff"
+    },
+    {
+      "name": "question mark outside url kept",
+      "input": "why? because",
+      "expect": "why? because"
+    },
+    {
+      "name": "combined",
+      "input": "\u001b[1mAuthorization: x\u001b[0m\nhttps://a.example.com/p?x=eyJa.eyJb.c",
+      "expect": "Authorization: [redacted]\nhttps://a.example.com/p"
+    }
+  ]
+}

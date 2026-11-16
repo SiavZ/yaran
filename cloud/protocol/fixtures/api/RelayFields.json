@@ -1,0 +1,51 @@
+{
+  "type": "RelayFields",
+  "schema": "relay.schema.json#/$defs/RelayFields",
+  "valid": [
+    {
+      "name": "fields",
+      "value": {
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "v2",
+      "keyword": "const",
+      "value": {
+        "v": 2,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    },
+    {
+      "name": "empty y",
+      "keyword": "minLength",
+      "value": {
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": ""
+      }
+    },
+    {
+      "name": "padded y",
+      "keyword": "pattern",
+      "value": {
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "abc="
+      }
+    },
+    {
+      "name": "missing r",
+      "keyword": "required",
+      "value": {
+        "v": 1,
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    }
+  ]
+}

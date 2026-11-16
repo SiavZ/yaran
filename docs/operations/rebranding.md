@@ -36,6 +36,8 @@ Browser preference reads consult the new Yaran key first, then its legacy dux ke
 
 New release tags are **`yaran-vX.Y.Z`**. New archives are `yaran-<os>-<arch>.tar.gz`, containing the `yaran` executable. The display version remains `vX.Y.Z`; current release-note lookup maps it to the Yaran tag. Explicit historical tag lookups remain exact.
 
+The Cloud Connect and phone-app release trains use `yaran-cloud-vX.Y.Z` and `yaran-mobile-vX.Y.Z` tags, never a `dux-` name, and do not change binary release naming: the `yaran` archives ship only on `yaran-v*` releases, and `install.sh` installs the newest `yaran-v*` release because the other trains are never marked as the latest release.
+
 Published `dux-amq-v*` tags, original archive/member names, and checksums are immutable provenance. Pinning one of those tags must still request its original archive bytes, not fabricate a Yaran archive at the old URL. The overlay's pinned legacy release is an explicit compatibility bootstrap, not a newly published Yaran release.
 
 ## Hosted repository

@@ -1,0 +1,46 @@
+{
+  "description": "RFC 8292 VAPID as the relay checks it (Design §9): aud must be the relay origin, exp in the future and at most 24 h ahead, k must equal the key bound at mint. JWT signatures are committed once.",
+  "vapid_private_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "1HhatuS5FM87eipJaE9AKclKGWSQMwVjE-FN_TRNmk8",
+    "y": "tsYfLvQ3QRoGgvdamUaEgd7eOUMNScJ5oWTP-hqWpSE",
+    "d": "32m_oa6QU72Kon-w5GoHRpYYZIZsv2AwXtTHOavO6t8"
+  },
+  "vapid_public_key": "BNR4WrbkuRTPO3oqSWhPQCnJShlkkDMFYxPhTf00TZpPtsYfLvQ3QRoGgvdamUaEgd7eOUMNScJ5oWTP-hqWpSE",
+  "bound_k": "BNR4WrbkuRTPO3oqSWhPQCnJShlkkDMFYxPhTf00TZpPtsYfLvQ3QRoGgvdamUaEgd7eOUMNScJ5oWTP-hqWpSE",
+  "audience": "https://relay.example.com",
+  "now": 1731571200,
+  "cases": [
+    {
+      "name": "valid",
+      "authorization": "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJhdWQiOiJodHRwczovL3JlbGF5LmV4YW1wbGUuY29tIiwiZXhwIjoxNzMxNjE0NDAwLCJzdWIiOiJodHRwczovL2NwLmV4YW1wbGUuY29tIn0.oHyl1ghCmvylgw4UsZQDiJ19t-aKejNDxeWmB9oaTTzF7ACTfz5QgH9k33XZO5N1jxyXv0KpISp292QoAK3OvQ, k=BNR4WrbkuRTPO3oqSWhPQCnJShlkkDMFYxPhTf00TZpPtsYfLvQ3QRoGgvdamUaEgd7eOUMNScJ5oWTP-hqWpSE",
+      "expect": "ok"
+    },
+    {
+      "name": "expired",
+      "authorization": "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJhdWQiOiJodHRwczovL3JlbGF5LmV4YW1wbGUuY29tIiwiZXhwIjoxNzMxNTcxMTk5LCJzdWIiOiJodHRwczovL2NwLmV4YW1wbGUuY29tIn0.0sarfglavE_CikwTROIzs-hDOk48ANCUnxfSY8LIUkqClTNGQUhrT--E7a_VTdb2dMPA_K0_U8kMyQjllKlvqw, k=BNR4WrbkuRTPO3oqSWhPQCnJShlkkDMFYxPhTf00TZpPtsYfLvQ3QRoGgvdamUaEgd7eOUMNScJ5oWTP-hqWpSE",
+      "expect": "relay_vapid_invalid"
+    },
+    {
+      "name": "exp more than 24 h ahead",
+      "authorization": "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJhdWQiOiJodHRwczovL3JlbGF5LmV4YW1wbGUuY29tIiwiZXhwIjoxNzMxNjU3NjAxLCJzdWIiOiJodHRwczovL2NwLmV4YW1wbGUuY29tIn0.KHU0ieEPKxSmFohh7b-YxFdfkmi3muKmdFiUuSAnFHwzTVEuEEmRqiNREPPsXggQT98bTe5ssQ-PYKDYm4VSBA, k=BNR4WrbkuRTPO3oqSWhPQCnJShlkkDMFYxPhTf00TZpPtsYfLvQ3QRoGgvdamUaEgd7eOUMNScJ5oWTP-hqWpSE",
+      "expect": "relay_vapid_invalid"
+    },
+    {
+      "name": "wrong aud",
+      "authorization": "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJhdWQiOiJodHRwczovL290aGVyLXJlbGF5LmV4YW1wbGUuY29tIiwiZXhwIjoxNzMxNTc0ODAwLCJzdWIiOiJodHRwczovL2NwLmV4YW1wbGUuY29tIn0.dQRaogN9F6b4PuvxPbBv6nrhNV-koaCO2UngmadHQbLkcDCMJ0LgcnW05ZfpRKrAR0SGBsDHb9Yu-Qo688kG5g, k=BNR4WrbkuRTPO3oqSWhPQCnJShlkkDMFYxPhTf00TZpPtsYfLvQ3QRoGgvdamUaEgd7eOUMNScJ5oWTP-hqWpSE",
+      "expect": "relay_vapid_invalid"
+    },
+    {
+      "name": "wrong k",
+      "authorization": "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJhdWQiOiJodHRwczovL3JlbGF5LmV4YW1wbGUuY29tIiwiZXhwIjoxNzMxNTc0ODAwLCJzdWIiOiJodHRwczovL2NwLmV4YW1wbGUuY29tIn0.Qow990XNkdJIoHytoj71CzxnSIPur9tx6rNrMQdd9y7tbXUm9kgEupQ3Jc_qUAgN5cVEAYmLo1w26vt2lFL-Ng, k=BA8lfVkf0VRHvGmBi4pRYNKaz0tx-sp_lfCvKIXoMS6t0OYjFTcKPfiNHIvbYtRT9_A9M3qvONE3qEGkah3jxy8",
+      "expect": "relay_vapid_mismatch"
+    },
+    {
+      "name": "missing header",
+      "authorization": null,
+      "expect": "relay_vapid_invalid"
+    }
+  ]
+}

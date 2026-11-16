@@ -32,6 +32,21 @@
 //! browser can be made to send an IP-literal Host for a name the attacker owns. A
 //! local reverse proxy forwarding a spoofed Host is the operator's own
 //! configuration, here as for rule 2.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! host_guard.rs
+//! ├── cloud_ingress
+//! ├── yaran-core::cloud::protocol
+//! └── yaran-core::tailscale
+//! External: axum, std
+//!
+//! Used by:
+//! host_guard.rs
+//! ├── cloud_ingress
+//! ├── crate
+//! └── server
+//! <module-headers:end>
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -41,6 +56,7 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use yaran_core::cloud::protocol::{REFUSAL_HEADER, RefusalCode};
 
 // ── Host normalization helpers ─────────────────────────────────────────────
 
@@ -141,6 +157,8 @@ pub struct HostAllowlist {
     /// not that leg is bound right now. Rule 5; see the module doc for why it is
     /// structural and why a serve reads it live.
     tailscale_literals: TailscaleLiterals,
+    /// The live tunnel-hostname rule (rule 4's second half; Phase 11 §2).
+    cloud: Option<crate::cloud_ingress::CloudIngress>,
 }
 
 /// Where rule 5's answer comes from: a value fixed at construction, or a cell the
@@ -181,7 +199,14 @@ impl HostAllowlist {
             has_unspecified,
             configured,
             tailscale_literals: TailscaleLiterals::Fixed(tailscale_literals),
+            cloud: None,
         }
+    }
+
+    /// Also allow the cloud leg's tunnel hostname, for exactly as long as it is bound.
+    pub fn with_cloud_ingress(mut self, cloud: crate::cloud_ingress::CloudIngress) -> Self {
+        self.cloud = Some(cloud);
+        self
     }
 
     /// Read rule 5 from a live cell instead of the constructed value, so a
@@ -232,8 +257,10 @@ impl HostAllowlist {
             return self.tailscale_literals.allowed() && is_tailscale_range(ip);
         }
 
-        // Rule 4: operator-configured hostname (case-insensitive, port-stripped).
+        // Rule 4: operator-configured hostname (case-insensitive, port-stripped), or
+        // the tunnel hostname while the cloud leg has it bound.
         self.configured.contains(&host)
+            || self.cloud.as_ref().is_some_and(|c| c.is_bound_host(&host))
     }
 }
 
@@ -254,13 +281,19 @@ async fn host_allowlist_middleware(
         .and_then(|h| h.to_str().ok());
     match host {
         Some(h) if allowlist.allows_host(h) => next.run(request).await,
-        Some(_) => (
-            StatusCode::FORBIDDEN,
+        Some(_) => refused(
+            RefusalCode::HostNotServed,
             "this yaran server does not serve the requested host",
-        )
-            .into_response(),
-        None => (StatusCode::FORBIDDEN, "missing or invalid Host header").into_response(),
+        ),
+        None => refused(RefusalCode::HostMissing, "missing or invalid Host header"),
     }
+}
+
+fn refused(code: RefusalCode, body: &'static str) -> Response {
+    let mut response = (StatusCode::FORBIDDEN, body).into_response();
+    let value = axum::http::HeaderValue::from_static(code.as_str());
+    response.headers_mut().insert(REFUSAL_HEADER, value);
+    response
 }
 
 /// Wrap a router with the Host allowlist middleware, pinning every route to the
@@ -274,10 +307,15 @@ pub fn host_allowlist_layer(
     configured: Vec<String>,
     tailscale_literals: bool,
     live_tailscale_literals: Option<Arc<std::sync::atomic::AtomicBool>>,
+    cloud: Option<crate::cloud_ingress::CloudIngress>,
 ) -> Router {
     let allowlist = HostAllowlist::new(&bound_ips, &configured, tailscale_literals);
-    let allowlist = Arc::new(match live_tailscale_literals {
+    let allowlist = match live_tailscale_literals {
         Some(cell) => allowlist.with_live_tailscale_literals(cell),
+        None => allowlist,
+    };
+    let allowlist = Arc::new(match cloud {
+        Some(cloud) => allowlist.with_cloud_ingress(cloud),
         None => allowlist,
     });
     router.layer(axum::middleware::from_fn_with_state(

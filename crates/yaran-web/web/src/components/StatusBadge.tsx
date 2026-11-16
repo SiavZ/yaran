@@ -6,9 +6,9 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@/components/ui/tooltip"
+} from "@yaran/ui-kit/tooltip"
 import type { SessionStatus } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The one session-status badge, colour and icon mirroring the TUI. The colour
 // lives on the icon and label only, with no pill background. `bg-transparent` is

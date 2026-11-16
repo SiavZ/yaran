@@ -1,0 +1,155 @@
+{
+  "type": "Me",
+  "schema": "me.schema.json#/$defs/Me",
+  "valid": [
+    {
+      "name": "user",
+      "value": {
+        "email": "ada@example.org",
+        "role": "user",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "limits": {
+          "machines": 10,
+          "devices": 10
+        },
+        "counts": {
+          "machines": 2,
+          "devices": 1
+        },
+        "session_exp": "2026-11-15T08:30:00Z"
+      }
+    },
+    {
+      "name": "admin",
+      "value": {
+        "email": "ada@example.org",
+        "role": "admin",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "limits": {
+          "machines": 10,
+          "devices": 10
+        },
+        "counts": {
+          "machines": 2,
+          "devices": 1
+        },
+        "session_exp": "2026-11-15T08:30:00Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown role",
+      "keyword": "enum",
+      "value": {
+        "email": "ada@example.org",
+        "role": "owner",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "limits": {
+          "machines": 10,
+          "devices": 10
+        },
+        "counts": {
+          "machines": 2,
+          "devices": 1
+        },
+        "session_exp": "2026-11-15T08:30:00Z"
+      }
+    },
+    {
+      "name": "limits without devices",
+      "keyword": "required",
+      "value": {
+        "email": "ada@example.org",
+        "role": "user",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "limits": {
+          "machines": 10
+        },
+        "counts": {
+          "machines": 2,
+          "devices": 1
+        },
+        "session_exp": "2026-11-15T08:30:00Z"
+      }
+    },
+    {
+      "name": "negative count",
+      "keyword": "minimum",
+      "value": {
+        "email": "ada@example.org",
+        "role": "user",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "limits": {
+          "machines": 10,
+          "devices": 10
+        },
+        "counts": {
+          "machines": -1,
+          "devices": 1
+        },
+        "session_exp": "2026-11-15T08:30:00Z"
+      }
+    },
+    {
+      "name": "bad session_exp",
+      "keyword": "pattern",
+      "value": {
+        "email": "ada@example.org",
+        "role": "user",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "limits": {
+          "machines": 10,
+          "devices": 10
+        },
+        "counts": {
+          "machines": 2,
+          "devices": 1
+        },
+        "session_exp": "tomorrow"
+      }
+    },
+    {
+      "name": "missing org",
+      "keyword": "required",
+      "value": {
+        "email": "ada@example.org",
+        "role": "user",
+        "user_slug": "ada",
+        "limits": {
+          "machines": 10,
+          "devices": 10
+        },
+        "counts": {
+          "machines": 2,
+          "devices": 1
+        },
+        "session_exp": "2026-11-15T08:30:00Z"
+      }
+    }
+  ]
+}

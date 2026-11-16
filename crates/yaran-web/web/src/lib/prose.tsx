@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-import { InlineCode } from "@/components/ui/inline-code"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 import { stripBidiControls } from "@/lib/bidi"
 
 // A sentence that names things, kept as structure rather than as a finished

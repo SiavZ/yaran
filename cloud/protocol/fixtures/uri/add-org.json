@@ -1,0 +1,91 @@
+{
+  "description": "yaranapp://add-org?u=<pct-encoded OrgUrl>, total <= 512 chars. build: expect is the URI or null (refused). parse: expect is {org_url} or uri_invalid.",
+  "build": [
+    {
+      "org_url": "https://cp.example.com",
+      "expect": "yaranapp://add-org?u=https%3A%2F%2Fcp.example.com"
+    },
+    {
+      "org_url": "https://yaran.cp.example.org",
+      "expect": "yaranapp://add-org?u=https%3A%2F%2Fyaran.cp.example.org"
+    },
+    {
+      "org_url": "http://cp.example.com",
+      "expect": null
+    },
+    {
+      "org_url": "https://cp.example.com/",
+      "expect": null
+    },
+    {
+      "org_url": "https://cp.example.com:8443",
+      "expect": null
+    },
+    {
+      "org_url": "https://CP.example.com",
+      "expect": null
+    },
+    {
+      "org_url": "https://localhost",
+      "expect": null
+    },
+    {
+      "org_url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "expect": null
+    }
+  ],
+  "parse": [
+    {
+      "uri": "yaranapp://add-org?u=https%3A%2F%2Fcp.example.com",
+      "expect": {
+        "org_url": "https://cp.example.com"
+      }
+    },
+    {
+      "uri": "YaranApp://add-org?u=https%3A%2F%2Fcp.example.com",
+      "expect": {
+        "org_url": "https://cp.example.com"
+      }
+    },
+    {
+      "uri": "yaranapp://add-org?u=https%3A%2F%2Fcp.example.com&utm=qr",
+      "expect": {
+        "org_url": "https://cp.example.com"
+      }
+    },
+    {
+      "uri": "yaranapp://add-org?u=https://cp.example.com",
+      "expect": {
+        "org_url": "https://cp.example.com"
+      }
+    },
+    {
+      "uri": "yaranapp://add-org?u=https%3A%2F%2Fcp.example.com&u=https%3A%2F%2Fcp.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-org",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-org?u=http%3A%2F%2Fcp.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-org?u=%E0%A4%A",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-orgs?u=https%3A%2F%2Fcp.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "https://add-org?u=https%3A%2F%2Fcp.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-org?u=https%3A%2F%2Fcp.example.com&pad=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expect": "uri_invalid"
+    }
+  ]
+}

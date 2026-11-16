@@ -133,6 +133,17 @@ describe("bootstrap slice", () => {
     expect(bootstrapFetches).toBe(before + 1)
   })
 
+  it("a cloud.changed event refetches so the pairing and tunnel state are live", async () => {
+    const mod = await loadStore()
+    const before = bootstrapFetches
+    bootstrapBody = makeBootstrap({
+      cloud: { mode: "auto", state: "ready", paired: true, hostname: "h.example.com", org_url: null, org_name: null, since: null, detail: null },
+    })
+    mod.eventsSocket.onEvent({ event: "cloud.changed" })
+    await vi.waitFor(() => expect(mod.getSnapshot().bootstrap?.cloud?.paired).toBe(true))
+    expect(bootstrapFetches).toBe(before + 1)
+  })
+
   it("ignores a bootstrap response that a newer one has overtaken", async () => {
     // Two `config.changed` events in quick succession fire two GETs, and nothing
     // makes the replies come back in order. Without a generation guard the FIRST

@@ -12,6 +12,8 @@ the tenet wins.
 - **Node 22.12 or newer** plus npm. The web UI is a React app that is **compiled into
   the `yaran` binary**, so a normal `cargo build` builds it. If you have no Node
   toolchain, see [Building without the web UI](#building-without-the-web-ui).
+  The exact Node release the cloud and mobile CI uses is pinned in `.node-version`
+  at the repo root, the only Node pin (version managers such as `fnm` read it).
 - **`git`**, which yaran is built around.
 - **`gh`** (optional) for the GitHub integration.
 
@@ -173,6 +175,66 @@ suppressing the lint unless there is a specific, documented reason.
 Every change should come with unit tests, and integration tests where that is
 feasible and low-lift. When you are fixing a bug, aim to prove the diagnosis with
 a failing test before you fix it.
+
+Two more gates run on every pull request through `.github/workflows/gates.yml`: no
+code file may grow past 500 lines (files already over it are held to their size by a
+baseline), and the files in the module-headers scope (the phone-app subprojects, and
+any existing file a phone-app change touches) must carry an up-to-date generated
+Uses / Used-by block in their header comment. Run `make headers-check lines-check`
+before pushing; [docs/contributing/module-headers.md](docs/contributing/module-headers.md)
+explains the block, the scope manifest, `--accept-growth` and the optional
+pre-commit hook.
+
+## Cloud and mobile subprojects
+
+Cloud Connect and the phone apps live in their own trees: `cloud/protocol` (the shared
+contract), `cloud/worker` (the org control plane), `cloud/push-relay` (the publisher
+relay) and `mobile/` (the Capacitor shell and the native Android and iOS apps). You only
+need their toolchains if you touch them.
+
+What you need:
+
+- **Node** at the version in the root `.node-version` (Node 24), for everything under
+  `cloud/` and `mobile/app`.
+- **JDK 21** and the Android SDK, for `mobile/android`.
+- **Xcode** on macOS, for `mobile/ios`. The Swift packages under `mobile/ios/Shared` also
+  test with `swift test` alone.
+
+Checks, each from the repo root:
+
+```bash
+(cd cloud/protocol && npm ci && npm run gen:check && npm run typecheck && npm test)
+(cd cloud/worker && npm ci && npm run typecheck && npm run lint && npm test && npm run build)
+(cd cloud/push-relay && npm ci && npm run typecheck && npm run lint && npm test && npm run build)
+(cd mobile/app && npm ci && npx tsc --noEmit && npm run lint && npm test && npm run build)
+(cd mobile/android && ./gradlew testFossDebugUnitTest :app:verifyFossDependencies ktlintCheck detekt lint)
+(cd mobile/ios/Shared/YaranPushCore && swift test)
+node tools/module-headers/bin/module-headers.mjs --check
+node tools/module-headers/bin/module-headers.mjs --lines --check
+```
+
+The module-headers checks cover every file in these trees; `make headers-check
+lines-check` runs the same two.
+
+**Fork pull requests never see secrets.** None of the CI suites use any, so a fork's
+pull request runs the same checks as a branch in this repository. Signing keys, store
+credentials and deploy tokens exist only in protected release environments that run on
+tag pushes.
+
+### New attack surface means editing its threat row
+
+The threat model gives every Cloud Connect and phone-app surface a numbered row (T25
+onward) in `SECURITY.md` and a section in `docs/operations/threat-model.md`. Those rows
+were drafted before the code and then reconciled with it; each mitigation opens with its
+status (implemented, partly implemented, or not implemented yet), and no row is yet
+verified against live services. A pull request that builds or changes one of those
+surfaces edits its own row in the same change: describe what the code actually does,
+with symbols and file paths, and update the status. A surface with no row gets the
+next free ID at the end. Say in the pull request description which rows you edited:
+
+```markdown
+- [ ] Edited my threat-model rows (IDs: T…)
+```
 
 ## Writing a release body
 

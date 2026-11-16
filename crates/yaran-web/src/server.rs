@@ -10,6 +10,104 @@
 //! hijacking, allowing same-host origins only. A client that sends no `Origin` is
 //! allowed, a documented tradeoff: a CLI or test client is trusted not to be a
 //! hijacked browser tab.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! server.rs
+//! ├── bootstrap_routes
+//! ├── browse_routes
+//! ├── build_routes
+//! ├── changes
+//! ├── changes_routes
+//! ├── cloud_handoff
+//! ├── cloud_ingress
+//! ├── cloud_mode
+//! ├── cloud_mode_routes
+//! ├── cloud_phone_routes
+//! ├── cloud_routes
+//! ├── config_routes
+//! ├── console
+//! ├── crate
+//! ├── engine_actor
+//! ├── event_bus
+//! ├── events_beat
+//! ├── file_drop_routes
+//! ├── file_routes
+//! ├── first_load_routes
+//! ├── git_routes
+//! ├── host_guard
+//! ├── origin_match
+//! ├── ownership_publish
+//! ├── project_actions
+//! ├── project_reads
+//! ├── pty_log
+//! ├── pty_sizes
+//! ├── resource_routes
+//! ├── rest_common
+//! ├── serve_legs
+//! ├── session_actions
+//! ├── startup_logs
+//! ├── tab_actions
+//! ├── terminal_actions
+//! ├── test_support
+//! ├── web_assets
+//! ├── workspace_routes
+//! ├── yaran-core::activity
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::config
+//! ├── yaran-core::logger
+//! ├── yaran-core::model
+//! ├── yaran-core::prose
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! ├── yaran-core::test_scratch
+//! ├── yaran-core::urls
+//! └── yaran-core::wire
+//! External: axum, chrono, futures_util, serde, serde_json, std, tempfile, tokio, tower, uuid
+//!
+//! Used by:
+//! server.rs
+//! ├── bootstrap_routes
+//! ├── browse_routes
+//! ├── build_routes
+//! ├── changes_routes
+//! ├── cloud_mode_routes
+//! ├── cloud_phone_routes
+//! ├── cloud_routes
+//! ├── cloud_test_support
+//! ├── config_routes
+//! ├── crate
+//! ├── file_drop_routes
+//! ├── file_routes
+//! ├── first_load_routes
+//! ├── git_routes
+//! ├── ownership_publish
+//! ├── project_actions
+//! ├── project_reads
+//! ├── resource_routes
+//! ├── session_actions
+//! ├── startup_logs
+//! ├── tab_actions
+//! ├── terminal_actions
+//! ├── test_support
+//! ├── workspace_routes
+//! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test changes_events]
+//! ├── yaran-web[test file_move_and_info_routes]
+//! ├── yaran-web[test file_tree_routes]
+//! ├── yaran-web[test first_load_routes]
+//! ├── yaran-web[test live_server_limits]
+//! ├── yaran-web[test missing_working_copy]
+//! ├── yaran-web[test project_worktrees_routes]
+//! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test session_branch_routes]
+//! ├── yaran-web[test static_serving]
+//! ├── yaran-web[test tab_routes]
+//! ├── yaran-web[test terminal_file_routes]
+//! ├── yaran-web[test workspace_push]
+//! └── yaran-web[test ws_transport]
+//! <module-headers:end>
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -145,6 +243,9 @@ pub struct AppState {
     /// bootstrap document so the Preferences row can say the flag outranks the
     /// saved value for as long as this run lasts.
     pub tailscale_forced_no: bool,
+    /// This serve's live `[cloud] mode` lane (view snapshot, ingress reader for
+    /// Phase 11), or `None` when nothing serves behind this router.
+    pub cloud: Option<crate::cloud_mode::CloudModeControl>,
     /// Overrides how long a create handler waits for its resource to surface
     /// before answering `202 Accepted`. `None` in every real serve, which uses
     /// [`crate::rest_common::CREATE_AWAIT_TIMEOUT`] and
@@ -338,6 +439,8 @@ pub struct RouterParams {
     pub tailscale_mode_control: Option<crate::serve_legs::TailscaleModeControl>,
     /// Whether this run was started with `--no-tailscale`.
     pub tailscale_forced_no: bool,
+    /// The handle the cloud-mode route and bootstrap read; `None` with no serve loop.
+    pub cloud_mode_control: Option<crate::cloud_mode::CloudModeControl>,
     /// How long a create handler waits for its resource before answering `202`.
     /// `None` uses the real windows; overridden only by tests (see
     /// [`RouterParams::with_create_await_timeout`]).
@@ -363,6 +466,9 @@ pub struct RouterParams {
     /// anything connects. `None` for every serve path but the background one,
     /// which is the only one with a terminal UI beside it to show the count on.
     pub(crate) connections_gauge: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// The cloud leg's ingress handle (Phase 11): the live tunnel-hostname rule and
+    /// the Access check. `None` in tests that do not exercise it.
+    pub cloud_ingress: Option<crate::cloud_ingress::CloudIngress>,
 }
 
 impl RouterParams {
@@ -397,10 +503,12 @@ impl RouterParams {
             live_tailscale_host_literals: None,
             tailscale_mode_control: None,
             tailscale_forced_no: false,
+            cloud_mode_control: None,
             create_await_timeout: None,
             release_notes_api_base: yaran_core::urls::GITHUB_API_BASE.to_string(),
             ownership_publisher: None,
             connections_gauge: None,
+            cloud_ingress: None,
         }
     }
 
@@ -574,6 +682,19 @@ impl RouterParams {
         self
     }
 
+    /// Give the routes this serve's live `[cloud] mode` lane.
+    pub fn with_cloud_mode_control(mut self, control: crate::cloud_mode::CloudModeControl) -> Self {
+        self.cloud_mode_control = Some(control);
+        self
+    }
+
+    /// Put the cloud ingress in front of the router and let the Host guard admit its
+    /// tunnel hostname while it is bound.
+    pub fn with_cloud_ingress(mut self, ingress: crate::cloud_ingress::CloudIngress) -> Self {
+        self.cloud_ingress = Some(ingress);
+        self
+    }
+
     /// Let the Host guard read rule 5 from the serve's live Tailscale-mode cell,
     /// so a mode change applied while yaran serves moves the guard with it.
     pub fn with_live_tailscale_host_literals(
@@ -671,6 +792,10 @@ pub fn build_app(
     // channel read by the socket; this signal is what an older page refetches on.
     // Same lifetime/teardown story as the config forwarder above.
     spawn_spine_changed_forwarder(engine.subscribe_spine_changes(), Arc::clone(&event_bus));
+    crate::cloud_mode_routes::spawn_cloud_changed_forwarder(
+        params.cloud_mode_control.as_ref(),
+        Arc::clone(&event_bus),
+    );
     // Run the first-load gate ONCE for this launch, off every request path. The
     // resolver parks the screen (if any) in this state and emits `config.changed`
     // so already-connected clients refetch bootstrap and find it; clients that
@@ -769,10 +894,13 @@ pub fn build_app(
         first_load,
         tailscale_mode: params.tailscale_mode_control.clone(),
         tailscale_forced_no: params.tailscale_forced_no,
+        cloud: params.cloud_mode_control.clone(),
     };
 
     // Every route is served plainly (trusted-local: no login gate). `extra_gated`
     // is merged as-is so a test can inject a probe route.
+    let cloud_present = params.cloud_ingress.is_some();
+    let cloud = params.cloud_ingress.clone().unwrap_or_default();
     let router = Router::new()
         .route("/ws/events", get(ws_events_upgrade))
         // Nested per-PTY byte-stream sockets. One socket per attached PTY: the
@@ -797,6 +925,7 @@ pub fn build_app(
         .merge(crate::changes_routes::routes())
         .merge(crate::resource_routes::routes())
         .merge(crate::bootstrap_routes::routes())
+        .merge(crate::cloud_mode_routes::routes())
         .merge(crate::build_routes::routes())
         .merge(crate::workspace_routes::routes())
         .merge(crate::session_actions::routes())
@@ -805,10 +934,13 @@ pub fn build_app(
         .merge(crate::startup_logs::routes())
         .merge(crate::terminal_actions::routes())
         .merge(crate::file_drop_routes::routes(&state))
+        .merge(crate::cloud_routes::routes(&state))
         .merge(crate::tab_actions::routes())
         .merge(crate::browse_routes::routes())
         .merge(crate::config_routes::routes())
         .merge(crate::first_load_routes::routes())
+        .merge(crate::cloud_handoff::cloud_routes(cloud.clone()))
+        .merge(crate::cloud_phone_routes::routes())
         .merge(extra_gated)
         .route("/healthz", get(|| async { "ok" }))
         .fallback(crate::web_assets::static_handler)
@@ -828,18 +960,25 @@ pub fn build_app(
         // The host allowlist (see below) is applied OUTSIDE this layer, so
         // foreign-Host probes are rejected before reaching the access log.
         .layer(middleware::from_fn_with_state(state.clone(), access_log))
-        .with_state(state);
+        .with_state(state)
+        // Cloud Access check (Phase 11 §5): inside the Host guard, outside the access
+        // log, so an unauthenticated tunnel request is never access-logged.
+        .layer(middleware::from_fn_with_state(
+            cloud.clone(),
+            crate::cloud_ingress::cloud_access_middleware,
+        ));
 
     // Host allowlist (DNS-rebinding defense): outermost layer so it runs before
     // the access log. Active when bound_ips is non-empty; tests that do not
     // exercise the host guard leave bound_ips empty, keeping the guard off.
-    if !params.bound_ips.is_empty() || !params.configured_hosts.is_empty() {
+    if !params.bound_ips.is_empty() || !params.configured_hosts.is_empty() || cloud_present {
         crate::host_guard::host_allowlist_layer(
             router,
             params.bound_ips,
             params.configured_hosts,
             params.tailscale_host_literals,
             params.live_tailscale_host_literals,
+            cloud_present.then_some(cloud),
         )
     } else {
         router
@@ -916,39 +1055,12 @@ fn same_origin_allowed(headers: &HeaderMap) -> bool {
         // No Origin: a non-browser client. Allowed (documented tradeoff).
         return true;
     };
-    let origin = origin.to_str().ok().and_then(origin_host);
     let host = headers
         .get(axum::http::header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .map(|h| h.to_string());
-
-    matches!((origin, host), (Some(o), Some(h)) if o == h)
-}
-
-/// Extract the `host[:port]` authority from an `Origin` header value
-/// (`scheme://host[:port]`), so it can be compared against the `Host` header.
-///
-/// NOTE: the scheme is intentionally dropped, so the comparison in
-/// [`same_origin_allowed`] is authority-only -- it does NOT distinguish an
-/// `http://` Origin from an `https://` one for the same host. A cross-protocol
-/// upgrade is not blocked here; browsers reject it via mixed-content policy, and
-/// on the TLS path the host allowlist is the complementary layer.
-///
-/// Returns `None` for the literal `"null"` (sent by sandboxed iframes / `data:`
-/// documents) and for any value without a `"://"` scheme separator, so callers
-/// can treat an unparseable Origin as a cross-origin mismatch rather than
-/// falling through to the no-Origin allow path.
-fn origin_host(origin: &str) -> Option<String> {
-    let after_scheme = origin.split_once("://").map(|(_, rest)| rest)?;
-    // Strip any path/query that shouldn't appear in an Origin but be defensive.
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    if authority.is_empty() {
-        None
-    } else {
-        Some(authority.to_string())
+        .and_then(|h| h.to_str().ok());
+    match (origin.to_str().ok(), host) {
+        (Some(o), Some(h)) => crate::origin_match::same_origin(o, h),
+        _ => false,
     }
 }
 
@@ -959,9 +1071,8 @@ fn origin_host(origin: &str) -> Option<String> {
 /// - `Origin` absent (curl, CLI clients, server-to-server): allowed. Non-browser
 ///   clients do not send `Origin`, and the tradeoff is documented.
 /// - `Origin` present and authority matches `Host` (same-origin browser): allowed.
-/// - `Origin: null` (sandboxed iframe / `data:` document): `origin_host` returns
-///   `None` (no `"://"` separator), which `same_origin_allowed` treats as a
-///   mismatch -- rejected with 403. Do NOT fall through to the no-Origin allow
+/// - `Origin: null` (sandboxed iframe / `data:` document): it has no `"://"`
+///   separator, which `same_origin_allowed` treats as a mismatch -- rejected with 403. Do NOT fall through to the no-Origin allow
 ///   path when the value is present but unparseable.
 /// - `Origin` present and authority does not match `Host`: rejected with 403.
 ///
@@ -1238,6 +1349,7 @@ fn upgrade_pty_socket(
     peer_ip: IpAddr,
     permit: tokio::sync::OwnedSemaphorePermit,
     headers: &HeaderMap,
+    deadline: Option<tokio::time::Instant>,
 ) -> Response {
     let engine = state.engine.clone();
     let console = state.console.clone();
@@ -1262,6 +1374,7 @@ fn upgrade_pty_socket(
                 connections,
                 user_agent,
                 live_limits,
+                deadline,
             )
         })
         .into_response()
@@ -1277,6 +1390,7 @@ async fn ws_session_pty_upgrade(
     Path(id): Path<String>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1320,6 +1434,7 @@ async fn ws_session_pty_upgrade(
         peer.ip(),
         permit,
         &headers,
+        deadline.0,
     )
 }
 
@@ -1334,6 +1449,7 @@ async fn ws_terminal_pty_upgrade(
     Path((id, tid)): Path<(String, String)>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1377,6 +1493,7 @@ async fn ws_terminal_pty_upgrade(
         peer.ip(),
         permit,
         &headers,
+        deadline.0,
     )
 }
 
@@ -1391,6 +1508,7 @@ async fn ws_project_terminal_pty_upgrade(
     Path((id, tid)): Path<(String, String)>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1434,6 +1552,7 @@ async fn ws_project_terminal_pty_upgrade(
         peer.ip(),
         permit,
         &headers,
+        deadline.0,
     )
 }
 
@@ -1449,6 +1568,7 @@ async fn ws_standalone_terminal_pty_upgrade(
     Path(tid): Path<String>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1486,6 +1606,7 @@ async fn ws_standalone_terminal_pty_upgrade(
         peer.ip(),
         permit,
         &headers,
+        deadline.0,
     )
 }
 
@@ -1558,6 +1679,7 @@ async fn ws_tab_pty_upgrade(
     Path((id, tab)): Path<(String, String)>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1646,6 +1768,7 @@ async fn ws_tab_pty_upgrade(
                 connections,
                 user_agent,
                 live_limits,
+                deadline.0,
             )
             .await
         })
@@ -1688,6 +1811,8 @@ async fn handle_pty_socket(
     // socket rather than frozen at bind, so a config reload retimes the next
     // connection.
     live_limits: Arc<crate::engine_actor::LiveServerLimits>,
+    // When an Access session behind this socket expires (Phase 11 §6), or `None`.
+    deadline: Option<tokio::time::Instant>,
 ) {
     console.client_connected(peer_ip);
     // Register this PTY socket as a live connection (its class depends on which PTY
@@ -1894,6 +2019,7 @@ async fn handle_pty_socket(
             event_bus: &bus,
             user_agent: user_agent.as_deref(),
             live_limits: &live_limits,
+            deadline,
         }
         .run(stream, rx, grid_changes, handshake_grid_seq)
         .await;
@@ -1917,6 +2043,7 @@ struct AttachedPtySocket<'a> {
     event_bus: &'a EventBus,
     user_agent: Option<&'a str>,
     live_limits: &'a crate::engine_actor::LiveServerLimits,
+    deadline: Option<tokio::time::Instant>,
 }
 
 impl AttachedPtySocket<'_> {
@@ -1931,6 +2058,8 @@ impl AttachedPtySocket<'_> {
             spawn_pty_forwarder(Arc::clone(self.sink), rx, self.engine.shutdown_flag());
         let mut ping = tokio::time::interval(WS_LIVENESS_PING_PERIOD);
         ping.tick().await;
+        let expiry = crate::cloud_ingress::session_deadline(self.deadline);
+        tokio::pin!(expiry);
 
         loop {
             // Handle each received value inside its selected branch. A combined
@@ -1941,6 +2070,11 @@ impl AttachedPtySocket<'_> {
                     self.handle_grid_change(change, &mut last_grid_seq).await
                 }
                 _ = &mut pty_forwarder => self.close_after_forwarder_end().await,
+                _ = &mut expiry => {
+                    let close = crate::cloud_ingress::session_expired_close();
+                    let _ = self.sink.lock().await.send(close).await;
+                    PtyLoopAction::Break
+                }
                 next = stream.next() => match next {
                     Some(Ok(message)) => self.handle_client_message(message).await,
                     _ => PtyLoopAction::Break,
@@ -2583,6 +2717,7 @@ async fn ws_events_upgrade(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -2623,6 +2758,7 @@ async fn ws_events_upgrade(
                 peer_ip,
                 permit,
                 connections,
+                deadline.0,
             )
         })
         .into_response()
@@ -2647,6 +2783,7 @@ async fn handle_events_socket(
     peer_ip: std::net::IpAddr,
     _permit: tokio::sync::OwnedSemaphorePermit,
     connections: Arc<crate::rest_common::ConnectionRegistry>,
+    deadline: Option<tokio::time::Instant>,
 ) {
     console.client_connected(peer_ip);
     // A server-assigned random id correlating REST actions with the statuses they
@@ -2760,6 +2897,7 @@ async fn handle_events_socket(
         connection_id,
         connections,
         peer_ip,
+        deadline,
     };
     let _ = connection.run().await;
     drop(connection);
@@ -2783,6 +2921,8 @@ struct EventsSocketLoop {
     /// has gone can fall back to a broadcast instead of reaching nobody.
     connections: Arc<crate::rest_common::ConnectionRegistry>,
     peer_ip: IpAddr,
+    /// When the Access session behind this socket expires (Phase 11 §6), or `None`.
+    deadline: Option<tokio::time::Instant>,
 }
 
 enum EventsLoopInput {
@@ -2792,6 +2932,7 @@ enum EventsLoopInput {
     Status(Result<WireStatus, tokio::sync::broadcast::error::RecvError>),
     StatusCleared(Result<Option<String>, tokio::sync::broadcast::error::RecvError>),
     Client(Option<Result<Message, axum::Error>>),
+    SessionExpired,
 }
 
 impl EventsLoopInput {
@@ -2803,6 +2944,11 @@ impl EventsLoopInput {
             Self::Status(status) => connection.handle_status(status).await,
             Self::StatusCleared(cleared) => connection.handle_status_clear(cleared).await,
             Self::Client(next) => connection.handle_client_message(next).await,
+            Self::SessionExpired => {
+                let close = crate::cloud_ingress::session_expired_close();
+                let _ = connection.sink.lock().await.send(close).await;
+                Err(())
+            }
         }
     }
 }
@@ -2811,10 +2957,13 @@ impl EventsSocketLoop {
     async fn run(&mut self) -> Result<(), ()> {
         let mut ping = tokio::time::interval(WS_LIVENESS_PING_PERIOD);
         ping.tick().await;
+        let expiry = crate::cloud_ingress::session_deadline(self.deadline);
+        tokio::pin!(expiry);
 
         loop {
             let input = tokio::select! {
                 _ = ping.tick() => EventsLoopInput::Ping,
+                _ = &mut expiry => EventsLoopInput::SessionExpired,
                 changed = self.workspace_rx.changed(), if self.workspace_alive => {
                     EventsLoopInput::Workspace(changed)
                 }
@@ -2957,6 +3106,10 @@ impl EventsSocketLoop {
     ) -> Result<(), ()> {
         match next {
             Some(Ok(Message::Text(text))) => {
+                if let Some(echo) = crate::events_beat::echo(text.as_str()) {
+                    let send = send_text(&self.sink, echo);
+                    return with_send_deadline(crate::events_beat::ECHO_TIMEOUT, send).await;
+                }
                 let Ok(frame) = serde_json::from_str::<EventsClientFrame>(text.as_str()) else {
                     return Ok(());
                 };
@@ -3004,7 +3157,7 @@ fn subscribed_resource_frame(
         ("session.changes", Some(session_id)) => {
             subscribed.contains(&event_bus::changes_topic(session_id))
         }
-        ("config.changed", _) => subscribed.contains("config"),
+        ("config.changed" | "cloud.changed", _) => subscribed.contains("config"),
         ("projects.changed", _) => subscribed.contains("projects"),
         ("sessions.changed" | "pty.owner", _) => subscribed.contains("sessions"),
         _ => false,

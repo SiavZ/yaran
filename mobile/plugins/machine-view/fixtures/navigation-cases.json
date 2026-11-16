@@ -1,0 +1,744 @@
+{
+  "description": "Machine-view navigation policy (Phase 15 Design, Navigation policy). host is the pinned machine host. frame main|sub; new_window marks window.open/_blank (iOS targetFrame == nil). expect: allow | allow_in_place (load this URL in the same view) | reauth | close_home | close_settings | external (system browser) | block | ignore. diagnostic: the decision writes one diagnostics line. URLs are split by the house splitter, never the platform URL parser, so both twins agree.",
+  "host": "laptop-ada.example.com",
+  "cases": [
+    {
+      "name": "same host root",
+      "url": "https://laptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host no path",
+      "url": "https://laptop-ada.example.com",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host hash route",
+      "url": "https://laptop-ada.example.com/#/agent/abc/tab/t1",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host query",
+      "url": "https://laptop-ada.example.com/editor?path=src%2Fmain.rs",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host upper case",
+      "url": "HTTPS://LAPTOP-ADA.EXAMPLE.COM/x",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host mixed case host",
+      "url": "https://Laptop-Ada.Example.com/x",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host explicit default port",
+      "url": "https://laptop-ada.example.com:443/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host other port",
+      "url": "https://laptop-ada.example.com:8443/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "same host other port no gesture",
+      "url": "https://laptop-ada.example.com:8443/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "same host empty port",
+      "url": "https://laptop-ada.example.com:/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "same host port too long",
+      "url": "https://laptop-ada.example.com:123456/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "same host without gesture",
+      "url": "https://laptop-ada.example.com/x",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "same host trailing dot",
+      "url": "https://laptop-ada.example.com./",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "same host userinfo",
+      "url": "https://user@laptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "userinfo hiding another host",
+      "url": "https://laptop-ada.example.com@evil.example.net/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "userinfo with password",
+      "url": "https://u:p@laptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "same host http downgrade",
+      "url": "http://laptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "same host access login path",
+      "url": "https://laptop-ada.example.com/cdn-cgi/access/login/laptop-ada.example.com?redirect_url=%2F",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "same host access login no gesture",
+      "url": "https://laptop-ada.example.com/cdn-cgi/access/login",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "same host other cdn-cgi path",
+      "url": "https://laptop-ada.example.com/cdn-cgi/trace",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "access team domain",
+      "url": "https://ada-team.cloudflareaccess.com/cdn-cgi/access/login/x",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "access team domain no gesture",
+      "url": "https://ada-team.cloudflareaccess.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "access team domain upper case",
+      "url": "https://ADA-TEAM.CLOUDFLAREACCESS.COM/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "access lookalike suffix",
+      "url": "https://ada-team.cloudflareaccess.com.evil.example.net/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "access lookalike no dot",
+      "url": "https://evilcloudflareaccess.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "access bare domain",
+      "url": "https://cloudflareaccess.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "subdomain of host",
+      "url": "https://evil.laptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "host as suffix of other",
+      "url": "https://xlaptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "parent domain",
+      "url": "https://example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "other host",
+      "url": "https://github.com/SiavZ/yaran",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "other host no gesture",
+      "url": "https://github.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "other host http",
+      "url": "http://example.org/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "other host http no gesture",
+      "url": "http://example.org/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "ip literal",
+      "url": "https://192.168.1.10/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "ipv6 literal",
+      "url": "https://[::1]/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "homograph cyrillic a",
+      "url": "https://laptop-аda.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "punycode host",
+      "url": "https://xn--laptop-da-x0g.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "percent encoded host",
+      "url": "https://laptop%2Dada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "underscore host",
+      "url": "https://laptop_ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "backslash trick",
+      "url": "https://evil.example.net\\@laptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "mailto",
+      "url": "mailto:ada@example.org",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "mailto no gesture",
+      "url": "mailto:ada@example.org",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "tel",
+      "url": "tel:+15555550100",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "tel no gesture",
+      "url": "tel:+15555550100",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "intent scheme",
+      "url": "intent://scan/#Intent;scheme=zxing;package=com.example;end",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "file scheme",
+      "url": "file:///etc/passwd",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "content scheme",
+      "url": "content://com.android.contacts/contacts",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "javascript navigation",
+      "url": "javascript:alert(1)",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "javascript upper case",
+      "url": "JAVASCRIPT:alert(1)",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "data main frame",
+      "url": "data:text/html,<h1>hi</h1>",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "blob same origin",
+      "url": "blob:https://laptop-ada.example.com/0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "blob other origin",
+      "url": "blob:https://evil.example.net/0b5f9a8e",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "about blank",
+      "url": "about:blank",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "about srcdoc",
+      "url": "about:srcdoc",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "about other",
+      "url": "about:config",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "ftp",
+      "url": "ftp://example.org/file",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "ws scheme",
+      "url": "wss://laptop-ada.example.com/ws",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "unknown scheme",
+      "url": "market://details?id=com.example",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "empty url",
+      "url": "",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "no scheme",
+      "url": "laptop-ada.example.com/",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "control reauth same host",
+      "url": "yaranapp://reauth?host=laptop-ada.example.com",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "control reauth no gesture",
+      "url": "yaranapp://reauth?host=laptop-ada.example.com",
+      "frame": "main",
+      "new_window": false,
+      "gesture": false,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "control reauth other host",
+      "url": "yaranapp://reauth?host=other.example.com",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "ignore",
+      "diagnostic": true
+    },
+    {
+      "name": "control reauth missing host",
+      "url": "yaranapp://reauth",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "ignore",
+      "diagnostic": true
+    },
+    {
+      "name": "control home",
+      "url": "yaranapp://home",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "close_home",
+      "diagnostic": false
+    },
+    {
+      "name": "control settings",
+      "url": "yaranapp://settings",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "close_settings",
+      "diagnostic": false
+    },
+    {
+      "name": "control unknown",
+      "url": "yaranapp://explode",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "ignore",
+      "diagnostic": true
+    },
+    {
+      "name": "control add-org",
+      "url": "yaranapp://add-org?u=https%3A%2F%2Fcp.example.com",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "ignore",
+      "diagnostic": true
+    },
+    {
+      "name": "control upper case scheme",
+      "url": "YARANAPP://home",
+      "frame": "main",
+      "new_window": false,
+      "gesture": true,
+      "expect": "close_home",
+      "diagnostic": false
+    },
+    {
+      "name": "new window same host",
+      "url": "https://laptop-ada.example.com/#/editor/agent/abc",
+      "frame": "main",
+      "new_window": true,
+      "gesture": true,
+      "expect": "allow_in_place",
+      "diagnostic": false
+    },
+    {
+      "name": "new window same host default port",
+      "url": "https://laptop-ada.example.com:443/x",
+      "frame": "main",
+      "new_window": true,
+      "gesture": true,
+      "expect": "allow_in_place",
+      "diagnostic": false
+    },
+    {
+      "name": "new window other host",
+      "url": "https://example.org/docs",
+      "frame": "main",
+      "new_window": true,
+      "gesture": true,
+      "expect": "external",
+      "diagnostic": false
+    },
+    {
+      "name": "new window other host no gesture",
+      "url": "https://example.org/docs",
+      "frame": "main",
+      "new_window": true,
+      "gesture": false,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "new window about blank",
+      "url": "about:blank",
+      "frame": "main",
+      "new_window": true,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "new window access",
+      "url": "https://ada-team.cloudflareaccess.com/",
+      "frame": "main",
+      "new_window": true,
+      "gesture": true,
+      "expect": "reauth",
+      "diagnostic": false
+    },
+    {
+      "name": "new window javascript",
+      "url": "javascript:void(0)",
+      "frame": "main",
+      "new_window": true,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "sub frame same host",
+      "url": "https://laptop-ada.example.com/frame",
+      "frame": "sub",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "sub frame about blank",
+      "url": "about:blank",
+      "frame": "sub",
+      "new_window": false,
+      "gesture": true,
+      "expect": "allow",
+      "diagnostic": false
+    },
+    {
+      "name": "sub frame other host",
+      "url": "https://example.org/",
+      "frame": "sub",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "sub frame mailto",
+      "url": "mailto:ada@example.org",
+      "frame": "sub",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "sub frame control url",
+      "url": "yaranapp://home",
+      "frame": "sub",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    },
+    {
+      "name": "sub frame access",
+      "url": "https://ada-team.cloudflareaccess.com/",
+      "frame": "sub",
+      "new_window": false,
+      "gesture": true,
+      "expect": "block",
+      "diagnostic": true
+    }
+  ]
+}

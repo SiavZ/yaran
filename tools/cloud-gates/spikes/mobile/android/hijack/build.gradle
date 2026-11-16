@@ -1,0 +1,26 @@
+// G13 hijack probe: a second app that declares the SAME https callback host+path (autoVerify)
+// and the same yaranapp-gate scheme as the spike, but is never listed in assetlinks.json.
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+def gateCallbackHost = (project.findProperty('gateCallbackHost') ?: 'gate-cb.example.invalid').toString()
+if (!(gateCallbackHost ==~ /[A-Za-z0-9.-]+/)) {
+    throw new GradleException("gateCallbackHost must be a bare host name, got: ${gateCallbackHost}")
+}
+
+android {
+    namespace = "io.github.siavz.yaran.gatespike.hijack"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "io.github.siavz.yaran.gatespike.hijack"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        manifestPlaceholders = [gateCallbackHost: gateCallbackHost]
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+}

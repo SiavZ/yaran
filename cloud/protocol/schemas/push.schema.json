@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "push.schema.json",
+  "title": "PushSchemas",
+  "description": "The push plaintext (Design §9), the only thing inside RFC 8291 encryption. Serialized UTF-8 JSON is at most 320 bytes; p and l are at most 24 UTF-8 bytes (checked in code).",
+  "$defs": {
+    "PushKind": {
+      "title": "PushKind",
+      "description": "Open enum on the receiving device.",
+      "enum": ["attention_raised", "attention_cleared", "agent_exited_badly", "test"]
+    },
+    "PushPayload": {
+      "title": "PushPayload",
+      "description": "test carries only v, k, ts. s is the RowState token for attention kinds and the ending token for agent_exited_badly; t is omitted for the slot tab.",
+      "type": "object",
+      "required": ["v", "k", "ts"],
+      "properties": {
+        "v": { "const": 1 },
+        "k": { "$ref": "#/$defs/PushKind" },
+        "m": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "a": { "$ref": "common.schema.json#/$defs/YaranId" },
+        "t": { "$ref": "common.schema.json#/$defs/YaranId" },
+        "s": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
+        "p": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "l": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "ts": { "type": "integer", "minimum": 0 }
+      },
+      "if": { "required": ["k"], "properties": { "k": { "const": "test" } } },
+      "then": { "propertyNames": { "enum": ["v", "k", "ts"] } },
+      "else": { "required": ["m", "a", "s"] }
+    }
+  }
+}

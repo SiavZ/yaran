@@ -33,6 +33,10 @@ rust-embed = { version = "8", features = [
 # Decompress embedded assets on the fly for the rare client that doesn't accept
 # br (build.rs stores them Brotli-compressed to shrink the binary).
 brotli = "8"
+# Phase 11: CSRF randomness, hashes and the handoff seal's ECDH; already in the lockfile.
+ring = "0.17.14"
+# Structured logs for the cloud ingress (`yaran::cloud::*` targets).
+tracing.workspace = true
 
 # Brotli-compress the built web assets while staging them into $OUT_DIR/ui, so
 # rust-embed bakes the compressed bytes into the binary (and they're served with
@@ -55,5 +59,7 @@ tempfile.workspace = true
 # test or a sleep. Dev-only: the feature is off in a normal build.
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite = { workspace = true }
+# Captures the cloud ingress logs to prove no secret reaches them.
+tracing-subscriber.workspace = true
 tower = { version = "0.5", features = ["util"] }
 reqwest = { version = "0.12", default-features = false, features = ["cookies", "json"] }

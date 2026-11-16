@@ -1,3 +1,138 @@
+//! The terminal UI's `App`: its data model, types, bootstrap, run loop and state helpers.
+//! The terminal UI's `App`: its state, types, bootstrap and run loop.
+//!
+//! Each concern (input, rendering, sessions, workers, modals) lives in a sibling
+//! submodule as its own `impl App` block; this file holds the data model they share.
+//! The TUI application: the `App` struct, its types, bootstrap and run loop.
+//! Each sibling submodule adds one `impl App` block for a concern (input, render,
+//! sessions, workers); this file owns the data model and the state helpers they share.
+//! - Runs on the TUI thread and owns the `Engine`, which is `!Send`.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/mod.rs
+//! ├── app::background_server
+//! ├── app::changes_job
+//! ├── app::cloud_commands
+//! ├── app::cloud_crumb
+//! ├── app::cloud_input
+//! ├── app::cloud_mode
+//! ├── app::cloud_render
+//! ├── app::cloud_tests
+//! ├── app::components
+//! ├── app::components::focus_ring
+//! ├── app::first_load
+//! ├── app::grouped_sidebar_tests
+//! ├── app::hangup
+//! ├── app::human_board
+//! ├── app::human_board_dialog
+//! ├── app::human_board_relay
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::new_agent_settings
+//! ├── app::orphan_worktrees
+//! ├── app::overlay_dismiss
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::reorder
+//! ├── app::session_settings
+//! ├── app::sessions
+//! ├── app::shared_workspace_tests
+//! ├── app::test_support
+//! ├── app::text_input
+//! ├── app::ui_audit_tests
+//! ├── app::workers
+//! ├── app::worktree_manager
+//! ├── clipboard
+//! ├── config
+//! ├── crate
+//! ├── diff
+//! ├── keybindings
+//! ├── raw_input
+//! ├── theme
+//! ├── yaran-core::agent_search
+//! ├── yaran-core::agent_tabs
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::browser
+//! ├── yaran-core::cloud::leg_outcome
+//! ├── yaran-core::config
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::config_sync
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::first_load
+//! ├── yaran-core::flat_list
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::home_path
+//! ├── yaran-core::human_board
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
+//! ├── yaran-core::macros
+//! ├── yaran-core::model
+//! ├── yaran-core::palette
+//! ├── yaran-core::peer
+//! ├── yaran-core::pr_reference
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::quiet_tail
+//! ├── yaran-core::release_notes
+//! ├── yaran-core::reload_handoff
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::session_settings
+//! ├── yaran-core::sidebar
+//! ├── yaran-core::statusline
+//! ├── yaran-core::term_identity
+//! ├── yaran-core::test_git
+//! ├── yaran-core::test_scratch
+//! ├── yaran-core::version
+//! ├── yaran-core::worker
+//! ├── yaran-core::working_copy
+//! └── yaran-core::worktree_manager
+//! External: anyhow, chrono, crossterm, libc, ratatui, signal_hook, std, tempfile, uuid
+//!
+//! Used by:
+//! app/mod.rs
+//! ├── app::background_server
+//! ├── app::changes_job
+//! ├── app::cloud_commands
+//! ├── app::cloud_crumb
+//! ├── app::cloud_input
+//! ├── app::cloud_mode
+//! ├── app::cloud_render
+//! ├── app::cloud_tests
+//! ├── app::first_load
+//! ├── app::grouped_sidebar_tests
+//! ├── app::human_board
+//! ├── app::human_board::tests
+//! ├── app::human_board_dialog
+//! ├── app::human_board_relay
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::new_agent_settings
+//! ├── app::orphan_worktrees
+//! ├── app::overlay_dismiss
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::reorder
+//! ├── app::session_settings
+//! ├── app::sessions
+//! ├── app::shared_workspace_tests
+//! ├── app::test_support
+//! ├── app::ui_audit_tests
+//! ├── app::workers
+//! ├── app::worktree_manager
+//! ├── clipboard
+//! ├── config_saver
+//! ├── crate
+//! └── server_screen
+//! <module-headers:end>
+
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::io::{Write as _, stdout};
@@ -302,6 +437,8 @@ pub struct App {
     /// The in-flight orphan-worktree cleaner worker, inventory or removal.
     /// `Some` also means "one is running", so a second cannot start.
     pub(crate) orphan_worktrees_rx: Option<mpsc::Receiver<orphan_worktrees::OrphanWorktreesAnswer>>,
+    /// The Yaran Cloud commands' running login and worker channel.
+    pub(crate) cloud: cloud_commands::CloudState,
     /// Notes that arrived while the user had a DIFFERENT modal open.
     /// `PromptState` is a single slot, so showing the what's-new screen the
     /// instant the fetch lands would discard whatever the user was typing. The
@@ -706,6 +843,10 @@ pub struct App {
     /// request, and a superseded one resolves as such, so at most one is open.
     pub(crate) pending_tailscale_mode_op:
         Option<yaran_core::engine::HandlerStatusOp<yaran_core::config::TailscaleModeOutcome>>,
+    /// The keyed status op for a live `[cloud] mode` change in background mode.
+    pub(crate) pending_cloud_mode_op: Option<
+        yaran_core::engine::HandlerStatusOp<yaran_core::cloud::leg_outcome::CloudModeOutcome>,
+    >,
     /// In-flight project-persistence status ops whose final is decided in the
     /// completion handler. Each non-`Add` persistence dispatch mints a
     /// [`yaran_core::engine::HandlerStatusOp`] (its own opaque id), shows its
@@ -2309,9 +2450,13 @@ pub(crate) enum PromptState {
     ChangeDefaultProvider(ChangeDefaultProviderPrompt),
     ChangeProjectDefaultProvider(ChangeProjectDefaultProviderPrompt),
     SetTailscaleMode(SetTailscaleModePrompt),
+    SetCloudMode(SetCloudModePrompt),
     /// The human board's Assign picker.
     AssignBoardCard(AssignBoardCardPrompt),
     WatchRules(WatchRulesPrompt),
+    /// The five Yaran Cloud modals; the family follows the stage (see
+    /// [`crate::app::cloud_commands`]).
+    Cloud(cloud_commands::CloudPrompt),
     /// The per-session settings modal (AMQ + orchestrator workstream).
     /// Boxed: the draft carries two text inputs and the rule list.
     SessionSettings(Box<SessionSettingsPrompt>),
@@ -3335,6 +3480,17 @@ pub(crate) enum OverlayMouseLayout {
         items: usize,
         offset: usize,
     },
+    /// A Yaran Cloud modal: the login's field, or a confirm's two buttons.
+    Cloud {
+        field: Option<Rect>,
+        cancel: Option<Rect>,
+        confirm: Option<Rect>,
+    },
+    SetCloudMode {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
     AssignBoardCard {
         list: Rect,
         items: usize,
@@ -4015,7 +4171,15 @@ pub(crate) fn build_grouped_left_items(
 
 mod background_server;
 mod changes_job;
+mod cloud_commands;
+mod cloud_crumb;
+mod cloud_input;
+mod cloud_mode;
+mod cloud_render;
+#[cfg(test)]
+mod cloud_tests;
 pub(crate) use background_server::{BackgroundServerStart, CompanionRouting};
+pub(crate) use cloud_mode::SetCloudModePrompt;
 // `pub(crate)` for its width helpers alone: the diff wrapper has to measure a
 // CJK glyph exactly as the pane's own wrapper does, and two functions that
 // disagree about that produce rows too wide for the box they were measured for.
@@ -4175,6 +4339,7 @@ impl App {
             paths.config_path.clone(),
             worker_tx.clone(),
         );
+        let push = yaran_core::engine::PushHook::new(&config, &paths, worker_tx.clone());
         let engine = Engine {
             config,
             paths,
@@ -4192,6 +4357,7 @@ impl App {
             worker_tx,
             worker_rx,
             config_writer,
+            push,
             surface: Box::new(crate::TuiConfigSurface),
             reloading: false,
             command_applies: 0,
@@ -4343,6 +4509,7 @@ impl App {
             unpushed_count_rx: None,
             notes_fetch_rx: None,
             orphan_worktrees_rx: None,
+            cloud: Default::default(),
             deferred_first_load_notes: None,
             notes_fetch_explicit_request: Arc::new(AtomicBool::new(false)),
             fullscreen_overlay: FullscreenOverlay::None,
@@ -4438,6 +4605,7 @@ impl App {
             companion_followup_ran: false,
             pending_background_server_start: None,
             pending_tailscale_mode_op: None,
+            pending_cloud_mode_op: None,
             server_flip_preflight_pending: false,
             pending_persist_ops: HashMap::new(),
             configure_save_op: None,
@@ -5689,6 +5857,10 @@ impl App {
                 self.stop_background_server();
                 Ok(())
             }
+            "set-cloud-mode" => {
+                self.open_set_cloud_mode_prompt();
+                Ok(())
+            }
             "set-tailscale-mode" => {
                 self.open_set_tailscale_mode_prompt();
                 Ok(())
@@ -5803,6 +5975,11 @@ impl App {
             }
             "toggle-tab-to-agent" => {
                 self.toggle_tab_reaches_agent();
+                Ok(())
+            }
+            "cloud-login" | "cloud-logout" | "cloud-rotate-token" | "cloud-status"
+            | "cloud-pair-phone" => {
+                self.run_cloud_command(command);
                 Ok(())
             }
             "toggle-human-board" => {
@@ -6053,6 +6230,7 @@ impl App {
         // Captured BEFORE the swap, because the comparison is against what the
         // running serve was told, not against what the file now says.
         let tailscale_before = self.engine.config.server.tailscale_mode();
+        let cloud_before = self.engine.config.cloud.clone();
         self.engine.config = config;
         self.engine.retune_after_config_swap();
         self.sync_view_state_from_config();
@@ -6105,6 +6283,8 @@ impl App {
             let mode = self.engine.config.server.tailscale_mode();
             self.ask_companion_for_tailscale_mode(mode);
         }
+        let cloud_after = self.engine.config.cloud.clone();
+        self.apply_cloud_reload(serving_before, &cloud_before, &cloud_after);
         // A config file can hand Tab to the agent while every `focus_next` and
         // `focus_prev` key is one the typeable pane types, and nobody toggled
         // anything, so the load is the only place that can say the pane has no

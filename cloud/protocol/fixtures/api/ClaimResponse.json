@@ -1,0 +1,194 @@
+{
+  "type": "ClaimResponse",
+  "schema": "machine.schema.json#/$defs/ClaimResponse",
+  "valid": [
+    {
+      "name": "claim",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "machine_name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        },
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "owner_email": "ada@example.org",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "protocol": 1
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing owner_email",
+      "keyword": "required",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "machine_name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        },
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "protocol": 1
+      }
+    },
+    {
+      "name": "http url",
+      "keyword": "pattern",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "machine_name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "http://laptop-ada.example.com",
+        "origin_port": 3890,
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        },
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "owner_email": "ada@example.org",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "protocol": 1
+      }
+    },
+    {
+      "name": "31-char slug",
+      "keyword": "pattern",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "machine_name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        },
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "owner_email": "ada@example.org",
+        "user_slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "protocol": 1
+      }
+    },
+    {
+      "name": "protocol zero",
+      "keyword": "minimum",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "machine_name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        },
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "owner_email": "ada@example.org",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "protocol": 0
+      }
+    },
+    {
+      "name": "bad email",
+      "keyword": "format",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "machine_name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        },
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "owner_email": "ada.example.org",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "protocol": 1
+      }
+    },
+    {
+      "name": "tunnel without token",
+      "keyword": "required",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "machine_name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "owner_email": "ada@example.org",
+        "user_slug": "ada",
+        "org": {
+          "name": "Example Org",
+          "url": "https://cp.example.com"
+        },
+        "protocol": 1
+      }
+    }
+  ]
+}

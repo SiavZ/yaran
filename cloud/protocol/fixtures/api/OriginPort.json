@@ -1,0 +1,40 @@
+{
+  "type": "OriginPort",
+  "schema": "common.schema.json#/$defs/OriginPort",
+  "valid": [
+    {
+      "name": "default",
+      "value": 3890
+    },
+    {
+      "name": "min",
+      "value": 1
+    },
+    {
+      "name": "max",
+      "value": 65535
+    }
+  ],
+  "invalid": [
+    {
+      "name": "zero",
+      "keyword": "minimum",
+      "value": 0
+    },
+    {
+      "name": "too big",
+      "keyword": "maximum",
+      "value": 65536
+    },
+    {
+      "name": "fraction",
+      "keyword": "type",
+      "value": 3890.5
+    },
+    {
+      "name": "string",
+      "keyword": "type",
+      "value": "3890"
+    }
+  ]
+}

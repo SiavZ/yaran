@@ -3813,3 +3813,45 @@ async fn session_create_and_its_replay_pin_the_same_terminal_key_set() {
         "GET /api/v1/sessions/:id after create",
     );
 }
+
+/// Phase 13: the events socket answers the browser's application-level beat with
+/// its own number, and a malformed beat is ignored rather than fatal.
+#[tokio::test]
+async fn events_socket_echoes_a_beat_and_ignores_a_malformed_one() {
+    let (addr, _tmp) = boot().await;
+    let (mut ws, _) = connect_events(addr).await;
+    ws.send(Message::Text(r#"{"beat":"seven"}"#.into()))
+        .await
+        .unwrap();
+    ws.send(Message::Text(r#"{"beat":7}"#.into()))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+            && let Ok(t) = m.into_text()
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&t)
+            && v["event"] == "beat"
+        {
+            assert_eq!(v, serde_json::json!({"event": "beat", "n": 7}));
+            return;
+        }
+    }
+    panic!("the events socket never answered the beat");
+}
+
+/// Phase 13: with no cloud credentials installed the phone-code route refuses with
+/// a sentence, and nothing about it depends on `X-Requested-With`.
+#[tokio::test]
+async fn phone_qr_route_refuses_an_unpaired_machine() {
+    let (addr, _tmp) = boot().await;
+    for xrw in [false, true] {
+        let mut req = reqwest::Client::new().get(format!("http://{addr}/api/v1/cloud/phone-qr"));
+        if xrw {
+            req = req.header("X-Requested-With", "XMLHttpRequest");
+        }
+        let resp = req.send().await.unwrap();
+        assert_eq!(resp.status().as_u16(), 409);
+        assert!(resp.text().await.unwrap().contains("yaran cloud login"));
+    }
+}

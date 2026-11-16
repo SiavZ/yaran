@@ -1,0 +1,27 @@
+{
+  "type": "Uuid",
+  "schema": "common.schema.json#/$defs/Uuid",
+  "valid": [
+    {
+      "name": "v4",
+      "value": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "uppercase",
+      "keyword": "pattern",
+      "value": "3F1C2B4A-5D6E-4F70-8A9B-0C1D2E3F4A5B"
+    },
+    {
+      "name": "version 1",
+      "keyword": "pattern",
+      "value": "3f1c2b4a-5d6e-1f70-8a9b-0c1d2e3f4a5b"
+    },
+    {
+      "name": "number",
+      "keyword": "type",
+      "value": 1
+    }
+  ]
+}

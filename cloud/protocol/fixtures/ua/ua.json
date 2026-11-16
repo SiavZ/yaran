@@ -1,0 +1,87 @@
+{
+  "description": "The §11 UA token. parse: expect is {version, os, form} or null. build: the token for the inputs.",
+  "parse": [
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 15; Pixel 9 Build/AP4A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36 YaranApp/1.2.3 (android; phone)",
+      "expect": {
+        "version": "1.2.3",
+        "os": "android",
+        "form": "phone"
+      }
+    },
+    {
+      "ua": "Mozilla/5.0 (iPad; CPU OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 YaranApp/1.2.3-beta.1 (ios; tablet)",
+      "expect": {
+        "version": "1.2.3-beta.1",
+        "os": "ios",
+        "form": "tablet"
+      }
+    },
+    {
+      "ua": "YaranApp/1.0.0 (android; tablet)",
+      "expect": {
+        "version": "1.0.0",
+        "os": "android",
+        "form": "tablet"
+      }
+    },
+    {
+      "ua": "YaranApp/2.0.0 (ios; phone) Extra/1",
+      "expect": {
+        "version": "2.0.0",
+        "os": "ios",
+        "form": "phone"
+      }
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 15; Pixel 9 Build/AP4A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36",
+      "expect": null
+    },
+    {
+      "ua": "XYaranApp/1.0.0 (android; phone)",
+      "expect": null
+    },
+    {
+      "ua": "YaranApp/1.0.0 (windows; phone)",
+      "expect": null
+    },
+    {
+      "ua": "YaranApp/1.0 (android; phone)",
+      "expect": null
+    },
+    {
+      "ua": "YaranApp/1.0.0 (android; phone)extra",
+      "expect": null
+    },
+    {
+      "ua": "YaranApp/12345.0.0 (android; phone)",
+      "expect": null
+    },
+    {
+      "ua": "YaranApp/1.0.0 (Android; phone)",
+      "expect": null
+    },
+    {
+      "ua": "YaranApp/1.0.0  (android; phone)",
+      "expect": null
+    }
+  ],
+  "build": [
+    {
+      "input": {
+        "version": "1.2.3",
+        "os": "android",
+        "form": "phone"
+      },
+      "token": "YaranApp/1.2.3 (android; phone)"
+    },
+    {
+      "input": {
+        "version": "10.0.1-rc.2",
+        "os": "ios",
+        "form": "tablet"
+      },
+      "token": "YaranApp/10.0.1-rc.2 (ios; tablet)"
+    }
+  ]
+}

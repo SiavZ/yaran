@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-import { InlineCode } from "@/components/ui/inline-code"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 
 // Renders single-backtick-delimited spans as <code> elements. Deliberately not a markdown
 // parser: no bold, no italic, no links, and no dependency for it. Setting descriptions and

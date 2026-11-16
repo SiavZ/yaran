@@ -92,8 +92,8 @@ import { performTreeDrop } from "@/lib/editorDrop"
 import type { DroppedItems } from "@/lib/editorDrop"
 import { nextFileDropToastId } from "@/lib/fileDrop"
 import { uploadDroppedFile } from "@/lib/fileDropApi"
-import { cn } from "@/lib/utils"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { cn } from "@yaran/ui-kit/cn"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { useObjectUrl } from "@/hooks/use-object-url"
 import type { MonacoInstance } from "@/components/CodeEditor"
 import { DeleteEntryDialog } from "@/components/DeleteEntryDialog"
@@ -112,7 +112,7 @@ import {
 import { useEditorSave } from "@/components/useEditorSave"
 import { EditorTabsStrip } from "@/components/EditorTabsStrip"
 import { FileStatusIcon } from "@/components/FileStatusIcon"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { ChunkBoundary } from "@/components/ChunkBoundary"
 import { FileTree } from "@/components/FileTree"
 import { useFileTreeFreshness } from "@/components/useFileTreeFreshness"
@@ -134,14 +134,14 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
+} from "@yaran/ui-kit/dropdown-menu"
+import { Input } from "@yaran/ui-kit/input"
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import {
   closeEditor,
   editorCloseTab,

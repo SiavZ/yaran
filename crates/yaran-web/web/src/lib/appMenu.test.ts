@@ -1,3 +1,17 @@
+/**
+ * Tests for the app menu definition (`lib/appMenu.ts`).
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/lib/appMenu.test.ts
+ * ├── src/lib/appMenu.ts
+ * └── src/lib/creationMenus.ts
+ * External: lucide-react, vitest
+ *
+ * Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
+ * <module-headers:end>
+ */
+
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const openCustomizeWebapp = vi.fn()
@@ -5,6 +19,7 @@ const openConfigEditor = vi.fn()
 const openMacrosDialog = vi.fn()
 const openGlobalEnv = vi.fn()
 const openTaskManager = vi.fn()
+const openCloudDialog = vi.fn()
 const sortAgents = vi.fn()
 const openWelcomeScreen = vi.fn()
 const openReleaseNotes = vi.fn()
@@ -15,6 +30,7 @@ const openNewAgentPicker = vi.fn()
 const createStandaloneTerminal = vi.fn()
 const reload = vi.fn(() => Promise.resolve())
 const recheckGithub = vi.fn(() => Promise.resolve())
+const openConnectPhone = vi.fn()
 
 vi.mock("@/lib/store", () => ({
   openCustomizeWebapp: () => openCustomizeWebapp(),
@@ -22,6 +38,7 @@ vi.mock("@/lib/store", () => ({
   openMacrosDialog: () => openMacrosDialog(),
   openGlobalEnv: () => openGlobalEnv(),
   openTaskManager: () => openTaskManager(),
+  openCloudDialog: () => openCloudDialog(),
   sortAgents: (by: string) => sortAgents(by),
   openWelcomeScreen: () => openWelcomeScreen(),
   openReleaseNotes: () => openReleaseNotes(),
@@ -31,6 +48,7 @@ vi.mock("@/lib/store", () => ({
     openCreateAgentFromPr(projectId),
   openNewAgentPicker: (intent: string) => openNewAgentPicker(intent),
   createStandaloneTerminal: () => createStandaloneTerminal(),
+  openConnectPhone: () => openConnectPhone(),
 }))
 vi.mock("@/lib/configApi", () => ({
   configApi: { reload: () => reload(), recheckGithub: () => recheckGithub() },
@@ -53,7 +71,8 @@ function walk(entries: AppMenuEntry[]): AppMenuEntry[] {
 }
 
 // Most tests build the fullest menu: gh available, so the from-PR entry exists.
-const ctx = { ghAvailable: true, githubIntegrationEnabled: true }
+const off = { nativeShell: false, phonePairing: false }
+const ctx = { ghAvailable: true, githubIntegrationEnabled: true, ...off }
 
 describe("appMenuModel", () => {
   beforeEach(() => vi.clearAllMocks())
@@ -73,6 +92,7 @@ describe("appMenuModel", () => {
       // No top-level new-standalone-terminal: its one home is the New submenu
       // above (pinned as absent by the test below).
       ["item", "task-manager"],
+      ["item", "yaran-cloud"],
       ["separator", "sep-about"],
       ["item", "welcome-screen"],
       ["item", "release-notes"],
@@ -103,7 +123,7 @@ describe("appMenuModel", () => {
           : { kind: e.kind, id: e.id },
       )
     for (const ghAvailable of [true, false]) {
-      const model = appMenuModel({ ghAvailable, githubIntegrationEnabled: true })
+      const model = appMenuModel({ ghAvailable, githubIntegrationEnabled: true, ...off })
       const agentSub = findSubmenu(model, "new-agent")
       expect(agentSub?.title).toBe("New")
       expect(shape(agentSub?.entries)).toEqual(
@@ -145,7 +165,7 @@ describe("appMenuModel", () => {
   // stale answer too, and would take every running agent with it.
   it("offers the GitHub re-check while the integration is on, whatever gh says", () => {
     const ids = (githubIntegrationEnabled: boolean, ghAvailable: boolean) =>
-      walk(appMenuModel({ ghAvailable, githubIntegrationEnabled })).map(
+      walk(appMenuModel({ ghAvailable, githubIntegrationEnabled, ...off })).map(
         (e) => e.id,
       )
     expect(ids(true, false)).toContain("recheck-github")
@@ -164,7 +184,7 @@ describe("appMenuModel", () => {
 
   it("hides the from-PR agent variant when gh is unavailable", () => {
     const ids = (ghAvailable: boolean) =>
-      walk(appMenuModel({ ghAvailable, githubIntegrationEnabled: true })).map((e) => e.id)
+      walk(appMenuModel({ ghAvailable, githubIntegrationEnabled: true, ...off })).map((e) => e.id)
     expect(ids(true)).toContain("new-agent-from-pr")
     expect(ids(false)).not.toContain("new-agent-from-pr")
   })
@@ -181,6 +201,7 @@ describe("appMenuModel", () => {
       "edit-macros",
       "global-env",
       "task-manager",
+      "yaran-cloud",
       // Every creation variant opens a dialog (picker or from-PR dialog).
       "new-agent-plain",
       "new-agent-from-pr",
@@ -201,6 +222,15 @@ describe("appMenuModel", () => {
     expect(titleOf("new-standalone-terminal")?.title).toBe(
       "New standalone terminal in your home folder",
     )
+  })
+
+  it("offers one Yaran Cloud… entry with an icon and a trailing ellipsis", () => {
+    const cloud = walk(appMenuModel(ctx)).filter((e) => e.id === "yaran-cloud")
+    expect(cloud).toHaveLength(1)
+    const [entry] = cloud
+    if (entry.kind !== "item") throw new Error("yaran-cloud is not an item")
+    expect(entry.title).toBe("Yaran Cloud…")
+    expect(entry.icon).toBeDefined()
   })
 
   it("gives every item and submenu a leading icon", () => {
@@ -280,6 +310,8 @@ describe("appMenuModel", () => {
     expect(openGlobalEnv).toHaveBeenCalledOnce()
     run("task-manager")
     expect(openTaskManager).toHaveBeenCalledOnce()
+    run("yaran-cloud")
+    expect(openCloudDialog).toHaveBeenCalledOnce()
     run("reload-config")
     expect(reload).toHaveBeenCalledOnce()
     run("welcome-screen")
@@ -347,5 +379,68 @@ describe("findSubmenu", () => {
       },
     ]
     expect(findSubmenu(nested, "inner")?.title).toBe("Inner")
+  })
+})
+
+// Phase 13: the device group. Gated on real reasons (02 §11 token, a paired
+// machine), placed between Yaran Cloud… and the about entries.
+describe("appMenuModel device group", () => {
+  beforeEach(() => vi.clearAllMocks())
+  const top = (c: Partial<typeof ctx>) =>
+    appMenuModel({ ...ctx, ...c }).map((e) => e.id)
+
+  it("adds nothing, not even a separator, with both flags off", () => {
+    expect(top({})).not.toContain("sep-device")
+  })
+
+  it("shows Connect a phone… on a paired machine in a browser", () => {
+    expect(top({ phonePairing: true }).slice(8, 12)).toEqual([
+      "task-manager",
+      "yaran-cloud",
+      "sep-device",
+      "connect-phone",
+    ])
+    expect(top({ phonePairing: true })).not.toContain("switch-machine")
+  })
+
+  it("shows the native entries inside the app, in order", () => {
+    expect(top({ nativeShell: true }).slice(8, 14)).toEqual([
+      "task-manager",
+      "yaran-cloud",
+      "sep-device",
+      "switch-machine",
+      "phone-app-settings",
+      "sep-about",
+    ])
+  })
+
+  it("ends Connect a phone… with an ellipsis and the native entries without one", () => {
+    const items = walk(appMenuModel({ ...ctx, nativeShell: true, phonePairing: true }))
+    const title = (id: string) =>
+      (items.find((e) => e.id === id) as { title: string }).title
+    expect(title("connect-phone")).toBe("Connect a phone…")
+    expect(title("switch-machine")).toBe("Switch machine")
+    expect(title("phone-app-settings")).toBe("Phone app settings")
+    for (const e of items) {
+      if (e.kind !== "separator") expect(e.icon, e.id).toBeDefined()
+    }
+  })
+
+  it("routes the entries to the dialog and the app's control URLs", () => {
+    const assign = vi.fn()
+    vi.stubGlobal("location", { assign })
+    const run = (id: string) => {
+      const e = walk(appMenuModel({ ...ctx, nativeShell: true, phonePairing: true })).find(
+        (x) => x.id === id,
+      )
+      if (e?.kind !== "item") throw new Error(id)
+      e.run()
+    }
+    run("connect-phone")
+    expect(openConnectPhone).toHaveBeenCalledOnce()
+    run("switch-machine")
+    run("phone-app-settings")
+    expect(assign.mock.calls).toEqual([["yaranapp://home"], ["yaranapp://settings"]])
+    vi.unstubAllGlobals()
   })
 })

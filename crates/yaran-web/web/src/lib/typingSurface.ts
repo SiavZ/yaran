@@ -10,7 +10,7 @@
 // storage on every call: it returns a string or null, compared by value, so a
 // second tab's write shows on the next render with no cache to invalidate.
 
-import { isMobileViewport } from "@/hooks/use-mobile"
+import { isMobileViewport } from "@yaran/ui-kit/use-mobile"
 
 import { notifyInfo } from "./notify"
 import { readBrandedStorage, removeBrandedStorage } from "./brandedStorage"

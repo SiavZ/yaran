@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Push notification words (Phase 16). Keys mirror PushPhrase in the iOS core
+     (YaranPushCore/NotificationContentBuilder.swift) so both platforms say the same thing. -->
+<resources>
+    <string name="yaran_push_channel_attention">Agents that need you</string>
+    <string name="yaran_push_channel_exits">Agents that stopped with an error</string>
+    <string name="yaran_push_generic_title">An agent needs attention</string>
+    <string name="yaran_push_generic_body">Open yaran to see which agent.</string>
+    <string name="yaran_push_needs_you">%1$s needs you</string>
+    <string name="yaran_push_needs_you_anon">An agent needs you</string>
+    <string name="yaran_push_exit_launch_failed">%1$s failed to start</string>
+    <string name="yaran_push_exit_launch_failed_anon">An agent failed to start</string>
+    <string name="yaran_push_exit_error">%1$s stopped with an error</string>
+    <string name="yaran_push_exit_error_anon">An agent stopped with an error</string>
+    <string name="yaran_push_exit_unknown">%1$s stopped unexpectedly</string>
+    <string name="yaran_push_exit_unknown_anon">An agent stopped unexpectedly</string>
+    <string name="yaran_push_exit_rapid">%1$s exited right after starting</string>
+    <string name="yaran_push_exit_rapid_anon">An agent exited right after starting</string>
+    <string name="yaran_push_test_title">Test notification from %1$s</string>
+    <string name="yaran_push_test_body">Notifications from this organization reach this phone.</string>
+    <string name="yaran_push_body_project_machine">%1$s · %2$s</string>
+    <string name="yaran_push_unknown_machine">A machine not on this phone</string>
+    <string name="yaran_push_unknown_org">your organization</string>
+    <string name="yaran_push_action_mute_machine">Mute this machine</string>
+    <string name="yaran_push_refresh_title">Notifications for %1$s need a refresh</string>
+    <string name="yaran_push_refresh_body">Open yaran to keep getting notifications on this phone.</string>
+</resources>

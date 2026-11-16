@@ -1,0 +1,17 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "GET",
+    "path": "/accounts/{account}/cfd_tunnel/{tunnel_id}/token"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": "[redacted]"
+    }
+  }
+}

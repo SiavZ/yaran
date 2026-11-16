@@ -1,0 +1,6 @@
+# Cloudflare API token. The gate probe only reports whether it is set; use a throwaway test value.
+CF_API_TOKEN=
+# One-time setup code. The gate probe only reports whether it is set; try leaving it blank.
+SETUP_CODE=
+# Data encryption key. The gate probe only reports whether it is set; use a throwaway test value.
+DATA_KEY=

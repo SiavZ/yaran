@@ -1,4 +1,4 @@
-.PHONY: run fmt fmt-check lint lint-fix profiling overlay-shellcheck overlay-bats overlay-test
+.PHONY: run fmt fmt-check lint lint-fix profiling overlay-shellcheck overlay-bats overlay-test headers headers-check lines-check
 
 run:
 	cargo run
@@ -33,3 +33,20 @@ overlay-bats:
 	bats yaran-amq/tests
 
 overlay-test: overlay-shellcheck overlay-bats
+
+# Local mirror of .github/workflows/gates.yml (phone-app plan Phase 01). `headers`
+# rewrites every in-scope module-headers block and tightens the oversize baseline;
+# the two checks are exactly what the Module headers and File length jobs run.
+# The first time: (cd tools/module-headers && npm ci && npm run fetch-grammars).
+MODULE_HEADERS := node tools/module-headers/bin/module-headers.mjs
+
+headers:
+	$(MODULE_HEADERS) --write
+	$(MODULE_HEADERS) --lines --write
+
+headers-check:
+	@test -d tools/module-headers/node_modules || { echo "Error: run 'npm ci' in tools/module-headers first"; exit 1; }
+	$(MODULE_HEADERS) --check
+
+lines-check:
+	$(MODULE_HEADERS) --lines --check

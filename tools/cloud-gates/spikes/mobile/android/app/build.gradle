@@ -1,0 +1,83 @@
+// Gate spike app module (Capacitor template, customised for Phase 03 gates G1-G13).
+// Customisations: Kotlin, foss/play flavors (G5, G7), callback-host placeholder (G13),
+// reproducible-release knobs (G7), no google-services plugin and no Firebase anywhere.
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+// G13: the callback host stands in for <publisher-domain>. Override with
+// `./gradlew -PgateCallbackHost=gate-cb.<staging-zone> ...`; no real domain is committed.
+def gateCallbackHost = (project.findProperty('gateCallbackHost') ?: 'gate-cb.example.invalid').toString()
+if (!(gateCallbackHost ==~ /[A-Za-z0-9.-]+/)) {
+    throw new GradleException("gateCallbackHost must be a bare host name, got: ${gateCallbackHost}")
+}
+
+android {
+    namespace = "io.github.siavz.yaran.gatespike"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "io.github.siavz.yaran.gatespike"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        manifestPlaceholders = [gateCallbackHost: gateCallbackHost]
+        buildConfigField "String", "GATE_CALLBACK_HOST", "\"${gateCallbackHost}\""
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildFeatures {
+        buildConfig = true
+    }
+    flavorDimensions = ["distribution"]
+    productFlavors {
+        // F-Droid shape: UnifiedPush connector only, no Google libraries (D13, G7).
+        foss { dimension "distribution" }
+        // Play shape: adds the embedded FCM distributor; still no google-services.json (G5).
+        play { dimension "distribution" }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // No signingConfig: release builds come out unsigned; g07 signs with apksigner.
+            vcsInfo { include = false }
+        }
+    }
+    // G7 reproducibility: no encrypted dependency blob in the APK or bundle.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+}
+
+// G7 reproducibility: baseline/ART profile output is not byte-stable across builds.
+tasks.configureEach { task ->
+    if (task.name.contains("ArtProfile")) {
+        task.enabled = false
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation "androidx.activity:activity:$androidxActivityVersion"
+    implementation "androidx.browser:browser:1.10.0"
+    implementation "org.unifiedpush.android:connector:3.3.5"
+    playImplementation "org.unifiedpush.android:embedded-fcm-distributor:3.1.0"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'

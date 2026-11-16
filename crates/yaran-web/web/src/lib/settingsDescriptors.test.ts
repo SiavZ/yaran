@@ -1,3 +1,17 @@
+/**
+ * Tests for the Preferences descriptors: the exposed key set, labels and defaults.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/lib/settingsDescriptors.test.ts
+ * ├── src/lib/bootstrapApi.ts
+ * └── src/lib/settingsDescriptors.ts
+ * External: vitest
+ *
+ * Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
+ * <module-headers:end>
+ */
+
 import { describe, expect, it } from "vitest"
 
 import type { Bootstrap } from "./bootstrapApi"
@@ -83,6 +97,7 @@ describe("settingsDescriptors", () => {
         "capabilities.hyperlinks",
         "ui.github_integration",
         "server.tailscale",
+        "cloud.mode",
         "ui.disable_automated_welcome_screen",
         "ui.disable_release_notes",
         "defaults.enable_randomized_pet_name_by_default",

@@ -4,7 +4,7 @@ import * as ResizablePrimitive from "react-resizable-panels"
 
 import { DIVIDER_CHROME, DIVIDER_TARGET_MIN } from "@/lib/paneDivider"
 import { useDividerHeld } from "@/hooks/use-divider-drag"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 function ResizablePanelGroup({
   className,

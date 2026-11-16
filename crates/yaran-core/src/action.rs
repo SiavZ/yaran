@@ -4,6 +4,18 @@
 //! stable snake_case identifier used as the `[keys]` config key. The TUI's key
 //! parsing, default key tables and runtime binding lookup live in the binary's
 //! `keybindings` module, not here.
+//!
+//! <module-headers:begin>
+//! Uses: none
+//! External: none
+//!
+//! Used by:
+//! action.rs
+//! ├── crate
+//! ├── palette
+//! ├── welcome
+//! └── yaran-tui::keybindings
+//! <module-headers:end>
 
 /// Unique identifier for every bindable action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -197,6 +209,9 @@ pub enum Action {
     /// Palette-only: open the `[server] tailscale` picker. The web counterpart is
     /// the Preferences dialog's Tailscale row.
     SetTailscaleMode,
+    /// Palette-only: open the `[cloud] mode` picker. The web counterpart is the
+    /// Preferences dialog's cloud row.
+    SetCloudMode,
     ToggleAlwaysShowTabs,
     /// Flip `ui.tab_reaches_agent`: whether the typeable center pane sends Tab
     /// and Shift-Tab to the agent instead of cycling panes with them.
@@ -204,6 +219,14 @@ pub enum Action {
     /// Flip `ui.human_board`: whether the right column shows the human board
     /// ("Tasks for Human") in place of the staged list and the commit box.
     ToggleHumanBoard,
+    /// Palette-only Yaran Cloud commands: pair this machine through a browser
+    /// login, unpair it, rotate its tunnel token, show its pairing, and show the
+    /// QR code that adds the organization to the phone app.
+    CloudLogin,
+    CloudLogout,
+    CloudRotateToken,
+    CloudStatus,
+    CloudPairPhone,
     /// Open the read-only Agent Info modal for the focused agent (name, provider,
     /// branch lineage, worktree, status).
     OpenAgentInfo,
@@ -372,9 +395,15 @@ impl Action {
             Action::StartBackgroundServer => "start_background_server",
             Action::StopBackgroundServer => "stop_background_server",
             Action::SetTailscaleMode => "set_tailscale_mode",
+            Action::SetCloudMode => "set_cloud_mode",
             Action::ToggleAlwaysShowTabs => "toggle_always_show_tabs",
             Action::ToggleTabReachesAgent => "toggle_tab_reaches_agent",
             Action::ToggleHumanBoard => "toggle_human_board",
+            Action::CloudLogin => "cloud_login",
+            Action::CloudLogout => "cloud_logout",
+            Action::CloudRotateToken => "cloud_rotate_token",
+            Action::CloudStatus => "cloud_status",
+            Action::CloudPairPhone => "cloud_pair_phone",
             Action::OpenAgentInfo => "open_agent_info",
             Action::ShowWelcomeScreen => "show_welcome_screen",
             Action::ShowReleaseNotes => "show_release_notes",
@@ -638,6 +667,9 @@ impl Action {
             Action::SetTailscaleMode => {
                 "Choose whether yaran binds your Tailscale address: auto, yes, or no."
             }
+            Action::SetCloudMode => {
+                "Choose whether yaran runs its Cloudflare tunnel for remote access: auto, yes, or no."
+            }
             Action::ToggleAlwaysShowTabs => {
                 "Toggle always showing the agent tab strip, even with a single tab."
             }
@@ -646,6 +678,15 @@ impl Action {
             }
             Action::ToggleHumanBoard => {
                 "Show or hide the human board (Tasks for Human) in place of the staged list and commit box."
+            }
+            Action::CloudLogin => "Pair this machine with a Yaran Cloud organization.",
+            Action::CloudLogout => {
+                "Unpair this machine from Yaran Cloud and delete its credentials."
+            }
+            Action::CloudRotateToken => "Rotate this machine's Yaran Cloud tunnel token.",
+            Action::CloudStatus => "Show whether this machine is paired with Yaran Cloud.",
+            Action::CloudPairPhone => {
+                "Show the QR code that adds your Yaran Cloud organization to the phone app."
             }
             Action::OpenAgentInfo => {
                 "Show the selected agent's details: provider, branch lineage, worktree, and status."
@@ -814,9 +855,15 @@ impl Action {
             | Action::StartBackgroundServer
             | Action::StopBackgroundServer
             | Action::SetTailscaleMode
+            | Action::SetCloudMode
             | Action::ToggleAlwaysShowTabs
             | Action::ToggleTabReachesAgent
             | Action::ToggleHumanBoard
+            | Action::CloudLogin
+            | Action::CloudLogout
+            | Action::CloudRotateToken
+            | Action::CloudStatus
+            | Action::CloudPairPhone
             | Action::OpenAgentInfo
             | Action::ShowWelcomeScreen
             | Action::ShowReleaseNotes
