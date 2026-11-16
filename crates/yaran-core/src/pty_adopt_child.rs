@@ -36,20 +36,26 @@ pub struct AdoptedChild {
 }
 
 impl AdoptedChild {
+    /// The child with process id `pid`, which this process must be the
+    /// parent of. A pid beyond `pid_t`'s range names no process and is never
+    /// found by `waitpid`.
     pub fn new(pid: u32) -> Self {
         Self {
-            pid: pid as libc::pid_t,
+            pid: libc::pid_t::try_from(pid).unwrap_or(libc::pid_t::MAX),
             reaped: None,
         }
     }
 
-    /// One `waitpid`, optionally blocking. `Ok(None)` means still running.
-    fn reap(&mut self, block: bool) -> Result<Option<ExitStatus>> {
+    /// One `waitpid`. `Ok(None)` means still running.
+    fn reap(&mut self, wait: Wait) -> Result<Option<ExitStatus>> {
         if let Some(status) = self.reaped.as_ref() {
             return Ok(Some(status.clone()));
         }
         let mut raw: libc::c_int = 0;
-        let flags = if block { 0 } else { libc::WNOHANG };
+        let flags = match wait {
+            Wait::Block => 0,
+            Wait::Poll => libc::WNOHANG,
+        };
         // SAFETY: `waitpid` writes only through the `raw` pointer this call owns.
         let rc = unsafe { libc::waitpid(self.pid, &raw mut raw, flags) };
         if rc == 0 {
@@ -74,6 +80,15 @@ impl AdoptedChild {
     }
 }
 
+/// Whether a `waitpid` waits for the child to exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wait {
+    /// Wait until it does.
+    Block,
+    /// Answer at once.
+    Poll,
+}
+
 /// Translate a raw `waitpid` status into an exit code.
 ///
 /// A signalled process is reported as `128 + signal`, the shell convention, so a
@@ -83,9 +98,9 @@ fn exit_status_from_raw(raw: libc::c_int) -> ExitStatus {
     // Read with the libc macros rather than by hand: the bit layout is
     // platform-specific and differs between Linux and the BSDs.
     if libc::WIFEXITED(raw) {
-        ExitStatus::with_exit_code(libc::WEXITSTATUS(raw) as u32)
+        ExitStatus::with_exit_code(u32::try_from(libc::WEXITSTATUS(raw)).unwrap_or(0))
     } else if libc::WIFSIGNALED(raw) {
-        ExitStatus::with_exit_code(128 + libc::WTERMSIG(raw) as u32)
+        ExitStatus::with_exit_code(128 + u32::try_from(libc::WTERMSIG(raw)).unwrap_or(0))
     } else {
         ExitStatus::with_exit_code(0)
     }
@@ -93,18 +108,21 @@ fn exit_status_from_raw(raw: libc::c_int) -> ExitStatus {
 
 impl Child for AdoptedChild {
     fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
-        self.reap(false)
+        self.reap(Wait::Poll)
     }
 
     fn wait(&mut self) -> Result<ExitStatus> {
-        self.reap(true)?
+        self.reap(Wait::Block)?
             .ok_or_else(|| Error::other("blocking wait returned without a status"))
     }
 
     fn process_id(&self) -> Option<u32> {
         // A reaped pid is no longer a live process and may be reused, so it is
         // not reported as one.
-        self.reaped.is_none().then_some(self.pid as u32)
+        self.reaped
+            .is_none()
+            .then(|| u32::try_from(self.pid).ok())
+            .flatten()
     }
 }
 
@@ -281,7 +299,7 @@ mod tests {
         let status = status.expect("the killed child must be reaped");
         assert_eq!(
             status.exit_code(),
-            128 + libc::SIGKILL as u32,
+            128 + u32::try_from(libc::SIGKILL).unwrap(),
             "a signalled child must report 128 + signal, not a bare code"
         );
         let _ = real.try_wait();
