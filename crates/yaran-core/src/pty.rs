@@ -1164,15 +1164,15 @@ impl ReaderLoopState {
         if terminal.take_content_change() {
             self.received_data.store(true, Ordering::Release);
         }
-        let newly_visible =
-            !self.has_output.load(Ordering::Acquire) && terminal.has_visible_output();
+        // Under the lock: whoever sees this output in the grid must not still see
+        // "no output", or the TUI paints its loader over a populated pane.
+        if !self.has_output.load(Ordering::Acquire) && terminal.has_visible_output() {
+            self.has_output.store(true, Ordering::Release);
+        }
         // Never hold the terminal lock while handing replies to the writer.
         drop(terminal);
         if !replies.is_empty() && !pty_queue_send(&self.writer_tx, replies) {
             log_dropped_pty_write();
-        }
-        if newly_visible {
-            self.has_output.store(true, Ordering::Release);
         }
     }
 
