@@ -127,7 +127,7 @@ mod tests {
             credentials::update(&repair_paths, |_| Ok(Some(repaired.clone()))).unwrap();
             let body =
                 serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"});
-            MockResponse::json(202, body)
+            MockResponse::json(202, &body)
         });
         let out = logout(&paths, &test_api_factory(worker.base_url()), false);
         assert_eq!(out, CloudActionOutcome::PairingChanged);

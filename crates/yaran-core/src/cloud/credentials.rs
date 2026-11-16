@@ -76,16 +76,25 @@ pub const CREDENTIALS_SCHEMA: u64 = 1;
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Credentials {
+    /// The file's schema; this build reads and writes [`CREDENTIALS_SCHEMA`].
     pub schema: u64,
+    /// The organization's control-plane address.
     pub org_url: String,
+    /// The machine's id in the organization.
     pub machine_id: String,
+    /// The machine's hostname.
     pub hostname: String,
+    /// The Access team domain sign-ins come from.
     pub team_domain: String,
+    /// The Access application's audience tag.
     pub aud: String,
     /// `ClaimResponse.owner_email`: the only email Phase 11's JWT check accepts (D3).
     pub owner_email: String,
+    /// The organization's name.
     pub org_name: String,
+    /// The local port the tunnel forwards to.
     pub origin_port: u16,
+    /// The protocol version the control plane spoke at pairing.
     pub protocol: u32,
     /// RFC 3339.
     pub paired_at: String,
@@ -95,6 +104,7 @@ pub struct Credentials {
     pub machine_key_pkcs8: String,
     /// Secret: the cloudflared tunnel token.
     pub tunnel_token: String,
+    /// The tunnel token's issue.
     pub token_version: i64,
     /// Secret (D24): base64url of 32 random bytes.
     pub handoff_consent_key: String,
@@ -132,7 +142,9 @@ impl fmt::Debug for Credentials {
 /// The D24 consent MAC key and its version (the cookie's `kv`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct HandoffConsentKey {
+    /// The MAC key. Secret.
     pub key: [u8; 32],
+    /// Its version, the cookie's `kv`.
     pub version: u32,
 }
 
@@ -147,6 +159,10 @@ impl fmt::Debug for HandoffConsentKey {
 
 impl HandoffConsentKey {
     /// A fresh random key at `version`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the system random source fails.
     pub fn generate(version: u32) -> Result<Self, CredentialsError> {
         let mut key = [0u8; 32];
         SystemRandom::new()
@@ -156,6 +172,10 @@ impl HandoffConsentKey {
     }
 
     /// The key for a new claim: version one above `previous`, or 1.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the system random source fails.
     pub fn for_claim(previous: Option<&Credentials>) -> Result<Self, CredentialsError> {
         let version = previous.map_or(1, |c| c.handoff_consent_key_version.saturating_add(1));
         Self::generate(version)
@@ -171,6 +191,7 @@ pub enum CredentialsError {
     Symlink,
     /// Not a record this build can use (bad JSON, a missing field, a bad key).
     Malformed(String),
+    /// Reading or writing the file failed, saying why.
     Io(String),
 }
 
@@ -233,12 +254,20 @@ impl Credentials {
     }
 
     /// The decoded PKCS#8 machine key.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the stored key is not valid base64url.
     pub fn machine_key_der(&self) -> Result<Vec<u8>, CredentialsError> {
         b64url_decode(&self.machine_key_pkcs8)
             .ok_or_else(|| CredentialsError::Malformed("machine_key_pkcs8 is not base64url".into()))
     }
 
     /// The D24 consent key.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the stored key is not 32 bytes of valid base64url.
     pub fn consent_key(&self) -> Result<HandoffConsentKey, CredentialsError> {
         let key: [u8; 32] = b64url_decode(&self.handoff_consent_key)
             .and_then(|k| k.try_into().ok())
@@ -262,6 +291,7 @@ impl Credentials {
         self.handoff_consent_key_version = consent.version;
     }
 
+    /// Whether the control plane has said this pairing is revoked.
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()
     }
@@ -281,9 +311,13 @@ impl Credentials {
 /// Cheap change detection: `(dev, ino, len, mtime_ns)` of the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CredentialsRevision {
+    /// The file's device.
     pub dev: u64,
+    /// Its inode.
     pub ino: u64,
+    /// Its length.
     pub len: u64,
+    /// Its modification time, in nanoseconds.
     pub mtime_ns: i128,
 }
 
@@ -299,6 +333,10 @@ pub fn revision(paths: &CloudPaths) -> Option<CredentialsRevision> {
 }
 
 /// Read the record, or `None` when the machine is not paired. Takes no lock.
+///
+/// # Errors
+///
+/// Fails when the file is a symlink, unreadable, malformed or from a newer yaran.
 pub fn read(paths: &CloudPaths) -> Result<Option<Credentials>, CredentialsError> {
     let meta = match fs::symlink_metadata(&paths.credentials) {
         Ok(meta) => meta,
@@ -349,6 +387,10 @@ fn write_locked(paths: &CloudPaths, creds: &Credentials) -> Result<(), Credentia
 /// Read-modify-write under the writers' lock. `f` sees the current record (or `None`);
 /// it returns the record to store, or `None` to delete the file. Returns what was stored.
 /// Returning the record unchanged writes nothing, so watchers see no new revision.
+///
+/// # Errors
+///
+/// Fails when the lock, the read or the write fails.
 pub fn update<F>(paths: &CloudPaths, f: F) -> Result<Option<Credentials>, CredentialsError>
 where
     F: FnOnce(Option<Credentials>) -> Result<Option<Credentials>, CredentialsError>,
@@ -377,6 +419,10 @@ fn remove_file(paths: &CloudPaths) -> Result<(), CredentialsError> {
 
 /// Forget the credentials (logout). Works on an unreadable file too, so
 /// `logout --local-only` is always a way out.
+///
+/// # Errors
+///
+/// Fails when the file exists and cannot be removed.
 pub fn delete(paths: &CloudPaths) -> Result<(), CredentialsError> {
     paths.ensure_dir().map_err(io_err)?;
     let _lock = crate::private_file::lock_exclusive(&paths.lock).map_err(io_err)?;
@@ -386,6 +432,10 @@ pub fn delete(paths: &CloudPaths) -> Result<(), CredentialsError> {
 /// Stamp `revoked_at` (any `410 machine_revoked`) on the record still holding the pairing
 /// the refused request was signed for. Returns whether that pairing is the stored one: a
 /// late answer about an older pairing never touches a newer one, and unpaired is a no-op.
+///
+/// # Errors
+///
+/// Fails when the record cannot be read or written.
 pub fn stamp_revoked(
     paths: &CloudPaths,
     signed_for: &Credentials,
@@ -405,6 +455,10 @@ pub fn stamp_revoked(
 
 /// `yaran cloud rotate --consent-key` (D24): fresh key, version + 1, no network call.
 /// `Ok(None)` when not paired.
+///
+/// # Errors
+///
+/// Fails when the record cannot be read or written, or the random source fails.
 pub fn rotate_consent_key(paths: &CloudPaths) -> Result<Option<Credentials>, CredentialsError> {
     update(paths, |current| {
         let Some(mut c) = current else {
@@ -417,6 +471,10 @@ pub fn rotate_consent_key(paths: &CloudPaths) -> Result<Option<Credentials>, Cre
 }
 
 /// The D24 consent key for Phase 11, read per request without a lock.
+///
+/// # Errors
+///
+/// Fails when the record cannot be read or its key is malformed.
 pub fn read_handoff_consent_key(
     paths: &CloudPaths,
 ) -> Result<Option<HandoffConsentKey>, CredentialsError> {

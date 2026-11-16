@@ -52,10 +52,13 @@ fn a_superseded_login_reports_when_claim_cleanup_fails() {
     newer.machine_id = "22afdb39-9d90-49a8-9ef5-b9482c1bdf61".into();
     let (other, kept) = (paths.clone(), newer.clone());
     let w = MockWorker::start(move |req| match req.path.as_str() {
-        "/v1/meta" => MockResponse::json(200, meta(1)),
+        "/v1/meta" => MockResponse::json(200, &meta(1)),
         "/v1/machine/claim" => {
             credentials::update(&other, |_| Ok(Some(kept.clone()))).unwrap();
-            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+            MockResponse::json(
+                200,
+                &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+            )
         }
         "/v1/machine/unpair" => MockResponse::error(503, "unavailable", "Try again."),
         _ => MockResponse::error(404, "not_found", "nope"),
@@ -84,14 +87,17 @@ fn a_claim_not_stored_reports_cleanup_and_possible_replacement() {
         let previous = pair_previous(&paths);
         let dir = paths.dir.clone();
         let w = MockWorker::start(move |req| match req.path.as_str() {
-            "/v1/meta" => MockResponse::json(200, meta(1)),
+            "/v1/meta" => MockResponse::json(200, &meta(1)),
             "/v1/machine/claim" => {
                 std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-                MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+                MockResponse::json(
+                    200,
+                    &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+                )
             }
             "/v1/machine/unpair" if cleanup_status == 202 => MockResponse::json(
                 202,
-                serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+                &serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"}),
             ),
             "/v1/machine/unpair" => MockResponse::error(503, "unavailable", "Try again."),
             _ => MockResponse::error(404, "not_found", "nope"),

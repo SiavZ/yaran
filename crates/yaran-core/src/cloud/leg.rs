@@ -47,23 +47,32 @@ use super::leg_identity::{CloudIdentity, CloudLegSettings};
 /// Why a leg ended. Every variant but `Requested` is terminal until the next input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LegStop {
+    /// The serve loop asked it to stop.
     Requested,
     /// The credentials vanished between planning and start (a logout raced the start).
     CredentialsGone,
+    /// The control plane says the machine is no longer paired.
     Revoked {
+        /// The hostname it had.
         hostname: String,
     },
+    /// No cloudflared could be had to run.
     BinaryUnavailable(BinaryUnavailable),
     /// Nothing answers on the loopback port the tunnel would forward to.
     NoLoopbackPrimary {
+        /// The port yaran was expected to serve on.
         port: u16,
     },
+    /// yaran serves on another port than the pairing names.
     OriginPortMismatch {
+        /// The port the pairing names.
         paired: u16,
+        /// The port yaran serves on.
         serving: u16,
     },
     /// Unauthorized persisted after a successful rotate.
     HealFailed {
+        /// The machine's hostname.
         hostname: String,
     },
 }
@@ -73,18 +82,24 @@ pub enum LegStop {
 pub enum CloudLegEvent {
     /// Downloading the managed binary, at most once a second.
     Acquiring {
+        /// How far along, when the size is known.
         pct: Option<u8>,
+        /// The download's size in megabytes, when known.
         total_mb: Option<u64>,
     },
     /// A download finished and verified.
     Acquired {
+        /// The cloudflared version now in place.
         version: String,
     },
     /// A child was spawned on the credentials' `token_version`.
     Starting {
+        /// The token issue the child runs on.
         token_version: i64,
     },
+    /// cloudflared has connections to Cloudflare's edge.
     Ready {
+        /// How many.
         connections: u32,
     },
     /// Ready was lost; cloudflared is reconnecting.
@@ -92,18 +107,24 @@ pub enum CloudLegEvent {
     /// The child exited and is being restarted. `first` is the first failure of a run,
     /// `escalate` the run reaching the sticky threshold without Ready.
     Restarting {
+        /// Which restart this is in the run.
         attempt: u32,
+        /// How long until it.
         delay: Duration,
+        /// Whether this is the run's first failure.
         first: bool,
+        /// Whether the run reached the sticky threshold without Ready.
         escalate: bool,
     },
     /// Unauthorized held for the confirm window; asking the control plane.
     Healing,
     /// A one-off warning worth one sentence (support window, clock skew, network).
     Warning(String),
+    /// The leg ended.
     Stopped(LegStop),
 }
 
+/// Where a leg reports its events.
 pub type LegSink = Arc<dyn Fn(CloudLegEvent) + Send + Sync>;
 
 /// Asks cloudflared's metrics port whether it is ready (injected so tests need no HTTP).
@@ -112,14 +133,28 @@ pub type ReadyProbe = Arc<dyn Fn(u16) -> Readiness + Send + Sync>;
 /// What a leg is started with.
 #[derive(Clone)]
 pub struct LegParams {
+    /// The `[cloud]` settings it runs with.
     pub settings: CloudLegSettings,
     /// yaran's loopback listener port (the tunnel's origin).
     pub serving_port: u16,
+    /// Where the managed binary is downloaded from.
     pub download: ManagedSource,
+    /// How cloudflared's readiness is asked.
     pub probe: ReadyProbe,
 }
 
+impl std::fmt::Debug for LegParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LegParams")
+            .field("settings", &self.settings)
+            .field("serving_port", &self.serving_port)
+            .field("download", &self.download)
+            .finish_non_exhaustive()
+    }
+}
+
 impl LegParams {
+    /// The production parameters: GitHub releases and the real metrics probe.
     pub fn new(settings: CloudLegSettings, serving_port: u16) -> Self {
         let timeout = Duration::from_secs(settings.request_timeout_seconds.max(1));
         Self {
@@ -135,6 +170,7 @@ impl LegParams {
 }
 
 /// The handle the serve loop owns.
+#[derive(Debug)]
 pub struct CloudLeg {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -143,6 +179,10 @@ pub struct CloudLeg {
 impl CloudLeg {
     /// Start a leg. `previous` (a leg already asked to stop) is joined on the new thread
     /// before anything else happens.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the operating system refuses to start a thread.
     pub fn start(
         params: LegParams,
         identity: Arc<dyn CloudIdentity>,
@@ -186,6 +226,7 @@ impl CloudLeg {
         }
     }
 
+    /// Whether the leg's thread has ended.
     pub fn is_finished(&self) -> bool {
         self.thread
             .as_ref()
@@ -216,6 +257,7 @@ pub(crate) fn sleep_unless_stopped(stop: &AtomicBool, total: Duration) -> bool {
 
 /// Polls the credentials revision and the revocation signal; calls `on_change` once at
 /// start and again whenever either moves. Stops when dropped.
+#[derive(Debug)]
 pub struct CredentialsWatch {
     stop: Arc<AtomicBool>,
 }
@@ -224,6 +266,11 @@ pub struct CredentialsWatch {
 pub const CREDENTIALS_POLL: Duration = Duration::from_secs(2);
 
 impl CredentialsWatch {
+    /// Start watching on its own thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the operating system refuses to start a thread.
     pub fn spawn(
         identity: Arc<dyn CloudIdentity>,
         period: Duration,

@@ -61,17 +61,18 @@ fn meta(min: i64) -> serde_json::Value {
 /// A control plane that answers meta, claim, unpair and rotate.
 fn worker(min_protocol: i64) -> MockWorker {
     MockWorker::start(move |req| match req.path.as_str() {
-        "/v1/meta" => MockResponse::json(200, meta(min_protocol)),
-        "/v1/machine/claim" => {
-            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
-        }
+        "/v1/meta" => MockResponse::json(200, &meta(min_protocol)),
+        "/v1/machine/claim" => MockResponse::json(
+            200,
+            &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+        ),
         "/v1/machine/unpair" => MockResponse::json(
             202,
-            serde_json::json!({"machine_id": yaran_core::cloud::test_support::SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+            &serde_json::json!({"machine_id": yaran_core::cloud::test_support::SAMPLE_MACHINE_ID, "state": "tearing_down"}),
         ),
         "/v1/machine/rotate" => MockResponse::json(
             200,
-            serde_json::json!({"tunnel": {"id": SAMPLE_TUNNEL_ID, "token": "t2", "token_version": 2}, "rotated": true}),
+            &serde_json::json!({"tunnel": {"id": SAMPLE_TUNNEL_ID, "token": "t2", "token_version": 2}, "rotated": true}),
         ),
         _ => MockResponse::error(404, "not_found", "nope"),
     })
@@ -340,18 +341,21 @@ async fn a_cancel_or_new_start_during_the_claim_lets_the_login_finish() {
     // The claim waits while the test cancels and restarts the login. A claim can tear a
     // replaced machine down, so once it is sent the login must run to its real outcome.
     let w = MockWorker::start(move |req| match req.path.as_str() {
-        "/v1/meta" => MockResponse::json(200, meta(1)),
+        "/v1/meta" => MockResponse::json(200, &meta(1)),
         "/v1/machine/claim" => {
             let _ = arrived_tx.lock().unwrap().send(());
             let _ = release_rx
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(10));
-            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+            MockResponse::json(
+                200,
+                &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+            )
         }
         "/v1/machine/unpair" => MockResponse::json(
             202,
-            serde_json::json!({"machine_id": yaran_core::cloud::test_support::SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+            &serde_json::json!({"machine_id": yaran_core::cloud::test_support::SAMPLE_MACHINE_ID, "state": "tearing_down"}),
         ),
         _ => MockResponse::error(404, "not_found", "nope"),
     });

@@ -57,9 +57,13 @@ use crate::cloud::protocol::meta::OrgRef;
 use crate::cloud::protocol::rules::b64url_decode;
 use crate::cloud::protocol::signing::{self, RequestParts};
 
+/// The organization address the samples pair with.
 pub const SAMPLE_ORG: &str = "https://cloud.example.com";
+/// The sample machine's id.
 pub const SAMPLE_MACHINE_ID: &str = "0b5b0f9e-6a49-4c8b-9a0e-2f8f8c8f0a11";
+/// The sample tunnel's id.
 pub const SAMPLE_TUNNEL_ID: &str = "7d1e3c2a-1b4f-4e8a-9c3d-5a6b7c8d9e0f";
+/// The sample machine's hostname.
 pub const SAMPLE_HOSTNAME: &str = "laptop-sam.machines.example.com";
 
 /// A schema-valid claim answer for `org_url`.
@@ -90,6 +94,10 @@ pub fn sample_claim(org_url: &str) -> ClaimResponse {
 }
 
 /// A fresh PKCS#8 machine key.
+///
+/// # Panics
+///
+/// Panics when the system random source fails.
 pub fn new_key_pkcs8() -> Vec<u8> {
     Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
         .expect("keygen")
@@ -98,6 +106,10 @@ pub fn new_key_pkcs8() -> Vec<u8> {
 }
 
 /// Sample credentials for `org_url`, with a real key.
+///
+/// # Panics
+///
+/// Panics when the system random source fails.
 pub fn sample_credentials(org_url: &str) -> Credentials {
     let consent = HandoffConsentKey::generate(1).expect("consent key");
     Credentials::from_claim(
@@ -109,6 +121,10 @@ pub fn sample_credentials(org_url: &str) -> Credentials {
 }
 
 /// Write sample credentials into `paths` and return them.
+///
+/// # Panics
+///
+/// Panics when the credentials cannot be written.
 pub fn pair_sample(paths: &CloudPaths, org_url: &str) -> Credentials {
     let creds = sample_credentials(org_url);
     crate::cloud::credentials::update(paths, |_| Ok(Some(creds.clone()))).expect("write");
@@ -118,15 +134,20 @@ pub fn pair_sample(paths: &CloudPaths, org_url: &str) -> Credentials {
 /// One request the mock received.
 #[derive(Clone, Debug, Default)]
 pub struct RecordedRequest {
+    /// The HTTP method.
     pub method: String,
     /// Path without the query.
     pub path: String,
+    /// The query string, without the `?`.
     pub query: String,
+    /// Every header, in the order received.
     pub headers: Vec<(String, String)>,
+    /// The body.
     pub body: Vec<u8>,
 }
 
 impl RecordedRequest {
+    /// The first header named `name`, case-insensitively.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -134,6 +155,7 @@ impl RecordedRequest {
             .map(|(_, v)| v.as_str())
     }
 
+    /// The body as JSON, or `null` when it is not.
     pub fn json(&self) -> serde_json::Value {
         serde_json::from_slice(&self.body).unwrap_or(serde_json::Value::Null)
     }
@@ -173,13 +195,17 @@ impl RecordedRequest {
 /// What the mock answers.
 #[derive(Clone, Debug)]
 pub struct MockResponse {
+    /// The status code.
     pub status: u16,
+    /// The headers to send.
     pub headers: Vec<(String, String)>,
+    /// The body.
     pub body: String,
 }
 
 impl MockResponse {
-    pub fn json(status: u16, body: serde_json::Value) -> Self {
+    /// A JSON answer with the request id header the real Worker sends.
+    pub fn json(status: u16, body: &serde_json::Value) -> Self {
         Self {
             status,
             headers: vec![("Yaran-Request-Id".into(), "req-mock-1".into())],
@@ -191,7 +217,7 @@ impl MockResponse {
     pub fn error(status: u16, code: &str, message: &str) -> Self {
         Self::json(
             status,
-            serde_json::json!({
+            &serde_json::json!({
                 "error": {"code": code, "message": message, "retryable": false},
                 "request_id": "req-mock-1"
             }),
@@ -202,7 +228,9 @@ impl MockResponse {
 type Handler = dyn Fn(&RecordedRequest) -> MockResponse + Send + Sync;
 
 /// A std-thread HTTP/1.1 server on loopback standing in for the org Worker.
+#[derive(Debug)]
 pub struct MockWorker {
+    /// Where it listens.
     pub addr: SocketAddr,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     stop: Arc<AtomicBool>,
@@ -210,6 +238,11 @@ pub struct MockWorker {
 }
 
 impl MockWorker {
+    /// Start serving on a free loopback port; `handler` answers every request.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no loopback port can be bound or the thread cannot start.
     pub fn start(
         handler: impl Fn(&RecordedRequest) -> MockResponse + Send + Sync + 'static,
     ) -> Self {
@@ -243,8 +276,13 @@ impl MockWorker {
         format!("http://{}", self.addr)
     }
 
+    /// Every request received so far, oldest first.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a handler panicked while recording a request.
     pub fn requests(&self) -> Vec<RecordedRequest> {
-        self.requests.lock().unwrap().clone()
+        self.requests.lock().expect("the request log lock").clone()
     }
 }
 
@@ -297,14 +335,15 @@ fn serve(stream: TcpStream, handler: &Arc<Handler>, log: &Mutex<Vec<RecordedRequ
         body,
     };
     let resp = handler(&req);
-    log.lock().unwrap().push(req);
+    log.lock().expect("the request log lock").push(req);
+    use std::fmt::Write as _;
     let mut out = format!(
         "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         resp.status,
         resp.body.len()
     );
     for (k, v) in &resp.headers {
-        out.push_str(&format!("{k}: {v}\r\n"));
+        let _ = write!(out, "{k}: {v}\r\n");
     }
     out.push_str("\r\n");
     out.push_str(&resp.body);
@@ -314,6 +353,10 @@ fn serve(stream: TcpStream, handler: &Arc<Handler>, log: &Mutex<Vec<RecordedRequ
 }
 
 /// The public key of a PKCS#8 document.
+///
+/// # Panics
+///
+/// Panics when `pkcs8` is not a valid Ed25519 key document.
 pub fn public_key_of(pkcs8: &[u8]) -> Vec<u8> {
     Ed25519KeyPair::from_pkcs8(pkcs8)
         .expect("pkcs8")

@@ -202,7 +202,7 @@ fn escape_cancels_a_running_login_and_closes_its_listener() {
     let worker = MockWorker::start(|_| {
         MockResponse::json(
             200,
-            serde_json::json!({
+            &serde_json::json!({
                 "service": "yaran-cloud", "protocol": {"min": 1, "max": 1}, "setup": "closed",
                 "org": {"name": "Example Org", "url": SAMPLE_ORG},
                 "access": {"team_domain": "team.cloudflareaccess.com"}, "worker": {"version": "1.0.0"},

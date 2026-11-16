@@ -176,10 +176,11 @@ fn meta(min: i64) -> serde_json::Value {
 
 fn worker(min: i64, claim_ok: bool) -> MockWorker {
     MockWorker::start(move |req| match req.path.as_str() {
-        "/v1/meta" => MockResponse::json(200, meta(min)),
-        "/v1/machine/claim" if claim_ok => {
-            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
-        }
+        "/v1/meta" => MockResponse::json(200, &meta(min)),
+        "/v1/machine/claim" if claim_ok => MockResponse::json(
+            200,
+            &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+        ),
         "/v1/machine/claim" => {
             MockResponse::error(400, "pkce_mismatch", "The verifier does not match.")
         }
@@ -389,14 +390,17 @@ fn timeout_and_cancel_end_the_wait() {
 /// A Worker whose claim runs `during_claim` before answering, and which accepts W8.
 fn claim_side_effect(during_claim: impl Fn() + Send + Sync + 'static) -> MockWorker {
     MockWorker::start(move |req| match req.path.as_str() {
-        "/v1/meta" => MockResponse::json(200, meta(1)),
+        "/v1/meta" => MockResponse::json(200, &meta(1)),
         "/v1/machine/claim" => {
             during_claim();
-            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+            MockResponse::json(
+                200,
+                &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+            )
         }
         "/v1/machine/unpair" => MockResponse::json(
             202,
-            serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+            &serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"}),
         ),
         _ => MockResponse::error(404, "not_found", "nope"),
     })

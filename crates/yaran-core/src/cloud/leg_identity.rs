@@ -68,16 +68,27 @@ pub use crate::cloud::protocol::machine::RotateReason;
 /// The `[cloud]` keys the leg reads, with `mode` parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudLegSettings {
+    /// Whether Cloud Connect runs, and how.
     pub mode: CloudMode,
+    /// The cloudflared binary to run; empty means the one yaran manages.
     pub cloudflared_path: String,
+    /// cloudflared's metrics port on loopback; 0 picks a free one.
     pub metrics_port: u16,
+    /// How long cloudflared may drain its connections when stopped.
     pub grace_period_seconds: u64,
+    /// The first wait before restarting a cloudflared that stopped.
     pub restart_backoff_initial_ms: u64,
+    /// The longest wait between restarts.
     pub restart_backoff_max_ms: u64,
+    /// The random spread added to each wait.
     pub restart_backoff_jitter_ms: u64,
+    /// The log level cloudflared runs with.
     pub cloudflared_loglevel: String,
+    /// Whether cloudflared's remote management diagnostics are on.
     pub management_diagnostics: bool,
+    /// How long cloudflared may report Unauthorized before yaran asks the control plane.
     pub unauthorized_confirm_seconds: u64,
+    /// How long one control-plane request may take.
     pub request_timeout_seconds: u64,
 }
 
@@ -128,15 +139,25 @@ pub fn store_mode(config: &mut crate::config::Config, mode: CloudMode) {
 /// The pairing record, as the leg sees it (the leg-facing part of `Credentials`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct PairedMachine {
+    /// The machine's hostname.
     pub hostname: String,
+    /// The Access team domain sign-ins come from.
     pub team_domain: String,
+    /// The Access application's audience tag.
     pub aud: String,
+    /// The paired owner's email.
     pub owner_email: String,
+    /// The organization's control-plane address.
     pub org_url: String,
+    /// The organization's name.
     pub org_name: String,
+    /// The local port the tunnel forwards to.
     pub origin_port: u16,
+    /// The tunnel token's issue.
     pub token_version: i64,
+    /// The tunnel token. Secret.
     pub tunnel_token: String,
+    /// Whether the control plane has said this machine is revoked.
     pub revoked: bool,
 }
 
@@ -175,38 +196,66 @@ impl std::fmt::Debug for PairedMachine {
 pub trait CloudIdentity: Send + Sync {
     /// `<config root>/cloud`: managed binary, token file, leg state.
     fn cloud_dir(&self) -> PathBuf;
+    /// The credentials file's revision, which changes whenever the file does.
     fn revision(&self) -> Option<CredentialsRevision>;
     /// `Ok(None)` when not paired.
+    ///
+    /// # Errors
+    ///
+    /// Fails, with the reason in words, when the credentials file cannot be read.
     fn load(&self) -> Result<Option<PairedMachine>, String>;
     /// Whether the control plane has said this machine is revoked.
     fn revoked(&self) -> bool;
     /// W5 `GET /v1/machine/config` (a 410 also raises the signal and stamps `revoked_at`).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane cannot be reached or refuses.
     fn machine_config(&self) -> Result<MachineConfig, MachineApiError>;
     /// W7; on success the token and its version are rewritten in the credentials.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses or the new token cannot be stored.
     fn rotate(&self, reason: RotateReason) -> Result<(), MachineApiError>;
     /// W32 `PUT /v1/machine/origin`; on success `origin_port` is rewritten.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses or the port cannot be stored.
     fn set_origin(&self, port: u16) -> Result<(), MachineApiError>;
 
+    /// The paths under [`Self::cloud_dir`].
     fn cloud_paths(&self) -> CloudPaths {
         CloudPaths::from_dir(&self.cloud_dir())
     }
 
+    /// Record the leg's state, for the next start and the status report.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the state file cannot be written.
     fn write_leg_state(&self, record: &LegState) -> anyhow::Result<()> {
         leg_state::write(&self.cloud_paths(), record)
     }
 
+    /// The leg's recorded state, when there is one.
     fn read_leg_state(&self) -> Option<LegState> {
         leg_state::read(&self.cloud_paths())
     }
 
+    /// Forget the leg's recorded state.
     fn clear_leg_state(&self) {
         let _ = leg_state::remove(&self.cloud_paths());
     }
 }
 
 /// The production identity: the credentials file and the signed control-plane client.
+#[derive(Debug)]
 pub struct PairedIdentity {
+    /// Where the credentials and the leg's files are.
     pub paths: CloudPaths,
+    /// How long one control-plane request may take.
     pub request_timeout: Duration,
 }
 
