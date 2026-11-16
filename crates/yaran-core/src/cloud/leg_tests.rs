@@ -78,7 +78,7 @@ impl CloudIdentity for FakeIdentity {
     fn revision(&self) -> Option<CredentialsRevision> {
         let m = self.machine.lock().unwrap();
         m.as_ref().map(|m| CredentialsRevision {
-            dev: m.token_version as u64,
+            dev: u64::try_from(m.token_version).unwrap(),
             ino: 0,
             len: 0,
             mtime_ns: 0,
@@ -229,7 +229,10 @@ fn a_paired_leg_reaches_ready_and_stops_without_leaving_anything() {
     leg.join();
     assert!(!h.dir.path().join("tunnel-token").exists());
     assert!(id.read_leg_state().is_none());
-    assert!(!crate::cloud::cloudflared::child_registry::live().contains(&(state.pid as i32)));
+    assert!(
+        !crate::cloud::cloudflared::child_registry::live()
+            .contains(&i32::try_from(state.pid).unwrap())
+    );
 }
 
 #[test]

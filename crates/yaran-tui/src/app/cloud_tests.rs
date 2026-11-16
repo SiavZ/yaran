@@ -276,10 +276,10 @@ fn outcome_sentences_render_as_chips() {
     let found = (0..buf.area.height).find_map(|y| {
         let row: String = (0..width).map(|x| buf[(x, y)].symbol()).collect();
         row.find(name)
-            .map(|at| (row[..at].chars().count() as u16, y))
+            .map(|at| (u16::try_from(row[..at].chars().count()).unwrap(), y))
     });
     let (x, y) = found.expect("the NotPaired sentence names the command");
-    for dx in 0..name.len() as u16 {
+    for dx in 0..u16::try_from(name.len()).unwrap() {
         let cell = &buf[(x + dx, y)];
         assert_eq!(
             (Some(cell.fg), Some(cell.bg)),

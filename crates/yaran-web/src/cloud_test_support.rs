@@ -124,7 +124,9 @@ pub(crate) fn harness_with(host: Option<&str>, jwks: Result<Jwks, String>) -> Ha
     let ingress = CloudIngress::with_parts(
         FakeSource::new(vec![jwks.map(|j| (j, None))]),
         Arc::<FakeConsent>::clone(&consent),
-        Arc::new(move || UNIX_EPOCH + Duration::from_secs(c.load(Ordering::SeqCst) as u64)),
+        Arc::new(move || {
+            UNIX_EPOCH + Duration::from_secs(u64::try_from(c.load(Ordering::SeqCst)).unwrap())
+        }),
     );
     ingress.update_settings(IngressSettings {
         app_callback_urls: vec![CALLBACK.to_string()],
@@ -331,7 +333,7 @@ pub(crate) fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
+                char::from(b).to_string()
             }
             b => format!("%{b:02X}"),
         })
@@ -547,7 +549,7 @@ pub(crate) fn fixture_consent_key() -> ConsentKey {
         .collect();
     ConsentKey {
         key: key.try_into().unwrap(),
-        version: f["kv"].as_u64().unwrap() as u32,
+        version: u32::try_from(f["kv"].as_u64().unwrap()).unwrap(),
     }
 }
 
