@@ -49,6 +49,16 @@ pub const WATCH_RESCAN_SPREAD_TICKS: usize = 4;
 /// buys nothing and would only delay them.
 pub const WATCH_MIN_RESCANS_PER_TICK: usize = 4;
 
+/// A freshly started agent's first output replays what it showed before: a
+/// resumed session redraws its transcript, and a reload adopts its terminal as
+/// it was. A `[task-done]` or `[compact]` in that replay is old, yet a new
+/// engine has seen none of it, so it would read as fresh and reset the agent's
+/// context. For this long after a tab's PTY is spawned (or adopted) the
+/// built-in rules therefore take its screen as already seen; a sentinel printed
+/// later fires as usual. Long enough for a resumed TUI to finish drawing its
+/// history. User rules are not held: they often answer a startup prompt.
+pub const WATCH_BUILT_IN_STARTUP_SETTLE: Duration = Duration::from_secs(10);
+
 /// How long a read of a compact instructions file stays current. An older one
 /// is repeated in the background, so an edited file reaches the rule without a
 /// restart.
@@ -420,6 +430,11 @@ impl Engine {
             let Some(client) = self.providers.get(tab.as_ref_id()) else {
                 continue;
             };
+            let settling = now.saturating_duration_since(client.spawned_at)
+                < self
+                    .watch
+                    .built_in_startup_settle
+                    .unwrap_or(WATCH_BUILT_IN_STARTUP_SETTLE);
             let rescan = if recently_scanned || budget == 0 {
                 None
             } else {
@@ -459,6 +474,24 @@ impl Engine {
                 self.watch.suppress_until.remove(&tab);
                 if let Some(attached) = self.watch.attached.get_mut(&tab) {
                     attached.engine.rebaseline_keyed(snapshot, key);
+                }
+            }
+            if settling && let Some(attached) = self.watch.attached.get_mut(&tab) {
+                // What a tab shows this soon after its spawn is not new to the
+                // agent (see WATCH_BUILT_IN_STARTUP_SETTLE).
+                if attached.auto_clear_idx.is_some() {
+                    attached.engine.rebaseline_kind_keyed(
+                        snapshot,
+                        key,
+                        WatchRuleKind::BuiltInAutoClear,
+                    );
+                }
+                if attached.auto_compact_idx.is_some() {
+                    attached.engine.rebaseline_kind_keyed(
+                        snapshot,
+                        key,
+                        WatchRuleKind::BuiltInAutoCompact,
+                    );
                 }
             }
             let session_id = self
@@ -1088,7 +1121,7 @@ mod tests {
 
     /// A PTY that prints `text` and then idles, for tests that only need a
     /// screen to scan.
-    fn printing_pty(text: &str) -> PtyClient {
+    pub(super) fn printing_pty(text: &str) -> PtyClient {
         let script = format!("printf '%s\\n' '{text}'; exec sleep 30");
         PtyClient::spawn(
             "sh",
@@ -1101,7 +1134,7 @@ mod tests {
         .expect("spawn printing pty")
     }
 
-    fn worker_settings(
+    pub(super) fn worker_settings(
         auto_clear: bool,
         auto_compact: bool,
         compact_path: Option<String>,
@@ -1115,7 +1148,7 @@ mod tests {
         }
     }
 
-    fn row_state(engine: &Engine, label: &str) -> Option<crate::watch::RuleStateKind> {
+    pub(super) fn row_state(engine: &Engine, label: &str) -> Option<crate::watch::RuleStateKind> {
         engine
             .watch_rule_rows()
             .into_iter()
@@ -1390,3 +1423,7 @@ mod tests {
 #[cfg(test)]
 #[path = "watch_tick_schedule_tests.rs"]
 mod schedule_tests;
+
+#[cfg(test)]
+#[path = "watch_tick_settle_tests.rs"]
+mod settle_tests;
