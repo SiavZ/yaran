@@ -132,7 +132,7 @@ pub fn run_with(
             };
             let kind = card.kind;
             let assignee = card.assignee.clone();
-            let outcome = store.update(|board| board.post(card, Utc::now()))?;
+            let outcome = store.update(|board| board.post(&card, Utc::now()))?;
             let verb = match outcome {
                 PostOutcome::Added(_) => "posted",
                 PostOutcome::Updated(_) => "updated",
@@ -423,7 +423,7 @@ fn run_reply(
     let (id, closed) = settings.store.update(|board| {
         let id = board.find(query)?;
         let was_open = board.card(&id).is_some_and(Card::is_open);
-        board.reply(&id, message, Utc::now())?;
+        board.reply(&id, &message, Utc::now())?;
         let closed = was_open && board.card(&id).is_some_and(|card| !card.is_open());
         Ok((id, closed))
     })?;

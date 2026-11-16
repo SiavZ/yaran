@@ -146,7 +146,7 @@ mod tests {
         let mut board = Board::default();
         let id = board
             .post(
-                NewCard {
+                &NewCard {
                     kind: Some(CardKind::Task),
                     title: "Decide".to_string(),
                     origin: Some(origin.to_string()),
@@ -163,7 +163,7 @@ mod tests {
         board
             .reply(
                 id,
-                NewMessage {
+                &NewMessage {
                     from: from.to_string(),
                     side: Some(from.to_string()),
                     text: format!("from {from}"),

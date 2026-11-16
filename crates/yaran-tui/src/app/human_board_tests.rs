@@ -37,31 +37,31 @@ fn sample_board() -> Board {
     let mut board = Board::default();
     board
         .post(
-            new_card(CardKind::Info, Some("3101"), "Deployed to dev"),
+            &new_card(CardKind::Info, Some("3101"), "Deployed to dev"),
             at(0),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Validate, Some("4812"), "Check signup"),
+            &new_card(CardKind::Validate, Some("4812"), "Check signup"),
             at(1),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Task, None, "Pick the launch date"),
+            &new_card(CardKind::Task, None, "Pick the launch date"),
             at(2),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Confirm, Some("3770"), "Merge the auth fix?"),
+            &new_card(CardKind::Confirm, Some("3770"), "Merge the auth fix?"),
             at(3),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Task, Some("1205"), "Old question"),
+            &new_card(CardKind::Task, Some("1205"), "Old question"),
             at(4),
         )
         .unwrap();
@@ -166,7 +166,7 @@ fn done_shows_only_the_most_recent_few() {
     let mut board = Board::default();
     for n in 0..(RECENT_DONE as i64 + 3) {
         board
-            .post(new_card(CardKind::Info, None, &format!("n{n}")), at(n))
+            .post(&new_card(CardKind::Info, None, &format!("n{n}")), at(n))
             .unwrap();
         let id = board.cards.last().unwrap().id.clone();
         board.resolve(id, None, None, at(n)).unwrap();
@@ -202,7 +202,7 @@ fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
     );
 
     let mut next = board.clone();
-    next.post(new_card(CardKind::Confirm, Some("7"), "Roll it?"), at(10))
+    next.post(&new_card(CardKind::Confirm, Some("7"), "Roll it?"), at(10))
         .unwrap();
     let fresh = state.apply_snapshot(Ok(next));
     assert_eq!(fresh.len(), 1);
@@ -224,10 +224,10 @@ fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
 fn news_only_announcements_do_not_claim_to_wait_on_you() {
     let mut board = Board::default();
     board
-        .post(new_card(CardKind::Info, None, "a"), at(0))
+        .post(&new_card(CardKind::Info, None, "a"), at(0))
         .unwrap();
     board
-        .post(new_card(CardKind::Info, None, "b"), at(1))
+        .post(&new_card(CardKind::Info, None, "b"), at(1))
         .unwrap();
     let fresh: Vec<_> = board.cards.clone();
     let message = announcement(&fresh).unwrap();
@@ -252,7 +252,7 @@ fn the_selection_follows_its_card_when_a_new_one_lands_above_it() {
 
     // A new task card sorts above it; the selection stays on card 2.
     let mut next = board;
-    next.post(new_card(CardKind::Task, None, "New decision"), at(20))
+    next.post(&new_card(CardKind::Task, None, "New decision"), at(20))
         .unwrap();
     state.apply_snapshot(Ok(next));
     assert_eq!(state.selected, Some(CardId::plain(2)));
@@ -571,7 +571,7 @@ fn the_watcher_starts_with_the_setting_and_stops_without_it() {
     app.engine.config.ui.human_board = true;
     let store = BoardStore::new(&app.engine.paths.root);
     store
-        .update(|board| board.post(new_card(CardKind::Task, None, "x"), at(0)))
+        .update(|board| board.post(&new_card(CardKind::Task, None, "x"), at(0)))
         .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while app.human_board.readable().is_none() && std::time::Instant::now() < deadline {
@@ -640,7 +640,7 @@ fn a_compact_board_title_keeps_the_complete_waiting_count() {
     for index in 0..12 {
         board
             .post(
-                new_card(CardKind::Task, None, &format!("Review {index}")),
+                &new_card(CardKind::Task, None, &format!("Review {index}")),
                 at(index),
             )
             .unwrap();
@@ -705,7 +705,7 @@ fn reply_app() -> (App, String) {
     let mut board = Board::default();
     let mut card = new_card(CardKind::Confirm, Some("mvp-7"), "Merge the auth fix?");
     card.from = Some("session-1".to_string());
-    board.post(card, at(0)).unwrap();
+    board.post(&card, at(0)).unwrap();
     let mut app = board_app(Some(board));
     let tab = app.focused_tab_id("session-1");
     app.engine
@@ -1039,7 +1039,7 @@ fn prioritized_board() -> Board {
     let mut post = |priority, title| {
         let mut c = new_card(CardKind::Task, None, title);
         c.priority = priority;
-        board.post(c, at(0)).unwrap();
+        board.post(&c, at(0)).unwrap();
     };
     post(None, "ordinary");
     post(Some(Priority::Low), "someday");
@@ -1094,7 +1094,7 @@ fn a_new_urgent_card_is_announced_as_such() {
     let mut board = Board::default();
     let mut c = new_card(CardKind::Confirm, Some("4"), "Roll now?");
     c.priority = Some(Priority::Critical);
-    board.post(c, at(0)).unwrap();
+    board.post(&c, at(0)).unwrap();
     let message = announcement(&board.cards).unwrap();
     assert!(
         message.contains("(Critical priority, Confirmation needed"),
@@ -1116,7 +1116,7 @@ fn long_card_app() -> App {
             .join("\n"),
     );
     c.from = Some("session-1".to_string());
-    board.post(c, at(0)).unwrap();
+    board.post(&c, at(0)).unwrap();
     let mut app = board_app(Some(board));
     // The poster runs, so the dialog opens with its reply field focused.
     let tab = app.focused_tab_id("session-1");
@@ -1207,12 +1207,12 @@ fn team_app() -> App {
     let mut board = Board::default();
     let mut for_sam = new_card(CardKind::Task, None, "Sign the contract");
     for_sam.assignee = Some("Sam".to_string());
-    board.post(for_sam, at(0)).unwrap();
+    board.post(&for_sam, at(0)).unwrap();
     let mut for_alex = new_card(CardKind::Validate, None, "Check the release");
     for_alex.assignee = Some("Alex".to_string());
-    board.post(for_alex, at(1)).unwrap();
+    board.post(&for_alex, at(1)).unwrap();
     board
-        .post(new_card(CardKind::Info, None, "Deployed"), at(2))
+        .post(&new_card(CardKind::Info, None, "Deployed"), at(2))
         .unwrap();
     BoardStore::new(&app.engine.paths.root)
         .update(|current| {
@@ -1332,8 +1332,8 @@ fn only_cards_for_me_are_announced() {
         .update(|board| {
             let mut c = new_card(CardKind::Task, None, "For Sam only");
             c.assignee = Some("Sam".to_string());
-            board.post(c, at(5))?;
-            board.post(new_card(CardKind::Task, None, "For anyone"), at(6))
+            board.post(&c, at(5))?;
+            board.post(&new_card(CardKind::Task, None, "For anyone"), at(6))
         })
         .unwrap();
     let fresh = app.load_human_board_now();
@@ -1420,7 +1420,7 @@ fn two_sided_app(me: &str, blocking: bool) -> (App, String) {
     card.assignee = Some("Alex".to_string());
     card.origin = Some("Sam".to_string());
     card.blocking = Some(blocking);
-    board.post(card, at(0)).unwrap();
+    board.post(&card, at(0)).unwrap();
     BoardStore::new(&app.engine.paths.root)
         .update(|current| {
             *current = board;
@@ -1459,7 +1459,7 @@ fn other_side_says(app: &mut App, from: &str, text: &str, done: bool) {
         .update(|board| {
             board.reply(
                 CardId::new("S", 1),
-                yaran_core::human_board::NewMessage {
+                &yaran_core::human_board::NewMessage {
                     from: from.to_string(),
                     side: Some(from.to_string()),
                     text: text.to_string(),
@@ -1671,7 +1671,7 @@ fn the_dots_say_what_waits_and_what_is_unread() {
         .update(|board| {
             board.reply(
                 CardId::new("S", 1),
-                yaran_core::human_board::NewMessage {
+                &yaran_core::human_board::NewMessage {
                     from: "session-1".to_string(),
                     side: Some("Sam".to_string()),
                     text: "The audit_2019 table.".to_string(),
@@ -1803,7 +1803,7 @@ fn a_card_with_a_very_long_title_can_be_read_to_its_last_word() {
         "the draft policy says 30/14/7 days and the plan records the same resolution. ".repeat(60)
     );
     board
-        .post(new_card(CardKind::Task, Some("6001"), &question), at(0))
+        .post(&new_card(CardKind::Task, Some("6001"), &question), at(0))
         .unwrap();
     let mut app = board_app(Some(board));
     app.focus = FocusPane::Files;
@@ -2012,19 +2012,19 @@ fn news_closes_by_itself_after_the_configured_hours() {
         let mut board = Board::default();
         board
             .post(
-                new_card(CardKind::Info, None, "Deployed"),
+                &new_card(CardKind::Info, None, "Deployed"),
                 Utc::now() - chrono::Duration::hours(5),
             )
             .unwrap();
         board
             .post(
-                new_card(CardKind::Info, None, "Rolled"),
+                &new_card(CardKind::Info, None, "Rolled"),
                 Utc::now() - chrono::Duration::hours(1),
             )
             .unwrap();
         board
             .post(
-                new_card(CardKind::Task, None, "Decide"),
+                &new_card(CardKind::Task, None, "Decide"),
                 Utc::now() - chrono::Duration::hours(9),
             )
             .unwrap();

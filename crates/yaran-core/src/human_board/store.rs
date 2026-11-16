@@ -490,8 +490,8 @@ mod tests {
     fn a_folder_board_keeps_one_note_per_card_under_its_prefix() {
         let (_home, store) = folder();
         assert!(store.load().unwrap().cards.is_empty(), "no folder is empty");
-        let first = store.update(|b| b.post(task("one"), at(0))).unwrap().id();
-        let second = store.update(|b| b.post(task("two"), at(1))).unwrap().id();
+        let first = store.update(|b| b.post(&task("one"), at(0))).unwrap().id();
+        let second = store.update(|b| b.post(&task("two"), at(1))).unwrap().id();
         assert_eq!(first, CardId::new("G", 1));
         assert_eq!(second, CardId::new("G", 2));
         assert_eq!(notes(&store), ["G-1.md", "G-2.md"]);
@@ -513,8 +513,8 @@ mod tests {
     #[test]
     fn a_change_rewrites_only_the_cards_it_touched() {
         let (_home, store) = folder();
-        store.update(|b| b.post(task("one"), at(0))).unwrap();
-        store.update(|b| b.post(task("two"), at(1))).unwrap();
+        store.update(|b| b.post(&task("one"), at(0))).unwrap();
+        store.update(|b| b.post(&task("two"), at(1))).unwrap();
         // A person edits the first note by hand, in their own style.
         let hand = "---\nkind: task\ntitle: one, edited by hand\n---\n";
         fs::write(store.path().join("G-1.md"), hand).unwrap();
@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(board.problems.len(), 1, "{:?}", board.problems);
         assert!(board.problems[0].contains("G-7.md"), "{:?}", board.problems);
 
-        let id = store.update(|b| b.post(task("new"), at(0))).unwrap().id();
+        let id = store.update(|b| b.post(&task("new"), at(0))).unwrap().id();
         assert_eq!(
             id,
             CardId::new("G", 8),
@@ -586,7 +586,7 @@ mod tests {
         for n in 0..(super::super::RESOLVED_HISTORY + 1) {
             store
                 .update(|b| {
-                    let id = b.post(task(&format!("r{n}")), at(0))?.id();
+                    let id = b.post(&task(&format!("r{n}")), at(0))?.id();
                     b.resolve(id, None, None, at((n % 60) as u32))
                 })
                 .unwrap();
@@ -618,7 +618,7 @@ mod tests {
             watcher.next_within(wait).unwrap().board.unwrap().cards,
             Vec::<crate::human_board::Card>::new()
         );
-        store.update(|b| b.post(task("a"), at(0))).unwrap();
+        store.update(|b| b.post(&task("a"), at(0))).unwrap();
         assert_eq!(
             watcher
                 .next_within(wait)

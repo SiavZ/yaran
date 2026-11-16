@@ -1456,7 +1456,7 @@ mod tests {
         fs::write(&unrelated, "sid-g keep\n").unwrap();
 
         assert_eq!(
-            execute_redact_logs(&live, "sid-g", false),
+            execute_redact_logs(&live, "sid-g", PurgeRun::Apply),
             PurgeOutcome::Done
         );
 

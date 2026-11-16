@@ -600,7 +600,7 @@ pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, 
             BoardJob::Reopen { id, .. } => board.reopen(id, now),
             BoardJob::Reply { id, message, .. } => {
                 let was_open = board.card(id).is_some_and(Card::is_open);
-                board.reply(id, message.clone(), now)?;
+                board.reply(id, &message.clone(), now)?;
                 Ok(was_open && board.card(id).is_some_and(|card| !card.is_open()))
             }
             BoardJob::Assign { id, person, by, .. } => {

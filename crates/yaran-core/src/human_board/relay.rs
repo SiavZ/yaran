@@ -292,7 +292,7 @@ mod tests {
         board.prefix = origin[..1].to_string();
         board
             .post(
-                NewCard {
+                &NewCard {
                     kind: Some(CardKind::Confirm),
                     title: "Drop the table?".to_string(),
                     detail: Some("It is the old audit table.".to_string()),
@@ -311,7 +311,7 @@ mod tests {
         board
             .reply(
                 id,
-                NewMessage {
+                &NewMessage {
                     from: from.to_string(),
                     side: Some(side.to_string()),
                     text: text.to_string(),
