@@ -105,6 +105,7 @@ pub enum Unpaired {
 }
 
 /// A control-plane client for one org.
+#[derive(Debug)]
 pub struct MachineApi {
     org_url: String,
     transport: String,
@@ -112,19 +113,30 @@ pub struct MachineApi {
     paths: CloudPaths,
 }
 
-fn agent(timeout: Duration, loopback: bool) -> ureq::Agent {
-    let mut builder = ureq::Agent::config_builder()
+/// The HTTP client every request goes through, honouring the environment's proxy.
+fn agent(timeout: Duration) -> ureq::Agent {
+    agent_config(timeout).build().into()
+}
+
+/// The same for a loopback mock, which a proxy must never see.
+#[cfg(any(test, feature = "test-support"))]
+fn loopback_agent(timeout: Duration) -> ureq::Agent {
+    agent_config(timeout).proxy(None).build().into()
+}
+
+fn agent_config(timeout: Duration) -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::Agent::config_builder()
         .timeout_connect(Some(timeout))
         .timeout_global(Some(timeout))
-        .http_status_as_error(false);
-    if loopback {
-        builder = builder.proxy(None);
-    }
-    builder.build().into()
+        .http_status_as_error(false)
 }
 
 impl MachineApi {
     /// A client for `org_url` (an https origin), keeping credentials under `paths`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `org_url` is not an https origin.
     pub fn new(
         org_url: &str,
         paths: &CloudPaths,
@@ -139,12 +151,16 @@ impl MachineApi {
         Ok(Self {
             org_url: org_url.to_string(),
             transport: org_url.to_string(),
-            agent: agent(timeout, false),
+            agent: agent(timeout),
             paths: paths.clone(),
         })
     }
 
     /// A client for the org this machine is paired with.
+    ///
+    /// # Errors
+    ///
+    /// Fails when this machine is not paired or its credentials cannot be read.
     pub fn paired(paths: &CloudPaths, timeout: Duration) -> Result<Self, MachineApiError> {
         let creds = credentials::read(paths)?.ok_or(MachineApiError::NotPaired)?;
         Self::new(&creds.org_url, paths, timeout)
@@ -152,22 +168,29 @@ impl MachineApi {
 
     /// Send requests to `base` (e.g. a loopback mock Worker) instead of the org URL.
     #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
     pub fn with_test_transport(mut self, base: &str) -> Self {
         let timeout = Duration::from_secs(5);
         self.transport = base.trim_end_matches('/').to_string();
-        self.agent = agent(timeout, true);
+        self.agent = loopback_agent(timeout);
         self
     }
 
+    /// The organization's control-plane address.
     pub fn org_url(&self) -> &str {
         &self.org_url
     }
 
+    /// Where the credentials it signs with are kept.
     pub fn paths(&self) -> &CloudPaths {
         &self.paths
     }
 
     /// W1: the org's self-description, with the protocol negotiated.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane cannot be reached, answers badly, or speaks no protocol this yaran does.
     pub fn meta(&self) -> Result<Meta, MachineApiError> {
         let meta: Meta = self.exchange("GET", "/v1/meta", None, Vec::new())?;
         negotiate(crate::cloud::protocol::CLIENT_RANGE, meta.protocol).map_err(|_| {
@@ -181,6 +204,10 @@ impl MachineApi {
     }
 
     /// W4: redeem a pair code with the key named at authorize.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses the claim or cannot be reached.
     pub fn claim(
         &self,
         identity: &MachineIdentity,
@@ -195,12 +222,20 @@ impl MachineApi {
     }
 
     /// W5: the machine's config (never the token).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses, says the machine is revoked, or cannot be reached.
     pub fn config(&self) -> Result<MachineConfig, MachineApiError> {
         self.signed("GET", "/v1/machine/config", Vec::new())
             .map(|(_, c)| c)
     }
 
     /// W7: rotate (`User`) or fetch a newer token (`Sync`); stores the answer.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses, says the machine is revoked, or cannot be reached.
     pub fn rotate(&self, reason: RotateReason) -> Result<RotateResponse, MachineApiError> {
         let creds = self.credentials()?;
         let body = body_bytes(Some(&RotateRequest {
@@ -222,6 +257,10 @@ impl MachineApi {
     }
 
     /// W8: start teardown. A `410` counts as done.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses or cannot be reached.
     pub fn unpair(&self) -> Result<Unpaired, MachineApiError> {
         match self.signed::<TeardownStarted>("POST", "/v1/machine/unpair", Vec::new()) {
             Ok(_) => Ok(Unpaired::TeardownStarted),
@@ -232,6 +271,10 @@ impl MachineApi {
 
     /// W8 for a claim this machine is discarding (its login was cancelled or another
     /// pairing won), signed with the claimed key; the stored credentials are not touched.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses or cannot be reached.
     pub fn unpair_claimed(
         &self,
         identity: &MachineIdentity,
@@ -246,6 +289,10 @@ impl MachineApi {
     }
 
     /// W32: retarget the ingress to `port`; stores the answer's `origin_port`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses, says the machine is revoked, or cannot be reached.
     pub fn set_origin(&self, port: u16) -> Result<OriginUpdateResult, MachineApiError> {
         let body = body_bytes(Some(&OriginUpdate {
             origin_port: i64::from(port),
@@ -265,6 +312,10 @@ impl MachineApi {
     }
 
     /// W6: deliver attention events (Phase 12).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the control plane refuses, says the machine is revoked, or cannot be reached.
     pub fn events(&self, batch: &EventBatch) -> Result<EventBatchResult, MachineApiError> {
         self.signed("POST", "/v1/machine/events", body_bytes(Some(batch)))
             .map(|(_, r)| r)
@@ -325,7 +376,7 @@ impl MachineApi {
                     method,
                     path,
                     host: &host,
-                    protocol: PROTOCOL_MAX as u32,
+                    protocol: u32::try_from(PROTOCOL_MAX).unwrap_or(u32::MAX),
                     machine_id,
                 };
                 let signed = signed_request::prepare(identity.key_pair(), &parts, body)
@@ -341,7 +392,7 @@ impl MachineApi {
             }
             None => body,
         };
-        let sent = self.send(method, &url, &headers, body);
+        let sent = self.send(method, &url, &headers, &body);
         let mut response = match sent {
             Ok(r) => r,
             Err(e) => {
@@ -397,7 +448,7 @@ impl MachineApi {
         method: &str,
         url: &str,
         headers: &[(String, String)],
-        body: Vec<u8>,
+        body: &[u8],
     ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         macro_rules! with_headers {
             ($req:expr) => {{
@@ -412,11 +463,11 @@ impl MachineApi {
             "GET" => with_headers!(self.agent.get(url)).call(),
             "PUT" => with_headers!(self.agent.put(url))
                 .header("Content-Type", "application/json")
-                .send(&body[..]),
+                .send(body),
             _ if body.is_empty() => with_headers!(self.agent.post(url)).send_empty(),
             _ => with_headers!(self.agent.post(url))
                 .header("Content-Type", "application/json")
-                .send(&body[..]),
+                .send(body),
         }
     }
 }

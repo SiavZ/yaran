@@ -35,26 +35,35 @@ use ring::signature::Ed25519KeyPair;
 
 use super::rules::b64url_encode;
 
+/// The first line of every canonical string a machine signs.
 pub const MACHINE_SIG_TAG: &str = "yaran-machine-sig-v1";
+/// The header carrying the protocol version a request speaks.
 pub const HEADER_PROTOCOL: &str = "Yaran-Protocol";
+/// The header naming the signing machine; absent on the claim route.
 pub const HEADER_MACHINE_ID: &str = "Yaran-Machine-Id";
+/// The header carrying the signing time, in Unix seconds.
 pub const HEADER_TIMESTAMP: &str = "Yaran-Timestamp";
+/// The header carrying the request's one-time nonce.
 pub const HEADER_NONCE: &str = "Yaran-Nonce";
+/// The header carrying the Ed25519 signature over the canonical string.
 pub const HEADER_SIGNATURE: &str = "Yaran-Signature";
 
 /// What identifies one machine request, apart from the clock, nonce and body.
 #[derive(Debug, Clone, Copy)]
 pub struct RequestParts<'a> {
+    /// The HTTP method, uppercase.
     pub method: &'a str,
     /// The request target exactly as sent; must match `^/v1/machine/[a-z]+$`.
     pub path: &'a str,
     /// The Host header (lowercased and stripped of a port when signed).
     pub host: &'a str,
+    /// The protocol version the request speaks.
     pub protocol: u32,
     /// `None` only on the claim route (W4).
     pub machine_id: Option<&'a str>,
 }
 
+/// Why a request could not be signed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SigningError {
     /// The path is not a signable machine path.
@@ -83,10 +92,15 @@ impl std::error::Error for SigningError {}
 /// The SIG headers for one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedHeaders {
+    /// The `Yaran-Protocol` value.
     pub protocol: String,
+    /// The `Yaran-Machine-Id` value; `None` on the claim route.
     pub machine_id: Option<String>,
+    /// The `Yaran-Timestamp` value.
     pub timestamp: String,
+    /// The `Yaran-Nonce` value.
     pub nonce: String,
+    /// The `Yaran-Signature` value.
     pub signature: String,
 }
 
@@ -119,10 +133,20 @@ pub fn signed_host(host: &str) -> String {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 /// The canonical string (nine LF-joined lines, no trailing newline).
+///
+/// # Errors
+///
+/// Fails when the path is not a signable machine path.
 pub fn canonical_string(
     parts: &RequestParts<'_>,
     timestamp: u64,
@@ -147,6 +171,10 @@ pub fn canonical_string(
 }
 
 /// Signs with an explicit timestamp (Unix seconds) and nonce (16 bytes, base64url).
+///
+/// # Errors
+///
+/// Fails when the path is not a signable machine path.
 pub fn sign(
     key: &Ed25519KeyPair,
     parts: &RequestParts<'_>,
@@ -165,6 +193,10 @@ pub fn sign(
 }
 
 /// Signs with the current clock and a fresh CSPRNG nonce.
+///
+/// # Errors
+///
+/// Fails when the path is not a signable machine path or the random source fails.
 pub fn sign_now(
     key: &Ed25519KeyPair,
     parts: &RequestParts<'_>,
@@ -188,12 +220,12 @@ mod tests {
 
     #[test]
     fn the_signer_reproduces_the_shared_vectors_byte_for_byte() {
+        use ring::signature::KeyPair as _;
         let f = fixture("sig/machine-request.json");
         let key = Ed25519KeyPair::from_pkcs8(&unhex(f["pkcs8_v2_hex"].as_str().unwrap()))
             .expect("pkcs8 v2");
         let seeded = Ed25519KeyPair::from_seed_unchecked(&unhex(f["seed_hex"].as_str().unwrap()))
             .expect("seed");
-        use ring::signature::KeyPair as _;
         assert_eq!(b64url_encode(key.public_key().as_ref()), f["public_key"]);
         assert_eq!(seeded.public_key().as_ref(), key.public_key().as_ref());
         let requests = f["requests"].as_array().unwrap();
