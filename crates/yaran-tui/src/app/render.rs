@@ -6446,11 +6446,12 @@ impl App {
     fn render_right_tabs(&mut self, frame: &mut Frame<'_>, area: Rect) {
         use super::human_board::RightTab;
         let tabs = self.right_column_tabs();
-        let has_people = self
+        let people: Vec<String> = self
             .human_board
             .settings
             .as_ref()
-            .is_some_and(yaran_core::human_board::BoardSettings::has_people);
+            .map(|settings| settings.people.clone())
+            .unwrap_or_default();
         let current = self.human_board.tab.clone();
         let pane_focused = self.focus == FocusPane::Files;
         let changed_files = self.engine.unstaged_files.len() + self.engine.staged_files.len();
@@ -6466,7 +6467,7 @@ impl App {
         let right = area.right();
         for (index, tab) in tabs.iter().enumerate() {
             let active = current.as_ref() == Some(tab);
-            let label = tab.label(has_people);
+            let label = tab.label(&people);
             let count = match (tab, self.human_board.readable()) {
                 (RightTab::Queue(_), Some(board)) => {
                     let view = tab

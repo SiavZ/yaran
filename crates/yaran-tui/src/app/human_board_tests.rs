@@ -730,14 +730,14 @@ fn focus_rings_include_the_reply_field_only_when_there_is_one() {
         reply: true,
         ..CardStops::default()
     };
-    assert_eq!(F::Reply.step(true, reply), F::Close);
-    assert_eq!(F::Close.step(true, reply), F::Send);
-    assert_eq!(F::Send.step(true, reply), F::Action);
-    assert_eq!(F::Action.step(true, reply), F::Reply);
-    assert_eq!(F::Reply.step(false, reply), F::Action);
+    assert_eq!(F::Reply.step(FocusStep::Forward, reply), F::Close);
+    assert_eq!(F::Close.step(FocusStep::Forward, reply), F::Send);
+    assert_eq!(F::Send.step(FocusStep::Forward, reply), F::Action);
+    assert_eq!(F::Action.step(FocusStep::Forward, reply), F::Reply);
+    assert_eq!(F::Reply.step(FocusStep::Backward, reply), F::Action);
     let bare = CardStops::default();
-    assert_eq!(F::Close.step(true, bare), F::Action);
-    assert_eq!(F::Action.step(true, bare), F::Close);
+    assert_eq!(F::Close.step(FocusStep::Forward, bare), F::Action);
+    assert_eq!(F::Action.step(FocusStep::Forward, bare), F::Close);
     // A choice of recipients and another person add their stops in drawing
     // order: the recipient after the field, Assign after the action.
     let all = CardStops {
@@ -748,7 +748,7 @@ fn focus_rings_include_the_reply_field_only_when_there_is_one() {
     let mut at = F::Reply;
     let mut ring = vec![at];
     for _ in 0..5 {
-        at = at.step(true, all);
+        at = at.step(FocusStep::Forward, all);
         ring.push(at);
     }
     assert_eq!(
@@ -762,7 +762,7 @@ fn focus_rings_include_the_reply_field_only_when_there_is_one() {
             F::Assign
         ]
     );
-    assert_eq!(F::Assign.step(true, all), F::Reply);
+    assert_eq!(F::Assign.step(FocusStep::Forward, all), F::Reply);
 }
 
 #[test]
@@ -1543,7 +1543,7 @@ fn send_and_mark_done_answers_the_other_side_and_closes_the_card() {
     app.open_selected_board_card();
     type_text(&mut app, "Yes, drop it.");
     // The action button with text in the field: send it and mark done.
-    app.resolve_human_board_card(true);
+    app.resolve_human_board_card(CardExit::Act);
     app.finish_board_job();
     let card = card_s1(&app);
     assert!(!card.is_open());

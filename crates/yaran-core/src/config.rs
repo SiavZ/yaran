@@ -390,6 +390,10 @@ pub struct MacrosConfig {
 /// The `[defaults]` table: what a new agent starts from when nothing more specific is set.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own on/off key in config.toml's [defaults] table, read and written by serde"
+)]
 pub struct Defaults {
     /// The global fallback provider for new agents in projects with no override.
     pub provider: String,
@@ -2985,6 +2989,10 @@ pub(crate) fn default_terminal_args() -> Vec<String> {
 /// normalizer over the bytes yaran sends. The table of what each one does, and the
 /// caveat that Copilot's and Grok's values are assumptions rather than measurements, lives on
 /// [`WebDragDropPaste`]. Read it before changing a value here.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one entry per built-in provider, each with its full command"
+)]
 pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9] {
     [
         (
@@ -3342,8 +3350,7 @@ fn select_existing_root(new: PathBuf, legacy: PathBuf) -> PathBuf {
             .iter()
             .any(|name| root.join(name).is_file())
             || fs::read_dir(root.join("worktrees"))
-                .ok()
-                .is_some_and(|mut entries| entries.next().is_some())
+                .is_ok_and(|mut entries| entries.next().is_some())
     };
     if has_state(&new) || !has_state(&legacy) {
         new
@@ -3404,27 +3411,28 @@ mod rebrand_path_tests {
 
     #[test]
     fn home_aliases_share_the_old_lock_and_new_override_wins_even_when_invalid() {
-        let _guard = crate::env_test_guard();
         struct RestoreHomes(Option<OsString>, Option<OsString>);
         impl Drop for RestoreHomes {
             fn drop(&mut self) {
                 for (name, value) in [("YARAN_HOME", &self.0), ("DUX_HOME", &self.1)] {
-                    unsafe {
-                        match value {
-                            Some(value) => env::set_var(name, value),
-                            None => env::remove_var(name),
-                        }
+                    match value {
+                        // SAFETY: the env test guard serializes every test that
+                        // touches these variables.
+                        Some(value) => unsafe { env::set_var(name, value) },
+                        // SAFETY: as above.
+                        None => unsafe { env::remove_var(name) },
                     }
                 }
             }
         }
+        let _guard = crate::env_test_guard();
         let _restore = RestoreHomes(env::var_os("YARAN_HOME"), env::var_os("DUX_HOME"));
         let old = tempfile::tempdir().unwrap();
         let new = tempfile::tempdir().unwrap();
-        unsafe {
-            env::remove_var("YARAN_HOME");
-            env::set_var("DUX_HOME", old.path());
-        }
+        // SAFETY: the env test guard serializes every test that touches these.
+        unsafe { env::remove_var("YARAN_HOME") };
+        // SAFETY: as above.
+        unsafe { env::set_var("DUX_HOME", old.path()) };
         let paths = YaranPaths::discover().unwrap();
         assert_eq!(paths.root, old.path());
         assert_eq!(paths.sessions_db_path, old.path().join("sessions.sqlite3"));
@@ -3434,13 +3442,16 @@ mod rebrand_path_tests {
             crate::lockfile::SingleInstanceLock::acquire(&paths.lock_path),
             Err(crate::lockfile::AcquireError::AlreadyRunning { .. })
         ));
+        // SAFETY: as above.
         unsafe { env::set_var("YARAN_HOME", new.path()) };
         assert_eq!(YaranPaths::discover().unwrap().root, new.path());
+        // SAFETY: as above.
         unsafe { env::set_var("YARAN_HOME", "relative-home") };
         assert!(
             YaranPaths::discover().is_err(),
             "invalid new override must not fall back"
         );
+        // SAFETY: as above.
         unsafe { env::set_var("YARAN_HOME", "") };
         assert!(
             YaranPaths::discover().is_err(),
@@ -4102,6 +4113,7 @@ pub enum WorkspaceMode {
 }
 
 impl WorkspaceMode {
+    /// The mode as config.toml spells it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Shared => "shared",
@@ -4114,6 +4126,7 @@ impl WorkspaceMode {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
+    /// Where a new project agent runs unless its project says otherwise.
     pub default_mode: WorkspaceMode,
     /// Whether shared-workspace agents auto-reopen on startup alongside
     /// worktree agents. Off by default: shared agents run in the real checkout,
@@ -4145,6 +4158,10 @@ where
 /// A shared agent runs in the real checkout, so that checkout must never be
 /// inside yaran's own state tree (where a cleanup could remove it). Symlink
 /// aliases are resolved, including through a missing tail.
+///
+/// # Errors
+///
+/// Fails when `path` is not a safe absolute path or lies inside yaran's own state.
 pub fn validate_shared_workspace_path(path: &str, paths: &YaranPaths) -> Result<()> {
     let expanded = expand_path(path).ok_or_else(|| {
         anyhow!(
@@ -4192,6 +4209,10 @@ fn canonicalize_allow_missing(path: &Path) -> PathBuf {
 
 /// Every project whose effective mode is shared must pass
 /// [`validate_shared_workspace_path`]. Run at TUI config load.
+///
+/// # Errors
+///
+/// Fails, naming the project, when a shared project's path is refused.
 pub fn validate_shared_project_paths(config: &Config, paths: &YaranPaths) -> Result<()> {
     for project in &config.projects {
         if config.workspace_mode_for_project(project) == WorkspaceMode::Shared {
@@ -4444,7 +4465,7 @@ pub fn sample_disk_usage_pct(path: &Path) -> Option<u8> {
         return None;
     }
     let used = total.saturating_sub(stat.f_bavail);
-    Some((used.saturating_mul(100) / total).min(100) as u8)
+    u8::try_from((used.saturating_mul(100) / total).min(100)).ok()
 }
 
 /// The settings for `provider`, or a bare command of the provider's own name when it is not

@@ -11864,10 +11864,10 @@ mod tests {
         // and discovery alone would silently skip this test on CI.
         let second_loopback = std::iter::once(std::net::IpAddr::from([127, 0, 0, 2]))
             .chain(crate::app::test_support::bindable_secondary_loopbacks());
-        let Some((held, ts_ip)) = second_loopback.into_iter().find_map(|ip| {
-            let listener = std::net::TcpListener::bind((ip, 0)).ok()?;
-            Some((listener, ip))
-        }) else {
+        let Some(held) = second_loopback
+            .into_iter()
+            .find_map(|ip| std::net::TcpListener::bind((ip, 0)).ok())
+        else {
             eprintln!(
                 "skipping: this host has no second loopback address available to \
                  stand in for a Tailscale IP, so the busy-leg state cannot be staged"

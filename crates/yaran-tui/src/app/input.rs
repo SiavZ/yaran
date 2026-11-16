@@ -94,6 +94,7 @@
 use super::CompletionAnswer;
 use super::components::wrap_lines::cluster_width;
 use super::components::{ButtonPressedTarget, FocusStep, PressedButton, next_focus};
+use super::human_board::{CardExit, ReplyDone};
 use super::modal::{
     ModalKeyStep, binding_lookup_is_suppressed, click_target, focus_move_step, modal_key_step,
 };
@@ -5860,11 +5861,11 @@ impl App {
             self.bindings.lookup(&key, BindingScope::Dialog)
         };
         match modal_key_step(action, key, text_focus) {
-            ModalKeyStep::Close => self.resolve_human_board_card(false),
+            ModalKeyStep::Close => self.resolve_human_board_card(CardExit::Close),
             ModalKeyStep::MoveFocus(step) => {
                 let stops = self.board_card_stops();
                 if let PromptState::HumanBoardCard { focus, .. } = &mut self.prompt {
-                    *focus = focus.step(step == FocusStep::Forward, stops);
+                    *focus = focus.step(step, stops);
                 }
             }
             ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus => match focus {
@@ -5874,12 +5875,16 @@ impl App {
                         PromptState::HumanBoardCard { reply: Some(reply), .. }
                             if reply.enter_marks_done()
                     );
-                    self.send_board_reply(done);
+                    self.send_board_reply(if done {
+                        ReplyDone::MarkDone
+                    } else {
+                        ReplyDone::Keep
+                    });
                 }
-                Focus::Reply | Focus::Close => self.resolve_human_board_card(false),
+                Focus::Reply | Focus::Close => self.resolve_human_board_card(CardExit::Close),
                 Focus::Recipient => self.cycle_board_reply_recipient(),
-                Focus::Send => self.send_board_reply(false),
-                Focus::Action => self.resolve_human_board_card(true),
+                Focus::Send => self.send_board_reply(ReplyDone::Keep),
+                Focus::Action => self.resolve_human_board_card(CardExit::Act),
                 Focus::Assign => self.assign_board_card_from_dialog(),
             },
             ModalKeyStep::FallThroughToField => {
@@ -11945,15 +11950,15 @@ impl App {
                 self.resolve_confirm_delete_leftover_folder(ConfirmAnswer::Confirm)
             }
             ButtonPressedTarget::HumanBoardCardClose => {
-                self.resolve_human_board_card(false);
+                self.resolve_human_board_card(CardExit::Close);
                 false
             }
             ButtonPressedTarget::HumanBoardCardAction => {
-                self.resolve_human_board_card(true);
+                self.resolve_human_board_card(CardExit::Act);
                 false
             }
             ButtonPressedTarget::HumanBoardCardSend => {
-                self.send_board_reply(false);
+                self.send_board_reply(ReplyDone::Keep);
                 false
             }
             ButtonPressedTarget::HumanBoardCardAssign => {

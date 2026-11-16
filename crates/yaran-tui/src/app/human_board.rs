@@ -42,6 +42,7 @@ use yaran_core::human_board::{
 use yaran_core::ids::TabIdRef;
 use yaran_core::statusline::StatusTone;
 
+use super::components::FocusStep;
 use super::text_input::TextInput;
 use super::{App, FocusPane, InputTarget, PromptState, RightSection};
 use crate::logger;
@@ -84,10 +85,10 @@ impl RightTab {
 
     /// The tab's name in the strip. The every-card queue is "All" beside
     /// people's queues and simply "Board" when it is the only one.
-    pub(crate) fn label(&self, has_people: bool) -> String {
+    pub(crate) fn label(&self, people: &[String]) -> String {
         match self {
             RightTab::Queue(Some(person)) => person.clone(),
-            RightTab::Queue(None) if has_people => "All".to_string(),
+            RightTab::Queue(None) if !people.is_empty() => "All".to_string(),
             RightTab::Queue(None) => "Board".to_string(),
             RightTab::Changes => "Changes".to_string(),
         }
@@ -253,10 +254,29 @@ pub(crate) struct CardStops {
     pub(crate) assign: bool,
 }
 
+/// How the card dialog is left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CardExit {
+    /// Close it and change nothing.
+    Close,
+    /// Press its action: mark done, reopen, or send the typed reply and mark done.
+    Act,
+}
+
+/// Whether a sent reply also marks its card done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReplyDone {
+    /// Send it and leave the card open.
+    Keep,
+    /// Send it and mark the card done.
+    MarkDone,
+}
+
 impl HumanBoardCardFocus {
     /// The next stop of the ring: the reply field and the recipient (when the
     /// dialog has them), then the buttons in the order they are drawn.
-    pub(crate) fn step(self, forward: bool, stops: CardStops) -> Self {
+    pub(crate) fn step(self, direction: FocusStep, stops: CardStops) -> Self {
+        let forward = direction == FocusStep::Forward;
         let mut ring: Vec<Self> = Vec::with_capacity(6);
         if stops.reply {
             ring.push(Self::Reply);
@@ -1163,14 +1183,15 @@ impl App {
     /// Resolve the card dialog: close it, and act when its action was chosen.
     /// With a reply typed, the action is sending it and marking the card
     /// done; without one, it is mark done or reopen.
-    pub(crate) fn resolve_human_board_card(&mut self, act: bool) {
+    pub(crate) fn resolve_human_board_card(&mut self, exit: CardExit) {
+        let act = exit == CardExit::Act;
         if act
             && let PromptState::HumanBoardCard {
                 reply: Some(reply), ..
             } = &self.prompt
             && !reply.input.text.trim().is_empty()
         {
-            self.send_board_reply(true);
+            self.send_board_reply(ReplyDone::MarkDone);
             return;
         }
         let prompt = std::mem::replace(&mut self.prompt, PromptState::None);
@@ -1337,7 +1358,8 @@ impl App {
     /// and an agent chosen, Send passes on what another side wrote instead.
     /// Anything that stops the send leaves the dialog open with the reply
     /// still in it, and says why.
-    pub(crate) fn send_board_reply(&mut self, mark_done: bool) {
+    pub(crate) fn send_board_reply(&mut self, done: ReplyDone) {
+        let mark_done = done == ReplyDone::MarkDone;
         let PromptState::HumanBoardCard {
             card,
             reply: Some(reply),

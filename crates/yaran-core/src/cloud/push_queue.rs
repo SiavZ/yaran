@@ -70,8 +70,10 @@ fn attention_kind(event: &Event) -> Option<AttentionKind> {
     }
 }
 
+/// One event waiting to be sent.
 #[derive(Debug, Clone)]
 pub struct Queued {
+    /// The event.
     pub event: Event,
     topic: Topic,
     born: Instant,
@@ -79,6 +81,7 @@ pub struct Queued {
 }
 
 impl Queued {
+    /// The event's id.
     pub fn id(&self) -> &str {
         id_of(&self.event)
     }
@@ -87,12 +90,18 @@ impl Queued {
 /// Running totals, logged by the emitter.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct QueueCounts {
+    /// Events the control plane acknowledged.
     pub sent: u64,
+    /// Events folded into a newer one for the same topic.
     pub coalesced: u64,
+    /// Events dropped for waiting longer than the time to live.
     pub expired: u64,
+    /// Events dropped because the queue was full.
     pub overflow: u64,
 }
 
+/// The machine's outgoing push events: coalesced per topic, expired after their
+/// time to live, and sent oldest first.
 #[derive(Debug)]
 pub struct PushQueue {
     pending: VecDeque<Queued>,
@@ -100,10 +109,12 @@ pub struct PushQueue {
     raised: HashSet<Topic>,
     coalesce: Duration,
     ttl: Duration,
+    /// Running totals since start.
     pub counts: QueueCounts,
 }
 
 impl PushQueue {
+    /// An empty queue with the given coalescing window and time to live.
     pub fn new(coalesce: Duration, ttl: Duration) -> Self {
         Self {
             pending: VecDeque::new(),
@@ -114,15 +125,18 @@ impl PushQueue {
         }
     }
 
+    /// Take new windows from a config change; waiting events keep theirs.
     pub fn set_windows(&mut self, coalesce: Duration, ttl: Duration) {
         self.coalesce = coalesce;
         self.ttl = ttl;
     }
 
+    /// How many events wait.
     pub fn len(&self) -> usize {
         self.pending.len()
     }
 
+    /// Whether none wait.
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
@@ -133,9 +147,10 @@ impl PushQueue {
             .position(|q| &q.topic == topic && attention_kind(&q.event).is_some())
     }
 
+    /// Take an event in, folding it into a waiting one for the same topic.
     pub fn offer(&mut self, event: Event, now: Instant) {
         let topic = topic_of(&event);
-        if let Some(_) = attention_kind(&event) {
+        if attention_kind(&event).is_some() {
             // Newest state wins; the window still runs from the topic's first edge.
             if let Some(i) = self.pending_attention(&topic) {
                 let entry = &mut self.pending[i];
@@ -215,7 +230,7 @@ impl PushQueue {
                 None => {}
             }
         }
-        self.counts.sent += acked as u64;
+        self.counts.sent += crate::numeric::usize_to_u64(acked);
         acked
     }
 
@@ -238,7 +253,7 @@ impl PushQueue {
         self.pending
             .retain(|q| now.saturating_duration_since(q.born) < ttl);
         let expired = before - self.pending.len();
-        self.counts.expired += expired as u64;
+        self.counts.expired += crate::numeric::usize_to_u64(expired);
         expired
     }
 
@@ -254,7 +269,7 @@ impl PushQueue {
     /// default when the emitter cannot tell), all due at once. `due` then drops the clears
     /// the Worker does not need.
     pub fn queue_shutdown_clears(&mut self, now: Instant) {
-        for q in self.pending.iter_mut() {
+        for q in &mut self.pending {
             if attention_kind(&q.event).is_some() {
                 q.event = idle_clear(q.topic.clone());
             }

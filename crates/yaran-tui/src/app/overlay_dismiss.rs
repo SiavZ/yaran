@@ -398,7 +398,7 @@ impl App {
             // Same as its Esc: a confirmation steps back to the list.
             PromptState::OrphanWorktrees(_) => self.cancel_orphan_worktrees_prompt(),
             PromptState::HumanBoardCard { .. } => {
-                self.resolve_human_board_card(false);
+                self.resolve_human_board_card(super::human_board::CardExit::Close);
             }
             // Same as its Esc: the card dialog it was opened from comes back.
             PromptState::AssignBoardCard(_) => self.leave_board_assign_picker(),
