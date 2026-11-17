@@ -45,7 +45,7 @@ import { getUser, listUsers, patchUser } from "../admin/users.ts";
 import { rotateVapidKey } from "../admin/vapid-rotate.ts";
 import { loadRecord } from "../setup/steps/common.ts";
 import { checkForUpdate, readUpdateStatus } from "../update/update-checker.ts";
-import { AdminDevicesPage, AdminMachinesPage, DisableUserConfirm, MachineConfirm, UsersPage, type AdminBase } from "./admin-pages.tsx";
+import { AdminDevicesPage, AdminMachinesPage, DemoteUserConfirm, DisableUserConfirm, MachineConfirm, UsersPage, type AdminBase } from "./admin-pages.tsx";
 import { AuditPage, HealthPage, PushKeysConfirm, SettingsPage, UpdatesPage } from "./admin-pages-2.tsx";
 import { readFlash, type Flash } from "./flash.ts";
 import type { RouteCtx, RouteRow } from "./route-types.ts";
@@ -58,7 +58,7 @@ const html = "html" as const;
 const enc = encodeURIComponent;
 
 async function base(ctx: RouteCtx): Promise<AdminBase> {
-  return { orgName: await orgName(ctx), flash: readFlash(ctx.request), update: await readUpdateStatus(ctx.deps) };
+  return { orgName: await orgName(ctx), signedInAs: ctx.identity!.email, flash: readFlash(ctx.request), update: await readUpdateStatus(ctx.deps) };
 }
 
 const sp = (ctx: RouteCtx, k: string) => ctx.url.searchParams.get(k) || null;
@@ -76,7 +76,7 @@ async function patchFlash(ctx: RouteCtx, patch: Parameters<typeof patchUser>[3],
   const out = await patchUser(ctx.deps, ctx.identity!, ctx.params.id!, patch);
   const user = await getUser(ctx.deps, ctx.params.id!);
   if (!out.ok) return done("/admin/users", { kind: out.code === "last_admin" ? "last_admin" : "user_gone", target: user?.email ?? ctx.params.id! });
-  return done("/admin/users", { kind: ok, target: out.user.email, ...(ok === "role_changed" ? { extra: [`They are now ${out.user.role === "admin" ? "an admin" : "a user"}.`] } : {}) });
+  return done("/admin/users", { kind: ok, target: out.user.email, ...(ok === "role_changed" ? { extra: [`They are now ${out.user.role === "admin" ? "an administrator" : "a member"}.`] } : {}) });
 }
 
 function auditFilter(ctx: RouteCtx): AuditFilter {
@@ -89,6 +89,9 @@ export const ADMIN_ROUTES: readonly RouteRow[] = [
     const p = await listUsers(ctx.deps, { limit: 50, cursor: sp(ctx, "cursor") });
     return page(ctx, UsersPage({ ...(await base(ctx)), users: p.items, nextCursor: p.next_cursor }));
   }),
+  get("/admin/users/:id/role", async (ctx) =>
+    page(ctx, DemoteUserConfirm({ ...(await base(ctx)), user: await getUser(ctx.deps, ctx.params.id!), id: ctx.params.id!, self: ctx.params.id === ctx.identity!.user_id })),
+  ),
   post("/admin/users/:id/role", (ctx, form) => patchFlash(ctx, { role: form.get("role") === "admin" ? "admin" : "user" }, "role_changed")),
   post("/admin/users/:id/enable", (ctx) => patchFlash(ctx, { disabled: false }, "user_enabled")),
   get("/admin/users/:id/disable", async (ctx) => page(ctx, DisableUserConfirm({ ...(await base(ctx)), user: await getUser(ctx.deps, ctx.params.id!), id: ctx.params.id! }))),
@@ -122,7 +125,7 @@ export const ADMIN_ROUTES: readonly RouteRow[] = [
   }),
   get("/admin/devices/:id/remove", async (ctx) => {
     const action = `/admin/devices/${enc(ctx.params.id!)}/remove`;
-    return page(ctx, RemovePhoneConfirmPage({ orgName: await orgName(ctx), device: await ctx.deps.pairing.getDevice(ctx.params.id!), id: ctx.params.id!, action, backHref: "/admin/devices", withSignOut: false }));
+    return page(ctx, RemovePhoneConfirmPage({ orgName: await orgName(ctx), signedInAs: ctx.identity!.email, device: await ctx.deps.pairing.getDevice(ctx.params.id!), id: ctx.params.id!, action, backHref: "/admin/devices", withSignOut: false }));
   }),
   post("/admin/devices/:id/remove", async (ctx) => {
     const d = await ctx.deps.pairing.getDevice(ctx.params.id!);

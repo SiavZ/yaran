@@ -19,4 +19,23 @@
     @apply bg-background text-foreground;
     -webkit-tap-highlight-color: transparent;
   }
+  button, input, select, textarea { font: inherit; }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+  .welcome-page { min-height: calc(100dvh - env(safe-area-inset-top)); }
+  .state-card {
+    @apply flex flex-col items-start gap-4 rounded-xl border border-border bg-card p-5 text-sm leading-relaxed;
+  }
+  .settings-group { @apply rounded-xl border border-border bg-card px-4; }
+  .settings-group > * + * { @apply border-t border-border; }
+  .settings-group > * { @apply py-3; }
+  .settings-heading { @apply mb-2 text-xs font-semibold tracking-wide text-muted-foreground; }
 }
+
+.phone-page { overflow-wrap: anywhere; padding-inline: 20px; }
+/* Phone controls grow with translated text and the system's font size. */
+[data-slot="button"] { height: auto; min-height: 48px; white-space: normal; padding-block: 12px; }
+.phone-icon-button { width: 48px; height: 48px; min-height: 48px; }
+.phone-nav { flex-wrap: wrap; padding-inline: 12px; gap: 4px; }
+.phone-nav button { flex: 1 0 auto; min-width: max-content; min-height: 64px; padding: 12px 4px; white-space: nowrap; }
+.phone-nav svg { width: 20px; height: 20px; }
+.phone-page [data-slot="switch"]::after { inset-block: -14px; }

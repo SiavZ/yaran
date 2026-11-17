@@ -217,8 +217,8 @@ machines** (with **Unpair…**), **My phones** (with **Remove…**) and **Connec
 shows the QR code for the phone app and the command that pairs a machine. Admins also
 get:
 
-- **Users**: who has signed in, with **Make admin** or **Make user**, and
-  **Disable…** or **Enable**.
+- **Users**: who has signed in and whether they are an Administrator or a Member, with
+  **Make admin** or **Remove admin rights…** (which asks first), and **Disable…** or **Enable**.
 - **Machines**: every machine with its owner, status, key fingerprint, port,
   provisioning state and when it was paired, with **Revoke…** and
   **Rotate tunnel token…**.
@@ -227,7 +227,7 @@ get:
 - **Audit log**: every change anyone made, filterable by actor, action, target and time,
   with **Export JSON Lines**.
 - **Settings**: see below.
-- **Health**: each check with "ok" or "needs attention", the wiring self-test,
+- **Health**: each check with "OK" or "Needs attention", the wiring self-test,
   **Re-run checks**, **Disable workers.dev** while that address is still on, and
   **Replace the API token**, which checks every permission before the old token is
   overwritten, and **Rotate push keys…**, for a push key that may have leaked or a lost

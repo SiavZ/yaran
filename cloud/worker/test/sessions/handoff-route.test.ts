@@ -97,7 +97,9 @@ describe("consent page", () => {
     const s = await setup();
     const res = await get(s, await handoffQuery(s), { "User-Agent": CHROME_ANDROID });
     const html = await res.text();
-    for (const name of ["Ada&#39;s Pixel", "Android", CP_HOST, s.user.email]) expect(html).toContain(`>${name}</code>`);
+    for (const name of ["Ada&#39;s Pixel", "Android", CP_HOST, s.user.email]) expect(html).toContain(`<code class="chip">${name}</code>`);
+    // The visible value is what a screen reader speaks: no aria-label may replace it.
+    expect(html).not.toMatch(/<code[^>]*aria-label/);
     expect(html).toMatch(/<button[^>]*value="continue"[^>]* autofocus>Continue<\/button>/);
     expect(html).toContain('<html lang="en" class="dark">');
     expect(html).not.toContain("<script");
@@ -110,7 +112,7 @@ describe("consent page", () => {
     const s = await setup();
     expect(await (await get(s, await handoffQuery(s), { "User-Agent": SAFARI_IOS })).text()).toContain(">iOS</code>");
     const plain = await (await get(s, await handoffQuery(s), { "User-Agent": "curl/8.0" })).text();
-    expect(plain).not.toContain('aria-label="Platform"');
+    expect(plain).not.toContain(" on <code");
   });
 
   it("carries the CSP and Referrer-Policy the form POST needs", async () => {

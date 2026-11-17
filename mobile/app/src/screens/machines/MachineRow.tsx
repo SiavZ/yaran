@@ -38,15 +38,15 @@ export function statusLook(raw: string): { word: MessageDescriptor; dot: string 
   const status = (KNOWN as readonly string[]).includes(raw) ? (raw as MachineStatus) : 'unknown';
   switch (status) {
     case 'online':
-      return { word: msg`Online`, dot: 'bg-emerald-500' };
+      return { word: msg`Online`, dot: 'bg-[var(--yaran-success)]' };
     case 'degraded':
-      return { word: msg`Degraded`, dot: 'bg-amber-500' };
+      return { word: msg`Degraded`, dot: 'bg-[var(--yaran-warning)]' };
     case 'offline':
       return { word: msg`Offline`, dot: 'bg-muted-foreground' };
     case 'never_connected':
       return { word: msg`Never connected`, dot: 'bg-muted-foreground' };
     case 'provisioning':
-      return { word: msg`Setting up`, dot: 'bg-sky-500' };
+      return { word: msg`Setting up`, dot: 'bg-[var(--yaran-info)]' };
     case 'tearing_down':
       return { word: msg`Being removed`, dot: 'bg-destructive' };
     case 'unknown':
@@ -64,11 +64,11 @@ export function MachineRow({ machine, onOpen, onRemove }: { machine: MachineSumm
   // Remove… opens a dialog whose Cancel takes focus; the closing menu must not pull it back.
   const dialogNext = useRef(false);
   return (
-    <li className="flex min-h-14 items-center gap-3 rounded-lg border border-border px-3 py-2">
-      <button type="button" className="flex min-h-10 flex-1 flex-col items-start text-left disabled:opacity-60" disabled={!canOpen} onClick={onOpen}>
+    <li className="flex min-h-14 items-center gap-3 rounded-xl border border-border bg-card p-4">
+      <button type="button" className="flex min-h-12 min-w-0 flex-1 flex-col items-start gap-1 [overflow-wrap:anywhere] text-left disabled:opacity-60" disabled={!canOpen} onClick={onOpen}>
         <span className="font-medium">{machine.name}</span>
-        <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <span aria-hidden className={`inline-block size-2 rounded-full ${look.dot}`} />
+        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground">
+          <span aria-hidden className={`inline-block size-2 shrink-0 rounded-full ${look.dot}`} />
           {i18n._(look.word)}
           {lastSeen && <span>· {i18n._(msg`last seen ${lastSeen}`)}</span>}
         </span>
@@ -80,7 +80,7 @@ export function MachineRow({ machine, onOpen, onRemove }: { machine: MachineSumm
             <button
               type="button"
               aria-label={i18n._(msg`Actions for ${machine.name}`)}
-              className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="phone-icon-button flex size-12 min-h-12 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
             />
           }
         >

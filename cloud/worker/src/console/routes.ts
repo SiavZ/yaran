@@ -74,7 +74,7 @@ export async function orgUrl(ctx: RouteCtx): Promise<string> {
 export const STORE_LINKS = [{ label: "yaran on GitHub (store and F-Droid links arrive with the first app release)", href: "https://github.com/SiavZ/yaran" }];
 
 function base(ctx: RouteCtx, name: string) {
-  return { orgName: name, flash: readFlash(ctx.request), isAdmin: ctx.identity!.role === "admin" };
+  return { orgName: name, signedInAs: ctx.identity!.email, flash: readFlash(ctx.request), isAdmin: ctx.identity!.role === "admin" };
 }
 
 const user = { kind: "user" } as const;
@@ -102,7 +102,7 @@ export const USER_ROUTES: readonly RouteRow[] = [
     path: "/console/machines/:id/unpair",
     auth: user,
     kind: html,
-    handler: async (ctx) => page(ctx, UnpairConfirmPage({ orgName: await orgName(ctx), machine: await ownMachine(ctx), id: ctx.params.id! })),
+    handler: async (ctx) => page(ctx, UnpairConfirmPage({ orgName: await orgName(ctx), signedInAs: ctx.identity!.email, machine: await ownMachine(ctx), id: ctx.params.id! })),
   },
   {
     method: "POST",
@@ -113,7 +113,7 @@ export const USER_ROUTES: readonly RouteRow[] = [
       const refused = originRefusal(ctx);
       if (refused) return refused;
       const machine = await ownMachine(ctx);
-      if (!machine) return page(ctx, UnpairConfirmPage({ orgName: await orgName(ctx), machine: null, id: ctx.params.id! }), 404);
+      if (!machine) return page(ctx, UnpairConfirmPage({ orgName: await orgName(ctx), signedInAs: ctx.identity!.email, machine: null, id: ctx.params.id! }), 404);
       await ctx.deps.pairing.unpairMachine(ctx.identity!.user_id, machine.id);
       return done("/console", { kind: "unpaired", target: machine.name });
     },
@@ -137,7 +137,7 @@ export const USER_ROUTES: readonly RouteRow[] = [
       const d = await ctx.deps.pairing.getDevice(ctx.params.id!);
       const own = d && d.owner_email === ctx.identity!.email ? d : null;
       const action = `/console/phones/${encodeURIComponent(ctx.params.id!)}/remove`;
-      return page(ctx, RemovePhoneConfirmPage({ orgName: await orgName(ctx), device: own, id: ctx.params.id!, action, backHref: "/console/phones", withSignOut: true }));
+      return page(ctx, RemovePhoneConfirmPage({ orgName: await orgName(ctx), signedInAs: ctx.identity!.email, device: own, id: ctx.params.id!, action, backHref: "/console/phones", withSignOut: true }));
     },
   },
   {

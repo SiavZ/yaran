@@ -25,15 +25,16 @@
  *
  * Used by:
  * src/console/admin-pages-2.tsx
- * └── src/console/admin-routes.ts
+ * ├── src/console/admin-routes.ts
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import type { AuditEntry, Settings, UpdateStatus } from "@yaran/protocol";
-import { Button, Checkbox, Chip, EmptyState, Field, LinkButton, Notice, PostForm, RelativeTime, Table } from "./ui/components.tsx";
+import { Button, Checkbox, Chip, EmptyState, ErrorCode, Field, LinkButton, Notice, PostForm, RelativeTime, Row, Status, Table } from "./ui/components.tsx";
 import { SelfTest } from "../setup/pages-steps.tsx";
 import { ProbeChecklist } from "../setup/pages.tsx";
 import type { ProbeRow } from "../setup/capability-probe.ts";
-import { getPath, SETTINGS_FIELDS } from "../admin/settings-schema.ts";
+import { getPath, SETTINGS_FIELDS, type SettingField } from "../admin/settings-schema.ts";
 import type { HealthCheck } from "../admin/health.ts";
 import type { AuditFilter } from "../admin/audit-query.ts";
 import { assertNever } from "../admin/ports.ts";
@@ -41,6 +42,8 @@ import { AdminShell, type AdminBase } from "./admin-pages.tsx";
 import { ConfirmBody } from "./ui/confirm.tsx";
 
 const enc = encodeURIComponent;
+
+const AUDIT_COLS = ["When", "Actor", "Action", "Target", "Result"] as const;
 
 export function AuditPage(p: AdminBase & { filter: AuditFilter; items: readonly AuditEntry[]; nextCursor: string | null }) {
   const qs = new URLSearchParams(Object.entries(p.filter).filter(([, v]) => v) as [string, string][]).toString();
@@ -60,24 +63,32 @@ export function AuditPage(p: AdminBase & { filter: AuditFilter; items: readonly 
         </div>
       </form>
       {p.items.length === 0 ? (
-        <EmptyState>No audit entries match this filter.</EmptyState>
+        <EmptyState action={qs ? <LinkButton href="/admin/audit">Clear the filter</LinkButton> : undefined}>
+          {qs ? "No audit entries match this filter." : "Nothing has been recorded yet."}
+        </EmptyState>
       ) : (
-        <Table caption="Audit entries, newest first" headers={["When", "Actor", "Action", "Target", "Result"]}>
+        <Table caption="Audit entries, newest first" headers={AUDIT_COLS}>
           {p.items.map((e) => (
-            <tr>
-              <td>
-                <RelativeTime iso={e.ts} />
-              </td>
-              <td>{e.actor.email ? <Chip>{e.actor.email}</Chip> : e.actor.kind}</td>
-              <td>
-                <Chip>{e.action}</Chip>
-              </td>
-              <td>
-                {e.target.kind}
-                {e.target.id ? <Chip>{e.target.id}</Chip> : null}
-              </td>
-              <td>{e.result === "ok" ? "ok" : `error ${e.error_code ?? ""}`}</td>
-            </tr>
+            <Row
+              headers={AUDIT_COLS}
+              cells={[
+                <RelativeTime iso={e.ts} />,
+                e.actor.email ? <span class="name">{e.actor.email}</span> : e.actor.kind,
+                <span class="mono">{e.action}</span>,
+                <>
+                  {e.target.kind}
+                  {e.target.id ? <span class="mono name"> {e.target.id}</span> : null}
+                </>,
+                e.result === "ok" ? (
+                  <Status tone="ok">OK</Status>
+                ) : (
+                  <>
+                    <Status tone="error">Error</Status>
+                    {e.error_code ? <ErrorCode code={e.error_code} /> : null}
+                  </>
+                ),
+              ]}
+            />
           ))}
         </Table>
       )}
@@ -91,40 +102,81 @@ function fieldValue(v: unknown): string {
   return v === null || v === undefined ? "" : String(v);
 }
 
-export function SettingsPage(p: AdminBase & { settings: unknown; zoneName: string; errors?: readonly { path: string; message: string }[] }) {
-  const errorFor = (path: string) => p.errors?.find((e) => e.path === `/${path.replaceAll(".", "/")}` || e.path.startsWith(`/${path.replaceAll(".", "/")}/`))?.message;
+/** The settings form's sections, in page order; a test holds every field to exactly one. */
+export const SETTINGS_GROUPS: readonly { legend: string; paths: readonly string[] }[] = [
+  { legend: "Organization", paths: ["org_name"] },
+  { legend: "Sign-in and pairing", paths: ["session_duration", "pairing_policy.mode", "pairing_policy.emails", "pairing_policy.domains", "pairing_policy.access_group_ids"] },
+  { legend: "Limits per person", paths: ["machine_cap_per_user", "device_cap_per_user"] },
+  { legend: "Push notifications", paths: ["push.enabled", "push.detail", "push.ttl_seconds", "push.relay_allowed", "push.allowed_relays"] },
+  { legend: "Offline machines and records", paths: ["stale_machine_policy.notify_after_days", "stale_machine_policy.revoke_after_days", "audit_retention_days", "orphan_cleanup"] },
+  { legend: "Cloudflare account limits", paths: ["quota_limits.access_apps", "quota_limits.access_policies", "quota_limits.tunnels"] },
+  { legend: "Updates", paths: ["deployer_repo_url"] },
+];
+
+type SettingsError = { path: string; message: string };
+
+const fieldOf = (e: SettingsError): SettingField | undefined =>
+  SETTINGS_FIELDS.find((f) => e.path === `/${f.path.replaceAll(".", "/")}` || e.path.startsWith(`/${f.path.replaceAll(".", "/")}/`));
+
+export function SettingsPage(p: AdminBase & { settings: unknown; zoneName: string; errors?: readonly SettingsError[] }) {
+  const errorFor = (path: string) => p.errors?.find((e) => fieldOf(e)?.path === path)?.message;
   return (
     <AdminShell {...p} title="Settings" current="/admin/settings">
-      {p.errors?.length ? <Notice tone="error">Nothing was saved: fix the fields marked below (validation_failed).</Notice> : null}
+      {p.errors?.length ? (
+        <Notice tone="error">
+          <p class="notice-title">Nothing was saved. Fix these settings, then save again:</p>
+          <ul class="error-summary">
+            {p.errors.map((e) => {
+              const f = fieldOf(e);
+              return <li>{f ? <a href={`#${f.path}`}>{`${f.label}: ${e.message}`}</a> : e.message}</li>;
+            })}
+          </ul>
+          <ErrorCode code="validation_failed" />
+        </Notice>
+      ) : null}
       <p>
         Zone: <Chip>{p.zoneName}</Chip>. It is fixed once setup closes, because every machine hostname lives under it; moving zones means a new control plane.
       </p>
       <PostForm action="/admin/settings">
-        {SETTINGS_FIELDS.map((f) => {
-          const v = getPath(p.settings, f.path);
-          const error = errorFor(f.path);
-          switch (f.kind) {
-            case "checkbox":
-              return <Checkbox id={f.path} label={f.label} hint={f.hint} checked={v === true} />;
-            case "select":
-              return <Field id={f.path} label={f.label} hint={f.hint} options={f.options ?? []} value={fieldValue(v)} {...(error ? { error } : {})} />;
-            case "lines":
-              return <Field id={f.path} label={f.label} hint={f.hint} multiline value={fieldValue(v)} {...(error ? { error } : {})} />;
-            case "number":
-            case "nullable_number":
-              return <Field id={f.path} label={f.label} hint={f.hint} type="number" value={fieldValue(v)} {...(error ? { error } : {})} />;
-            case "text":
-              return <Field id={f.path} label={f.label} hint={f.hint} value={fieldValue(v)} {...(error ? { error } : {})} />;
-            default:
-              return assertNever(f.kind);
-          }
-        })}
+        {SETTINGS_GROUPS.map((g) => (
+          <fieldset class="group">
+            <legend>{g.legend}</legend>
+            {g.paths.map((path) => SETTINGS_FIELDS.find((f) => f.path === path)).map((f) => f && settingControl(f, p.settings, errorFor(f.path)))}
+          </fieldset>
+        ))}
         <div class="row">
           <Button>Save settings</Button>
         </div>
       </PostForm>
     </AdminShell>
   );
+}
+
+/** Display names only; the existing wire values remain the option values. */
+const OPTION_LABELS: Record<string, string> = {
+  allowlist: "Only allowed people", everyone: "Everyone accepted by your sign-in methods",
+  names: "Include project and agent names", minimal: "Hide project and agent names",
+  delete: "Delete untracked objects", report: "Report untracked objects only",
+};
+
+/** One settings control; checkboxes carry no error because a boolean cannot be invalid. */
+function settingControl(f: SettingField, settings: unknown, error: string | undefined) {
+  const v = getPath(settings, f.path);
+  switch (f.kind) {
+    case "checkbox":
+      return <Checkbox id={f.path} label={f.label} hint={f.hint} checked={v === true} />;
+    case "select":
+      return <Field id={f.path} label={f.label} hint={f.hint} options={(f.options ?? []).map((value) => ({ value, label: OPTION_LABELS[value] ?? value }))} value={fieldValue(v)} {...(error ? { error } : {})} />;
+    case "lines":
+      return <Field id={f.path} label={f.label} hint={f.hint} multiline value={fieldValue(v)} {...(error ? { error } : {})} />;
+    case "number":
+    case "nullable_number":
+      return <Field id={f.path} label={f.label} hint={f.hint} type="number" value={fieldValue(v)} {...(error ? { error } : {})} />;
+    case "text":
+      return <Field id={f.path} label={f.label} hint={f.hint} value={fieldValue(v)} {...(error ? { error } : {})} />;
+    default:
+      return assertNever(f.kind);
+  }
 }
 
 const CHECK_LABEL: Record<HealthCheck["id"], string> = {
@@ -147,7 +199,9 @@ export function HealthPage(p: AdminBase & { checks: readonly HealthCheck[]; prob
       <ul class="checklist">
         {p.checks.map((c) => (
           <li>
-            <strong>{c.ok === null ? "unknown" : c.ok ? "ok" : "needs attention"}</strong>: {CHECK_LABEL[c.id]}. {c.detail}
+            {c.ok === null ? <Status tone="off">Unknown</Status> : c.ok ? <Status tone="ok">OK</Status> : <Status tone="warn">Needs attention</Status>}
+            <strong>{CHECK_LABEL[c.id]}</strong>
+            <span class="muted">{c.detail}</span>
           </li>
         ))}
       </ul>

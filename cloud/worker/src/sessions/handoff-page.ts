@@ -53,9 +53,9 @@ export interface ConsentPageInput {
 
 export function consentPage(i: ConsentPageInput): Response {
   const { q } = i;
-  const who: (Html | string)[] = [chip(q.device, { label: "Device" })];
-  if (i.platform) who.push(" on ", chip(i.platform, { label: "Platform" }));
-  who.push(" wants to sign in to ", chip(i.host, { label: "Host" }), " as ", chip(i.email, { label: "Signed-in email" }), ".");
+  const who: (Html | string)[] = [chip(q.device)];
+  if (i.platform) who.push(" on ", chip(i.platform));
+  who.push(" wants to sign in to ", chip(i.host), " as ", chip(i.email), ".");
   const body: Html[] = [
     heading("Sign this device in to ", chip(i.host), "?"),
     prose(...who),

@@ -26,7 +26,8 @@
  * ├── src/console/admin-routes.ts
  * ├── src/console/routes.ts
  * ├── src/setup/routes.ts
- * └── test/admin-services.test.ts
+ * ├── test/admin-services.test.ts
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import { validate, type Settings, type ValidationResult } from "@yaran/protocol";
@@ -46,24 +47,24 @@ export interface SettingField {
 export const SETTINGS_FIELDS: readonly SettingField[] = [
   { path: "org_name", label: "Organization name", hint: "Shown on every console page and to phones as the org name.", kind: "text" },
   { path: "session_duration", label: "Sign-in session length", hint: "How long an Access sign-in lasts, from 15m to 720h (for example 24h). Saving re-applies it to the control plane and every machine.", kind: "text" },
-  { path: "pairing_policy.mode", label: "Who may sign in and pair", hint: "allowlist admits only the emails, email domains and Access groups below; everyone admits any identity your sign-in methods accept, and is refused while One-time PIN is on.", kind: "select", options: ["allowlist", "everyone"] },
+  { path: "pairing_policy.mode", label: "Who may sign in and pair", hint: "With Only allowed people, access is limited to the emails, email domains and Access groups below. The Everyone option accepts any identity your sign-in methods accept; it cannot be used with One-time PIN.", kind: "select", options: ["allowlist", "everyone"] },
   { path: "pairing_policy.emails", label: "Allowed emails", hint: "One email address per line.", kind: "lines" },
   { path: "pairing_policy.domains", label: "Allowed email domains", hint: "One domain per line, for example example.org.", kind: "lines" },
   { path: "pairing_policy.access_group_ids", label: "Allowed Access groups", hint: "One Access group id per line, from Zero Trust, Access, Access groups.", kind: "lines" },
   { path: "machine_cap_per_user", label: "Machines per user", hint: "From 1 to 50.", kind: "number" },
   { path: "device_cap_per_user", label: "Phones per user", hint: "From 1 to 20.", kind: "number" },
   { path: "push.enabled", label: "Push notifications", hint: "Off stops every push to every phone.", kind: "checkbox" },
-  { path: "push.detail", label: "Push detail", hint: "names includes the project and agent label in a notification; minimal leaves them out.", kind: "select", options: ["names", "minimal"] },
+  { path: "push.detail", label: "Push detail", hint: "Choose whether notifications include project and agent names.", kind: "select", options: ["names", "minimal"] },
   { path: "push.ttl_seconds", label: "Push lifetime (seconds)", hint: "How long an undelivered push waits, from 60 to 86400.", kind: "number" },
   { path: "push.relay_allowed", label: "Allow push relays", hint: "Off refuses relay channels, which turns push off on iPhones.", kind: "checkbox" },
   { path: "push.allowed_relays", label: "Allowed relays", hint: "One https relay URL per line; empty allows any https relay.", kind: "lines" },
   { path: "stale_machine_policy.notify_after_days", label: "Flag machines offline for (days)", hint: "Puts a badge on machines offline this long; empty turns it off.", kind: "nullable_number" },
-  { path: "stale_machine_policy.revoke_after_days", label: "Revoke machines offline for (days)", hint: "Revokes machines offline this long; empty turns it off.", kind: "nullable_number" },
+  { path: "stale_machine_policy.revoke_after_days", label: "Revoke machines offline for (days)", hint: "Automatically disconnects and unpairs machines offline this long. Leave empty to keep them paired.", kind: "nullable_number" },
   { path: "audit_retention_days", label: "Keep audit log for (days)", hint: "From 30 to 3650; older rows are deleted daily.", kind: "number" },
   { path: "quota_limits.access_apps", label: "Access application limit", hint: "Raise only after Cloudflare raises your account limit; a lower value is a soft cap.", kind: "number" },
   { path: "quota_limits.access_policies", label: "Access policy limit", hint: "Raise only after Cloudflare raises your account limit.", kind: "number" },
   { path: "quota_limits.tunnels", label: "Tunnel limit", hint: "Raise only after Cloudflare raises your account limit.", kind: "number" },
-  { path: "orphan_cleanup", label: "Orphaned Cloudflare objects", hint: "delete removes objects yaran created but no longer tracks; report only lists them on Health.", kind: "select", options: ["delete", "report"] },
+  { path: "orphan_cleanup", label: "Orphaned Cloudflare objects", hint: "Delete removes objects yaran created but no longer tracks. Report only lists them on Health.", kind: "select", options: ["delete", "report"] },
   { path: "deployer_repo_url", label: "Your deploy repository", hint: "The https URL of the repository the Deploy button created, so Updates can link its update workflow. Empty for none.", kind: "text" },
 ];
 

@@ -3,7 +3,8 @@
  *
  * Every page works without it. With it: links marked `data-confirm` open their confirm
  * page's form in a native `<dialog>` (Esc and Cancel close it, nothing confirms by
- * default), copy buttons appear, absolute times gain a relative label, and the wiring
+ * default), copy buttons appear (announcing success, selecting the text when copying fails),
+ * table scroll regions keep a tab stop only while they scroll, absolute times gain a relative label, and the wiring
  * self-test runs where a page asks for it.
  *
  * - Loaded as a same-origin module, so the CSP's `script-src 'self'` holds; no inline handlers.
@@ -46,13 +47,39 @@ function upgradeConfirmLinks(): void {
 
 function enableCopyButtons(): void {
   for (const btn of document.querySelectorAll<HTMLButtonElement>("button[data-copy]")) {
-    const input = document.getElementById(btn.dataset.copy ?? "") as HTMLInputElement | null;
+    const id = btn.dataset.copy ?? "";
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    const status = document.querySelector<HTMLElement>(`[data-copy-status="${CSS.escape(id)}"]`);
     if (!input || !navigator.clipboard) continue;
     btn.hidden = false;
     btn.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(input.value);
-      btn.textContent = "Copied";
+      // The status line is a live region, so the outcome is announced as well as shown.
+      try {
+        await navigator.clipboard.writeText(input.value);
+        btn.textContent = "Copied";
+        if (status) status.textContent = "Copied to the clipboard.";
+      } catch {
+        input.focus();
+        input.select();
+        btn.textContent = "Copy";
+        if (status) status.textContent = "This browser would not copy it. The text is selected, so copy it with your device's own copy command.";
+      }
     });
+  }
+}
+
+/** A table's scroll region keeps its tab stop only while it really scrolls (phone cards never do). */
+function scrollRegions(): void {
+  const regions = [...document.querySelectorAll<HTMLElement>("[data-scroll-region]")];
+  const update = () => {
+    for (const r of regions) r.tabIndex = r.scrollWidth > r.clientWidth ? 0 : -1;
+  };
+  update();
+  addEventListener("resize", update);
+  const nav = document.querySelector<HTMLElement>(".nav-wrap");
+  const current = nav?.querySelector<HTMLElement>('a[aria-current="page"]');
+  if (nav && current && nav.scrollWidth > nav.clientWidth) {
+    nav.scrollLeft += current.getBoundingClientRect().left - nav.getBoundingClientRect().left - (nav.clientWidth - current.offsetWidth) / 2;
   }
 }
 
@@ -118,5 +145,6 @@ async function selfTest(): Promise<void> {
 
 upgradeConfirmLinks();
 enableCopyButtons();
+scrollRegions();
 relativeTimes();
 if (document.querySelector("[data-selftest]")) void selfTest();

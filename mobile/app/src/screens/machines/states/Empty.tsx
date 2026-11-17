@@ -8,7 +8,7 @@
  * ├── @yaran/ui-kit:src/empty.tsx
  * ├── @yaran/ui-kit:src/inline-code.tsx
  * └── src/lib/route.ts
- * External: @lingui/react
+ * External: @lingui/react, lucide-react
  *
  * Used by:
  * src/screens/machines/states/Empty.tsx
@@ -19,6 +19,7 @@ import { Trans } from '@lingui/react/macro';
 import { Button } from '@yaran/ui-kit/button';
 import { Empty as EmptyFrame, EmptyDescription, EmptyHeader, EmptyTitle } from '@yaran/ui-kit/empty';
 import { InlineCode } from '@yaran/ui-kit/inline-code';
+import { MonitorIcon } from 'lucide-react';
 
 import { navigate } from '../../../lib/route.ts';
 
@@ -33,7 +34,7 @@ export function NoOrgs() {
           <Trans>Add your org to see your machines here.</Trans>
         </EmptyDescription>
       </EmptyHeader>
-      <Button className="h-10" onClick={() => navigate({ name: 'welcome' })}>
+      <Button className="min-h-12" onClick={() => navigate({ name: 'welcome' })}>
         <Trans>Add an org</Trans>
       </Button>
     </EmptyFrame>
@@ -42,11 +43,10 @@ export function NoOrgs() {
 
 export function NoMachines() {
   return (
-    <p className="text-sm text-muted-foreground">
-      <Trans>
-        No machines yet. On the computer you want to reach, run <InlineCode>yaran cloud login</InlineCode> and it
-        appears here.
-      </Trans>
-    </p>
+    <div className="state-card">
+      <MonitorIcon aria-hidden className="size-6 text-muted-foreground" />
+      <h2 className="text-lg font-semibold"><Trans>Your machines will appear here</Trans></h2>
+      <p className="text-muted-foreground"><Trans>No machines yet. On the computer you want to reach, run <InlineCode>yaran cloud login</InlineCode> and it appears here.</Trans></p>
+    </div>
   );
 }

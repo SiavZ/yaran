@@ -4,8 +4,11 @@
  * - SystemBars runs in CSS insets mode, so every page pads by `env(safe-area-inset-*)`.
  *
  * <module-headers:begin>
- * Uses: none
- * External: react
+ * Uses:
+ * src/screens/Page.tsx
+ * ├── src/lib/route.ts
+ * └── src/screens/BrandMark.tsx
+ * External: @lingui/react, lucide-react, react
  *
  * Used by:
  * src/screens/Page.tsx
@@ -24,13 +27,43 @@
  * └── src/screens/settings/Settings.tsx
  * <module-headers:end>
  */
-import type { ReactNode } from 'react';
+import { Trans } from '@lingui/react/macro';
+import { ArrowLeftIcon } from 'lucide-react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
-export function Page({ title, children, actions }: { title: ReactNode; children: ReactNode; actions?: ReactNode }) {
+import { navigate, type Route } from '../lib/route.ts';
+import { BrandMark } from './BrandMark.tsx';
+
+export function Page({ title, children, actions, back, backDisabled = false, className = '' }: {
+  title: ReactNode;
+  children: ReactNode;
+  actions?: ReactNode;
+  back?: Route;
+  backDisabled?: boolean;
+  className?: string;
+}) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    // Keep an explicit autofocus (for example Unlock); otherwise announce the new screen.
+    if (document.activeElement === document.body || document.activeElement?.closest('.phone-nav')) heading.current?.focus();
+  }, []);
   return (
-    <main className="mx-auto flex w-full max-w-xl flex-1 flex-col gap-4 px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-4">
-      <header className="flex min-h-10 items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold">{title}</h1>
+    <main className={`phone-page mx-auto flex w-full min-w-0 max-w-xl flex-1 flex-col gap-6 px-5 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-6 ${className}`}>
+      <div className="flex items-center gap-2.5 text-sm font-semibold tracking-tight">
+        <BrandMark /><span>yaran</span>
+      </div>
+      {back && (
+        <button
+          type="button"
+          className="-ml-3 flex min-h-12 self-start items-center gap-2 rounded-lg px-3 text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
+          disabled={backDisabled}
+          onClick={() => navigate(back)}
+        >
+          <ArrowLeftIcon aria-hidden className="size-4" /><Trans>Back</Trans>
+        </button>
+      )}
+      <header className="flex min-h-12 items-center justify-between gap-[12px]">
+        <h1 ref={heading} tabIndex={-1} className="min-w-0 text-2xl font-semibold tracking-tight outline-none [overflow-wrap:anywhere]">{title}</h1>
         {actions}
       </header>
       {children}

@@ -44,7 +44,7 @@ export function EraseDialog({ open, onClose, onErased }: { open: boolean; onClos
             <Trans>Erase everything on this phone?</Trans>
           </DialogTitle>
         </DialogHeader>
-        <p className="text-sm text-destructive">
+        <p className="text-sm">
           <Trans>
             This signs the phone out of every org, removes every org and setting, and deletes the keys that protect them. You'll
             have to add your orgs again.
@@ -52,10 +52,10 @@ export function EraseDialog({ open, onClose, onErased }: { open: boolean; onClos
         </p>
         <div className="h-2" />
         <DialogFooter>
-          <Button className="h-10" variant="outline" autoFocus onClick={onClose}>
+          <Button className="min-h-12" variant="outline" autoFocus onClick={onClose}>
             <Trans>Cancel</Trans>
           </Button>
-          <Button className="h-10" variant="destructive" onClick={() => void confirm()}>
+          <Button className="min-h-12" variant="destructive" onClick={() => void confirm()}>
             <Trans>Erase everything</Trans>
           </Button>
         </DialogFooter>

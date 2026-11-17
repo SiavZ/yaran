@@ -71,7 +71,7 @@ export function Licenses() {
   useEffect(() => void loadBuildInfo().then((b) => setFlavor(b.flavor)), []);
   const native = flavor === 'appstore' ? ios : flavor === 'play' ? androidPlay : androidFoss;
   return (
-    <Page title={<Trans>About and licenses</Trans>}>
+    <Page title={<Trans>About and licenses</Trans>} back={{ name: 'settings' }}>
       {flavor === 'foss' && (
         <section className="flex flex-col gap-2">
           <p className="text-sm text-muted-foreground">
@@ -80,7 +80,7 @@ export function Licenses() {
               new versions are published on GitHub.
             </Trans>
           </p>
-          <a className="inline-flex min-h-10 items-center text-primary underline" href={RELEASES_URL} target="_blank" rel="noreferrer noopener">
+          <a className="inline-flex min-h-12 items-center text-primary underline" href={RELEASES_URL} target="_blank" rel="noreferrer noopener">
             <Trans>Releases on GitHub</Trans>
           </a>
         </section>

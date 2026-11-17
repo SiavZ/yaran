@@ -27,7 +27,8 @@
  * ├── src/screens/machines/RemoveMachineDialog.tsx
  * ├── src/screens/machines/states/Empty.tsx
  * ├── src/screens/machines/states/ErrorState.tsx
- * └── src/screens/machines/states/Offline.tsx
+ * ├── src/screens/machines/states/Offline.tsx
+ * └── src/screens/onboarding/SignInResult.tsx
  * External: @lingui/core, @lingui/react, lucide-react, react
  *
  * Used by:
@@ -41,12 +42,12 @@ import { useLingui } from '@lingui/react';
 import { Trans } from '@lingui/react/macro';
 import type { MachineSummary } from '@yaran/protocol';
 import { Button } from '@yaran/ui-kit/button';
-import { RefreshCwIcon } from 'lucide-react';
+import { LoaderCircleIcon, RefreshCwIcon, ShieldAlertIcon } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { ApiFailure } from '../../lib/api.ts';
 import { MACHINE_POLL_MS, machinesStore, refreshMachines, type OrgMachines } from '../../lib/machinesStore.ts';
-import { Session } from '../../lib/native/machineView.ts';
+import { Session, type SignInOutcome } from '../../lib/native/machineView.ts';
 import { openMachine } from '../../lib/openMachine.ts';
 import { handleDeviceRevoked, orgStore, type OrgRecord } from '../../lib/orgStore.ts';
 import { navigate } from '../../lib/route.ts';
@@ -54,6 +55,7 @@ import { updateSettings } from '../../lib/settingsStore.ts';
 import { useStore } from '../../lib/store.ts';
 import { visibleInterval } from '../../lib/visibleClock.ts';
 import { Page } from '../Page.tsx';
+import { SignInResult } from '../onboarding/SignInResult.tsx';
 import { MachineRow } from './MachineRow.tsx';
 import { RemoveMachineDialog } from './RemoveMachineDialog.tsx';
 import { NoMachines, NoOrgs } from './states/Empty.tsx';
@@ -69,9 +71,20 @@ export async function onOrgFailure(org: OrgRecord, failure: ApiFailure): Promise
 
 function OrgSection({ org, list, grouped }: { org: OrgRecord; list: OrgMachines | undefined; grouped: boolean }) {
   const [removing, setRemoving] = useState<MachineSummary | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
+  const [signInFailure, setSignInFailure] = useState<Exclude<SignInOutcome, { kind: 'signed_in' }> | null>(null);
   const refresh = useCallback(() => {
     void refreshMachines(org.id).then((f) => f && onOrgFailure(org, f));
   }, [org]);
+
+  async function renewSignIn() {
+    setSigningIn(true);
+    setSignInFailure(null);
+    const outcome = await Session.signIn({ orgId: org.id, target: 'control-plane' }).catch((): SignInOutcome => ({ kind: 'offline' }));
+    setSigningIn(false);
+    if (outcome.kind === 'signed_in') refresh();
+    else setSignInFailure(outcome);
+  }
 
   async function open(m: MachineSummary) {
     await updateSettings({ lastMachine: { orgId: org.id, machineId: m.id, host: m.hostname } });
@@ -84,16 +97,18 @@ function OrgSection({ org, list, grouped }: { org: OrgRecord; list: OrgMachines 
       {grouped && <h2 className="text-sm font-semibold text-muted-foreground">{org.name}</h2>}
       {failure?.kind === 'offline' && <Offline onRetry={refresh} />}
       {failure?.kind === 'session_expired' && (
-        <div role="alert" className="flex flex-col items-start gap-3 rounded-lg border border-border p-4">
-          <p>
+        <div role="alert" className="state-card">
+          <ShieldAlertIcon aria-hidden className="size-5 text-[var(--yaran-warning)]" />
+          <p className="text-sm leading-relaxed">
             <Trans>Your sign-in to {org.name} has ended. Sign in again to see its machines.</Trans>
           </p>
-          <Button
-            className="h-10"
-            onClick={() => void Session.signIn({ orgId: org.id, target: 'control-plane' }).then((o) => o.kind === 'signed_in' && refresh())}
-          >
-            <Trans>Sign in</Trans>
-          </Button>
+          {signInFailure ? (
+            <SignInResult embedded outcome={signInFailure} host={new URL(org.id).hostname} onRetry={() => void renewSignIn()} onBack={() => navigate({ name: 'orgs' })} />
+          ) : (
+            <Button className="min-h-12" disabled={signingIn} onClick={() => void renewSignIn()}>
+              {signingIn ? <><LoaderCircleIcon aria-hidden className="motion-safe:animate-spin" /><Trans>Opening browser…</Trans></> : <Trans>Sign in</Trans>}
+            </Button>
+          )}
         </div>
       )}
       {failure && failure.kind !== 'offline' && failure.kind !== 'session_expired' && failure.kind !== 'device_revoked' && (
@@ -135,7 +150,7 @@ export function MachineList() {
       title={<Trans>Machines</Trans>}
       actions={
         orgs.length > 0 && (
-          <Button variant="ghost" size="icon-lg" className="size-10" aria-label={i18n._(msg`Refresh machines`)} onClick={refreshAll}>
+          <Button variant="ghost" size="icon-lg" className="phone-icon-button size-12 min-h-12" aria-label={i18n._(msg`Refresh machines`)} onClick={refreshAll}>
             <RefreshCwIcon aria-hidden />
           </Button>
         )

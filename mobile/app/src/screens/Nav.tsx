@@ -1,7 +1,7 @@
 /**
  * The bottom navigation between the three home screens: Machines, Orgs and Settings.
  *
- * - Navigation, not action: quieter styling, a 40 px floor, `aria-current` on the active tab.
+ * - Navigation, not action: quieter styling, a 48 px floor, `aria-current` on the active tab.
  *
  * <module-headers:begin>
  * Uses:
@@ -26,7 +26,7 @@ export function Nav({ active }: { active: Home }) {
     <button
       type="button"
       aria-current={active === name ? 'page' : undefined}
-      className={`flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 text-xs ${active === name ? 'text-foreground' : 'text-muted-foreground'}`}
+      className={`flex min-h-16 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-xl px-2 py-3 text-xs font-medium transition-colors ${active === name ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-muted'}`}
       onClick={() => navigate({ name } as Route)}
     >
       {icon}
@@ -34,7 +34,7 @@ export function Nav({ active }: { active: Home }) {
     </button>
   );
   return (
-    <nav className="sticky bottom-0 flex border-t border-border bg-background pb-[env(safe-area-inset-bottom)]">
+    <nav className="phone-nav sticky bottom-0 z-10 mx-auto flex w-full max-w-xl gap-1 border-t border-border bg-background px-3 pt-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)]">
       {tab('machines', <MonitorIcon aria-hidden className="size-5" />, <Trans>Machines</Trans>)}
       {tab('orgs', <UsersIcon aria-hidden className="size-5" />, <Trans>Orgs</Trans>)}
       {tab('settings', <SettingsIcon aria-hidden className="size-5" />, <Trans>Settings</Trans>)}

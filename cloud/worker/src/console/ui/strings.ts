@@ -21,10 +21,14 @@
  * ├── src/console/ui/confirm.tsx
  * ├── src/console/ui/shell.tsx
  * ├── src/console/user-pages.tsx
+ * ├── src/setup/pages.tsx
  * └── src/ui/kit.ts
  * <module-headers:end>
  */
-import type { PushState } from "@yaran/protocol";
+import type { AdminUser, Flavor, MachineStatus, Platform, PushChannel, PushState } from "@yaran/protocol";
+
+/** The tone of a `Status` dot; the word beside it always carries the meaning. */
+export type StatusTone = "ok" | "warn" | "error" | "info" | "off";
 
 export const S = {
   skipLink: "Skip to the main content",
@@ -32,6 +36,9 @@ export const S = {
   cancel: "Cancel",
   back: "Back",
   never: "never",
+  signedInAs: "Signed in as",
+  actions: "Actions",
+  errorCode: "Error code:",
   alreadyRemoved: "was already removed, so there is nothing left to do.",
   tone: { info: "Note:", warn: "Warning:", error: "Error:", success: "Done:" },
   nav: {
@@ -46,16 +53,41 @@ export const S = {
     settings: "Settings",
     health: "Health",
     updates: "Updates",
+    admin: "Admin",
+    workspace: "My workspace",
+    adminContext: "Admin",
   },
+  machineStatus: {
+    online: ["Online", "ok"],
+    degraded: ["Degraded", "warn"],
+    offline: ["Offline", "off"],
+    never_connected: ["Never connected", "off"],
+    provisioning: ["Setting up", "info"],
+    tearing_down: ["Being removed", "error"],
+    unknown: ["Status unknown", "off"],
+  } satisfies Record<MachineStatus, readonly [string, StatusTone]>,
+  platform: { android: "Android", ios: "iOS" } satisfies Record<Platform, string>,
+  flavor: { foss: "F-Droid build", play: "Google Play build", appstore: "App Store build", dev: "development build" } satisfies Record<Flavor, string>,
+  pushChannel: { unifiedpush: "UnifiedPush", fcm_embedded: "Firebase", apns_relay: "Apple push relay", fcm_relay: "Firebase relay" } satisfies Record<PushChannel, string>,
   pushState: {
-    active: "push working",
-    gone: "push stopped: the subscription expired",
-    auth_failed: "push stopped: the phone must register again",
-    failing: "push is failing",
-    none: "push off",
+    active: "Push working",
+    gone: "Push stopped: the subscription expired",
+    auth_failed: "Push stopped: the phone must register again",
+    failing: "Push is failing",
+    none: "Push off",
   } satisfies Record<PushState, string>,
+  pushTone: { active: "ok", gone: "warn", auth_failed: "warn", failing: "error", none: "off" } satisfies Record<PushState, StatusTone>,
+  role: { admin: "Administrator", user: "Member" } satisfies Record<AdminUser["role"], string>,
+  users: {
+    active: "Active",
+    disabled: "Disabled",
+    demote: "Remove admin rights…",
+    demoteTitle: "Remove admin rights",
+    demoteLead: "Remove admin rights from",
+  },
   machines: {
-    empty: "You have no paired machines yet. Open Connect to pair one.",
+    empty: "You have no paired machines yet. Pairing takes one command in the machine's terminal.",
+    emptyAction: "Pair a machine",
     renameHint: "To rename a machine, unpair it and pair it again: the name is part of its hostname, Access application and DNS record.",
     unpair: "Unpair…",
     unpairLead: "Unpair the machine",
@@ -65,7 +97,8 @@ export const S = {
     stale: "offline for a long time",
   },
   phones: {
-    empty: "You have no phones registered yet. Open Connect and scan the code with the yaran app.",
+    empty: "You have no phones registered yet. Add this org in the yaran app to get notifications on your phone.",
+    emptyAction: "Connect a phone",
     remove: "Remove…",
     removeLead: "Remove the phone",
     removeConsequence: "It stops receiving push notifications and can no longer sign in to this org until it is added again.",
@@ -76,7 +109,9 @@ export const S = {
   },
   connect: {
     phoneHeading: "Connect a phone",
-    phoneLead: "Scan this code with the yaran app, or add the org by its address:",
+    phoneLead: "On another phone, scan this code with the yaran app.",
+    addressLabel: "Org address",
+    addressHint: "On this phone? Copy the address, open the yaran app, choose Type the org address, and paste it.",
     stores: "Get the app",
     machineHeading: "Connect a machine",
     machineLead: "On the machine running yaran, run this command, or use Sign in to yaran cloud in the terminal UI's command palette or the web app menu:",

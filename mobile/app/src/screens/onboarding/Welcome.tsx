@@ -29,22 +29,22 @@ import { Page } from '../Page.tsx';
 
 export function Welcome() {
   return (
-    <Page title={<Trans>Welcome to yaran</Trans>}>
-      <p className="text-muted-foreground">
-        <Trans>
-          Open the coding agents running on your machines from this phone. To start, add your org: scan the QR code
-          your admin or <InlineCode>yaran cloud login</InlineCode> shows, or type its address.
-        </Trans>
-      </p>
-      <div className="flex flex-col gap-3">
-        <Button className="h-10" onClick={() => navigate({ name: 'scan' })}>
+    <Page title={<Trans>Welcome</Trans>} className="welcome-page">
+      <p className="max-w-sm text-xl leading-relaxed text-muted-foreground"><Trans>Your coding agents, within reach. Open the machines you work on from this phone.</Trans></p>
+      <div className="mt-auto flex flex-col gap-3 pt-10">
+        <p className="mb-1 text-sm font-medium"><Trans>Start by connecting your org.</Trans></p>
+        <Button className="min-h-12" onClick={() => navigate({ name: 'scan' })}>
           <QrCodeIcon aria-hidden />
           <Trans>Scan QR code</Trans>
         </Button>
-        <Button className="h-10" variant="outline" onClick={() => navigate({ name: 'enter-url' })}>
+        <Button className="min-h-12" variant="outline" onClick={() => navigate({ name: 'enter-url' })}>
           <KeyboardIcon aria-hidden />
           <Trans>Type the org address</Trans>
         </Button>
+        <aside className="mt-3 rounded-xl border border-border bg-card p-4 text-sm leading-relaxed text-muted-foreground">
+          <p className="mb-2 font-medium text-foreground"><Trans>Need a QR code?</Trans></p>
+          <p><Trans>On your computer, run <InlineCode>yaran cloud pair-phone</InlineCode>, or ask your admin for your org's code or address.</Trans></p>
+        </aside>
       </div>
     </Page>
   );

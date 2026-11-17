@@ -19,12 +19,12 @@ import { WifiOffIcon } from 'lucide-react';
 
 export function Offline({ onRetry }: { onRetry: () => void }) {
   return (
-    <div role="alert" className="flex flex-col items-start gap-3 rounded-lg border border-border p-4">
+    <div role="alert" className="state-card">
       <p className="flex items-center gap-2">
         <WifiOffIcon aria-hidden className="size-4" />
         <Trans>No connection. Check your network and try again.</Trans>
       </p>
-      <Button className="h-10" variant="outline" onClick={onRetry}>
+      <Button className="min-h-12" variant="outline" onClick={onRetry}>
         <Trans>Retry</Trans>
       </Button>
     </div>

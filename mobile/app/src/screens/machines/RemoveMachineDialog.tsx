@@ -78,7 +78,7 @@ export function RemoveMachineDialog({
             </Trans>
           </DialogTitle>
         </DialogHeader>
-        <p className="text-sm text-destructive">
+        <p className="text-sm">
           <Trans>
             This deletes the machine's tunnel and sign-in app in your org. yaran on <InlineCode>{machine?.name ?? ''}</InlineCode>{' '}
             stops its cloud connection; run <InlineCode>yaran cloud login</InlineCode> there to add it again.
@@ -86,10 +86,10 @@ export function RemoveMachineDialog({
         </p>
         <div className="h-2" />
         <DialogFooter>
-          <Button className="h-10" variant="outline" autoFocus onClick={onClose}>
+          <Button className="min-h-12" variant="outline" autoFocus onClick={onClose}>
             <Trans>Cancel</Trans>
           </Button>
-          <Button className="h-10" variant="destructive" onClick={() => machine && void confirm(machine)}>
+          <Button className="min-h-12" variant="destructive" onClick={() => machine && void confirm(machine)}>
             <Trans>Remove machine</Trans>
           </Button>
         </DialogFooter>

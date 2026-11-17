@@ -86,14 +86,14 @@ export function NotificationSettings() {
           <DialogHeader>
             <DialogTitle>{pushText('push.confirm.turn_off.title', { name: turningOff?.name ?? '' })}</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-destructive">{pushText('push.confirm.turn_off.body', { name: turningOff?.name ?? '' })}</p>
+          <p className="text-sm">{pushText('push.confirm.turn_off.body', { name: turningOff?.name ?? '' })}</p>
           <div className="h-2" />
           <DialogFooter>
-            <Button className="h-10" variant="outline" autoFocus onClick={() => setTurningOff(null)}>
+            <Button className="min-h-12" variant="outline" autoFocus onClick={() => setTurningOff(null)}>
               <Trans>Cancel</Trans>
             </Button>
             <Button
-              className="h-10"
+              className="min-h-12"
               variant="destructive"
               onClick={() => {
                 if (turningOff) void turnOffPush(turningOff);

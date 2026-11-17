@@ -46,21 +46,21 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
             in to each one again.
           </Trans>
         </p>
-        <Button className="h-10" onClick={onUnlocked}>
+        <Button className="min-h-12" onClick={onUnlocked}>
           <Trans>Continue</Trans>
         </Button>
       </Page>
     );
   }
   return (
-    <Page title={<Trans>yaran is locked</Trans>}>
+    <Page title={<Trans>yaran is locked</Trans>} className="items-center justify-center text-center">
       <LockIcon aria-hidden className="size-10 self-center text-muted-foreground" />
       {note === 'cancelled' && (
         <p role="status" className="text-sm text-muted-foreground">
           <Trans>Unlock was cancelled.</Trans>
         </p>
       )}
-      <Button className="h-10" autoFocus onClick={() => void unlock()}>
+      <Button className="min-h-12" autoFocus onClick={() => void unlock()}>
         <Trans>Unlock</Trans>
       </Button>
     </Page>

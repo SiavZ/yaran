@@ -62,22 +62,25 @@ export function EnterUrl() {
   }
 
   return (
-    <Page title={<Trans>Type the org address</Trans>}>
+    <Page title={<Trans>Type the org address</Trans>} back={{ name: 'welcome' }}>
+      <p id={`${fieldId}-hint`} className="text-sm leading-relaxed text-muted-foreground"><Trans>Get this address from your admin or your org's Cloud Connect page. It looks like cp.example.com.</Trans></p>
       <form className="flex flex-col gap-3" onSubmit={submit} noValidate>
         <label htmlFor={fieldId} className="text-sm font-medium">
           <Trans>Org address</Trans>
         </label>
         <Input
           id={fieldId}
-          className="h-10"
+          className="min-h-12"
           inputMode="url"
+          enterKeyHint="go"
+          autoFocus
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
           placeholder="cp.example.com"
           value={value}
           aria-invalid={error !== null}
-          aria-describedby={error ? `${fieldId}-error` : undefined}
+          aria-describedby={`${fieldId}-hint${error ? ` ${fieldId}-error` : ''}`}
           onChange={(e) => {
             setValue(e.target.value);
             setError(null);
@@ -88,10 +91,10 @@ export function EnterUrl() {
             {error}
           </p>
         )}
-        <Button type="submit" className="h-10">
+        <Button type="submit" className="min-h-12">
           <Trans>Continue</Trans>
         </Button>
-        <Button type="button" variant="ghost" className="h-10" onClick={() => navigate({ name: 'scan' })}>
+        <Button type="button" variant="ghost" className="min-h-12" onClick={() => navigate({ name: 'scan' })}>
           <Trans>Scan a QR code instead</Trans>
         </Button>
       </form>

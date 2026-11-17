@@ -45,7 +45,7 @@ export function Diagnostics() {
   }
 
   return (
-    <Page title={<Trans>Diagnostics</Trans>}>
+    <Page title={<Trans>Diagnostics</Trans>} back={{ name: 'settings' }}>
       <p className="text-sm text-muted-foreground">
         <Trans>
           This log never includes sign-in tokens, cookies or link parameters, but it does include org and machine host names
@@ -55,7 +55,7 @@ export function Diagnostics() {
       <pre aria-label="Diagnostics log" className="max-h-96 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs whitespace-pre-wrap">
         {text === null ? '' : text === '' ? <Trans>The log is empty.</Trans> : text}
       </pre>
-      <Button className="h-10" variant="outline" disabled={!text} onClick={() => void exportLog()}>
+      <Button className="min-h-12" variant="outline" disabled={!text} onClick={() => void exportLog()}>
         <Trans>Export…</Trans>
       </Button>
     </Page>

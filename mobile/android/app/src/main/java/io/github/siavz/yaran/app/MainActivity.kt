@@ -66,6 +66,7 @@ class MainActivity : BridgeActivity() {
 
     // YaranApplication's AppLock.trackActivities moves the lock; this Activity only shows it.
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.AppTheme_NoActionBar)
         enableEdgeToEdge()
         ScreenPrivacy.install(this)
         super.onCreate(savedInstanceState)

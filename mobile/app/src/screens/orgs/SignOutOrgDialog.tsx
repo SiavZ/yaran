@@ -51,7 +51,7 @@ export function SignOutOrgDialog({ org, onClose }: { org: OrgRecord | null; onCl
             </Trans>
           </DialogTitle>
         </DialogHeader>
-        <p className="text-sm text-destructive">
+        <p className="text-sm">
           <Trans>
             This phone is removed from <InlineCode>{org?.name ?? ''}</InlineCode> and its sign-ins there are deleted. You
             can add the org again later.
@@ -59,10 +59,10 @@ export function SignOutOrgDialog({ org, onClose }: { org: OrgRecord | null; onCl
         </p>
         <div className="h-2" />
         <DialogFooter>
-          <Button className="h-10" variant="outline" autoFocus onClick={onClose}>
+          <Button className="min-h-12" variant="outline" autoFocus onClick={onClose}>
             <Trans>Cancel</Trans>
           </Button>
-          <Button className="h-10" variant="destructive" onClick={() => org && void confirm(org)}>
+          <Button className="min-h-12" variant="destructive" onClick={() => org && void confirm(org)}>
             <Trans>Sign out</Trans>
           </Button>
         </DialogFooter>

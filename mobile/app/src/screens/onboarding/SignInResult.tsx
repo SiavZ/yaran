@@ -19,13 +19,14 @@
  *
  * Used by:
  * src/screens/onboarding/SignInResult.tsx
+ * ├── src/screens/machines/MachineList.tsx
  * └── src/screens/onboarding/ConfirmOrg.tsx
  * <module-headers:end>
  */
 import { Trans } from '@lingui/react/macro';
 import { Button } from '@yaran/ui-kit/button';
 import { InlineCode } from '@yaran/ui-kit/inline-code';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { assertNever } from '../../lib/assertNever.ts';
 import type { SignInOutcome } from '../../lib/native/machineView.ts';
@@ -106,18 +107,25 @@ function sentence(o: Failure, host: string): { text: ReactNode; retry: boolean }
   }
 }
 
-export function SignInResult({ outcome, host, onRetry }: { outcome: Failure; host: string; onRetry: () => void }) {
+export function SignInResult({ outcome, host, onRetry, embedded = false, onBack }: {
+  outcome: Failure; host: string; onRetry: () => void; embedded?: boolean; onBack?: () => void;
+}) {
   const { text, retry } = sentence(outcome, host);
+  const result = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // The sign-in button is replaced by this result. Keep keyboard focus in its recovery flow.
+    if (document.activeElement === document.body || result.current?.contains(document.activeElement)) result.current?.focus();
+  }, [outcome]);
   return (
-    <div role="alert" className="flex flex-col items-start gap-3 rounded-lg border border-border p-4">
+    <div ref={result} tabIndex={-1} role={embedded ? undefined : 'alert'} className={embedded ? 'flex flex-col items-start gap-4' : 'state-card'}>
       <p>{text}</p>
       {retry ? (
-        <Button className="h-10" onClick={onRetry}>
+        <Button className="min-h-12" onClick={onRetry}>
           <Trans>Try again</Trans>
         </Button>
       ) : (
-        <Button className="h-10" variant="outline" onClick={() => navigate({ name: 'welcome' })}>
-          <Trans>Back</Trans>
+        <Button className="min-h-12" variant="outline" onClick={onBack ?? (() => navigate({ name: 'welcome' }))}>
+          {onBack ? <Trans>Manage orgs</Trans> : <Trans>Back</Trans>}
         </Button>
       )}
     </div>

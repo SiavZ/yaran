@@ -34,7 +34,7 @@ import { buildRoute } from './lib/route.ts';
 import { renderShell } from './test/render.tsx';
 import { ALL_ROUTES } from './test/routes.ts';
 
-const TARGET = /(^|\s)(h-10|size-10|min-h-10|min-h-12|min-h-14|max-md:min-h-10)(\s|$)/;
+const TARGET = /(^|\s)(h-10|size-10|min-h-10|min-h-12|min-h-14|min-h-16|max-md:min-h-10)(\s|$)/;
 
 function hasTarget(el: Element): boolean {
   for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {

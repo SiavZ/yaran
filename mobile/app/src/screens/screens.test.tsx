@@ -20,7 +20,7 @@
  * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { AppLock } from '@yaran/secure-store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -65,9 +65,19 @@ describe('development-build banner', () => {
 });
 
 describe('routing', () => {
+  it('announces destinations reached from the persistent home navigation', async () => {
+    window.location.hash = buildRoute({ name: 'machines' });
+    renderShell(<App />);
+    for (const name of ['Settings', 'Orgs', 'Machines']) {
+      const tab = await screen.findByRole('button', { name });
+      tab.focus();
+      fireEvent.click(tab);
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name })));
+    }
+  });
   it('starts on Welcome with no org and on Machines with one', async () => {
     renderShell(<App />);
-    expect(await screen.findByRole('heading', { name: 'Welcome to yaran' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Welcome' })).toBeTruthy();
   });
   it('shows the lock screen instead of any screen while locked', async () => {
     vi.mocked(AppLock.status).mockResolvedValueOnce({ enabled: true, allowPasscode: false, grace: '1min', locked: true, biometry: 'available' });

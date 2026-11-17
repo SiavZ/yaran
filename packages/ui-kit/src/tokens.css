@@ -7,6 +7,8 @@
     /* The UI font (the variable Geist face). The consumer loads the face itself
        (the web imports @fontsource-variable/geist); this only names it. */
     --yaran-font-sans: 'Geist Variable', sans-serif;
+    /* Existing Y mark's gold: product identity only, never a state or action. */
+    --yaran-brand: #e8b86d;
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
