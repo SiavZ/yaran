@@ -8,6 +8,7 @@
  * test/pairing/authorize-route.test.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── cloud/protocol/fixtures/sig/fingerprint.json
+ * ├── src/console/ui/components.tsx
  * ├── src/pairing/authorize-route.ts
  * ├── test/helpers/worker.ts
  * ├── test/pairing/pair-helpers.ts
@@ -21,6 +22,7 @@
 import fingerprints from "@yaran/protocol/fixtures/sig/fingerprint.json" with { type: "json" };
 import { b64urlDecode } from "@yaran/protocol";
 import { describe, expect, it } from "vitest";
+import { nameParts } from "../../src/console/ui/components.tsx";
 import { nextFreeName } from "../../src/pairing/authorize-route.ts";
 import { errorCode } from "../helpers/worker.ts";
 import { opsOf, seedMachine, seedUser } from "../phase06/fakes.ts";
@@ -98,18 +100,19 @@ describe("GET refusals", () => {
 });
 
 describe("the confirm page", () => {
-  it("shows the 02 §7.1 fingerprint as a mono chip, with focus on Approve", async () => {
+  it("asks one constant question and shows machine, account and the 02 §7.1 fingerprint in a facts panel, with focus on Approve", async () => {
     const pw = await pairWorld();
     const m = await fixtureMachine();
     const fx = fingerprints.cases[0]!;
     // Pin the rendered string to the shared fixture's key.
     const res = await getAuthorize(pw, authorizeQuery(m, { machine_pubkey: fx.public_key }));
     const html = await res.text();
-    // The value itself is the accessible text; the context is a hidden prefix, never an aria-label.
-    expect(html).toContain(`<span class="sr-only">Machine key fingerprint: </span><code class="chip chip-mono">${fx.fingerprint}</code>`);
+    // The value itself is the accessible text; its term gives the context, never an aria-label.
+    expect(html).toContain("<h1>Pair this machine?</h1>");
+    expect(html).toContain(`<dt>Machine key fingerprint</dt><dd><code class="chip chip-mono">${nameParts(fx.fingerprint).join("<wbr>")}</code></dd>`);
     expect(html).not.toMatch(/<code[^>]*aria-label/);
-    expect(html).toContain(`<code class="chip">${pw.user.email}</code>`);
-    expect(html).toContain(`<code class="chip">laptop</code>`);
+    expect(html).toContain(`<dt>Signed in as</dt><dd><code class="chip">${nameParts(pw.user.email).join("<wbr>")}</code></dd>`);
+    expect(html).toContain(`<dt>Machine</dt><dd><code class="chip">laptop</code></dd>`);
     expect(html).toMatch(/<html lang="en" class="dark">/);
     expect(html).toMatch(/<button type="submit" class="btn btn-primary" name="decision" value="approve" autofocus>Approve<\/button>/);
     expect(html).toMatch(/<form method="post" action="\/v1\/pair\/authorize" aria-label="Pairing decision">/);
@@ -129,11 +132,17 @@ describe("the confirm page", () => {
     const pw = await pairWorld();
     const old = await seedMachine(pw.w.ctx.db, pw.user, { name: "laptop" });
     const html = await (await getAuthorize(pw, authorizeQuery(await fixtureMachine()))).text();
-    expect(html).toContain(`name="replace_machine_id" value="${old}">Replace laptop</button>`);
+    // Short verbs, each tied to the line under it that says what it does to which name.
+    expect(html).toContain(`name="replace_machine_id" value="${old}" aria-describedby="replace-hint">Replace the old machine</button><p class="hint" id="replace-hint">`);
+    expect(html).toContain('aria-describedby="pair-as-hint">Pair as a new machine</button><p class="hint" id="pair-as-hint">Adds this computer as <code class="chip">laptop-<wbr>2</code>, next to the old one.</p>');
     expect(html).toContain('name="decision" value="deny" autofocus>Deny</button>');
+    // Deny's form is pinned to the screen's bottom, so its autofocus scrolls nothing and the page
+    // opens at "Pair this machine?" (no script runs here); the approvals stay unpinned.
+    expect(html).toMatch(/<form method="post" action="\/v1\/pair\/authorize" aria-label="Deny pairing" class="sticky-actions">/);
+    expect(html).toMatch(/aria-label="Approve pairing">/);
+    expect(html.match(/sticky-actions/g)).toHaveLength(1);
     expect(html.match(/ autofocus/g)).toHaveLength(1);
     expect(html.match(/<h1>/g)).toHaveLength(1);
-    expect(html).toContain(">Pair as laptop-2</button>");
   });
 });
 

@@ -113,11 +113,12 @@ export function SignInResult({ outcome, host, onRetry, embedded = false, onBack 
   const { text, retry } = sentence(outcome, host);
   const result = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    // The sign-in button is replaced by this result. Keep keyboard focus in its recovery flow.
+    // The sign-in button is replaced by this result. Keep keyboard focus in its recovery flow;
+    // the container is a programmatic focus target, not a control, so it draws no ring (Try again keeps its own).
     if (document.activeElement === document.body || result.current?.contains(document.activeElement)) result.current?.focus();
   }, [outcome]);
   return (
-    <div ref={result} tabIndex={-1} role={embedded ? undefined : 'alert'} className={embedded ? 'flex flex-col items-start gap-4' : 'state-card'}>
+    <div ref={result} tabIndex={-1} role={embedded ? undefined : 'alert'} className={`outline-none ${embedded ? 'flex flex-col items-start gap-4' : 'state-card'}`}>
       <p>{text}</p>
       {retry ? (
         <Button className="min-h-12" onClick={onRetry}>

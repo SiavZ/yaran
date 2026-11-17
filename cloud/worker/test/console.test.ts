@@ -131,14 +131,21 @@ describe("pages", () => {
   });
   test("phones lists word push_state", async () => {
     const w = await ready();
-    expect(await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console/phones`, { identity: ADA })).text()).toContain("Push stopped: the subscription expired");
-    expect(await (await dispatch(ADMIN_ROUTES, w, "GET", `${CP}/admin/devices`, { identity: ADA })).text()).toContain("Push stopped: the subscription expired");
+    for (const page of [await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console/phones`, { identity: ADA })).text(), await (await dispatch(ADMIN_ROUTES, w, "GET", `${CP}/admin/devices`, { identity: ADA })).text()]) {
+      expect(page).toContain("Push stopped: the subscription expired");
+      // The documented way back (cloud-troubleshooting.md): opening the app registers it again.
+      expect(page).toContain('<span class="muted sub">Opening the yaran app on the phone once registers it again.</span>');
+    }
   });
   test("machines say how to rename and the admin list shows the key fingerprint and origin port", async () => {
     const w = await ready();
-    expect(await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console`, { identity: ADA })).text()).toContain("unpair it and pair it again");
+    const mine = await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console`, { identity: ADA })).text();
+    expect(mine).toContain("unpair it and pair it again");
+    // Opening a machine is a 40px control that says Open and shows the whole address (named "Open <host>").
+    expect(mine).toContain('<a class="btn btn-outline open-link" href="https://laptop-ada.example.org"><span>Open</span> <span class="name">laptop-<wbr/>ada<wbr/>.example<wbr/>.org</span></a>');
     const admin = await (await dispatch(ADMIN_ROUTES, w, "GET", `${CP}/admin/machines`, { identity: ADA })).text();
-    expect(admin).toContain(await machineKeyFingerprint(machineKey));
+    // The fingerprint breaks only between its groups.
+    expect(admin).toContain(`<span class="mono name">${(await machineKeyFingerprint(machineKey)).replaceAll("-", "-<wbr/>")}</span>`);
     expect(admin).toContain('<td role="cell" data-label="Origin port"><div class="cell-value">8080</div></td>');
   });
 });
@@ -163,7 +170,7 @@ describe("taking admin rights away", () => {
     expect(self).toContain("This is your own account");
     expect(self).toContain('<button type="submit" class="btn btn-destructive">Remove admin rights</button>');
     // The chip and its question mark cannot be split across lines.
-    expect(self).toContain('<span class="chip-tail"><code class="chip">ada@example.org</code>?</span>');
+    expect(self).toContain('<span class="chip-tail"><code class="chip">ada@<wbr/>example<wbr/>.org</code>?</span>');
     expect(a11yViolations(self)).toEqual([]);
     const bob = await (await dispatch(html, w, "GET", `${CP}/admin/users/00000000-0000-4000-8000-0000000000b2/role`, { identity: ADA })).text();
     expect(bob).toContain("is already a member, so there is nothing to change");

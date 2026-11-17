@@ -54,9 +54,9 @@ Some details:
   Open the address on any device (handy over SSH), and if the browser ends on a page that
   fails to load, paste that page's address into the terminal.
 - yaran waits up to 15 minutes for the browser (`login_timeout_seconds`).
-- If you already have a machine with that name, the confirm page offers **Replace
-  `<name>`** (the same computer paired again; the old one is removed only after this one
-  connects) or **Pair as `<name>-2`**.
+- If you already have a machine with that name, the confirm page offers **Replace the old
+  machine** (the same computer paired again; it keeps the name, and the old one is removed
+  only after this one connects) or **Pair as a new machine** (named `<name>-2`).
 - Cancelling works only until the browser hands the approval back. After that the login
   always finishes, because a Replace has already started removing the old machine.
 - A machine paired with a different org is refused until you log out of the first one.

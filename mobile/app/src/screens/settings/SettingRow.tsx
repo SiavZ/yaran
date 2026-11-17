@@ -34,8 +34,8 @@ export function SwitchRow({
 }) {
   const id = useId();
   return (
-    <div className="flex min-h-12 items-center justify-between gap-3">
-      <div className="flex flex-col">
+    <div className="flex min-h-12 flex-wrap items-center justify-between gap-3">
+      <div className="flex min-w-[min(100%,12rem)] flex-1 flex-col">
         <label id={`${id}-label`} htmlFor={id} className="font-medium">
           {label}
         </label>

@@ -1,6 +1,6 @@
 /**
  * The string-building side of the console UI kit for Phase 06's pages: HTML escaping,
- * chips, buttons and notices with the markup and classes of 07's `console/ui` components,
+ * chips, a facts panel, buttons and notices with the markup and classes of 07's `console/ui` components,
  * and the page rendered inside 07's `Shell` (its stylesheets, enhancement script and
  * skip link), so the pairing and handoff pages look like the consoles.
  *
@@ -12,6 +12,7 @@
  * <module-headers:begin>
  * Uses:
  * src/ui/kit.ts
+ * ├── src/console/ui/components.tsx
  * ├── src/console/ui/shell.tsx
  * └── src/console/ui/strings.ts
  * External: hono
@@ -24,6 +25,7 @@
  */
 
 import { raw as rawHtml } from "hono/html";
+import { nameParts } from "../console/ui/components.tsx";
 import { Shell } from "../console/ui/shell.tsx";
 import { S } from "../console/ui/strings.ts";
 
@@ -45,9 +47,20 @@ const join = (parts: readonly (Html | string)[]): string => parts.map((p) => (ty
  * before the value as hidden text, never an `aria-label` on `<code>`, which a screen reader
  * may read in place of the value the person has to check.
  */
-export function chip(text: string, o: { mono?: boolean; label?: string } = {}): Html {
+export function chip(text: string, o: { mono?: boolean; label?: string; whole?: boolean } = {}): Html {
   const label = o.label ? `<span class="sr-only">${esc(o.label)}: </span>` : "";
-  return raw(`${label}<code class="chip${o.mono ? " chip-mono" : ""}">${esc(text)}</code>`);
+  // `whole`: no wrap hints, so a heading's name moves to a fresh line in one piece instead of
+  // splitting at its first dot; `overflow-wrap:anywhere` still breaks one longer than the line.
+  const value = o.whole ? esc(text) : nameParts(text).map(esc).join("<wbr>");
+  return raw(`${label}<code class="chip${o.mono ? " chip-mono" : ""}">${value}</code>`);
+}
+
+/**
+ * The trust facts a person checks before deciding, as one labelled panel: each value sits
+ * under its own term, so the heading and the decision buttons need not repeat it.
+ */
+export function facts(rows: readonly (readonly [label: string, value: Html])[]): Html {
+  return raw(`<dl class="facts">${rows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${value.html}</dd></div>`).join("")}</dl>`);
 }
 
 /** A sentence built from prose segments and chips. */
@@ -68,19 +81,28 @@ export function notice(tone: "warning" | "error" | "info", ...parts: (Html | str
   return raw(`<div class="notice notice-${t.cls}" role="${tone === "info" ? "status" : "alert"}"><span class="notice-icon" aria-hidden="true">${t.icon}</span><span class="sr-only">${esc(S.tone[t.cls])}</span><div class="notice-body">${join(parts)}</div></div>`);
 }
 
-/** A form posting to `action` with hidden fields and its submit buttons. */
-export function form(action: string, hidden: Record<string, string>, buttons: Html[], label: string): Html {
+/**
+ * A form posting to `action` with hidden fields and its submit buttons. `sticky` pins it to the
+ * bottom of the screen, so an autofocused button there is already in view and the page opens
+ * at its question rather than scrolled down to the button (these pages run no script).
+ */
+export function form(action: string, hidden: Record<string, string>, buttons: Html[], label: string, o: { sticky?: boolean } = {}): Html {
   const fields = Object.entries(hidden)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
     .join("");
-  return raw(`<form method="post" action="${esc(action)}" aria-label="${esc(label)}">${fields}<div class="actions">${buttons.map((b) => b.html).join("")}</div></form>`);
+  return raw(`<form method="post" action="${esc(action)}" aria-label="${esc(label)}"${o.sticky ? ' class="sticky-actions"' : ""}>${fields}<div class="actions">${buttons.map((b) => b.html).join("")}</div></form>`);
 }
 
-/** A submit button; the primary one takes explicit focus. */
-export function button(o: { name?: string; value?: string; text: string; primary?: boolean; focus?: boolean }): Html {
+/**
+ * A submit button; the primary one takes explicit focus. A `hint` keeps the label a short verb
+ * and says what it acts on in a line under it, tied to the button by `aria-describedby`.
+ */
+export function button(o: { name?: string; value?: string; text: string; primary?: boolean; focus?: boolean; hint?: { id: string; parts: (Html | string)[] } }): Html {
   const cls = o.primary ? "btn btn-primary" : "btn btn-outline";
   const nv = o.name === undefined ? "" : ` name="${esc(o.name)}" value="${esc(o.value ?? "")}"`;
-  return raw(`<button type="submit" class="${cls}"${nv}${o.focus ? " autofocus" : ""}>${esc(o.text)}</button>`);
+  const described = o.hint ? ` aria-describedby="${esc(o.hint.id)}"` : "";
+  const btn = `<button type="submit" class="${cls}"${nv}${described}${o.focus ? " autofocus" : ""}>${esc(o.text)}</button>`;
+  return raw(o.hint ? `<div class="choice">${btn}<p class="hint" id="${esc(o.hint.id)}">${join(o.hint.parts)}</p></div>` : btn);
 }
 
 export interface PageOptions {

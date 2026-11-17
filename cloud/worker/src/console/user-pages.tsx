@@ -28,7 +28,7 @@
 import type { AdminDevice, AdminMachine } from "@yaran/protocol";
 import { raw } from "hono/html";
 import type { Child } from "hono/jsx";
-import { CopyField, EmptyState, LinkButton, MachineState, RelativeTime, Row, Status, Table, Checkbox } from "./ui/components.tsx";
+import { breakable, CopyField, EmptyState, LinkButton, MachineState, RelativeTime, Row, Status, Table, Checkbox } from "./ui/components.tsx";
 import { AlreadyRemoved, ConfirmBody } from "./ui/confirm.tsx";
 import { Shell, USER_NAV } from "./ui/shell.tsx";
 import { S } from "./ui/strings.ts";
@@ -66,8 +66,10 @@ export function MachinesPage(p: UserPageBase & { machines: readonly AdminMachine
                 </>,
                 <MachineState status={m.status} />,
                 <RelativeTime iso={m.last_seen_at ?? null} />,
-                <a class="name" href={m.url}>
-                  {m.hostname}
+                // The way into the machine: a 40px outline control that says Open and shows the whole address.
+                <a class="btn btn-outline open-link" href={m.url}>
+                  <span>{S.machines.open}</span>{" "}
+                  <span class="name">{breakable(m.hostname)}</span>
                 </a>,
                 <LinkButton href={`/console/machines/${encodeURIComponent(m.id)}/unpair`} confirm>
                   {S.machines.unpair}
@@ -112,6 +114,7 @@ export function PushCell(props: { device: AdminDevice }) {
     <>
       <Status tone={S.pushTone[d.push_state] ?? "off"}>{S.pushState[d.push_state] ?? d.push_state}</Status>
       {d.push.channel ? <span class="muted sub">via {S.pushChannel[d.push.channel] ?? d.push.channel}</span> : null}
+      {d.push_state === "gone" || d.push_state === "auth_failed" ? <span class="muted sub">{S.pushRecovery}</span> : null}
     </>
   );
 }

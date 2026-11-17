@@ -1,6 +1,7 @@
 /**
- * The W2 pairing pages: the confirm page (machine, email and key fingerprint as chips,
- * Approve or Deny, or Replace and Pair-as on the same-name branch), the provisioning
+ * The W2 pairing pages: the confirm page (one constant question, the machine, account and
+ * key fingerprint in a facts panel, Approve or Deny, or Replace and Pair-as on the same-name
+ * branch, each a short verb with the name it acts on described under it), the provisioning
  * error page with its Retry, and the plain refusal page for a bad callback or state.
  *
  * Built only from the console UI kit (`ui/kit.ts`), so every value is escaped there and every
@@ -23,7 +24,7 @@
  * <module-headers:end>
  */
 import type { ErrorCode } from "@yaran/protocol";
-import { button, chip, form, heading, notice, page, prose, type Html } from "../ui/kit.ts";
+import { button, chip, facts, form, heading, notice, page, prose, type Html } from "../ui/kit.ts";
 
 export const PAIR_FORM_ACTION = "/v1/pair/authorize";
 
@@ -43,27 +44,40 @@ const loopback = (port: number) => `http://127.0.0.1:${port}`;
 export function confirmPage(i: ConfirmPageInput): Response {
   const hidden = { request_id: i.requestId, csrf: i.csrf };
   const body: Html[] = [
-    heading("Pair ", chip(i.machineName), " with your account?"),
-    prose("You are signed in as ", chip(i.email), ". Approving gives this machine its own private address that only you can open."),
-    prose("Check that this key fingerprint matches the one ", chip("yaran cloud login"), " printed in your terminal:"),
-    prose(chip(i.fingerprint, { mono: true, label: "Machine key fingerprint" })),
-    prose("If it does not match, or you did not just run that command, choose Deny."),
+    // A constant question: the names live in the panel below, so a 32-character name never
+    // turns the heading or the decisions into a wall of text at enlarged sizes.
+    heading("Pair this machine?"),
+    prose("Approving gives this machine its own private address that only you can open."),
+    facts([
+      ["Machine", chip(i.machineName)],
+      ["Signed in as", chip(i.email)],
+      ["Machine key fingerprint", chip(i.fingerprint, { mono: true })],
+    ]),
+    prose("Check that this fingerprint matches the one ", chip("yaran cloud login"), " printed in your terminal. If it does not match, or you did not just run that command, choose Deny."),
   ];
   if (i.sameName) {
     body.push(
-      notice("info", "You already have a machine called ", chip(i.machineName), ". Replace it if this is the same computer paired again; the old one is removed only after this one connects."),
+      // The name is in the panel above; the notice and the choices say what happens to it.
+      notice("info", "You already have an active machine with this name."),
       // Two distinct actions, both approvals: Replace carries replace_machine_id, Pair-as omits it.
       form(
         PAIR_FORM_ACTION,
         { ...hidden, decision: "approve" },
         [
-          button({ name: "replace_machine_id", value: i.sameName.id, text: `Replace ${i.machineName}`, primary: true }),
-          button({ text: `Pair as ${i.sameName.nextName}` }),
+          button({
+            name: "replace_machine_id",
+            value: i.sameName.id,
+            text: "Replace the old machine",
+            primary: true,
+            hint: { id: "replace-hint", parts: ["For the same computer paired again: it keeps the name, and the old machine is removed only after this one connects."] },
+          }),
+          button({ text: "Pair as a new machine", hint: { id: "pair-as-hint", parts: ["Adds this computer as ", chip(i.sameName.nextName), ", next to the old one."] } }),
         ],
         "Approve pairing",
       ),
       // Replacing removes a machine, so focus starts on the refusal rather than preselecting it.
-      form(PAIR_FORM_ACTION, hidden, [button({ name: "decision", value: "deny", text: "Deny", focus: true })], "Deny pairing"),
+      // Pinned to the screen's bottom, so that focus does not scroll the question out of view.
+      form(PAIR_FORM_ACTION, hidden, [button({ name: "decision", value: "deny", text: "Deny", focus: true })], "Deny pairing", { sticky: true }),
     );
   } else {
     body.push(

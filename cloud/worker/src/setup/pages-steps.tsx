@@ -91,7 +91,11 @@ export function OrgPage(props: { problem?: StepProblem | undefined }) {
       </PostForm>
       {(props.problem === "no_org" || props.problem === "invalid_team_name") && (
         <PostForm action="/setup/org">
-          <Field id="team" label="Team name" hint="Becomes <team>.cloudflareaccess.com, the sign-in address your users see." required />
+          <Field id="team" label="Team name" hint={
+              <>
+                Becomes <Chip>{"<team>.cloudflareaccess.com"}</Chip>, the sign-in address your users see.
+              </>
+            } required />
           <div class="row">
             <Button name="action" value="create">
               Create the Zero Trust organization
@@ -281,7 +285,7 @@ export function DonePage(props: { record: SetupRecord }) {
         Setup is closed for good, and <Chip>{r.admin_email ?? ""}</Chip> is the first admin.
       </Notice>
       {r.workers_dev_disabled ? (
-        <Notice tone="info">The workers.dev address is turned off; only https://{r.cp_host} answers from now on.</Notice>
+        <Notice tone="info">The workers.dev address is turned off; only <Chip>{`https://${r.cp_host}`}</Chip> answers from now on.</Notice>
       ) : (
         <Notice tone="warn">
           Turning off the workers.dev address failed. It already refuses every request, and Health has a Disable workers.dev button to retry.
