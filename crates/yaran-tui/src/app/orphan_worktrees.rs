@@ -11,9 +11,16 @@
 
 use std::sync::mpsc;
 
+use yaran_core::leftover_folders::BranchChoice;
 use yaran_core::orphan_worktrees::OrphanWorktreeCandidate;
 
-use super::*;
+use super::components::PickerList;
+use super::{
+    Action, App, BindingScope, KeyCode, KeyEvent, Line, Modifier, OverlayMouseLayout, PathBuf,
+    PromptState, Result, Span, Style, render, thread,
+};
+use ratatui::prelude::*;
+use ratatui::widgets::{ListItem, Paragraph};
 
 /// Where the cleaner modal is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,10 +55,10 @@ pub(crate) enum OrphanWorktreesAnswer {
 
 impl App {
     /// `prune-orphan-worktrees`: open the cleaner and start the inventory.
-    pub(crate) fn open_orphan_worktree_cleaner(&mut self) -> Result<()> {
+    pub(crate) fn open_orphan_worktree_cleaner(&mut self) {
         if self.orphan_worktrees_rx.is_some() {
             self.set_warning("Orphan worktree cleanup is already running.");
-            return Ok(());
+            return;
         }
         self.prompt = PromptState::OrphanWorktrees(OrphanWorktreesPrompt {
             candidates: Vec::new(),
@@ -64,7 +71,6 @@ impl App {
                 yaran_core::orphan_worktrees::inventory(&paths).map_err(|err| format!("{err:#}")),
             )
         });
-        Ok(())
     }
 
     fn spawn_orphan_worker(
@@ -141,7 +147,7 @@ impl App {
                     match result {
                         Ok(()) => self.set_info(format!("Removed orphan worktree {shown}.")),
                         Err(message) => {
-                            self.set_error(yaran_core::sanitize::for_terminal(&message))
+                            self.set_error(yaran_core::sanitize::for_terminal(&message));
                         }
                     }
                     return;
@@ -226,13 +232,17 @@ impl App {
                     .is_some_and(|candidate| candidate.branch.is_some());
                 match key.code {
                     // `b` toggles branch deletion, only when there is a branch.
-                    KeyCode::Char('b') | KeyCode::Char(' ') if has_branch => {
+                    KeyCode::Char('b' | ' ') if has_branch => {
                         prompt.stage = OrphanWorktreesStage::Confirm {
                             delete_branch: !delete_branch,
                         };
                     }
                     _ if matches!(action, Some(Action::Confirm)) => {
-                        self.dispatch_orphan_worktree_removal(delete_branch && has_branch);
+                        self.dispatch_orphan_worktree_removal(if delete_branch && has_branch {
+                            BranchChoice::Delete
+                        } else {
+                            BranchChoice::Keep
+                        });
                     }
                     _ => {}
                 }
@@ -241,7 +251,7 @@ impl App {
         Some(false)
     }
 
-    fn dispatch_orphan_worktree_removal(&mut self, delete_branch: bool) {
+    fn dispatch_orphan_worktree_removal(&mut self, branch: BranchChoice) {
         let PromptState::OrphanWorktrees(prompt) = &mut self.prompt else {
             return;
         };
@@ -252,21 +262,22 @@ impl App {
         prompt.stage = OrphanWorktreesStage::Removing;
         let paths = self.engine.paths.clone();
         self.spawn_orphan_worker("orphan-worktree-remove", move || {
-            let result = yaran_core::orphan_worktrees::remove(
-                &paths,
-                &candidate.worktree_path,
-                delete_branch,
-            )
-            .map_err(|err| format!("{err:#}"));
+            let result =
+                yaran_core::orphan_worktrees::remove(&paths, &candidate.worktree_path, branch)
+                    .map_err(|err| format!("{err:#}"));
             OrphanWorktreesAnswer::Removed {
                 worktree_path: candidate.worktree_path,
-                delete_branch,
+                delete_branch: branch == BranchChoice::Delete,
                 result,
             }
         });
     }
 
-    pub(crate) fn render_orphan_worktrees_prompt(&mut self, frame: &mut Frame) {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one renderer for the cleaner's every stage, each a few lines"
+    )]
+    pub(crate) fn render_orphan_worktrees_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::OrphanWorktrees(prompt) = &self.prompt else {
             return;
         };
@@ -297,9 +308,7 @@ impl App {
                     format!(
                         " Remove {}?",
                         yaran_core::sanitize::for_terminal(
-                            &candidate
-                                .map(|c| c.worktree_path.display().to_string())
-                                .unwrap_or_default()
+                            &candidate.map_or_default(|c| c.worktree_path.display().to_string())
                         )
                     ),
                     Style::default().add_modifier(Modifier::BOLD),
@@ -383,16 +392,20 @@ impl App {
                 ]))
             })
             .collect::<Vec<_>>();
-        let mut state = ListState::default()
-            .with_selected((!prompt.candidates.is_empty()).then_some(prompt.selected));
-        StatefulWidget::render(
-            List::new(items)
-                .highlight_symbol("› ")
-                .highlight_style(self.theme.selection_style()),
-            list_area,
-            frame.buffer_mut(),
-            &mut state,
-        );
+        let empty_text = if matches!(prompt.stage, OrphanWorktreesStage::Loading) {
+            "Listing worktrees…"
+        } else {
+            "No orphan worktrees: every worktree under yaran's root belongs to an agent."
+        };
+        let list = PickerList::new(items, Some(prompt.selected), empty_text)
+            // The dialog's own right border carries the scroll indicator.
+            .indicator_frame(area)
+            .render(frame, list_area, &self.theme);
+        self.overlay_layout.active = OverlayMouseLayout::OrphanWorktrees {
+            list: list.list,
+            items: list.items,
+            offset: list.offset,
+        };
 
         let confirm_key = self.bindings.label_for(Action::Confirm);
         let close_key = self.bindings.label_for(Action::CloseOverlay);
@@ -428,12 +441,12 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn candidate(name: &str, branch: Option<&str>, dirty: bool) -> OrphanWorktreeCandidate {
+    fn candidate(name: &str, branch: Option<&str>) -> OrphanWorktreeCandidate {
         OrphanWorktreeCandidate {
             project_path: PathBuf::from("/tmp/repo"),
             worktree_path: PathBuf::from(format!("/tmp/yaran/worktrees/{name}")),
             branch: branch.map(str::to_string),
-            dirty,
+            dirty: false,
         }
     }
 
@@ -457,7 +470,13 @@ mod tests {
     #[test]
     fn confirming_a_row_starts_with_branch_kept_and_esc_steps_back() {
         let mut app = test_app(default_bindings());
-        open_list(&mut app, vec![candidate("a", Some("a"), true)]);
+        open_list(
+            &mut app,
+            vec![OrphanWorktreeCandidate {
+                dirty: true,
+                ..candidate("a", Some("a"))
+            }],
+        );
 
         app.handle_orphan_worktrees_prompt_key(key(KeyCode::Enter));
         assert_eq!(
@@ -554,7 +573,7 @@ mod tests {
             .buffer()
             .content
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
 
         assert!(rendered.contains("DIRTY"));
@@ -566,7 +585,7 @@ mod tests {
     #[test]
     fn a_detached_row_cannot_toggle_branch_deletion() {
         let mut app = test_app(default_bindings());
-        open_list(&mut app, vec![candidate("d", None, false)]);
+        open_list(&mut app, vec![candidate("d", None)]);
         app.handle_orphan_worktrees_prompt_key(key(KeyCode::Enter));
         app.handle_orphan_worktrees_prompt_key(key(KeyCode::Char('b')));
         assert_eq!(
@@ -584,10 +603,7 @@ mod tests {
         let mut app = test_app(default_bindings());
         open_list(
             &mut app,
-            vec![
-                candidate("a", Some("a"), false),
-                candidate("b", Some("b"), false),
-            ],
+            vec![candidate("a", Some("a")), candidate("b", Some("b"))],
         );
         app.apply_orphan_worktrees_answer(OrphanWorktreesAnswer::Removed {
             worktree_path: PathBuf::from("/tmp/yaran/worktrees/b"),
@@ -647,7 +663,7 @@ mod tests {
     fn the_palette_command_runs_the_inventory_off_thread() {
         let mut app = test_app(default_bindings());
         yaran_core::storage::load_or_create_store_id(&app.engine.paths.root).unwrap();
-        app.execute_command("prune-orphan-worktrees".to_string())
+        app.execute_command("prune-orphan-worktrees")
             .expect("command");
         assert!(matches!(app.prompt, PromptState::OrphanWorktrees(_)));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

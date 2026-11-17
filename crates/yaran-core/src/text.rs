@@ -20,7 +20,7 @@ pub fn count_of(n: usize, singular: &str) -> String {
 /// same sentence gets this from `toLocaleString("en-US")`, so the separator is
 /// a comma here too rather than the reader's own locale: the two strings have
 /// to stay identical.
-pub fn group_digits(n: usize) -> String {
+pub(crate) fn group_digits(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, ch) in digits.chars().enumerate() {
@@ -42,9 +42,27 @@ pub fn count_of_with(n: usize, singular: &str, plural: &str) -> String {
     }
 }
 
+/// `bytes` as lowercase hexadecimal, two digits per byte: how a digest is
+/// spelled in a key, a token generation or a version.
+pub(crate) fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_lower_spells_every_byte_as_two_lowercase_digits() {
+        assert_eq!(hex_lower(&[0x00, 0x0a, 0xff, 0x5c]), "000aff5c");
+        assert_eq!(hex_lower(&[]), "");
+    }
 
     #[test]
     fn count_of_pluralizes_a_regular_noun() {

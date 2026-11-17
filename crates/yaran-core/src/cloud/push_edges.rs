@@ -9,8 +9,10 @@
 //! - Pure and engine-free; the engine calls `observe` once per tick.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_edges.rs
+//! ├── engine
 //! ├── engine::attention_decision
 //! └── ids
 //! External: std
@@ -19,23 +21,30 @@
 //! cloud/push_edges.rs
 //! ├── cloud
 //! └── engine::push_hook
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;
 
+use crate::engine::AttentionIndicator;
 use crate::engine::attention_decision::apply_attention_decision;
 use crate::ids::{TabId, TabIdRef};
 
 /// Which way a tab's push attention moved this tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeKind {
+    /// The tab started needing attention.
     Raised,
+    /// The tab stopped needing attention.
     Cleared,
 }
 
+/// One tab's change of push attention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edge {
+    /// The tab that moved.
     pub tab: TabId,
+    /// Which way it moved.
     pub kind: EdgeKind,
 }
 
@@ -48,15 +57,15 @@ pub struct PushEdges {
 impl PushEdges {
     /// One tick: apply the decision, drop tabs that are no longer live, return the diff
     /// (sorted by tab id so the order is deterministic).
-    pub fn observe(
+    pub(crate) fn observe(
         &mut self,
         fired: &[TabId],
-        enabled: bool,
+        indicator: AttentionIndicator,
         engaged: impl Fn(&TabIdRef) -> bool,
         live: impl Fn(&TabIdRef) -> bool,
     ) -> Vec<Edge> {
         let before = self.shadow.clone();
-        apply_attention_decision(&mut self.shadow, fired, enabled, engaged);
+        apply_attention_decision(&mut self.shadow, fired, indicator, engaged);
         self.shadow.retain(|tab| live(tab));
         let raised = self.shadow.difference(&before).map(|tab| Edge {
             tab: tab.clone(),
@@ -106,26 +115,35 @@ mod tests {
     fn push_edges_raise_once_per_rising_edge() {
         let mut e = PushEdges::default();
         assert_eq!(
-            e.observe(&[t("a")], true, NOT_ENGAGED, LIVE),
+            e.observe(&[t("a")], AttentionIndicator::On, NOT_ENGAGED, LIVE),
             vec![raised("a")]
         );
         // Firing again while flagged is not an edge.
-        assert!(e.observe(&[t("a")], true, NOT_ENGAGED, LIVE).is_empty());
-        assert!(e.observe(&[], true, NOT_ENGAGED, LIVE).is_empty());
+        assert_eq!(
+            e.observe(&[t("a")], AttentionIndicator::On, NOT_ENGAGED, LIVE),
+            Vec::<crate::cloud::push_edges::Edge>::new()
+        );
+        assert_eq!(
+            e.observe(&[], AttentionIndicator::On, NOT_ENGAGED, LIVE),
+            Vec::<crate::cloud::push_edges::Edge>::new()
+        );
     }
 
     #[test]
     fn push_edges_engaged_suppresses_the_raise() {
         let mut e = PushEdges::default();
-        assert!(e.observe(&[t("a")], true, |_| true, LIVE).is_empty());
+        assert_eq!(
+            e.observe(&[t("a")], AttentionIndicator::On, |_| true, LIVE),
+            Vec::<crate::cloud::push_edges::Edge>::new()
+        );
     }
 
     #[test]
     fn push_edges_viewed_then_next_tick_clears() {
         let mut e = PushEdges::default();
-        e.observe(&[t("a")], true, NOT_ENGAGED, LIVE);
+        e.observe(&[t("a")], AttentionIndicator::On, NOT_ENGAGED, LIVE);
         assert_eq!(
-            e.observe(&[], true, |tab| tab.as_str() == "a", LIVE),
+            e.observe(&[], AttentionIndicator::On, |tab| tab.as_str() == "a", LIVE),
             vec![cleared("a")]
         );
     }
@@ -133,9 +151,10 @@ mod tests {
     #[test]
     fn push_edges_provider_gone_clears() {
         let mut e = PushEdges::default();
-        e.observe(&[t("a"), t("b")], true, NOT_ENGAGED, LIVE);
+        e.observe(&[t("a"), t("b")], AttentionIndicator::On, NOT_ENGAGED, LIVE);
         assert_eq!(
-            e.observe(&[], true, NOT_ENGAGED, |tab| tab.as_str() != "a"),
+            e.observe(&[], AttentionIndicator::On, NOT_ENGAGED, |tab| tab.as_str()
+                != "a"),
             vec![cleared("a")]
         );
         assert!(e.contains(TabIdRef::new("b")));
@@ -144,9 +163,9 @@ mod tests {
     #[test]
     fn push_edges_disabled_clears_everything() {
         let mut e = PushEdges::default();
-        e.observe(&[t("a"), t("b")], true, NOT_ENGAGED, LIVE);
+        e.observe(&[t("a"), t("b")], AttentionIndicator::On, NOT_ENGAGED, LIVE);
         assert_eq!(
-            e.observe(&[t("c")], false, NOT_ENGAGED, LIVE),
+            e.observe(&[t("c")], AttentionIndicator::Off, NOT_ENGAGED, LIVE),
             vec![cleared("a"), cleared("b")]
         );
     }
@@ -154,10 +173,10 @@ mod tests {
     #[test]
     fn push_edges_reraise_after_clear_raises_again() {
         let mut e = PushEdges::default();
-        e.observe(&[t("a")], true, NOT_ENGAGED, LIVE);
-        e.observe(&[], true, |_| true, LIVE);
+        e.observe(&[t("a")], AttentionIndicator::On, NOT_ENGAGED, LIVE);
+        e.observe(&[], AttentionIndicator::On, |_| true, LIVE);
         assert_eq!(
-            e.observe(&[t("a")], true, NOT_ENGAGED, LIVE),
+            e.observe(&[t("a")], AttentionIndicator::On, NOT_ENGAGED, LIVE),
             vec![raised("a")]
         );
     }
@@ -170,8 +189,8 @@ mod tests {
         let ticks: [&[TabId]; 3] = [&[t("a")], &[t("b")], &[]];
         for (i, fired) in ticks.into_iter().enumerate() {
             let engaged = |tab: &TabIdRef| i == 2 && tab.as_str() == "a";
-            e.observe(fired, true, engaged, LIVE);
-            apply_attention_decision(&mut ui, fired, true, engaged);
+            e.observe(fired, AttentionIndicator::On, engaged, LIVE);
+            apply_attention_decision(&mut ui, fired, AttentionIndicator::On, engaged);
             for tab in ["a", "b"] {
                 assert_eq!(
                     e.contains(TabIdRef::new(tab)),

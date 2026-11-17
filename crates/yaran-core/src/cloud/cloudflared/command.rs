@@ -13,6 +13,7 @@
 //!   is why every spawn happens on the leg's one long-lived supervisor thread).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/command.rs
 //! ├── bounded_command
@@ -26,6 +27,7 @@
 //! ├── cloud::cloudflared::supervisor::tests
 //! ├── cloud::leg_run
 //! └── yaran-web::cloud_loop
+//! ```
 //! <module-headers:end>
 
 use std::ffi::OsString;
@@ -46,11 +48,17 @@ const LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error", "fatal"];
 /// Everything needed to start one cloudflared child.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChildSpec {
+    /// The cloudflared binary.
     pub binary: PathBuf,
+    /// Its metrics port on loopback.
     pub metrics_port: u16,
+    /// Its log level.
     pub loglevel: String,
+    /// How long it may drain connections when stopped.
     pub grace_seconds: u64,
+    /// Whether its remote management diagnostics are on.
     pub management_diagnostics: bool,
+    /// The owner-only file it reads the tunnel token from.
     pub token_file: PathBuf,
 }
 
@@ -111,14 +119,16 @@ impl ChildSpec {
 
 #[cfg(target_os = "linux")]
 fn set_parent_death_signal(cmd: &mut Command) {
-    // SAFETY: prctl is async-signal-safe and touches only the forked child.
+    let prepare_child = || {
+        // SAFETY: prctl is async-signal-safe and touches only the forked child.
+        if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // SAFETY: the callback uses only async-signal-safe operations after fork.
     unsafe {
-        cmd.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+        cmd.pre_exec(prepare_child);
     }
 }
 
@@ -128,6 +138,10 @@ fn set_parent_death_signal(_cmd: &mut Command) {}
 /// The metrics port to pass: the configured one, or a free loopback port when it is 0.
 /// cloudflared may lose the race for a probed port; it then exits 1 and the restart picks
 /// a new one.
+///
+/// # Errors
+///
+/// Fails when no free loopback port can be found.
 pub fn resolve_metrics_port(configured: u16) -> std::io::Result<u16> {
     if configured != 0 {
         return Ok(configured);
@@ -137,6 +151,10 @@ pub fn resolve_metrics_port(configured: u16) -> std::io::Result<u16> {
 }
 
 /// Write the tunnel token to a fresh 0600 file (any previous one is replaced).
+///
+/// # Errors
+///
+/// Fails when the owner-only file cannot be written.
 pub fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
     let _ = std::fs::remove_file(path);
     let mut file = std::fs::OpenOptions::new()
@@ -231,7 +249,7 @@ mod tests {
     /// Offline: a nonexistent token file must fail with 255 and "Failed to read token file",
     /// proving every flag is accepted where yaran puts it.
     #[test]
-    #[ignore]
+    #[ignore = "needs the pinned cloudflared binary in YARAN_TEST_CLOUDFLARED"]
     fn real_cloudflared_accepts_the_flag_placement() {
         let Some(bin) = std::env::var_os("YARAN_TEST_CLOUDFLARED") else {
             panic!("set YARAN_TEST_CLOUDFLARED to the pinned cloudflared binary");
@@ -246,6 +264,7 @@ mod tests {
         let cmd = spec.command();
         let outcome = crate::bounded_command::run_command_with_timeout(
             cmd,
+            crate::bounded_command::ChildGroup::New,
             std::time::Duration::from_secs(20),
             crate::bounded_command::DEFAULT_READER_DRAIN,
             "cloudflared",

@@ -37,31 +37,31 @@ fn sample_board() -> Board {
     let mut board = Board::default();
     board
         .post(
-            new_card(CardKind::Info, Some("3101"), "Deployed to dev"),
+            &new_card(CardKind::Info, Some("3101"), "Deployed to dev"),
             at(0),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Validate, Some("4812"), "Check signup"),
+            &new_card(CardKind::Validate, Some("4812"), "Check signup"),
             at(1),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Task, None, "Pick the launch date"),
+            &new_card(CardKind::Task, None, "Pick the launch date"),
             at(2),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Confirm, Some("3770"), "Merge the auth fix?"),
+            &new_card(CardKind::Confirm, Some("3770"), "Merge the auth fix?"),
             at(3),
         )
         .unwrap();
     board
         .post(
-            new_card(CardKind::Task, Some("1205"), "Old question"),
+            &new_card(CardKind::Task, Some("1205"), "Old question"),
             at(4),
         )
         .unwrap();
@@ -84,7 +84,7 @@ fn screen(app: &mut App) -> String {
         .map(|cell| cell.symbol().to_string())
         .collect::<Vec<_>>()
         .chunks(width)
-        .map(|row| row.concat())
+        .map(<[std::string::String]>::concat)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -98,6 +98,7 @@ fn staged_file(path: &str) -> yaran_core::model::ChangedFile {
         binary: false,
         diff_excluded: false,
         renamed_from: None,
+        kind: yaran_core::model::ChangedFileKind::File,
     }
 }
 
@@ -105,7 +106,7 @@ fn staged_file(path: &str) -> yaran_core::model::ChangedFile {
 fn board_app(board: Option<Board>) -> App {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     if let Some(board) = board {
         let store = BoardStore::new(&app.engine.paths.root);
         store
@@ -156,16 +157,16 @@ fn rows_group_open_cards_by_kind_then_show_recent_done() {
 #[test]
 fn an_empty_board_has_no_rows() {
     let (rows, slots) = board_rows(&Board::default(), &Audience::Everyone);
-    assert!(rows.is_empty());
-    assert!(slots.is_empty());
+    assert_eq!(rows, Vec::<crate::app::human_board::BoardRow>::new());
+    assert_eq!(slots, Vec::<yaran_core::human_board::CardId>::new());
 }
 
 #[test]
 fn done_shows_only_the_most_recent_few() {
     let mut board = Board::default();
-    for n in 0..(RECENT_DONE as i64 + 3) {
+    for n in 0..(i64::try_from(RECENT_DONE).unwrap() + 3) {
         board
-            .post(new_card(CardKind::Info, None, &format!("n{n}")), at(n))
+            .post(&new_card(CardKind::Info, None, &format!("n{n}")), at(n))
             .unwrap();
         let id = board.cards.last().unwrap().id.clone();
         board.resolve(id, None, None, at(n)).unwrap();
@@ -190,7 +191,10 @@ fn fit_width_cuts_on_display_columns() {
 fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
     let mut state = HumanBoardState::default();
     let board = sample_board();
-    assert!(state.apply_snapshot(Ok(board.clone())).is_empty());
+    assert_eq!(
+        state.apply_snapshot(Ok(board.clone())),
+        Vec::<yaran_core::human_board::Card>::new()
+    );
     assert_eq!(
         state.selected,
         Some(CardId::plain(3)),
@@ -198,7 +202,7 @@ fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
     );
 
     let mut next = board.clone();
-    next.post(new_card(CardKind::Confirm, Some("7"), "Roll it?"), at(10))
+    next.post(&new_card(CardKind::Confirm, Some("7"), "Roll it?"), at(10))
         .unwrap();
     let fresh = state.apply_snapshot(Ok(next));
     assert_eq!(fresh.len(), 1);
@@ -220,10 +224,10 @@ fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
 fn news_only_announcements_do_not_claim_to_wait_on_you() {
     let mut board = Board::default();
     board
-        .post(new_card(CardKind::Info, None, "a"), at(0))
+        .post(&new_card(CardKind::Info, None, "a"), at(0))
         .unwrap();
     board
-        .post(new_card(CardKind::Info, None, "b"), at(1))
+        .post(&new_card(CardKind::Info, None, "b"), at(1))
         .unwrap();
     let fresh: Vec<_> = board.cards.clone();
     let message = announcement(&fresh).unwrap();
@@ -248,7 +252,7 @@ fn the_selection_follows_its_card_when_a_new_one_lands_above_it() {
 
     // A new task card sorts above it; the selection stays on card 2.
     let mut next = board;
-    next.post(new_card(CardKind::Task, None, "New decision"), at(20))
+    next.post(&new_card(CardKind::Task, None, "New decision"), at(20))
         .unwrap();
     state.apply_snapshot(Ok(next));
     assert_eq!(state.selected, Some(CardId::plain(2)));
@@ -284,7 +288,10 @@ fn moving_the_selection_stops_at_both_ends() {
 #[test]
 fn an_unreadable_board_keeps_no_selection_and_announces_nothing() {
     let mut state = HumanBoardState::default();
-    assert!(state.apply_snapshot(Err("broken".to_string())).is_empty());
+    assert_eq!(
+        state.apply_snapshot(Err("broken".to_string())),
+        Vec::<yaran_core::human_board::Card>::new()
+    );
     assert_eq!(state.selected, None);
     assert!(state.readable().is_none());
 }
@@ -334,7 +341,7 @@ fn the_board_fills_the_column_and_changes_is_a_tab_beside_it() {
 #[test]
 fn with_the_board_off_the_right_column_is_unchanged() {
     let mut app = test_app(default_bindings());
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     app.engine.staged_files = vec![staged_file("a.rs")];
     assert!(!app.engine.config.ui.human_board, "off by default");
     assert_eq!(app.right_lower(), RightLower::StagedAndCommit);
@@ -362,7 +369,7 @@ fn an_empty_board_says_so_and_how_cards_arrive() {
 fn an_unreadable_board_says_why_in_the_pane() {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     std::fs::write(app.engine.paths.root.join("human_board.json"), "{ nope").unwrap();
     app.load_human_board_now();
     let text = screen(&mut app);
@@ -516,7 +523,7 @@ fn clicking_a_card_row_focuses_the_board_and_selects_it() {
     let click = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: list.x + 3,
-        row: list.y + row as u16,
+        row: list.y + u16::try_from(row).unwrap_or(u16::MAX),
         modifiers: KeyModifiers::NONE,
     };
     app.handle_mouse(click);
@@ -546,8 +553,7 @@ fn the_toggle_flips_the_setting_and_moves_the_cursor_off_a_hidden_section() {
 #[test]
 fn the_palette_runs_the_toggle() {
     let mut app = test_app(default_bindings());
-    app.execute_command("toggle-human-board".to_string())
-        .unwrap();
+    app.execute_command("toggle-human-board").unwrap();
     assert!(app.engine.config.ui.human_board);
 }
 
@@ -565,7 +571,7 @@ fn the_watcher_starts_with_the_setting_and_stops_without_it() {
     app.engine.config.ui.human_board = true;
     let store = BoardStore::new(&app.engine.paths.root);
     store
-        .update(|board| board.post(new_card(CardKind::Task, None, "x"), at(0)))
+        .update(|board| board.post(&new_card(CardKind::Task, None, "x"), at(0)))
         .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while app.human_board.readable().is_none() && std::time::Instant::now() < deadline {
@@ -617,7 +623,7 @@ fn a_narrow_column_keeps_the_waiting_count_and_drops_the_updates() {
         .map(|cell| cell.symbol().to_string())
         .collect::<Vec<_>>()
         .chunks(width)
-        .map(|row| row.concat())
+        .map(<[std::string::String]>::concat)
         .collect::<Vec<_>>()
         .join("\n");
     let title = text
@@ -634,7 +640,7 @@ fn a_compact_board_title_keeps_the_complete_waiting_count() {
     for index in 0..12 {
         board
             .post(
-                new_card(CardKind::Task, None, &format!("Review {index}")),
+                &new_card(CardKind::Task, None, &format!("Review {index}")),
                 at(index),
             )
             .unwrap();
@@ -648,7 +654,7 @@ fn a_compact_board_title_keeps_the_complete_waiting_count() {
             .buffer()
             .content()
             .chunks(usize::from(width))
-            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
             .collect();
         let title = rows.iter().find(|row| row.contains("Tasks ")).unwrap();
         assert!(title.contains("(12)"), "{title}");
@@ -699,7 +705,7 @@ fn reply_app() -> (App, String) {
     let mut board = Board::default();
     let mut card = new_card(CardKind::Confirm, Some("mvp-7"), "Merge the auth fix?");
     card.from = Some("session-1".to_string());
-    board.post(card, at(0)).unwrap();
+    board.post(&card, at(0)).unwrap();
     let mut app = board_app(Some(board));
     let tab = app.focused_tab_id("session-1");
     app.engine
@@ -724,14 +730,14 @@ fn focus_rings_include_the_reply_field_only_when_there_is_one() {
         reply: true,
         ..CardStops::default()
     };
-    assert_eq!(F::Reply.step(true, reply), F::Close);
-    assert_eq!(F::Close.step(true, reply), F::Send);
-    assert_eq!(F::Send.step(true, reply), F::Action);
-    assert_eq!(F::Action.step(true, reply), F::Reply);
-    assert_eq!(F::Reply.step(false, reply), F::Action);
+    assert_eq!(F::Reply.step(FocusStep::Forward, reply), F::Close);
+    assert_eq!(F::Close.step(FocusStep::Forward, reply), F::Send);
+    assert_eq!(F::Send.step(FocusStep::Forward, reply), F::Action);
+    assert_eq!(F::Action.step(FocusStep::Forward, reply), F::Reply);
+    assert_eq!(F::Reply.step(FocusStep::Backward, reply), F::Action);
     let bare = CardStops::default();
-    assert_eq!(F::Close.step(true, bare), F::Action);
-    assert_eq!(F::Action.step(true, bare), F::Close);
+    assert_eq!(F::Close.step(FocusStep::Forward, bare), F::Action);
+    assert_eq!(F::Action.step(FocusStep::Forward, bare), F::Close);
     // A choice of recipients and another person add their stops in drawing
     // order: the recipient after the field, Assign after the action.
     let all = CardStops {
@@ -742,7 +748,7 @@ fn focus_rings_include_the_reply_field_only_when_there_is_one() {
     let mut at = F::Reply;
     let mut ring = vec![at];
     for _ in 0..5 {
-        at = at.step(true, all);
+        at = at.step(FocusStep::Forward, all);
         ring.push(at);
     }
     assert_eq!(
@@ -756,7 +762,7 @@ fn focus_rings_include_the_reply_field_only_when_there_is_one() {
             F::Assign
         ]
     );
-    assert_eq!(F::Assign.step(true, all), F::Reply);
+    assert_eq!(F::Assign.step(FocusStep::Forward, all), F::Reply);
 }
 
 #[test]
@@ -1005,7 +1011,8 @@ fn the_selected_card_row_uses_the_agent_lists_soft_tint() {
         .board_row_to_slot
         .iter()
         .position(|slot| *slot == Some(1))
-        .expect("slot 1 drawn") as u16;
+        .expect("slot 1 drawn");
+    let row = u16::try_from(row).unwrap();
     let cell = &buffer[(list.x + 3, list.y + row)];
     assert_eq!(cell.bg, app.theme.selection_bar_tint());
     assert_ne!(
@@ -1033,7 +1040,7 @@ fn prioritized_board() -> Board {
     let mut post = |priority, title| {
         let mut c = new_card(CardKind::Task, None, title);
         c.priority = priority;
-        board.post(c, at(0)).unwrap();
+        board.post(&c, at(0)).unwrap();
     };
     post(None, "ordinary");
     post(Some(Priority::Low), "someday");
@@ -1088,7 +1095,7 @@ fn a_new_urgent_card_is_announced_as_such() {
     let mut board = Board::default();
     let mut c = new_card(CardKind::Confirm, Some("4"), "Roll now?");
     c.priority = Some(Priority::Critical);
-    board.post(c, at(0)).unwrap();
+    board.post(&c, at(0)).unwrap();
     let message = announcement(&board.cards).unwrap();
     assert!(
         message.contains("(Critical priority, Confirmation needed"),
@@ -1110,7 +1117,7 @@ fn long_card_app() -> App {
             .join("\n"),
     );
     c.from = Some("session-1".to_string());
-    board.post(c, at(0)).unwrap();
+    board.post(&c, at(0)).unwrap();
     let mut app = board_app(Some(board));
     // The poster runs, so the dialog opens with its reply field focused.
     let tab = app.focused_tab_id("session-1");
@@ -1197,16 +1204,16 @@ fn team_app() -> App {
     app.engine.config.ui.human_board = true;
     app.engine.config.board.people = vec!["Sam".to_string(), "Alex".to_string()];
     app.engine.config.board.me = "alex".to_string();
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     let mut board = Board::default();
     let mut for_sam = new_card(CardKind::Task, None, "Sign the contract");
     for_sam.assignee = Some("Sam".to_string());
-    board.post(for_sam, at(0)).unwrap();
+    board.post(&for_sam, at(0)).unwrap();
     let mut for_alex = new_card(CardKind::Validate, None, "Check the release");
     for_alex.assignee = Some("Alex".to_string());
-    board.post(for_alex, at(1)).unwrap();
+    board.post(&for_alex, at(1)).unwrap();
     board
-        .post(new_card(CardKind::Info, None, "Deployed"), at(2))
+        .post(&new_card(CardKind::Info, None, "Deployed"), at(2))
         .unwrap();
     BoardStore::new(&app.engine.paths.root)
         .update(|current| {
@@ -1326,8 +1333,8 @@ fn only_cards_for_me_are_announced() {
         .update(|board| {
             let mut c = new_card(CardKind::Task, None, "For Sam only");
             c.assignee = Some("Sam".to_string());
-            board.post(c, at(5))?;
-            board.post(new_card(CardKind::Task, None, "For anyone"), at(6))
+            board.post(&c, at(5))?;
+            board.post(&new_card(CardKind::Task, None, "For anyone"), at(6))
         })
         .unwrap();
     let fresh = app.load_human_board_now();
@@ -1353,7 +1360,7 @@ fn a_shared_board_shows_how_its_last_sync_went() {
     let mut app = board_app(Some(sample_board()));
     app.human_board.last_sync = Some(yaran_core::human_board::sync::SyncOutcome {
         at: Utc::now(),
-        result: Ok(Default::default()),
+        result: Ok(yaran_core::human_board::sync::SyncReport::default()),
     });
     let text = screen(&mut app);
     assert!(text.contains("synced "), "{text}");
@@ -1369,7 +1376,7 @@ fn a_shared_board_shows_how_its_last_sync_went() {
 fn a_folder_board_reads_its_notes() {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     let folder = app.engine.paths.root.join("shared-board");
     app.engine.config.board.dir = folder.to_string_lossy().into_owned();
     app.engine.config.board.me = "Kim".to_string();
@@ -1401,20 +1408,20 @@ fn a_folder_board_reads_its_notes() {
 /// A board shared by Sam and Alex, run by `me`, holding one card that Sam's
 /// agent `session-1` posted on Sam's board for Alex. The agent runs here only
 /// when `me` is Sam.
-fn two_sided_app(me: &str, blocking: bool) -> (App, String) {
+fn two_sided_app(me: &str, blocking: yaran_core::human_board::Blocking) -> (App, String) {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
     app.engine.config.board.people = vec!["Sam".to_string(), "Alex".to_string()];
     app.engine.config.board.me = me.to_string();
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     let mut board = Board::default();
     board.prefix = "S".to_string();
     let mut card = new_card(CardKind::Confirm, Some("db-9"), "Drop the old audit table?");
     card.from = Some("session-1".to_string());
     card.assignee = Some("Alex".to_string());
     card.origin = Some("Sam".to_string());
-    card.blocking = Some(blocking);
-    board.post(card, at(0)).unwrap();
+    card.blocking = Some(blocking == yaran_core::human_board::Blocking::HoldsPoster);
+    board.post(&card, at(0)).unwrap();
     BoardStore::new(&app.engine.paths.root)
         .update(|current| {
             *current = board;
@@ -1448,16 +1455,16 @@ fn card_s1(app: &App) -> Card {
 }
 
 /// Something written on the other side's machine lands on the board.
-fn other_side_says(app: &mut App, from: &str, text: &str, done: bool) {
+fn other_side_says(app: &mut App, from: &str, text: &str, done: ReplyDone) {
     BoardStore::new(&app.engine.paths.root)
         .update(|board| {
             board.reply(
                 CardId::new("S", 1),
-                yaran_core::human_board::NewMessage {
+                &yaran_core::human_board::NewMessage {
                     from: from.to_string(),
                     side: Some(from.to_string()),
                     text: text.to_string(),
-                    done,
+                    done: done == ReplyDone::MarkDone,
                 },
                 Utc::now(),
             )
@@ -1479,7 +1486,7 @@ fn latest_status(app: &App) -> String {
 
 #[test]
 fn a_card_from_the_other_side_answers_its_person_through_the_board() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let PromptState::HumanBoardCard {
         reply: Some(reply), ..
@@ -1533,11 +1540,11 @@ fn a_card_from_the_other_side_answers_its_person_through_the_board() {
 
 #[test]
 fn send_and_mark_done_answers_the_other_side_and_closes_the_card() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     type_text(&mut app, "Yes, drop it.");
     // The action button with text in the field: send it and mark done.
-    app.resolve_human_board_card(true);
+    app.resolve_human_board_card(CardExit::Act);
     app.finish_board_job();
     let card = card_s1(&app);
     assert!(!card.is_open());
@@ -1548,7 +1555,7 @@ fn send_and_mark_done_answers_the_other_side_and_closes_the_card() {
 
 #[test]
 fn on_your_own_card_you_can_ask_the_other_person_instead_of_the_agent() {
-    let (mut app, tab) = two_sided_app("Sam", false);
+    let (mut app, tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let PromptState::HumanBoardCard {
         reply: Some(reply), ..
@@ -1584,7 +1591,7 @@ fn on_your_own_card_you_can_ask_the_other_person_instead_of_the_agent() {
 
 #[test]
 fn assign_opens_a_picker_of_everyone_and_esc_goes_back_to_the_card() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     // Only a task can be handed to someone else's queue.
     BoardStore::new(&app.engine.paths.root)
         .update(|board| {
@@ -1630,7 +1637,7 @@ fn assign_opens_a_picker_of_everyone_and_esc_goes_back_to_the_card() {
 
 #[test]
 fn news_and_confirmations_cannot_be_assigned() {
-    let (app, _tab) = two_sided_app("Alex", false);
+    let (app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     let mut card = card_s1(&app);
     assert!(!app.board_card_assignable(&card), "a confirmation");
     card.kind = CardKind::Info;
@@ -1643,14 +1650,14 @@ fn news_and_confirmations_cannot_be_assigned() {
 
 #[test]
 fn the_dots_say_what_waits_and_what_is_unread() {
-    let (mut app, _tab) = two_sided_app("Sam", true);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::HoldsPoster);
     let alex = yaran_core::human_board::Audience::Person("Alex");
     // The poster is blocked and nobody answered: red. Nothing from Alex yet.
     assert_eq!(app.board_queue_marks(&alex), (true, false));
     let text = screen(&mut app);
     assert!(text.contains("\u{25cf}"), "a dot on the tab strip: {text}");
 
-    other_side_says(&mut app, "Alex", "Which table?", false);
+    other_side_says(&mut app, "Alex", "Which table?", ReplyDone::Keep);
     // Alex answered: the poster is no longer waiting on a person, and Sam has
     // something unread.
     assert_eq!(app.board_queue_marks(&alex), (false, true));
@@ -1665,7 +1672,7 @@ fn the_dots_say_what_waits_and_what_is_unread() {
         .update(|board| {
             board.reply(
                 CardId::new("S", 1),
-                yaran_core::human_board::NewMessage {
+                &yaran_core::human_board::NewMessage {
                     from: "session-1".to_string(),
                     side: Some("Sam".to_string()),
                     text: "The audit_2019 table.".to_string(),
@@ -1686,8 +1693,13 @@ fn the_dots_say_what_waits_and_what_is_unread() {
 
 #[test]
 fn a_reply_from_the_other_side_is_announced() {
-    let (mut app, _tab) = two_sided_app("Sam", false);
-    other_side_says(&mut app, "Alex", "Yes, but keep a backup.", true);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
+    other_side_says(
+        &mut app,
+        "Alex",
+        "Yes, but keep a backup.",
+        ReplyDone::MarkDone,
+    );
     let status = latest_status(&app);
     assert!(
         status.contains("Alex answered and marked done card #S-1 [db-9]")
@@ -1699,7 +1711,7 @@ fn a_reply_from_the_other_side_is_announced() {
 #[test]
 fn a_reply_from_the_other_side_is_relayed_to_the_agent_that_asked() {
     use std::os::unix::fs::PermissionsExt;
-    let (mut app, _tab) = two_sided_app("Sam", false);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
     app.engine.config.board.relay = true;
     app.engine.config.board.relay_transport = "amq".to_string();
     let log = app.engine.paths.root.join("relayed.txt");
@@ -1713,7 +1725,7 @@ fn a_reply_from_the_other_side_is_relayed_to_the_agent_that_asked() {
     app.human_board.talk.relay_exe = Some(fake);
     app.drain_human_board();
 
-    other_side_says(&mut app, "Alex", "Yes, drop it.", false);
+    other_side_says(&mut app, "Alex", "Yes, drop it.", ReplyDone::Keep);
     app.drain_board_talk();
     app.finish_board_relay();
     let sent = std::fs::read_to_string(&log).expect("the relay ran");
@@ -1751,8 +1763,8 @@ fn a_reply_from_the_other_side_is_relayed_to_the_agent_that_asked() {
 
 #[test]
 fn with_relaying_off_send_forwards_the_other_sides_reply_by_hand() {
-    let (mut app, tab) = two_sided_app("Sam", false);
-    other_side_says(&mut app, "Alex", "Yes, drop it.", false);
+    let (mut app, tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
+    other_side_says(&mut app, "Alex", "Yes, drop it.", ReplyDone::Keep);
     app.open_selected_board_card();
     // The card is Alex's; choose the agent that posted it as the recipient.
     app.handle_key(key(KeyCode::Tab)).unwrap();
@@ -1797,7 +1809,7 @@ fn a_card_with_a_very_long_title_can_be_read_to_its_last_word() {
         "the draft policy says 30/14/7 days and the plan records the same resolution. ".repeat(60)
     );
     board
-        .post(new_card(CardKind::Task, Some("6001"), &question), at(0))
+        .post(&new_card(CardKind::Task, Some("6001"), &question), at(0))
         .unwrap();
     let mut app = board_app(Some(board));
     app.focus = FocusPane::Files;
@@ -1836,7 +1848,7 @@ fn find_on_screen(text: &str, needle: &str) -> Option<(usize, usize)> {
 
 #[test]
 fn typing_a_long_reply_grows_the_field_downward_and_moves_nothing_else() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let before = screen(&mut app);
     let top = find_on_screen(&before, "Card S-1").expect("the dialog title");
@@ -1871,13 +1883,13 @@ fn typing_a_long_reply_grows_the_field_downward_and_moves_nothing_else() {
         .count();
     assert_eq!(
         field_rows,
-        super::super::human_board_dialog::REPLY_MAX_ROWS as usize
+        usize::from(super::super::human_board_dialog::REPLY_MAX_ROWS)
     );
 }
 
 #[test]
 fn every_element_of_the_card_dialog_shares_one_left_edge() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let text = screen(&mut app);
     // Only the dialog: the board's own row shows the same title elsewhere.
@@ -1913,12 +1925,29 @@ fn every_element_of_the_card_dialog_shares_one_left_edge() {
     // Boxes draw their border down the middle of a cell, so text one column in
     // starts right where the borders do.
     assert_eq!(field_left + 1, reply, "the reply field's border");
-    assert_eq!(button_left + 1, reply, "the buttons' borders");
+    // The buttons take the shared row every dialog uses: centred between the
+    // same two edges the field spans.
+    let field_right = lines[field_row]
+        .chars()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|c| *c == '\u{256e}')
+        .expect("the field's top-right corner");
+    let button_right = lines[close_row - 1]
+        .chars()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|c| *c == '\u{256e}')
+        .expect("the last button's top-right corner");
+    assert!(
+        (button_left - field_left).abs_diff(field_right - button_right) <= 1,
+        "the buttons are centred: {button_left}..{button_right} in {field_left}..{field_right}"
+    );
 }
 
 #[test]
 fn a_drag_over_the_card_text_selects_it_and_copies_it() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     screen(&mut app);
     let body = app.human_board.card_view.body;
@@ -1974,7 +2003,8 @@ fn a_copy_joins_soft_wrapped_rows_with_a_space_and_keeps_real_breaks() {
         anchor: TermGridPos { row: 0, col: 0 },
         end: TermGridPos { row: 2, col: 40 },
         dragging: false,
-        origin: Default::default(),
+        origin: crate::app::SelectionOrigin::default(),
+        part: crate::app::CenterPart::Main,
     };
     assert_eq!(
         selected_card_text(&rows, &continues, &all),
@@ -1988,19 +2018,19 @@ fn news_closes_by_itself_after_the_configured_hours() {
         let mut board = Board::default();
         board
             .post(
-                new_card(CardKind::Info, None, "Deployed"),
+                &new_card(CardKind::Info, None, "Deployed"),
                 Utc::now() - chrono::Duration::hours(5),
             )
             .unwrap();
         board
             .post(
-                new_card(CardKind::Info, None, "Rolled"),
+                &new_card(CardKind::Info, None, "Rolled"),
                 Utc::now() - chrono::Duration::hours(1),
             )
             .unwrap();
         board
             .post(
-                new_card(CardKind::Task, None, "Decide"),
+                &new_card(CardKind::Task, None, "Decide"),
                 Utc::now() - chrono::Duration::hours(9),
             )
             .unwrap();
@@ -2025,7 +2055,7 @@ fn news_closes_by_itself_after_the_configured_hours() {
 #[test]
 fn a_card_in_someone_elses_queue_asks_them_first() {
     // Sam's own agent posted the card for Alex; Sam opens it on Sam's board.
-    let (mut app, _tab) = two_sided_app("Sam", false);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let PromptState::HumanBoardCard {
         reply: Some(reply), ..
@@ -2054,7 +2084,7 @@ fn a_card_in_someone_elses_queue_asks_them_first() {
 
 #[test]
 fn a_long_reply_scrolls_with_the_wheel_and_the_line_keys() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     screen(&mut app);
     type_text(&mut app, "FIRSTWORD ");

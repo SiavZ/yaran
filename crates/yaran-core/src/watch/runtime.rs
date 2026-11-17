@@ -17,10 +17,24 @@ use super::{WatchEngine, WatchRule};
 /// instead of rehashing the same text on every tick.
 #[derive(Clone)]
 pub struct WatchSnapshot {
+    /// The terminal generation the text came from.
     pub generation: u64,
+    /// When it was scanned.
     pub scanned_at: Instant,
+    /// The text.
     pub text: std::sync::Arc<str>,
+    /// Its fingerprint.
     pub key: super::SnapshotKey,
+}
+
+impl std::fmt::Debug for WatchSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchSnapshot")
+            .field("generation", &self.generation)
+            .field("scanned_at", &self.scanned_at)
+            .field("text_len", &self.text.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// One tab's attached engine plus the inputs it was built from, so a config
@@ -28,6 +42,7 @@ pub struct WatchSnapshot {
 /// built-in auto-clear rule) rebuilds it, and one that does not keeps its
 /// attempt counters and cooldowns.
 pub struct AttachedWatch {
+    /// The engine running the rules.
     pub engine: WatchEngine,
     /// The exact rule list the engine was built from (user rules, then the
     /// built-in auto-clear and auto-compact rules when attached).
@@ -38,6 +53,16 @@ pub struct AttachedWatch {
     pub auto_clear_idx: Option<usize>,
     /// Index of the built-in auto-compact rule, when attached.
     pub auto_compact_idx: Option<usize>,
+}
+
+impl std::fmt::Debug for AttachedWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttachedWatch")
+            .field("rules", &self.rules.len())
+            .field("auto_clear_idx", &self.auto_clear_idx)
+            .field("auto_compact_idx", &self.auto_compact_idx)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the engine knows about one compact instructions file, keyed in
@@ -56,8 +81,10 @@ pub struct CompactCommandCache {
     pub warning: Option<String>,
 }
 
-#[derive(Default)]
+/// Every live tab's watch engine and what drives them.
+#[derive(Debug, Default)]
 pub struct WatchRuntime {
+    /// Each tab's attached engine.
     pub attached: HashMap<TabId, AttachedWatch>,
     /// Tabs whose last `send_text` body is typed but whose submit key is
     /// deferred to a later tick (two-phase delivery), with when the body went.

@@ -7,6 +7,8 @@
 //! [`yaran_core::logger`], whose entry points take `&str`, so these return `String`
 //! and the call site logs them.
 
+use yaran_core::pty_owners::ResizeIntent;
+
 /// Why a resize frame was refused. A small enum rather than a free-text reason
 /// so a third refusal cannot be added without the formatter being taught about
 /// it: the match below is exhaustive.
@@ -16,8 +18,9 @@ pub enum ResizeRefusal {
     /// Ordinary, expected traffic: a watcher's window really does change size.
     NonOwnerPlainResize,
     /// The frame DID ask to take over, but named an expected predecessor that
-    /// no longer owns the pty (an unowned pty included). This is the delayed
-    /// ghost-succession frame the compare-and-swap exists to refuse.
+    /// neither holds the row nor, with the row free, was the last to hold it.
+    /// This is the delayed ghost-succession frame the compare-and-swap exists
+    /// to refuse.
     ExpectedOwnerMismatch,
 }
 
@@ -53,20 +56,27 @@ fn device_label(device: Option<&str>) -> &str {
 /// way the claim won, because a press and a self-succession are the same flag on
 /// the wire: a press is a person taking a terminal from another device, a
 /// self-succession is a blipped owner taking its own pty back on reconnect. They
-/// are told apart by `expected_owner`, which only a self-succession names.
+/// are told apart by the take-over's `expected_owner`, which only a
+/// self-succession names.
 pub fn describe_claim_granted(
     pty_id: &str,
     conn_id: u64,
     device: Option<&str>,
-    takeover: bool,
-    expected_owner: Option<u64>,
+    intent: ResizeIntent,
 ) -> String {
-    let how = match (takeover, expected_owner) {
-        (true, Some(ghost)) => {
-            format!("a self-succession over its own dead connection {ghost}")
+    let how = match intent {
+        ResizeIntent::TakeOver {
+            expected_owner: Some(ghost),
+        } => {
+            format!(
+                "a self-succession of its own earlier connection {ghost}, taking the row \
+                 from it or claiming the row after it let go"
+            )
         }
-        (true, None) => "an explicit take-over".to_string(),
-        (false, _) => "a plain claim of a pty nobody was driving".to_string(),
+        ResizeIntent::TakeOver {
+            expected_owner: None,
+        } => "an explicit take-over".to_string(),
+        ResizeIntent::Plain => "a plain claim of a pty nobody was driving".to_string(),
     };
     format!(
         "PTY {pty_id}: input and sizing ownership granted to connection {conn_id} \
@@ -92,13 +102,26 @@ pub fn describe_claim_refused(
             "the frame did not ask to take over, and attaching never steals"
         }
         ResizeRefusal::ExpectedOwnerMismatch => {
-            "the take-over named a predecessor that no longer owns the pty, so it \
-             was superseded before it arrived"
+            "the take-over named a predecessor that neither holds the row nor was the \
+             last to hold it, so it was superseded before it arrived"
         }
     };
     format!(
         "PTY {pty_id}: resize from connection {conn_id} refused whole, nothing applied \
          and nothing broadcast; {owner} and {why}"
+    )
+}
+
+/// A resize frame named a grid outside the bounds a PTY supports.
+pub fn describe_resize_out_of_bounds(pty_id: &str, conn_id: u64, rows: u16, cols: u16) -> String {
+    format!(
+        "PTY {pty_id}: resize from connection {conn_id} to {cols}x{rows} refused whole, \
+         nothing applied, claimed or broadcast; a terminal grid must be between {}x{} and \
+         {}x{} (columns by rows)",
+        yaran_core::pty::PTY_MIN_COLS,
+        yaran_core::pty::PTY_MIN_ROWS,
+        yaran_core::pty::PTY_MAX_COLS,
+        yaran_core::pty::PTY_MAX_ROWS,
     )
 }
 
@@ -130,14 +153,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_out_of_bounds_resize_line_reads_as_one_sentence() {
+        let line = describe_resize_out_of_bounds("s1", 7, 0, 0);
+        assert!(
+            line.contains("to 0x0 refused whole, nothing applied"),
+            "{line}"
+        );
+        assert!(!line.contains("  "), "{line}");
+    }
+
+    #[test]
     fn a_granted_claim_names_the_pty_the_connection_the_device_and_how_it_won() {
         assert_eq!(
-            describe_claim_granted("s1", 7, Some("Chrome UA"), true, None),
+            describe_claim_granted(
+                "s1",
+                7,
+                Some("Chrome UA"),
+                ResizeIntent::TakeOver {
+                    expected_owner: None
+                }
+            ),
             "PTY s1: input and sizing ownership granted to connection 7 (Chrome UA) \
              by an explicit take-over"
         );
         assert_eq!(
-            describe_claim_granted("term-2", 0, None, false, None),
+            describe_claim_granted("term-2", 0, None, ResizeIntent::Plain),
             "PTY term-2: input and sizing ownership granted to connection 0 \
              (no device label) by a plain claim of a pty nobody was driving"
         );
@@ -152,9 +192,17 @@ mod tests {
     #[test]
     fn a_granted_claim_tells_a_self_succession_from_a_press() {
         assert_eq!(
-            describe_claim_granted("s1", 7, Some("Chrome UA"), true, Some(4)),
+            describe_claim_granted(
+                "s1",
+                7,
+                Some("Chrome UA"),
+                ResizeIntent::TakeOver {
+                    expected_owner: Some(4)
+                }
+            ),
             "PTY s1: input and sizing ownership granted to connection 7 (Chrome UA) \
-             by a self-succession over its own dead connection 4"
+             by a self-succession of its own earlier connection 4, taking the row from \
+             it or claiming the row after it let go"
         );
     }
 
@@ -170,15 +218,15 @@ mod tests {
             describe_claim_refused("s1", 9, Some(4), ResizeRefusal::ExpectedOwnerMismatch),
             "PTY s1: resize from connection 9 refused whole, nothing applied and \
              nothing broadcast; connection 4 currently owns it and the take-over named \
-             a predecessor that no longer owns the pty, so it was superseded before it \
-             arrived"
+             a predecessor that neither holds the row nor was the last to hold it, so it \
+             was superseded before it arrived"
         );
         assert_eq!(
             describe_claim_refused("s1", 9, None, ResizeRefusal::ExpectedOwnerMismatch),
             "PTY s1: resize from connection 9 refused whole, nothing applied and \
              nothing broadcast; nobody currently owns it and the take-over named a \
-             predecessor that no longer owns the pty, so it was superseded before it \
-             arrived"
+             predecessor that neither holds the row nor was the last to hold it, so it \
+             was superseded before it arrived"
         );
     }
 

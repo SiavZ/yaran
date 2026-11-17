@@ -1,10 +1,14 @@
-//! yaran-core build script: stamps the display version, the git commit and the publisher domain into the crate.
+//! yaran-core build script: stamps the display version (`v<version>` for a
+//! release build, `development` otherwise), the git commit and the publisher
+//! domain into the crate.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: std
 //!
 //! Used by: entry point (cargo build script of yaran-core)
+//! ```
 //! <module-headers:end>
 
 use std::env;
@@ -41,8 +45,7 @@ fn stamp_publisher_domain() {
         .and_then(|(_, rest)| rest.split_once(':'))
         .and_then(|(_, rest)| rest.trim_start().strip_prefix('"'))
         .and_then(|rest| rest.split_once('"'))
-        .map(|(value, _)| value.trim().to_string())
-        .unwrap_or_default();
+        .map_or_default(|(value, _)| value.trim().to_string());
     println!("cargo:rustc-env=YARAN_PUBLISHER_DOMAIN={domain}");
 }
 

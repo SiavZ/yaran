@@ -4,11 +4,12 @@
 // (StandaloneEditor.tsx). Exactly one of the two mounts it at a time (the
 // overlay stands down while the tab is the standalone surface), so there is
 // never a second Monaco model set or a second buffer map over the same files.
+import { changedStatusLookup } from "@/lib/changedFiles"
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { readBrandedStorage } from "@/lib/brandedStorage"
 import {
   Check,
-  ChevronDown,
+  ChevronLeft,
   CircleAlert,
   Ellipsis,
   ExternalLink,
@@ -17,6 +18,7 @@ import {
   FileCode2,
   FilePlus,
   FileText,
+  FileType,
   GitCompare,
   Laptop,
   Loader2,
@@ -26,16 +28,21 @@ import {
   RefreshCw,
   RotateCw,
   Save,
+  SaveAll,
   Search,
-  Wand2,
+  SquareTerminal,
   X,
 } from "lucide-react"
 import type { PanelImperativeHandle } from "react-resizable-panels"
-import { notify, notifyBusy, notifyError, notifySuccess } from "@/lib/notify"
+import { notify, notifyBusy, notifyError, notifyInfo, notifySuccess } from "@/lib/notify"
 import { chip, prose } from "@/lib/prose"
+import { matchCharRanges } from "@/lib/searchMatch"
 import { fileApi } from "@/lib/fileApi"
 import { OPEN_IN_EDITORS } from "@/lib/editors"
 import {
+  bufferReadEncoding,
+  bufferSaveEncoding,
+  isBufferDirty,
   changeSignalFor,
   isBufferStale,
   pruneByIds,
@@ -46,6 +53,17 @@ import type { ChangesSliceView, TabBuffer } from "@/lib/editorBuffers"
 import { isAllDeleteDiff } from "@/lib/diffPresentation"
 import { diffHeadBanner } from "@/lib/diffHeadBanner"
 import { loadRootDrafts, storeRootDrafts } from "@/lib/editorDrafts"
+import { laneKey, useLaneBusy } from "@/lib/editorLane"
+import {
+  REOPEN_CHOICES,
+  SAVE_CHOICES,
+  dismissNotice,
+  encodingNotices,
+  encodingLabel,
+  noticeDismissed,
+  sameSaveEncoding,
+  type SaveEncoding,
+} from "@/lib/editorEncoding"
 import {
   rootHasDiff,
   rootKey,
@@ -61,7 +79,7 @@ import {
   renameTarget as computeRenameTarget,
 } from "@/lib/fileTreeOps"
 import { performMove } from "@/lib/moveEntry"
-import { deletedMessage } from "@/lib/editorMutations"
+import { deletedMessage, renamedMessage } from "@/lib/editorMutations"
 import {
   effectiveLanguageLabel,
   languageOverrideFor,
@@ -71,6 +89,7 @@ import {
   withLanguageOverride,
 } from "@/lib/editorLanguage"
 import type { RegisteredLanguage } from "@/lib/editorLanguage"
+import { loadRegisteredLanguages } from "@/lib/monacoLanguages"
 import { isLocalAccessHost } from "@/lib/localAccess"
 import {
   EDITOR_CONTENT_MIN_SIZE_PROP,
@@ -88,13 +107,24 @@ import {
   serializeExplorerLayout,
 } from "@/lib/editorLayout"
 import { isImagePreviewPath, previewKind } from "@/lib/editorPreview"
+import { planStatusBar, type ImageDimensions } from "@/lib/editorStatus"
+import { goToEditorSpot, readEditorSpot, type SpotEditor } from "@/lib/editorSpot"
+import { DEFAULT_EDITOR_VIEW, type EditorViewState } from "@/lib/routeQuery"
+import {
+  editorTitleProse,
+  standaloneEditorName,
+} from "@/lib/standaloneEditorName"
 import { performTreeDrop } from "@/lib/editorDrop"
 import type { DroppedItems } from "@/lib/editorDrop"
 import { nextFileDropToastId } from "@/lib/fileDrop"
 import { uploadDroppedFile } from "@/lib/fileDropApi"
+import { ACTIVE_ROW_RING } from "@yaran/ui-kit/focusRing"
 import { cn } from "@yaran/ui-kit/cn"
 import { useIsMobile } from "@yaran/ui-kit/use-mobile"
+import { LanguagePickerList } from "@/components/LanguagePickerList"
+import { Popover, PopoverContent } from "@yaran/ui-kit/popover"
 import { useObjectUrl } from "@/hooks/use-object-url"
+import { useSearchPick } from "@/hooks/use-search-pick"
 import type { MonacoInstance } from "@/components/CodeEditor"
 import { DeleteEntryDialog } from "@/components/DeleteEntryDialog"
 import type { DeleteEntryTarget } from "@/components/DeleteEntryDialog"
@@ -102,6 +132,11 @@ import { ConfirmReloadFileDialog } from "@/components/ConfirmReloadFileDialog"
 import type { ReloadFileTarget } from "@/components/ConfirmReloadFileDialog"
 import { EditorIcon } from "@/components/EditorIcon"
 import { FileDiskBanner } from "@/components/FileDiskBanner"
+import { EncodingNotice } from "@/components/EncodingNotice"
+import {
+  ConfirmReopenEncodingDialog,
+  type ReopenEncodingTarget,
+} from "@/components/ConfirmReopenEncodingDialog"
 import { SaveConflictDialog } from "@/components/SaveConflictDialog"
 import { useEditorDiffReads } from "@/components/useEditorDiffReads"
 import { useEditorFileReads } from "@/components/useEditorFileReads"
@@ -111,8 +146,14 @@ import {
 } from "@/components/useEditorDiskFreshness"
 import { useEditorSave } from "@/components/useEditorSave"
 import { EditorTabsStrip } from "@/components/EditorTabsStrip"
+import {
+  EditorStatusBar,
+  type StatusBarEditor,
+} from "@/components/EditorStatusBar"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 import { FileStatusIcon } from "@/components/FileStatusIcon"
 import { Button } from "@yaran/ui-kit/button"
+import { ButtonGroup } from "@/components/ui/button-group"
 import { ChunkBoundary } from "@/components/ChunkBoundary"
 import { FileTree } from "@/components/FileTree"
 import { useFileTreeFreshness } from "@/components/useFileTreeFreshness"
@@ -125,11 +166,11 @@ import type { NewEntryTarget } from "@/components/NewEntryDialog"
 import { RenameEntryDialog } from "@/components/RenameEntryDialog"
 import type { RenameEntryTarget } from "@/components/RenameEntryDialog"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
+import { StartTruncatedText } from "@/components/StartTruncatedText"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -146,12 +187,15 @@ import {
   closeEditor,
   editorCloseTab,
   editorCloseTabsUnderPath,
+  editorConsumeArrival,
   editorOpenFile,
   editorPinTab,
   editorRenameTabPaths,
   editorSetTabDirty,
   editorSetTabMode,
   editorSyncActiveTab,
+  editorSyncView,
+  leaveStandaloneEditor,
   openEditorCloseTab,
   standaloneEditorHash,
   useYaran,
@@ -171,6 +215,25 @@ const MarkdownPreview = lazy(() => import("./MarkdownPreview"))
 // Cap how many results the search list renders so a 1-char query in a huge repo
 // can't mount thousands of rows.
 const MAX_SEARCH_RESULTS = 300
+
+// The header's one height token for its labelled controls, which all wear the
+// outline variant: the icon-only ones take the matching `size="icon"` plus
+// HEADER_ICON_CONTROL. A finger at any width gets the 40px floor
+// (pointer-coarse), and a control painted on a phone adds its own
+// (max-md:h-10); the rest are desktop-only and reached through the phone's fold.
+const HEADER_CONTROL = "h-8 shrink-0 pointer-coarse:h-10"
+const HEADER_ICON_CONTROL = "shrink-0 pointer-coarse:size-10"
+
+// Below xl the header's labelled controls do not fit beside the path (at md
+// they measured wider than the row), so each drops its words to a
+// screen-reader-only label, keeping its accessible name, and the padding
+// shrinks to make the lone icon a square: 32px, or 40px for a finger. The
+// shared tooltip names each one, on hover and on keyboard focus.
+const COLLAPSES_BELOW_XL = "max-xl:px-2 pointer-coarse:max-xl:px-3"
+
+function HeaderLabel({ children }: { children: React.ReactNode }) {
+  return <span className="max-xl:sr-only">{children}</span>
+}
 
 // The two lines of I/O around the explorer's persisted width. The decisions
 // (what the value means, what an unrecognised one does) are all in the pure
@@ -208,14 +271,15 @@ interface EditorBodyProps {
   // entry keys off it rather than off a bare id.
   root: EditorRoot
   // True when composed by StandaloneEditorShell: the body IS the tab, so the
-  // header drops its Close button (there is nothing to close into; the
-  // shell's open-in-yaran link is the way out) and its open-in-new-tab anchor
-  // (this already is that tab), and on phones the explorer starts collapsed.
+  // header drops its Close button (there is nothing to close into) and its
+  // open-in-new-tab anchor (this already is that tab), and on a phone it leads
+  // with the Back control every phone screen has and starts the explorer
+  // collapsed.
   standalone?: boolean
 }
 
 export function EditorBody({ root, standalone = false }: EditorBodyProps) {
-  const { bootstrap, changes, editorTarget, editorTabs } = useYaran()
+  const { bootstrap, changes, editorRoute, editorTarget, editorTabs, spine } = useYaran()
   // The namespaced key for every per-root map, and the stable dependency for
   // every effect below: the root itself is a fresh object on each render.
   const key = rootKey(root)
@@ -232,6 +296,9 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     path: activeTabPath,
     dirty,
   } = activeTabFacts(activeTab)
+  // How the address says to look at the active file, when the store's route
+  // names that file (see `editorRouteViewFor`).
+  const routeView = editorRouteViewFor(editorRoute, key, activeTab)
 
   // Per-tab Monaco buffers (file content + diff cache), keyed by tab id, kept
   // OUT of the global store deliberately (see lib/editorTabs.ts header
@@ -250,17 +317,6 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   useEffect(() => {
     storeRootDrafts(key, buffers)
   }, [key, buffers])
-
-  // Report the active tab up as the editor's live URL position: the address
-  // bar names the file (and mode) actually on screen, and in-editor switches
-  // REPLACE the history entry (see the store's `editorSyncActiveTab`). No
-  // active tab reports a pathless open editor.
-  useEffect(() => {
-    editorSyncActiveTab(root, activeTabMode, activeTabPath)
-    // `root` is a fresh object every render, so the KEY is the dependency; a
-    // root that keys the same is the same root.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, activeTabMode, activeTabPath])
 
   // The `monaco` instance, captured once CodeEditor mounts (see CodeEditor's
   // `onReady`). EditorBody, not CodeEditor, owns disposal because it owns
@@ -293,6 +349,18 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     buffersRef.current = buffers
   })
 
+  // Whether this editor is still mounted. Every asynchronous answer (a
+  // save's, a read's) checks it before touching anything, the tab's unsaved
+  // mark in the global store above all: an editor closed and opened again is
+  // a new one, and the old one's answers belong to nobody.
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
+
   // Markdown preview toggle: render the buffer instead of the Monaco editor.
   // Kept per tab id rather than as one shared boolean, so each tab remembers
   // its own choice and no effect has to reset it on every tab switch.
@@ -302,6 +370,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   function togglePreview(): void {
     if (!activeTab) return
     const tabId = activeTab.id
+    editorSyncView(root, activeTab.path, { preview: !previewOpenTabIds.has(tabId) })
     setPreviewOpenTabIds((prev) => {
       const next = new Set(prev)
       if (next.has(tabId)) next.delete(tabId)
@@ -345,6 +414,13 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   const [reloadTarget, setReloadTarget] = useState<ReloadFileTarget | null>(
     null,
   )
+  // Reopening a dirty buffer in another encoding discards the edits, so it
+  // asks first, with the same live truth as the reload confirm: still dirty.
+  const [reopenTarget, setReopenTarget] =
+    useState<ReopenEncodingTarget | null>(null)
+  // The fallback notice's dismissals live in a page-session set outside React
+  // (lib/editorEncoding.ts); this only makes a dismissal re-render.
+  const [, setNoticeDismissals] = useState(0)
   // Bumped by `revalidateDirs` after a create/rename/delete lands, so
   // `FileTree` force-refetches the affected dir(s) past its lazy-load cache.
   const [treeRevalidate, setTreeRevalidate] = useState<{
@@ -377,8 +453,8 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   // The language picker's two pieces of state.
   //
   // The registry, read off Monaco through a dynamic import so this module never
-  // pulls the Monaco bundle into the main chunk; it resolves to the chunk
-  // CodeEditor and DiffViewer already lazy-load. Read in an effect rather than
+  // pulls the Monaco bundle into the main chunk (see `loadRegisteredLanguages`).
+  // Read in an effect rather than
   // from CodeEditor's `onReady`, because the picker must also work in diff
   // mode, where CodeEditor never mounts.
   const [registeredLanguages, setRegisteredLanguages] = useState<
@@ -394,6 +470,15 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   const [languageOverrides, setLanguageOverrides] = useState<
     Map<string, string>
   >(() => new Map())
+
+  // The live Monaco editor while the file pane is showing it, for the status
+  // bar to follow. State rather than a ref so the bar re-subscribes when the
+  // editor comes and goes; the bar's own cursor reads stay inside the bar.
+  const [codeEditor, setCodeEditor] = useState<LiveCodeEditor | null>(null)
+  // The pixel size of the last image tab that finished loading, for the
+  // status bar. Tagged with its path, so a picture still loading never shows
+  // the previous one's.
+  const [imageDims, setImageDims] = useState<ImageDimensions | null>(null)
 
   // Explorer panel layout, persisted by yaran rather than by the panel library's
   // `useDefaultLayout`, which persists a percentage and so makes the explorer
@@ -476,6 +561,12 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   const fileReady = bufferIsFileReady(activeTab, activeBuffer)
   const binary = readyBufferFlag(fileReady, activeBuffer?.binary)
   const readOnly = readyBufferFlag(fileReady, activeBuffer?.readOnly)
+  // Read-only only because the encoding cannot write the file back unchanged:
+  // still text, and converting it to another encoding is the way out. Every
+  // other read-only (a symlink, a .git path) has no save at all.
+  const hardReadOnly = readyBufferFlag(fileReady, activeBuffer?.pathReadOnly)
+  const encodingUnwritable =
+    readOnly && !hardReadOnly && (activeBuffer?.unwritable ?? null) !== null
   // File-mode readiness for the preview toggle: a loaded, non-binary buffer.
   // The toggle itself is available in BOTH modes; its diff-mode half needs
   // `diffReady`, declared further down, so `canPreview` lives beside it (one
@@ -496,9 +587,9 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     let cancelled = false
     // The registry does not change after the grammars register at import
     // time, so this runs once and then short-circuits on the state check.
-    void import("@/lib/monacoSetup")
-      .then((m) => {
-        if (!cancelled) setRegisteredLanguages(m.monaco.languages.getLanguages())
+    void loadRegisteredLanguages()
+      .then((languages) => {
+        if (!cancelled) setRegisteredLanguages(languages)
       })
       // Monaco failing to load is already fatal for the pane behind us, which
       // reports it; the picker simply does not appear.
@@ -527,9 +618,27 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   // prefixes included.
   function retargetOverrides(from: string, to: string): void {
     setLanguageOverrides((prev) => retargetLanguageOverrides(prev, from, to))
+    encodingChoicesRef.current = retargetLanguageOverrides(
+      encodingChoicesRef.current,
+      from,
+      to,
+    )
   }
+  // The phone fold's language sheet, and whether the fold is closing to hand
+  // focus to it (read once the fold has finished closing).
+  const [languageSheetOpen, setLanguageSheetOpen] = useState(false)
+  const languageSheetPendingRef = useRef(false)
+  // Whether the fold's close-focus pass must leave focus to the sheet.
+  const languageSheetKeepsFocusRef = useRef(false)
+  // The fold's trigger, where focus goes back when the sheet closes.
+  const mobileFoldRef = useRef<HTMLButtonElement | null>(null)
+  const languageFieldRef = useRef<HTMLInputElement | null>(null)
+  // Closed with the picker when there is nothing to pick for (an image tab,
+  // no tab at all), so it never comes back open by itself on the next file.
+  if (!showLanguagePicker && languageSheetOpen) setLanguageSheetOpen(false)
   function pickLanguage(id: string | null): void {
     if (languageTabPath === null) return
+    editorSyncView(root, languageTabPath, { language: id })
     setLanguageOverrides((prev) =>
       withLanguageOverride(prev, languageTabPath, id),
     )
@@ -543,16 +652,50 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   // focus and tab activation instead.
   const slice = changesForRoot(changes, root)
 
-  // Mark the tree's changed files from the slice. Stores the raw git status code
-  // per path; FileStatusIcon maps it to an icon + label.
-  const changedMap = useMemo(() => {
-    const map = new Map<string, string>()
-    if (!slice) return map
-    for (const f of [...slice.unstaged, ...slice.staged]) {
-      if (!map.has(f.path)) map.set(f.path, f.status)
+  // Mark the tree's changed files from the slice: the raw git status code per
+  // path, a file inside a folded folder answering as that folder;
+  // FileStatusIcon maps it to an icon + label.
+  const changedMap = useMemo(
+    () => changedStatusLookup(slice ? [slice.unstaged, slice.staged] : []),
+    [slice],
+  )
+
+  // The File/Diff switch is for files with something to diff. A file already
+  // in Diff keeps it even once it stops being changed, so a revert never
+  // leaves the user stuck in a diff with no way out. The answer comes from the
+  // last LOADED slice of this root: a refetch empties the slice while it
+  // loads, and an error leaves it empty, neither of which says the file
+  // stopped being changed. Before the first load ever nothing is changed, so
+  // the switch is never shown and then taken back.
+  const [loadedChanges, setLoadedChanges] = useState<{
+    key: string
+    slice: ChangesSliceView
+  } | null>(null)
+  if (slice?.phase === "loaded" && loadedChanges?.slice !== slice) {
+    setLoadedChanges({ key, slice })
+  }
+  const knownSlice =
+    slice === null || slice.phase === "loaded"
+      ? slice
+      : loadedChanges?.key === key
+        ? loadedChanges.slice
+        : null
+  const knownChanged = useMemo(() => {
+    const rows = knownSlice ? [knownSlice.unstaged, knownSlice.staged] : []
+    // A renamed file's old path has no row of its own, yet it is a deletion
+    // against HEAD.
+    const renamedFrom = new Set<string>()
+    for (const list of rows) {
+      for (const row of list) if (row.renamed_from) renamedFrom.add(row.renamed_from)
     }
-    return map
-  }, [slice])
+    const lookup = changedStatusLookup(rows)
+    return (path: string) => lookup.get(path) !== undefined || renamedFrom.has(path)
+  }, [knownSlice])
+  const contentRef = useRef<HTMLDivElement>(null)
+  const showViewSwitch =
+    hasDiff &&
+    activeTabPath != null &&
+    (knownChanged(activeTabPath) || activeTabMode === "diff")
 
   // A per-file change-signal for the open file: status plus line counts, which
   // move when the content changes, though an edit keeping identical +/- counts
@@ -596,6 +739,10 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   const { raiseDiskBanner, dismissDiskBanner } =
     createEditorDiskBannerActions(setBuffers)
 
+  // The save's way to read a file again when its answer no longer describes
+  // the buffer; filled in once the reader below exists.
+  const rereadRef = useRef<((tabId: string, path: string) => void) | null>(null)
+
   const {
     savingTabId,
     savingPaths,
@@ -606,9 +753,19 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     root,
     tabsRef,
     sliceRef,
+    buffersRef,
+    aliveRef,
+    rereadRef,
     setBuffers,
     raiseDiskBanner,
   })
+  // The operation out on the open file, if any (lib/editorLane.ts). While
+  // one is, every control that would start another is unavailable: Save, the
+  // encoding menu's rows, the banner's Reload and the conflict dialog's offers.
+  const laneOp = useLaneBusy(
+    activeTab === null ? null : laneKey(key, activeTab.path),
+  )
+  const fileBusy = laneOp !== undefined
 
   // The diff is cached per tab+path; ready when the loaded diff is for the
   // active tab's CURRENT path. While ready, a change-signal differing from the
@@ -640,6 +797,48 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   )
   // This tab's save is in flight.
   const isSaving = tabIsSaving(savingTabId, activeTab)
+  // What the status bar carries for what is on screen. The size is the disk's
+  // as of the last read or save (the freshness stamp), not the unsaved
+  // buffer's, so it never claims bytes that are not on disk yet.
+  // The encoding of a large file's diff (the head of git's patch), while that
+  // view is what is on screen and is not binary.
+  const shownHead =
+    activeTab?.mode === "diff" && diffReady ? activeBuffer?.diffHead : null
+  const diffHeadEncoding =
+    shownHead && !shownHead.binary
+      ? encodingLabel(shownHead.encoding ?? "UTF-8", false)
+      : null
+  const statusPlan = planStatusBar({
+    tab: activeTab === null ? null : { path: activeTab.path, mode: activeTab.mode },
+    dirty,
+    readOnly,
+    image: isImageTab,
+    imageDims,
+    fileReady,
+    binary,
+    preview: showPreview,
+    diffEditorShown: diffEditorIsShown(activeTab, diffReady, activeBuffer, showPreview),
+    size: activeBuffer?.stamp.size ?? null,
+    languageAvailable: showLanguagePicker,
+    // Every text file names its encoding, plain UTF-8 included, the way VS
+    // Code does, so any file can be reopened in any encoding from the bar.
+    encodingLabel:
+      activeBuffer !== undefined
+        ? encodingLabel(
+            activeBuffer.encoding,
+            activeBuffer.bom,
+          )
+        : null,
+    mixedEol: activeBuffer?.mixedEol ?? false,
+    eol: activeBuffer?.eol ?? null,
+    diffHeadEncodingLabel: diffHeadEncoding,
+    readOnlyReason: encodingUnwritable
+      ? `This file is read-only: ${encodingLabel(
+          activeBuffer?.encoding ?? "UTF-8",
+          activeBuffer?.bom ?? false,
+        )} can't write it back without changing bytes you didn't touch. Reopen or convert it from the encoding menu.`
+      : null,
+  })
 
   // The one preview pane both content arms share (file mode and diff mode),
   // rendering `previewContent` (the file's end state, see its derivation
@@ -683,6 +882,13 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     }
     return matches
   }, [search, searchIndex])
+  const searchPick = useSearchPick({
+    query: search,
+    // While the index loads the list shows a spinner, not these rows.
+    items: searchLoading ? [] : filtered,
+    keyOf: (path) => path,
+    onPick: (path) => requestOpen(path),
+  })
 
   // Refetch the search index (a capped flat walk of the worktree). Called on
   // mount, after every create/rename/delete mutation, and on each of the
@@ -708,7 +914,30 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // The encoding the person chose for each open path, kept beside the buffers
+  // for the one moment a buffer cannot carry it: a rename, which moves the tab
+  // to a new path and so starts a fresh read. Same lifetime as a language
+  // pick: it follows a rename or move and dies when the file is closed.
+  const encodingChoicesRef = useRef<Map<string, string>>(new Map())
+  useEffect(() => {
+    for (const buffer of buffers.values()) {
+      if (buffer.encodingRequested) {
+        encodingChoicesRef.current.set(buffer.path, buffer.encodingRequested)
+      }
+    }
+  }, [buffers])
+
+  // The address's encoding, seeded before the file's first read so that read
+  // already asks for it. Declared ahead of the readers, whose effects start it.
+  useEffect(() => {
+    const encoding = routeView?.encoding ?? null
+    if (activeTab === null || encoding === null) return
+    encodingChoicesRef.current.set(activeTab.path, encoding)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeView, activeTab?.id])
+
   const { loadFileBuffer, reloadFileInPlace } = useEditorFileReads({
+    aliveRef,
     root,
     tabs,
     activeTab,
@@ -716,8 +945,14 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     tabsRef,
     buffersRef,
     sliceRef,
+    encodingChoicesRef,
     setBuffers,
     raiseDiskBanner,
+  })
+
+  useEffect(() => {
+    rereadRef.current = (tabId, path) =>
+      reloadFileInPlace(tabId, path, false, { afterSave: true })
   })
 
   useEditorDiskFreshness({
@@ -735,15 +970,156 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     reloadFileInPlace,
   })
 
-  const { loadDiffBuffer, refreshDiff } = useEditorDiffReads({
+  const { loadDiffBuffer, refreshDiff, reloadDiffAs } = useEditorDiffReads({
     root,
     tabs,
     activeTab,
     activeBuffer,
     tabsRef,
+    buffersRef,
+    encodingChoicesRef,
     loadedSignalRef: openFileSignalRef,
     setBuffers,
   })
+
+  // How this editor is looking at a tab right now, which is what a tab switch
+  // and the open-in-new-tab link hand over. The cursor and scroll are not in
+  // it: those are read off the live editor only when a link is taken.
+  function localViewFor(tab: EditorTab): EditorViewState {
+    return {
+      ...DEFAULT_EDITOR_VIEW,
+      preview: previewOpenTabIds.has(tab.id),
+      language: languageOverrides.get(tab.path) ?? null,
+      encoding: buffers.get(tab.id)?.encodingRequested ?? null,
+    }
+  }
+
+  // Report the active tab up as the editor's live URL position: the address
+  // bar names the file (and mode) actually on screen, and in-editor switches
+  // REPLACE the history entry (see the store's `editorSyncActiveTab`). No
+  // active tab reports a pathless open editor. The tab's own view goes with it,
+  // and the store takes it only on a move to another file, so an address's view
+  // is not overwritten by the defaults of an editor that has just mounted.
+  useEffect(() => {
+    editorSyncActiveTab(
+      root,
+      activeTabMode,
+      activeTabPath,
+      activeTab === null ? undefined : localViewFor(activeTab),
+    )
+    // `root` is a fresh object every render, so the KEY is the dependency; a
+    // root that keys the same is the same root.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, activeTabMode, activeTabPath])
+
+  // An address's view arriving (on mount, or a navigation within this root):
+  // Preview and the language follow it. A language is taken only once Monaco's
+  // registry has loaded and has it; one it does not have leaves the address.
+  useEffect(() => {
+    if (activeTab === null || routeView === null) return
+    const tabId = activeTab.id
+    const preview = routeView?.preview ?? false
+    // Synchronous on purpose: the address is the outside truth this state
+    // follows, and the setter returns the same set when nothing changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPreviewOpenTabIds((prev) => {
+      if (prev.has(tabId) === preview) return prev
+      const next = new Set(prev)
+      if (preview) next.add(tabId)
+      else next.delete(tabId)
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeView, activeTab?.id])
+  useEffect(() => {
+    if (activeTab === null || routeView === null) return
+    const path = activeTab.path
+    const language = routeView?.language ?? null
+    if (language !== null && registeredLanguages.length === 0) return
+    if (language !== null && !registeredLanguages.some((l) => l.id === language)) {
+      editorSyncView(root, path, { language: null })
+      return
+    }
+    // Synchronous for the same reason as Preview above.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLanguageOverrides((prev) =>
+      (prev.get(path) ?? null) === language
+        ? prev
+        : withLanguageOverride(prev, path, language),
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeView, activeTab?.id, registeredLanguages])
+
+  // An address naming another encoding for a file that is already open and
+  // clean reopens it in that encoding; an unsaved one is left as it is, since
+  // only the reopen confirm may throw typing away. A fresh read already asked
+  // for it (the seed above).
+  useEffect(() => {
+    const encoding = routeView?.encoding ?? null
+    if (activeTab === null || encoding === null || activeTab.mode !== "file") return
+    if (!fileReady || activeTab.dirty || activeBuffer === undefined) return
+    if ((activeBuffer.encodingRequested ?? activeBuffer.encoding) === encoding) return
+    reloadFileInPlace(activeTab.id, activeTab.path, true, { encoding })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeView, activeTab?.id, fileReady])
+
+  // A reopen in another encoding, or a save that converted the file, is a
+  // change of view the address follows. Only a CHANGE on the same tab is
+  // reported: the value a buffer comes back from the draft cache with is not
+  // news, and reporting it would overwrite the encoding an address asked for.
+  const reportedEncodingRef = useRef<{ tabId: string; encoding: string | null } | null>(
+    null,
+  )
+  const activeEncoding = activeBuffer?.encodingRequested ?? null
+  useEffect(() => {
+    const prev = reportedEncodingRef.current
+    reportedEncodingRef.current =
+      activeTab === null ? null : { tabId: activeTab.id, encoding: activeEncoding }
+    if (activeTab === null || activeEncoding === null) return
+    if (prev?.tabId !== activeTab.id || prev.encoding === activeEncoding) return
+    editorSyncView(root, activeTab.path, { encoding: activeEncoding })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab?.id, activeEncoding])
+
+  // An address's cursor and scroll are gone to once, when the file's own
+  // model is in the editor and laid out, and then handed back to the store,
+  // which takes them out of the address. A file that opens in its preview, or
+  // turns out binary, has no editor to put them in, so they are dropped. The
+  // arrival is remembered by identity, so a second delivery of the same one
+  // (a paired popstate and hashchange) is not gone to twice.
+  const arrivedViewRef = useRef<EditorViewState | null>(null)
+  useEffect(() => {
+    const view = routeView
+    if (activeTab === null || view === undefined || view === null) return
+    if (view.line === null && view.top === null) return
+    if (arrivedViewRef.current === view) return
+    const path = activeTab.path
+    if (isImageTab || binary || showPreview) {
+      arrivedViewRef.current = view
+      editorConsumeArrival(root, path)
+      return
+    }
+    const editor = codeEditor
+    const monaco = monacoRef.current
+    if (!fileReady || editor === null || monaco === null) return
+    if (editor.getModel()?.uri.toString() !== monaco.Uri.parse(path).toString()) return
+    const go = () => {
+      arrivedViewRef.current = view
+      goToEditorSpot(editor, view)
+      editorConsumeArrival(root, path)
+    }
+    if (editor.getLayoutInfo().height > 0) {
+      go()
+      return
+    }
+    const sub = editor.onDidLayoutChange(() => {
+      if (editor.getLayoutInfo().height <= 0) return
+      sub.dispose()
+      go()
+    })
+    return () => sub.dispose()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeView, activeTab?.id, codeEditor, fileReady, binary, showPreview, isImageTab])
 
   // Dispose and prune by the set of open paths so preview replacement and every
   // tab-scoped cache observe the same snapshot.
@@ -775,6 +1151,11 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     // inherited by a different file that later takes it. Every way a tab leaves
     // ends in `tabs` losing the entry, so this covers all of them.
     setLanguageOverrides((prev) => pruneLanguageOverrides(prev, currentPaths))
+    // The encoding choices die with their tab the same way.
+    const choices = encodingChoicesRef.current
+    for (const path of [...choices.keys()]) {
+      if (!currentPaths.has(path)) choices.delete(path)
+    }
   }, [tabs])
 
   // Dispose every retained model when the body unmounts: @monaco-editor/react
@@ -815,19 +1196,27 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   // the close-confirm gating read from one place), and promote a preview tab
   // to permanent on its first edit, so an in-progress edit is never silently
   // discarded by a later preview-replace.
-  function handleDraftChange(value: string): void {
-    if (!activeTab) return
+  // `path` is the file the change is the text of. It must be the file the
+  // buffer holds, checked against the LIVE buffer: a preview tab reuses its id
+  // for another file, and a change for one file must never land in another's
+  // draft, whatever order the editor wrapper delivers it in.
+  function handleDraftChange(value: string, path: string): void {
+    if (!activeTab || activeTab.path !== path) return
     const tabId = activeTab.id
     setBuffers((prev) => {
       const cur = prev.get(tabId)
-      if (!cur) return prev
+      if (!cur || cur.path !== path || cur.loadedPath !== path) return prev
+      // Nobody can type into a read-only buffer (nor one an asked-for reopen
+      // or reload is reading), so a change here is the editor's own echo and
+      // never an edit; it must not move the text a conversion would write.
+      if (cur.readOnly || cur.readingLock) return prev
       const next = new Map(prev)
       next.set(tabId, { ...cur, draft: value })
       return next
     })
     const cur = buffers.get(tabId)
-    if (cur && !cur.binary && !cur.readOnly) {
-      const newDirty = value !== cur.loaded
+    if (cur && cur.path === path && !cur.binary && !cur.readOnly) {
+      const newDirty = isBufferDirty({ ...cur, draft: value })
       // Only dispatch when the dirty flag actually flips: `useYaran()` is an
       // unselective `useSyncExternalStore`, so a dispatch on every keystroke
       // fans out a store-wide re-render to every consumer, not just this
@@ -847,13 +1236,60 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   // dropping the token is exactly what "yes, I know, do it anyway" means on
   // this route.
   function save(): void {
-    if (!activeTab || binary || isSaving || !dirty) return
+    // A busy file is answered by `writeBuffer`, which says so.
+    if (!activeTab || binary || !dirty) return
     writeBuffer(
       activeTab.id,
       activeTab.path,
       activeBuffer?.draft ?? "",
+      bufferSaveEncoding(activeBuffer),
       activeBuffer?.stamp,
     )
+  }
+
+  // "Save with encoding": write the buffer now in `choice`, with the same
+  // freshness token as any save. Offered whether or not there are edits, since
+  // converting the file is itself the change; a character the encoding cannot
+  // hold refuses the whole save and writes nothing.
+  function saveWithEncoding(choice: SaveEncoding): void {
+    if (!activeTab || binary || hardReadOnly || fileBusy || !fileReady) return
+    if (!activeBuffer) return
+    // What the file is now; that row is inert, so a save from here is always
+    // a conversion.
+    if (sameSaveEncoding(choice, bufferReadEncoding(activeBuffer))) return
+    // The text goes exactly as the editor holds it: the row's mark choice
+    // alone decides whether a mark is written, and nothing in the text is
+    // taken out or put in for it.
+    writeBuffer(
+      activeTab.id,
+      activeTab.path,
+      activeBuffer.draft,
+      choice,
+      activeBuffer.stamp,
+      true,
+    )
+  }
+
+  // "Reopen with encoding": read the file again in exactly `encoding`. With
+  // unsaved edits that throws them away, so it confirms first; a clean buffer
+  // reopens at once. A file that does not decode in it is refused by the
+  // server and the buffer stays as it was (see `reloadFileInPlace`).
+  function requestReopen(encoding: string): void {
+    // A save in flight would answer for whatever text this replaced it with.
+    if (!activeTab || fileBusy) return
+    const tabId = activeTab.id
+    const path = activeTab.path
+    const isDirty = tabsRef.current.find((t) => t.id === tabId)?.dirty ?? false
+    if (isDirty) {
+      setReopenTarget({
+        tabId,
+        path,
+        encoding,
+        label: encodingLabel(encoding, false),
+      })
+      return
+    }
+    reloadFileInPlace(tabId, path, true, { encoding })
   }
 
   // The banner's "Reload from disk". Confirmed only when there is something to
@@ -937,9 +1373,9 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
       .rename(root, from, to)
       .then(() => {
         setRenameEntryTarget(null)
-        // No toast: the tree row and the open tab both carry the new name. A
-        // MOVE keeps its toast (see `handleMoveSubmit`), because the entry
-        // leaves the folder the user was looking at.
+        // Said before the refetches, as a move's is: the rename has landed, and
+        // the re-sorted row can sit outside the part of the tree in view.
+        notifySuccess(renamedMessage(from, newName))
         editorRenameTabPaths(root, from, to)
         retargetOverrides(from, to)
         revalidateDirs([parentDir(from), parentDir(to)])
@@ -1038,38 +1474,96 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
 
   const openPath = activeTabPath
 
-  // The language menu's rows, shared by the desktop trigger and the phone
-  // fold's submenu so the two cannot drift. "Auto" first, above a separator,
-  // because it is the state every file starts in and the one a user goes
-  // looking for to undo a pick; it CLEARS the override rather than selecting
-  // a language, so it is checked exactly when no override is set.
-  function languagePickerItems(): React.ReactNode {
+  // What the language picker lists and does, handed to the one list both the
+  // status bar's popover and the phone fold's sheet render.
+  const languagePicker = {
+    choices: languageChoices,
+    current: activeLanguageOverride,
+    onPick: pickLanguage,
+    fallbackFocus: () => contentRef.current,
+  }
+
+  // The encoding menu's rows, behind the status bar's encoding selector on
+  // every screen. Two submenus, not dialogs, so no trailing ellipsis. Any file
+  // can be reopened in any encoding: a garbled result is the person's call and
+  // a reopen away from undone, while a decode that would lose bytes is refused
+  // by the server. Save with is gone for a read-only file, which has no save.
+  function encodingMenuItems(): React.ReactNode {
+    // The large-file diff view rereads the patch and has no save; the file
+    // view reopens the file and can save in another encoding.
+    const inDiff = activeTab?.mode === "diff"
+    const current = inDiff
+      ? { encoding: activeBuffer?.diffHead?.encoding ?? "UTF-8", bom: false }
+      : activeBuffer
+        ? bufferReadEncoding(activeBuffer)
+        : bufferSaveEncoding(undefined)
+    const reopen = (encoding: string) => {
+      if (inDiff && activeTab) reloadDiffAs(activeTab.id, activeTab.path, encoding)
+      else requestReopen(encoding)
+    }
     return (
       <>
-        <DropdownMenuItem
-          aria-current={activeLanguageOverride === undefined ? "true" : undefined}
-          onClick={() => pickLanguage(null)}
-        >
-          <Wand2 />
-          Auto
-          {activeLanguageOverride === undefined && <Check className="ml-auto" />}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        {languageChoices.map((choice) => (
-          <DropdownMenuItem
-            key={choice.id}
-            aria-current={
-              activeLanguageOverride === choice.id ? "true" : undefined
-            }
-            onClick={() => pickLanguage(choice.id)}
-          >
-            <Code2 />
-            {choice.label}
-            {activeLanguageOverride === choice.id && (
-              <Check className="ml-auto" />
-            )}
-          </DropdownMenuItem>
-        ))}
+        <DropdownMenuSub>
+          {/* Not while this tab is saving: the save's answer is about the text
+              it sent, and a reopen would put a different decoding under it. */}
+          <DropdownMenuSubTrigger disabled={fileBusy}>
+            <RotateCw />
+            Reopen with encoding
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
+            {REOPEN_CHOICES.map((choice) => (
+              <DropdownMenuItem
+                key={choice.encoding}
+                aria-current={
+                  choice.encoding === current.encoding ? "true" : undefined
+                }
+                onClick={() => reopen(choice.encoding)}
+              >
+                <FileType />
+                {choice.label}
+                {choice.encoding === current.encoding && (
+                  <Check className="ml-auto" />
+                )}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        {!inDiff && !hardReadOnly && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger disabled={fileBusy}>
+              <SaveAll />
+              Save with encoding
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
+              {SAVE_CHOICES.map((choice) => {
+                const isCurrent = sameSaveEncoding(choice, current)
+                return (
+                  <DropdownMenuItem
+                    key={`${choice.encoding}:${choice.bom}`}
+                    aria-current={isCurrent ? "true" : undefined}
+                    // A file its encoding cannot write back unchanged can be
+                    // converted, never saved again in that same encoding.
+                    // The current encoding and mark is never a row to act
+                    // on: it is not a conversion, and not an edit either, so
+                    // a save from it would only rewrite untouched bytes (the
+                    // line endings, say) for nothing.
+                    disabled={isCurrent}
+                    onClick={() =>
+                      saveWithEncoding({
+                        encoding: choice.encoding,
+                        bom: choice.bom,
+                      })
+                    }
+                  >
+                    <FileType />
+                    {choice.label}
+                    {isCurrent && <Check className="ml-auto" />}
+                  </DropdownMenuItem>
+                )
+              })}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
       </>
     )
   }
@@ -1086,156 +1580,98 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
     ))
   }
 
-  function renderStatusIndicators(): React.ReactNode {
-    return (
-      <>
-        {dirty && (
-          <>
-            <SimpleTooltip content="Unsaved changes">
-              <span className="shrink-0 text-primary" aria-hidden="true">
-                ●
-              </span>
-            </SimpleTooltip>
-            <span className="sr-only">unsaved changes</span>
-          </>
-        )}
-        {readOnly && activeTab?.mode === "file" && (
-          <SimpleTooltip content="This file is read-only: it is a symlink to an external file or a .git path">
-            <span className="shrink-0 text-xs text-muted-foreground">
-              read-only
-            </span>
-          </SimpleTooltip>
-        )}
-      </>
-    )
+  // Choosing File on a file that is no longer changed takes the switch away
+  // with the very button pressed, so focus moves to the editor surface first
+  // instead of dropping to the page body.
+  function chooseFileView() {
+    if (!activeTab) return
+    if (activeTabPath != null && !knownChanged(activeTabPath)) {
+      contentRef.current?.focus()
+    }
+    editorSetTabMode(root, activeTab.id, "file")
   }
 
   function renderDesktopViewActions(): React.ReactNode {
+    const previewLabel =
+      showPreview && activeTab?.mode === "file" ? "Edit" : "Preview"
     return (
       <>
-        {activeTab && !isImageTab && hasDiff && (
-          <div
-            className="flex shrink-0 items-center gap-0.5 rounded-md border p-0.5 max-md:hidden"
-            role="group"
-            aria-label="View mode"
-          >
-            <Button
-              size="sm"
-              variant={activeTab.mode === "file" ? "default" : "ghost"}
-              aria-pressed={activeTab.mode === "file"}
-              onClick={() => editorSetTabMode(root, activeTab.id, "file")}
-            >
-              <FileText />
-              File
-            </Button>
-            <Button
-              size="sm"
-              variant={activeTab.mode === "diff" ? "default" : "ghost"}
-              aria-pressed={activeTab.mode === "diff"}
-              onClick={() => editorSetTabMode(root, activeTab.id, "diff")}
-            >
-              <GitCompare />
-              Diff
-            </Button>
-          </div>
+        {activeTab && !isImageTab && showViewSwitch && (
+          // One switch, two outline buttons joined by the shared ButtonGroup;
+          // the Button toggle look's primary fill marks the current mode.
+          <ButtonGroup className="shrink-0 max-md:hidden" aria-label="View mode">
+            <SimpleTooltip content="File">
+              <Button
+                variant="outline"
+                className={cn(HEADER_CONTROL, COLLAPSES_BELOW_XL)}
+                toggle
+                aria-pressed={activeTab.mode === "file"}
+                onClick={chooseFileView}
+              >
+                <FileText />
+                <HeaderLabel>File</HeaderLabel>
+              </Button>
+            </SimpleTooltip>
+            <SimpleTooltip content="Diff">
+              <Button
+                variant="outline"
+                className={cn(HEADER_CONTROL, COLLAPSES_BELOW_XL)}
+                toggle
+                aria-pressed={activeTab.mode === "diff"}
+                onClick={() => editorSetTabMode(root, activeTab.id, "diff")}
+              >
+                <GitCompare />
+                <HeaderLabel>Diff</HeaderLabel>
+              </Button>
+            </SimpleTooltip>
+          </ButtonGroup>
         )}
         {hasDiff && activeTab?.mode === "diff" && diffStale && (
           <SimpleTooltip content="This file changed on disk: reload the diff">
             <Button
-              size="sm"
-              variant="ghost"
-              className="text-amber-500 max-md:hidden"
+              variant="outline"
+              className={cn(
+                HEADER_CONTROL,
+                COLLAPSES_BELOW_XL,
+                "text-yaran-warning max-md:hidden",
+              )}
               aria-label="Reload the diff. The file changed on disk"
               onClick={refreshDiff}
             >
               <CircleAlert />
-              Reload
+              <HeaderLabel>Reload</HeaderLabel>
             </Button>
           </SimpleTooltip>
         )}
         {canPreview && (
-          <Button
-            size="sm"
-            variant={showPreview ? "default" : "ghost"}
-            className="max-md:hidden"
-            aria-pressed={showPreview}
-            onClick={togglePreview}
-          >
-            {showPreview && activeTab?.mode === "file" ? <Pencil /> : <Eye />}
-            {showPreview && activeTab?.mode === "file" ? "Edit" : "Preview"}
-          </Button>
-        )}
-        {showLanguagePicker && (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="max-md:hidden"
-                  aria-label={`Syntax language: ${activeLanguageLabel}`}
-                />
-              }
+          <SimpleTooltip content={previewLabel}>
+            <Button
+              variant="outline"
+              className={cn(HEADER_CONTROL, COLLAPSES_BELOW_XL, "max-md:hidden")}
+              toggle
+              aria-pressed={showPreview}
+              onClick={togglePreview}
             >
-              <Code2 />
-              {activeLanguageLabel}
-              <ChevronDown />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {languagePickerItems()}
-            </DropdownMenuContent>
-          </DropdownMenu>
+              {showPreview && activeTab?.mode === "file" ? <Pencil /> : <Eye />}
+              <HeaderLabel>{previewLabel}</HeaderLabel>
+            </Button>
+          </SimpleTooltip>
         )}
       </>
-    )
-  }
-
-  function renderLocalEditorAction(): React.ReactNode {
-    if (activeTab === null) return null
-    return (
-      <SimpleTooltip
-        content={
-          localAccess
-            ? undefined
-            : "Only available when yaran is opened locally, not over a remote URL."
-        }
-      >
-        <span className="inline-flex max-md:hidden">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={!localAccess || openingEditor}
-                  aria-busy={openingEditor}
-                />
-              }
-            >
-              {openingEditor ? (
-                <Loader2 className="motion-safe:animate-spin" />
-              ) : (
-                <Laptop />
-              )}
-              Open local editor
-              <ChevronDown />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {localEditorMenuItems()}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </span>
-      </SimpleTooltip>
     )
   }
 
   function renderSaveAction(): React.ReactNode {
     if (activeTab?.mode !== "file" || isImageTab) return null
+    // The cluster's one filled primary action, beside its outline peers: Save
+    // commits the user's work, so it is the header's primary act. A
+    // user-approved exception, like the launcher corner's filled split button; it still
+    // keeps the header's one height.
     return (
       <Button
-        size="sm"
-        className="max-md:min-h-10"
-        disabled={!dirty || isSaving || readOnly}
+        variant="default"
+        className={cn(HEADER_CONTROL, "max-md:h-10")}
+        disabled={!dirty || fileBusy || readOnly}
         aria-busy={isSaving}
         onClick={save}
       >
@@ -1248,103 +1684,254 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   function renderMobileActions(): React.ReactNode {
     if (activeTab === null) return null
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              className="shrink-0 md:hidden max-md:size-10"
-              aria-label="More editor actions"
-            />
-          }
+      <>
+        <DropdownMenu
+          onOpenChangeComplete={(open) => {
+            if (open || !languageSheetPendingRef.current) return
+            languageSheetPendingRef.current = false
+            languageFieldRef.current?.focus()
+          }}
         >
-          <Ellipsis />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {!isImageTab && hasDiff && (
-            <>
-              <DropdownMenuItem
-                aria-current={activeTab.mode === "file" ? "true" : undefined}
-                onClick={() => editorSetTabMode(root, activeTab.id, "file")}
-              >
-                <FileText />
-                File view
-                {activeTab.mode === "file" && <Check className="ml-auto" />}
+          <DropdownMenuTrigger
+            ref={mobileFoldRef}
+            render={
+              <Button
+                size="icon"
+                variant="outline"
+                className={cn(HEADER_ICON_CONTROL, "md:hidden max-md:size-10")}
+                aria-label="More editor actions"
+              />
+            }
+          >
+            <Ellipsis />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            // The language sheet takes focus once this menu has closed;
+            // handing it back to the trigger first would flash it there.
+            finalFocus={() => {
+              const keep = languageSheetKeepsFocusRef.current
+              languageSheetKeepsFocusRef.current = false
+              return !keep
+            }}
+          >
+            {!isImageTab && showViewSwitch && (
+              <>
+                <DropdownMenuItem
+                  aria-current={activeTab.mode === "file" ? "true" : undefined}
+                  onClick={chooseFileView}
+                >
+                  <FileText />
+                  File view
+                  {activeTab.mode === "file" && <Check className="ml-auto" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  aria-current={activeTab.mode === "diff" ? "true" : undefined}
+                  onClick={() => editorSetTabMode(root, activeTab.id, "diff")}
+                >
+                  <GitCompare />
+                  Diff view
+                  {activeTab.mode === "diff" && <Check className="ml-auto" />}
+                </DropdownMenuItem>
+              </>
+            )}
+            {hasDiff && activeTab.mode === "diff" && diffStale && (
+              <DropdownMenuItem onClick={refreshDiff}>
+                <CircleAlert />
+                Reload diff
               </DropdownMenuItem>
-              <DropdownMenuItem
-                aria-current={activeTab.mode === "diff" ? "true" : undefined}
-                onClick={() => editorSetTabMode(root, activeTab.id, "diff")}
-              >
-                <GitCompare />
-                Diff view
-                {activeTab.mode === "diff" && <Check className="ml-auto" />}
+            )}
+            {canPreview && (
+              <DropdownMenuItem onClick={togglePreview}>
+                {showPreview && activeTab.mode === "file" ? <Pencil /> : <Eye />}
+                {showPreview ? "Hide preview" : "Show preview"}
               </DropdownMenuItem>
-            </>
-          )}
-          {hasDiff && activeTab.mode === "diff" && diffStale && (
-            <DropdownMenuItem onClick={refreshDiff}>
-              <CircleAlert />
-              Reload diff
-            </DropdownMenuItem>
-          )}
-          {canPreview && (
-            <DropdownMenuItem onClick={togglePreview}>
-              {showPreview && activeTab.mode === "file" ? <Pencil /> : <Eye />}
-              {showPreview ? "Hide preview" : "Show preview"}
-            </DropdownMenuItem>
-          )}
-          {showLanguagePicker && (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
+            )}
+            {showLanguagePicker && (
+              // Opens the searchable sheet below rather than a submenu: a
+              // search field inside a menu fights its typeahead and focus.
+              <DropdownMenuItem
+                // The sheet opens at once; its field takes focus once this
+                // menu has finished closing, because a modal menu pulls focus
+                // back into itself while it is up.
+                onClick={() => {
+                  languageSheetPendingRef.current = true
+                  languageSheetKeepsFocusRef.current = true
+                  setLanguageSheetOpen(true)
+                }}
+              >
                 <Code2 />
-                {activeLanguageLabel}
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                {languagePickerItems()}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          )}
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger disabled={!localAccess || openingEditor}>
-              <Laptop />
-              Open local editor
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              {localEditorMenuItems()}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        </DropdownMenuContent>
-      </DropdownMenu>
+                {activeLanguageLabel}…
+              </DropdownMenuItem>
+            )}
+            {localAccess && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger disabled={openingEditor}>
+                  <Laptop />
+                  Open local editor
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  {localEditorMenuItems()}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {showLanguagePicker && (
+          // The phone's language picker: the shared bottom sheet a popover
+          // becomes on a phone, as the macro picker's is, so the search field
+          // stays pinned at its top and the list scrolls under it; the
+          // viewport resizes for the soft keyboard, and the sheet's height cap
+          // follows it.
+          <Popover open={languageSheetOpen} onOpenChange={setLanguageSheetOpen}>
+            <PopoverContent
+              // Back to the fold the sheet was opened from: it has no trigger
+              // of its own to return to.
+              finalFocus={mobileFoldRef}
+              // No Trigger of its own: placed against the fold it opens from.
+              anchor={mobileFoldRef}
+              aria-label="Syntax language"
+              // The search field, not the sheet: the picker opens ready to
+              // type, soft keyboard and all.
+              initialFocus={languageFieldRef}
+              className={
+                isMobile
+                  ? "flex flex-col overflow-hidden p-0 pb-[max(env(safe-area-inset-bottom),0.25rem)]"
+                  : "w-64 p-0"
+              }
+            >
+              <LanguagePickerList
+                choices={languagePicker.choices}
+                current={languagePicker.current}
+                fieldRef={languageFieldRef}
+                onPick={(id) => {
+                  pickLanguage(id)
+                  setLanguageSheetOpen(false)
+                }}
+              />
+            </PopoverContent>
+          </Popover>
+        )}
+      </>
+    )
+  }
+
+  // The open-in-new-tab address for what is on screen. The cursor and scroll
+  // are read off the live editor at the moment the link is taken (a press of
+  // any button, so a middle click and "Copy link" get them, or keyboard focus),
+  // and written straight onto the anchor rather than through a render, so a
+  // cursor move costs nothing.
+  function newTabHash(withSpot: boolean): string {
+    if (activeTab === null) return standaloneEditorHash(root)
+    const spot =
+      withSpot && activeTab.mode === "file" && !showPreview && codeEditor !== null
+        ? readEditorSpot(codeEditor)
+        : { line: null, top: null }
+    return standaloneEditorHash(root, {
+      mode: activeTab.mode,
+      path: activeTab.path,
+      view: { ...localViewFor(activeTab), ...spot },
+    })
+  }
+  function takeNewTabLink(event: React.SyntheticEvent<HTMLAnchorElement>): void {
+    event.currentTarget.setAttribute("href", newTabHash(true))
+  }
+  // A new tab is a fresh page and the drafts live in this one's memory, so it
+  // opens the file as saved; this tab is the only one that knows otherwise.
+  function noteUnsavedStayHere(): void {
+    if (activeTab === null || !activeTab.dirty) return
+    notifyInfo(
+      prose`The new tab opened ${chip(activeTab.path)} as it is saved on disk. Your unsaved edits are only in this tab.`,
     )
   }
 
   function renderStandaloneActions(): React.ReactNode {
     if (standalone) return null
+    // Both of these leave the overlay rather than act on the file, and the
+    // tenet would let them be quieter; they wear the cluster's outline anyway,
+    // because a ghost label in a row of outlined buttons reads as text rather
+    // than as a control, and these are the overlay's only ways out.
     return (
       <>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="shrink-0 max-md:min-h-10"
-          render={
-            <a
-              href={standaloneEditorHash(
-                root,
-                activeTab ? { mode: activeTab.mode, path: activeTab.path } : null,
-              )}
-              target="_blank"
-              rel="noopener"
-            />
-          }
-        >
-          <ExternalLink />
-          Open in new tab
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => closeEditor()}>
-          <X />
-          Close
-        </Button>
+        <SimpleTooltip content="Open in new tab">
+          <Button
+            variant="outline"
+            className={cn(HEADER_CONTROL, COLLAPSES_BELOW_XL, "max-md:h-10")}
+            render={
+              <a
+                href={newTabHash(false)}
+                target="_blank"
+                rel="noopener"
+                onPointerDown={takeNewTabLink}
+                onContextMenu={takeNewTabLink}
+                onFocus={takeNewTabLink}
+                onKeyDown={takeNewTabLink}
+                onClick={noteUnsavedStayHere}
+                onAuxClick={(event) => {
+                  if (event.button === 1) noteUnsavedStayHere()
+                }}
+              />
+            }
+          >
+            <ExternalLink />
+            <HeaderLabel>Open in new tab</HeaderLabel>
+          </Button>
+        </SimpleTooltip>
+        <SimpleTooltip content="Close">
+          <Button
+            variant="outline"
+            className={cn(HEADER_CONTROL, COLLAPSES_BELOW_XL, "max-md:h-10")}
+            onClick={() => closeEditor()}
+          >
+            <X />
+            <HeaderLabel>Close</HeaderLabel>
+          </Button>
+        </SimpleTooltip>
+      </>
+    )
+  }
+
+  // What the editor is rooted at, named from the same facts the sidebar row is
+  // drawn from, so the header and the row cannot call one thing two names. One
+  // line on a computer; two on a phone, where the words sit above the chip.
+  function renderRootTitle(): React.ReactNode {
+    const named = standaloneEditorName(root, spine)
+    const Glyph = named.glyph === "terminal" ? SquareTerminal : FileCode2
+    // "Editor for <name>[ in <where>]" as prose segments. The leading words get
+    // their own line on a phone; the names follow on one line that truncates
+    // rather than wrapping the header, the first name holding on longest.
+    const [lead, ...rest] = editorTitleProse(named)
+    return (
+      <>
+        {/* The root's own glyph, so a terminal-rooted editor reads as one at a
+            glance rather than as an agent whose name happens to be a path. */}
+        <Glyph className="size-4 shrink-0 text-muted-foreground max-md:hidden" />
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 max-md:flex-col max-md:items-start max-md:gap-0.5">
+          <span className="shrink-0 text-sm text-muted-foreground max-md:text-xs">
+            {typeof lead === "string" ? lead.trim() : null}
+          </span>
+          <div className="flex min-w-0 max-w-full items-center gap-1.5 text-sm">
+            {rest.map((segment, index) =>
+              typeof segment === "string" ? (
+                <span key={index} className="shrink-0 text-muted-foreground">
+                  {segment.trim()}
+                </span>
+              ) : (
+                <InlineCode
+                  key={index}
+                  className={cn(
+                    "min-w-0 truncate whitespace-nowrap",
+                    // The owner gives way faster than the terminal's own name.
+                    rest.slice(0, index).some((s) => typeof s !== "string") &&
+                      "shrink-[4]",
+                  )}
+                >
+                  {segment.name}
+                </InlineCode>
+              ),
+            )}
+          </div>
+        </div>
       </>
     )
   }
@@ -1352,17 +1939,34 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   function renderHeader(): React.ReactNode {
     return (
       <>
-        {/* Header: open file path, view toggle, dirty indicator, actions.
-          min-h-12.75 (51px) floors the row at its tallest control, the
-          File/Diff segmented group, an h-7 (28px) button inside p-0.5 (4px)
-          + border (2px) = 34px, plus the row's py-2 (16px) and its own
-          border-b (1px; min-h is border-box), so the bar keeps one height
-          as controls come and go instead of jumping 6px whenever a file
-          opens or closes (measured 51px with a file open, 45px without,
-          before the floor). The mobile toggle (max-md:size-10, 40px)
-          exceeds the floor on phones, where the toggle always renders, so
-          the row is constant there too. */}
-      <div className="flex min-h-12.75 items-center gap-2 border-b px-3 py-2">
+        {/* Header: what this editor is rooted at, the view toggle and the
+          actions. The open file's path lives in the status bar below.
+          Every control is HEADER_CONTROL's h-8 (32px), so min-h-12.25 (49px)
+          is that plus the row's py-2 (16px) and its own border-b (1px; min-h
+          is border-box): the bar keeps one height as controls come and go.
+          For a finger every control is 40px, so the floor is 57px
+          (pointer-coarse:min-h-14.25). On a phone the painted controls take
+          the 40px floor, and the explorer toggle always renders there, so
+          the row is constant too. */}
+      <div className="flex min-h-12.25 items-center gap-2 pointer-coarse:min-h-14.25 border-b px-3 py-2">
+        {standalone && (
+          // The phone's Up control, the same generic Back every phone screen
+          // leads with, and as quiet as theirs: it navigates rather than acts,
+          // so it stays ghost beside the outline cluster. It PUSHES the screen
+          // the editor is about rather than stepping back through history,
+          // which has nothing behind it when the editor opened in a new tab.
+          // A computer has no such control: there the browser's own Back and
+          // closing the tab are the way out.
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-10 shrink-0 md:hidden"
+            aria-label="Back"
+            onClick={() => leaveStandaloneEditor(root)}
+          >
+            <ChevronLeft />
+          </Button>
+        )}
         {/* Explorer collapse/expand toggle: lives in the header, OUTSIDE the
             panel it hides, so it stays reachable while collapsed. */}
         <SimpleTooltip
@@ -1371,9 +1975,9 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
           }
         >
           <Button
-            size="icon-sm"
-            variant="ghost"
-            className="shrink-0 max-md:size-10"
+            size="icon"
+            variant="outline"
+            className={cn(HEADER_ICON_CONTROL, "max-md:size-10")}
             aria-label={
               explorerCollapsed
                 ? "Show the file explorer"
@@ -1387,15 +1991,8 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
             {explorerCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
           </Button>
         </SimpleTooltip>
-        <FileCode2 className="size-4 shrink-0 text-muted-foreground" />
-        {/* <bdi> LTR isolate: keeps a leading bidi-neutral char in a dotfile
-            path (".github/...") from being reordered to the end by direction:rtl. */}
-        <span className="min-w-0 flex-1 truncate text-left font-mono text-sm [direction:rtl]">
-          <bdi dir="ltr">{openPath ?? "Select a file"}</bdi>
-        </span>
-        {renderStatusIndicators()}
+        {renderRootTitle()}
         {renderDesktopViewActions()}
-        {renderLocalEditorAction()}
         {renderSaveAction()}
         {renderMobileActions()}
         {renderStandaloneActions()}
@@ -1476,6 +2073,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                     onChange={(e) => setSearch(e.target.value)}
                     aria-label="Search files"
                     placeholder="Search files…"
+                    {...searchPick.fieldProps}
                     className="h-8 pl-7 text-sm [@media(pointer:coarse)]:h-10"
                   />
                 </div>
@@ -1535,22 +2133,27 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                         {filtered.map((p) => (
                           <button
                             key={p}
+                            id={searchPick.rowId(p)}
                             type="button"
                             onClick={() => requestOpen(p)}
                             className={cn(
                               "flex w-full items-center gap-1.5 rounded px-1 py-1 hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring [@media(pointer:coarse)]:min-h-10",
                               p === openPath && "bg-muted",
+                              p === searchPick.activeKey && ACTIVE_ROW_RING,
                             )}
                           >
-                            {changedMap.has(p) && (
+                            {changedMap.get(p) && (
                               <FileStatusIcon status={changedMap.get(p)!} />
                             )}
-                            {/* Full path → start-ellipsize so the filename stays visible.
-                                <bdi> LTR isolate keeps a leading "." (dotfile path) from
-                                being reordered to the end by direction:rtl. */}
-                            <span className="min-w-0 flex-1 truncate text-left font-mono text-sm [direction:rtl]">
-                              <bdi dir="ltr">{p}</bdi>
-                            </span>
+                            {/* The full path, giving way at its start so the
+                                filename stays visible. */}
+                            <StartTruncatedText
+                              text={p}
+                              className="flex-1 font-mono text-sm"
+                              matches={matchCharRanges(p, [
+                                search.trim().toLowerCase(),
+                              ])}
+                            />
                           </button>
                         ))}
                         {searchTruncated && (
@@ -1615,6 +2218,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                 activeTab.mode === "file" &&
                 !isBufferStale(activeBuffer, activeTab.path) && (
                   <FileDiskBanner
+                    busy={fileBusy}
                     state={activeBuffer?.diskState ?? "fresh"}
                     path={activeTab.path}
                     dirty={dirty}
@@ -1633,7 +2237,35 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                     }}
                   />
                 )}
-              <div className="relative min-h-0 flex-1">
+              {/* The encoding notices: how this file was read decides what
+                  a save would do, so it is said before anything is written.
+                  Beside, never instead of, the disk banner above: separate
+                  facts. */}
+              {activeTab !== null &&
+                activeTab.mode === "file" &&
+                fileReady &&
+                !binary &&
+                activeBuffer !== undefined &&
+                encodingNotices(
+                  activeTab.path,
+                  activeBuffer,
+                  (kind) =>
+                  noticeDismissed(key, activeTab.path, kind),
+                ).map((notice) => (
+                  <EncodingNotice
+                    key={notice.kind}
+                    notice={notice}
+                    onDismiss={() => {
+                      dismissNotice(key, activeTab.path, notice.kind)
+                      setNoticeDismissals((n) => n + 1)
+                    }}
+                  />
+                ))}
+              <div
+                ref={contentRef}
+                tabIndex={-1}
+                className="relative min-h-0 flex-1 outline-none"
+              >
                 <EditorContentPane
                   root={root}
                   tab={activeTab}
@@ -1652,12 +2284,30 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                   onMonacoReady={(monaco) => {
                     monacoRef.current = monaco
                   }}
+                  onEditorChange={setCodeEditor}
+                  onImageDims={setImageDims}
                 />
               </div>
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
         </div>
+        {/* Full width under the explorer and the content: it describes the
+            open file, whichever pane has focus. */}
+        <EditorStatusBar
+          plan={statusPlan}
+          editor={codeEditor}
+          languageLabel={activeLanguageLabel}
+          languagePicker={languagePicker}
+          encodingItems={encodingMenuItems()}
+          // Spawns an editor on the server, so it is offered only where the
+          // page was opened at a local address.
+          localEditor={
+            localAccess && activeTab !== null
+              ? { items: localEditorMenuItems(), opening: openingEditor }
+              : null
+          }
+        />
       </>
     )
   }
@@ -1727,6 +2377,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
           resolve a conflict that is waiting on an answer), so the guard is a
           plain tab lookup rather than the shared hook's two-value form. */}
       <SaveConflictDialog
+        busy={fileBusy}
         target={
           saveConflict !== null &&
           tabs.some((t) => t.id === saveConflict.tabId)
@@ -1739,7 +2390,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
           setSaveConflict(null)
           // No token: the whole meaning of Overwrite is to save without the
           // guard, and the body is the one the refused save carried.
-          writeBuffer(target.tabId, target.path, target.body)
+          writeBuffer(target.tabId, target.path, target.body, target.encoding)
         }}
         onReload={() => {
           const target = saveConflict!
@@ -1748,6 +2399,21 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
           // throws away everything the user typed, and that is the same act
           // the banner's Reload asks about.
           requestReload(target.tabId, target.path)
+        }}
+      />
+      <ConfirmReopenEncodingDialog
+        target={reopenTarget}
+        present={
+          reopenTarget !== null &&
+          (tabs.find((t) => t.id === reopenTarget.tabId)?.dirty ?? false)
+        }
+        onClose={() => setReopenTarget(null)}
+        onConfirm={() => {
+          const target = reopenTarget!
+          setReopenTarget(null)
+          reloadFileInPlace(target.tabId, target.path, true, {
+            encoding: target.encoding,
+          })
         }}
       />
       <DeleteEntryDialog
@@ -1875,6 +2541,50 @@ function previewableDiffIsReady(
   return ready && !(buffer?.diff?.binary ?? false) && !buffer?.diffHead
 }
 
+// Monaco's diff editor is what the content pane shows: not the patch head past
+// the size ceiling, not the binary refusal, and not a preview.
+function diffEditorIsShown(
+  tab: EditorTab | null,
+  diffReady: boolean,
+  buffer: TabBuffer | undefined,
+  preview: boolean,
+): boolean {
+  return (
+    tab?.mode === "diff" &&
+    !isImagePreviewPath(tab.path) &&
+    diffReady &&
+    !buffer?.diffHead &&
+    !(buffer?.diff?.binary ?? false) &&
+    !preview
+  )
+}
+
+// The editor's live code editor: what the status bar follows, plus the reads
+// and moves an address's cursor and scroll need. Monaco's editor fits it.
+type LiveCodeModel = NonNullable<ReturnType<StatusBarEditor["getModel"]>> & {
+  uri: { toString(): string }
+  getLineCount(): number
+}
+type LiveCodeEditor = Omit<StatusBarEditor, "getModel"> &
+  Omit<SpotEditor, "getModel"> & {
+    getModel(): LiveCodeModel | null
+    getLayoutInfo(): { height: number }
+    onDidLayoutChange(listener: () => void): { dispose(): void }
+  }
+
+// The route's view, when the route names this root's active file in its mode;
+// `null` when it names something else (a report on its way up has not landed
+// yet), and `undefined` when it names this file with nothing to say about it.
+function editorRouteViewFor(
+  route: { root: EditorRoot; mode: string; path: string | null; view?: EditorViewState } | null,
+  key: string,
+  tab: EditorTab | null,
+): EditorViewState | undefined | null {
+  if (route === null || tab === null || rootKey(route.root) !== key) return null
+  if (route.path !== tab.path || route.mode !== tab.mode) return null
+  return route.view
+}
+
 function previewIsAvailable(
   kind: ReturnType<typeof previewKind>,
   tab: EditorTab | null,
@@ -1921,13 +2631,15 @@ interface EditorContentPaneProps {
   renderPreview: (path: string) => React.ReactNode
   onRetryFile: (tabId: string, path: string) => void
   onRetryDiff: (tabId: string, path: string) => void
-  onDraftChange: (value: string) => void
+  onDraftChange: (value: string, path: string) => void
   onSave: () => void
   onMonacoReady: (monaco: MonacoInstance) => void
+  onEditorChange: (editor: LiveCodeEditor | null) => void
+  onImageDims: (dims: ImageDimensions | null) => void
 }
 
 function EditorContentPane(props: EditorContentPaneProps) {
-  const { root, tab, image } = props
+  const { root, tab, image, onImageDims } = props
   if (tab === null) {
     return (
       <CenteredPane>Select a file from the tree to view or edit it.</CenteredPane>
@@ -1940,6 +2652,7 @@ function EditorContentPane(props: EditorContentPaneProps) {
         key={tab.path}
         src={fileApi.rawUrl(root, tab.path)}
         path={tab.path}
+        onDims={onImageDims}
       />
     )
   }
@@ -1976,7 +2689,7 @@ function DiffContentPane({
     if (diffHead.binary) {
       return (
         <CenteredPane>
-          This file is binary and can&rsquo;t be diffed here.
+          This file is binary, so it can&rsquo;t be diffed here.
         </CenteredPane>
       )
     }
@@ -1994,7 +2707,7 @@ function DiffContentPane({
   if (buffer?.diff?.binary) {
     return (
       <CenteredPane>
-        This file is binary and can&rsquo;t be diffed here.
+        This file is binary, so it can&rsquo;t be diffed here.
       </CenteredPane>
     )
   }
@@ -2031,6 +2744,7 @@ function FileContentPane({
   onDraftChange,
   onSave,
   onMonacoReady,
+  onEditorChange,
 }: ActiveEditorContentProps) {
   if (buffer?.fileError && !isBufferStale(buffer, tab.path)) {
     return (
@@ -2044,7 +2758,7 @@ function FileContentPane({
   if (binary) {
     return (
       <CenteredPane>
-        This file is binary and can&rsquo;t be edited here.
+        This file is binary, so it can&rsquo;t be edited here.
       </CenteredPane>
     )
   }
@@ -2059,6 +2773,12 @@ function FileContentPane({
           onChange={onDraftChange}
           onSave={onSave}
           onReady={onMonacoReady}
+          onEditorChange={onEditorChange}
+          // A read that names the file's style hands the text over in LF
+          // (see `editorTextOf`); an older server names none.
+          lfText={(buffer?.eol ?? null) !== null}
+          readOnly={(buffer?.readOnly ?? false) || (buffer?.readingLock ?? null) !== null}
+          readOnlyReason={readOnlyReasonOf(buffer)}
         />
       </Suspense>
     </ChunkBoundary>
@@ -2106,12 +2826,19 @@ function ErrorPane({
 // Cache-Control: no-cache). The caller keys the pane by path, so this state
 // resets on a preview-replace.
 //
-// The caption shows the path and the pixel dimensions, because the pane never
-// fetches the file and so cannot know the byte size.
-function ImagePreviewPane({ src, path }: { src: string; path: string }) {
+// The pixel dimensions go to the status bar, which already names the path. It
+// shows no byte size, because the pane never fetches the file through /read.
+function ImagePreviewPane({
+  src,
+  path,
+  onDims,
+}: {
+  src: string
+  path: string
+  onDims: (dims: ImageDimensions | null) => void
+}) {
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
-  const [dims, setDims] = useState<{ w: number; h: number } | null>(null)
   if (failed) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-sm text-destructive">
@@ -2125,7 +2852,7 @@ function ImagePreviewPane({ src, path }: { src: string; path: string }) {
           variant="outline"
           onClick={() => {
             setFailed(false)
-            setDims(null)
+            onDims(null)
             setAttempt((a) => a + 1)
           }}
         >
@@ -2136,21 +2863,25 @@ function ImagePreviewPane({ src, path }: { src: string; path: string }) {
     )
   }
   return (
-    <PreviewImageFrame
-      caption={dims === null ? path : `${path} · ${dims.w} × ${dims.h}`}
-    >
+    <PreviewImageFrame>
       <img
         key={attempt}
         src={src}
         alt={path}
         className="max-h-full max-w-full object-contain"
         onLoad={(e) =>
-          setDims({
-            w: e.currentTarget.naturalWidth,
-            h: e.currentTarget.naturalHeight,
+          onDims({
+            path,
+            width: e.currentTarget.naturalWidth,
+            height: e.currentTarget.naturalHeight,
           })
         }
-        onError={() => setFailed(true)}
+        onError={() => {
+          // A picture that failed to load has no size to report, whatever the
+          // last successful load of this path measured.
+          onDims(null)
+          setFailed(true)
+        }}
       />
     </PreviewImageFrame>
   )
@@ -2164,7 +2895,7 @@ function ImagePreviewPane({ src, path }: { src: string; path: string }) {
 function SvgPreviewPane({ draft, path }: { draft: string; path: string }) {
   const url = useObjectUrl(draft, "image/svg+xml")
   return (
-    <PreviewImageFrame caption={path}>
+    <PreviewImageFrame>
       {url !== null && (
         <img src={url} alt={path} className="max-h-full max-w-full object-contain" />
       )}
@@ -2172,24 +2903,29 @@ function SvgPreviewPane({ draft, path }: { draft: string; path: string }) {
   )
 }
 
-// Shared frame for the two image panes: the image lives in a min-h-0 flex-1
-// box and the caption is a fixed (shrink-0) sibling, so a portrait image can
-// never push the caption out of the pane or force a surprise scrollbar.
-function PreviewImageFrame({
-  caption,
-  children,
-}: {
-  caption: string
-  children: React.ReactNode
-}) {
+// Shared frame for the two image panes: the image is contained in the pane, so
+// a portrait image can never force a surprise scrollbar. The path they used to
+// caption themselves with is the status bar's now.
+function PreviewImageFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-full min-h-0 flex-col items-center gap-2 bg-muted/30 p-4">
-      <div className="flex min-h-0 w-full flex-1 items-center justify-center">
-        {children}
-      </div>
-      <span className="max-w-full shrink-0 truncate font-mono text-xs text-muted-foreground">
-        {caption}
-      </span>
+    <div className="flex h-full min-h-0 items-center justify-center bg-muted/30 p-4">
+      {children}
     </div>
   )
+}
+
+// What Monaco says when someone types into a read-only buffer: the same two
+// reasons the status bar's read-only label gives.
+function readOnlyReasonOf(buffer: TabBuffer | undefined): string | undefined {
+  const lock = buffer?.readingLock ?? null
+  if (lock?.kind === "reopen") {
+    return `Reopening as ${lock.label}: the text is replaced when the file has been read again.`
+  }
+  if (lock?.kind === "reload") {
+    return "Reloading from disk: the text is replaced when the file has been read again."
+  }
+  if (!buffer?.readOnly) return undefined
+  return buffer.unwritable !== null && !buffer.pathReadOnly
+    ? "This file is read-only: its encoding can't write it back without changing bytes you didn't touch. Reopen or convert it from the encoding menu in the status bar."
+    : "This file is read-only: it is a symlink to an external file or a .git path."
 }

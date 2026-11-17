@@ -106,7 +106,8 @@ Only tracked files exist for the tool: `git add` a new file before checking it.
 ## Growing an oversize file
 
 `tools/module-headers/baseline-oversize.json` records every file that was over 500
-lines on 2026-11-14 with its line count. A baselined file may never exceed its count,
+lines on 2026-11-14, and every file the upstream import below brought in, with its
+line count. A baselined file may never exceed its count,
 and a new file over 500 lines fails outright; there is no in-file opt-out.
 
 When a phase genuinely needs to add wiring to an oversize file (a `mod` line, a call, a
@@ -123,6 +124,31 @@ is for. A renamed baselined file counts as new and is re-baselined the same way.
 
 When a file shrinks, `--lines --write` lowers its count (and drops it once it is at or
 under 500). An entry whose file is gone fails the check until that runs.
+
+### The one-time upstream import (2026-11-16)
+
+Upstream never had this gate. Merging upstream `server-mode` at `7e80c7dd1` (renamed to
+Yaran names in `0956be7ac`, merged in `4fcad268a`) brought 308 files over the limit: 144
+new oversize files and 164 baselined files that grew. They were recorded once, with the
+ordinary `--accept-growth`, at their exact line counts at `422fe5872`. That count
+includes the post-merge lint pass, which mostly added doc comments. Each reason starts
+with `upstream import 2026-11-16` and names one of these three sources:
+
+- **New upstream module:** the upstream path it came from.
+- **Merged module:** the upstream and fork counts it was merged from.
+- **Fork module with no upstream counterpart:** what adapting it to upstream added.
+
+The same pass ran `--lines --write` first, so baselined files that had shrunk were
+tightened or dropped.
+
+This is a one-time exception for code that already existed on one side of the merge.
+It is not headroom:
+
+- Every count is the file's actual size, so the ratchet holds from here.
+- A file still may not grow without its own reviewed `--accept-growth`.
+- New behaviour still goes in a new module of 500 lines or fewer.
+- A later upstream sync gets no blanket exception. Each grown file is reviewed like any
+  other growth, with a reason naming the upstream revision and path.
 
 ## What the graph can and cannot see
 

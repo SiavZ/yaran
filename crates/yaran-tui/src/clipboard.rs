@@ -6,7 +6,7 @@ use yaran_core::engine::{Final, StatusUpdate, status_op};
 use crate::app::WorkerEvent;
 
 /// Request sent from the main thread to the clipboard worker. Carries the
-/// op's success and failure finals (already keyed by the StatusOp minted at
+/// op's success and failure finals (already keyed by the `StatusOp` minted at
 /// the call site), so the worker can ship back the resolved `status` without
 /// the engine having to know the per-call label.
 struct CopyRequest {
@@ -31,7 +31,7 @@ impl Clipboard {
         std::thread::Builder::new()
             .name("clipboard".into())
             .spawn(move || {
-                clipboard_worker(rx);
+                clipboard_worker(&rx);
             })
             .expect("failed to spawn clipboard worker thread");
 
@@ -55,8 +55,8 @@ impl Clipboard {
         // Declare the loading→final states together. The success message is the
         // label; the failure message matches the engine's prior wording.
         let success_label = label.to_string();
-        let op = status_op("Copying path to clipboard\u{2026}")
-            .on_success(move |_: &()| Final::info(success_label.clone()))
+        let op = status_op("Copying to the clipboard\u{2026}")
+            .on_success(move |(): &()| Final::info(success_label.clone()))
             .on_failure(|e: &String| Final::error(format!("Clipboard copy failed: {e}")));
         let pending = op.pending_status();
         self.tx
@@ -66,8 +66,17 @@ impl Clipboard {
                 op,
                 worker_tx: worker_tx.clone(),
             })
-            .map_err(|_| anyhow!("Clipboard worker thread is not running"))?;
+            .map_err(|_| {
+                anyhow!("the clipboard worker is not running; restart yaran to copy again")
+            })?;
         Ok(pending)
+    }
+
+    /// A handle whose worker is gone, so every copy is refused at the send.
+    #[cfg(test)]
+    pub(crate) fn without_worker() -> Self {
+        let (tx, _) = mpsc::channel::<CopyRequest>();
+        Self { tx }
     }
 
     #[cfg(test)]
@@ -94,7 +103,7 @@ impl Clipboard {
 }
 
 /// Maximum payload size for an OSC 52 copy. Many terminals refuse longer
-/// sequences. 100 KiB matches the limit used by tmux and WezTerm.
+/// sequences. 100 KiB matches the limit used by tmux and `WezTerm`.
 const OSC52_MAX_BYTES: usize = 100_000;
 
 /// True when no X11 or Wayland display is reachable, so arboard's Linux/BSD
@@ -118,18 +127,11 @@ fn base64_encode(data: &[u8]) -> String {
         let b1 = chunk.get(1).copied().map_or(0, u32::from);
         let b2 = chunk.get(2).copied().map_or(0, u32::from);
         let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(A[((n >> 18) & 0x3f) as usize] as char);
-        out.push(A[((n >> 12) & 0x3f) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            A[((n >> 6) & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            A[(n & 0x3f) as usize] as char
-        } else {
-            '='
-        });
+        let sextet = |shift: u32| char::from(A[usize::try_from((n >> shift) & 0x3f).unwrap_or(0)]);
+        out.push(sextet(18));
+        out.push(sextet(12));
+        out.push(if chunk.len() > 1 { sextet(6) } else { '=' });
+        out.push(if chunk.len() > 2 { sextet(0) } else { '=' });
     }
     out
 }
@@ -142,7 +144,7 @@ fn osc52_sequence(text: &str) -> String {
 
 /// Emit an OSC 52 copy via /dev/tty so the escape reaches the controlling
 /// terminal regardless of stdout/stderr redirection. The host terminal
-/// (WezTerm, kitty, alacritty, the VS Code terminal, tmux with
+/// (`WezTerm`, kitty, alacritty, the VS Code terminal, tmux with
 /// `set-clipboard on`, and so on) writes the payload to the local clipboard.
 /// This is the standard way to copy from a remote shell with no X server.
 fn osc52_copy(text: &str) -> Result<()> {
@@ -163,7 +165,7 @@ fn osc52_copy(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn clipboard_worker(rx: mpsc::Receiver<CopyRequest>) {
+fn clipboard_worker(rx: &mpsc::Receiver<CopyRequest>) {
     // Without a display server arboard's X11 path hangs until it times out,
     // so skip it and go straight to OSC 52 (headless SSH, VS Code Remote).
     let primary: Result<arboard::Clipboard, String> = if no_display() {
@@ -184,7 +186,7 @@ fn clipboard_worker(rx: mpsc::Receiver<CopyRequest>) {
 /// timeout, lost selection ownership), that request is retried through
 /// `fallback` before the failure is reported.
 fn run_worker<P>(
-    rx: mpsc::Receiver<CopyRequest>,
+    rx: &mpsc::Receiver<CopyRequest>,
     primary: Result<P, String>,
     fallback: impl Fn(&str) -> Result<()>,
 ) where
@@ -265,7 +267,7 @@ mod tests {
     ) -> (mpsc::Sender<CopyRequest>, mpsc::Receiver<CopyRequest>) {
         let (tx, rx) = mpsc::channel();
         let op = status_op("copy")
-            .on_success(|_: &()| Final::info("ok"))
+            .on_success(|(): &()| Final::info("ok"))
             .on_failure(|e: &String| Final::error(e.clone()));
         tx.send(CopyRequest {
             text: text.to_string(),
@@ -279,7 +281,7 @@ mod tests {
 
     fn run_one<P>(
         primary: Result<P, String>,
-        fallback_ok: bool,
+        fallback: Result<(), &'static str>,
     ) -> (Result<(), String>, Vec<String>)
     where
         P: FnMut(&str) -> std::result::Result<(), String>,
@@ -288,13 +290,9 @@ mod tests {
         let (tx, rx) = request("payload", &worker_tx);
         drop(tx);
         let seen = std::cell::RefCell::new(Vec::new());
-        run_worker(rx, primary, |t: &str| {
+        run_worker(&rx, primary, |t: &str| {
             seen.borrow_mut().push(t.to_string());
-            if fallback_ok {
-                Ok(())
-            } else {
-                Err(anyhow!("no tty"))
-            }
+            fallback.map_err(|e| anyhow!(e))
         });
         let WorkerEvent::ClipboardCopyCompleted { result, .. } = worker_rx.recv().unwrap() else {
             panic!("unexpected event");
@@ -307,28 +305,29 @@ mod tests {
     #[test]
     fn unavailable_native_clipboard_falls_back_to_osc52() {
         // The fork's failure mode: arboard cannot reach an X server over SSH.
-        let (result, seen) = run_one::<Setter>(Err("X11 server connection timed out".into()), true);
+        let (result, seen) =
+            run_one::<Setter>(Err("X11 server connection timed out".into()), Ok(()));
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(seen, vec!["payload".to_string()]);
     }
 
     #[test]
     fn failed_native_set_retries_via_osc52() {
-        let (result, seen) = run_one::<Setter>(Ok(|_| Err("lost ownership".into())), true);
+        let (result, seen) = run_one::<Setter>(Ok(|_| Err("lost ownership".into())), Ok(()));
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(seen, vec!["payload".to_string()]);
     }
 
     #[test]
     fn successful_native_set_does_not_emit_osc52() {
-        let (result, seen) = run_one::<Setter>(Ok(|_| Ok(())), true);
+        let (result, seen) = run_one::<Setter>(Ok(|_| Ok(())), Ok(()));
         assert!(result.is_ok());
-        assert!(seen.is_empty());
+        assert_eq!(seen, Vec::<std::string::String>::new());
     }
 
     #[test]
     fn fallback_failure_is_reported() {
-        let (result, _) = run_one::<Setter>(Err("no display server".into()), false);
+        let (result, _) = run_one::<Setter>(Err("no display server".into()), Err("no tty"));
         assert!(result.unwrap_err().contains("no tty"));
     }
 

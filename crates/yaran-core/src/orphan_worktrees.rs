@@ -29,6 +29,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::config::YaranPaths;
 use crate::git;
+use crate::leftover_folders::BranchChoice;
 use crate::sanitize::for_terminal;
 use crate::storage::{SessionStore, load_store_id};
 
@@ -51,6 +52,10 @@ struct Inventory {
 }
 
 /// Build the complete candidate list. Fails closed; see the module doc.
+///
+/// # Errors
+///
+/// Fails when any project or worktree cannot be inspected.
 pub fn inventory(paths: &YaranPaths) -> Result<Vec<OrphanWorktreeCandidate>> {
     Ok(load_inventory(paths)?.candidates)
 }
@@ -58,7 +63,13 @@ pub fn inventory(paths: &YaranPaths) -> Result<Vec<OrphanWorktreeCandidate>> {
 /// Revalidate the complete inventory, then remove exactly one still-eligible
 /// candidate through the protected-workspace guard. `delete_branch` also
 /// force-deletes its branch; the default is to keep it.
-pub fn remove(paths: &YaranPaths, worktree_path: &Path, delete_branch: bool) -> Result<()> {
+///
+/// # Errors
+///
+/// Fails when the inventory cannot be taken, the path is no longer an
+/// eligible orphan, a branch deletion is asked of a detached worktree, or
+/// git refuses.
+pub fn remove(paths: &YaranPaths, worktree_path: &Path, branch: BranchChoice) -> Result<()> {
     let inventory = load_inventory(paths)?;
     let target = resolve(worktree_path)?;
     let candidate = inventory
@@ -71,9 +82,9 @@ pub fn remove(paths: &YaranPaths, worktree_path: &Path, delete_branch: bool) -> 
                 for_terminal(&target.display().to_string())
             )
         })?;
-    match (delete_branch, candidate.branch.as_deref()) {
-        (true, None) => bail!("a detached worktree has no branch to delete"),
-        (true, Some(branch)) => {
+    match (branch, candidate.branch.as_deref()) {
+        (BranchChoice::Delete, None) => bail!("a detached worktree has no branch to delete"),
+        (BranchChoice::Delete, Some(branch)) => {
             git::remove_worktree(
                 &candidate.project_path,
                 &candidate.worktree_path,
@@ -82,7 +93,7 @@ pub fn remove(paths: &YaranPaths, worktree_path: &Path, delete_branch: bool) -> 
                 &inventory.registered_projects,
             )?;
         }
-        (false, _) => git::remove_worktree_keep_branch(
+        (BranchChoice::Keep, _) => git::remove_worktree_keep_branch(
             &candidate.project_path,
             &candidate.worktree_path,
             &inventory.registered_projects,
@@ -260,6 +271,7 @@ mod tests {
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         }
     }
@@ -277,7 +289,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::default(),
                     workspace_mode: None,
                 })
                 .collect(),
@@ -401,7 +413,10 @@ mod tests {
 
         let store = SessionStore::open(&paths.sessions_db_path).unwrap();
         store.upsert_session(&session_for(&managed)).unwrap();
-        assert!(inventory(&paths).unwrap().is_empty());
+        assert_eq!(
+            inventory(&paths).unwrap(),
+            Vec::<crate::orphan_worktrees::OrphanWorktreeCandidate>::new()
+        );
         store.soft_delete_session("retained-row").unwrap();
         assert!(
             inventory(&paths).unwrap().is_empty(),
@@ -410,7 +425,7 @@ mod tests {
         store.delete_session("retained-row").unwrap();
         drop(store);
 
-        remove(&paths, &managed, false).unwrap();
+        remove(&paths, &managed, BranchChoice::Keep).unwrap();
         assert!(!managed.exists());
         let branch = Command::new("git")
             .arg("-C")
@@ -427,7 +442,7 @@ mod tests {
 
         fs::write(&paths.config_path, "not = [valid").unwrap();
         assert!(inventory(&paths).is_err());
-        assert!(remove(&paths, &managed, false).is_err());
+        assert!(remove(&paths, &managed, BranchChoice::Keep).is_err());
         assert!(managed.exists());
 
         write_config(&paths, &[&repo]);
@@ -457,7 +472,10 @@ mod tests {
         init_repo(&nested_project);
         write_config(&paths, &[&repo, &nested_project]);
 
-        let error = format!("{:#}", remove(&paths, &managed, false).unwrap_err());
+        let error = format!(
+            "{:#}",
+            remove(&paths, &managed, BranchChoice::Keep).unwrap_err()
+        );
         assert!(error.contains("overlaps the registered project"), "{error}");
         assert!(managed.exists());
     }
@@ -467,7 +485,7 @@ mod tests {
     #[test]
     fn removal_deletes_branch_only_when_asked_and_refuses_for_detached() {
         let (_temp, paths, repo, managed, _outside) = setup_inventory();
-        remove(&paths, &managed, true).unwrap();
+        remove(&paths, &managed, BranchChoice::Delete).unwrap();
         assert!(!managed.exists());
         let branch = Command::new("git")
             .arg("-C")
@@ -482,7 +500,9 @@ mod tests {
             &repo,
             &["worktree", "add", "--detach", detached.to_str().unwrap()],
         );
-        let error = remove(&paths, &detached, true).unwrap_err().to_string();
+        let error = remove(&paths, &detached, BranchChoice::Delete)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("detached"), "{error}");
         assert!(detached.exists());
     }

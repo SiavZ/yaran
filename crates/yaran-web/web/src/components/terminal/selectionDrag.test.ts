@@ -24,6 +24,8 @@ class TermFake {
     active: {
       type: "normal",
       viewportY: 0,
+      baseY: 0,
+      cursorY: 0,
       getLine: (y: number) => {
         const text = this.lines[y]
         if (text === undefined) return undefined
@@ -62,9 +64,62 @@ class TermFake {
   select(col: number, row: number, length: number) {
     this.selection = { col, row, length }
   }
+  // Only blank-or-not matters to these tests, so this reads the covered cells
+  // of the first row and nothing more. Counted: the drag must not build the
+  // selected text on every move.
+  selectionReads = 0
+  getSelection() {
+    this.selectionReads++
+    const sel = this.selection
+    if (!sel) return ""
+    return [...(this.lines[sel.row] ?? "")].slice(sel.col, sel.col + sel.length).join("")
+  }
+  clearSelection() {
+    this.selection = null
+  }
+  // Single-row spans are all these tests paint.
+  getSelectionPosition() {
+    const sel = this.selection
+    if (!sel) return undefined
+    return {
+      start: { x: sel.col, y: sel.row },
+      end: { x: sel.col + sel.length, y: sel.row },
+    }
+  }
   scrollLines(n: number) {
     this.scrolled.push(n)
     this.buffer.active.viewportY = Math.max(0, this.buffer.active.viewportY + n)
+  }
+  // The viewport hold's seams. Its behaviour over streaming output is pinned
+  // against a real xterm in `lib/termselect.xterm.test.ts`.
+  // A marker on a line, as xterm places one: relative to the cursor's row.
+  registerMarker(cursorYOffset = 0) {
+    const b = this.buffer.active
+    return {
+      line: b.baseY + b.cursorY + cursorYOffset,
+      isDisposed: false,
+      dispose() {
+        this.isDisposed = true
+      },
+    }
+  }
+  onWriteParsed() {
+    return { dispose() {} }
+  }
+  resizeListeners: (() => void)[] = []
+  onResize(cb: () => void) {
+    this.resizeListeners.push(cb)
+    return {
+      dispose: () => {
+        this.resizeListeners = this.resizeListeners.filter((l) => l !== cb)
+      },
+    }
+  }
+  scrollToLine(line: number) {
+    this.buffer.active.viewportY = line
+  }
+  scrollToBottom() {
+    this.buffer.active.viewportY = this.buffer.active.baseY
   }
 }
 
@@ -97,12 +152,13 @@ describe("beginning a selection", () => {
     expect(drag.active()).toBe(true)
   })
 
-  it("selects only blanks where there is nothing, rather than the nearest word", () => {
+  it("paints nothing on blank cells, but a drag from there onto text selects it", () => {
     const { term, drag } = setup()
-    // Past the end of the text: a blank run, which expands as a run (xterm's
-    // own word rule) rather than reaching back for the word to its left.
+    // Past the end of the text: a blank run, which would copy nothing.
     drag.begin(at(15, 0))
-    expect(term.selection?.col).toBeGreaterThanOrEqual(10)
+    expect(term.selection).toBeNull()
+    drag.extend(at(4, 0))
+    expect(term.getSelection().trim()).toBe("status")
   })
 
   it("takes no anchor at all on a row that does not exist", () => {
@@ -123,6 +179,50 @@ describe("beginning a selection", () => {
 })
 
 describe("extending a selection", () => {
+  it("never builds the selected text while the finger moves", () => {
+    const { term, drag } = setup()
+    drag.begin(at(1, 0))
+    for (let col = 2; col < 15; col++) drag.extend(at(col, 1))
+    expect(term.selectionReads).toBe(0)
+  })
+
+  it("does not call a gesture the terminal cut short a blank one", () => {
+    const { term, drag } = setup()
+    drag.begin(at(15, 0))
+    expect(drag.liftFoundOnlyBlanks()).toBe(true)
+    for (const listener of term.resizeListeners) listener()
+    expect(drag.liftFoundOnlyBlanks()).toBe(false)
+  })
+
+  it("does not call a still finger blank when the app switched screens under it", () => {
+    const { term, drag } = setup()
+    drag.begin(at(15, 0))
+    term.buffer.active.type = "alternate"
+    drag.end()
+    expect(drag.liftFoundOnlyBlanks()).toBe(false)
+  })
+
+  it("clears a highlight whose word the app blanked out, and calls the lift blank", () => {
+    const { term, drag } = setup()
+    drag.begin(at(1, 0))
+    expect(term.selection).not.toBeNull()
+    // A status line redrawn as spaces where the pressed word was.
+    term.lines = ["   " + " status", "second line"]
+    drag.extend(at(2, 0))
+    expect(term.selection).toBeNull()
+    drag.end()
+    expect(drag.liftFoundOnlyBlanks()).toBe(true)
+  })
+
+  it("calls the lift blank when the word was blanked out under a still finger", () => {
+    const { term, drag } = setup()
+    drag.begin(at(1, 0))
+    term.lines = ["          ", "second line"]
+    drag.end()
+    expect(term.selection).toBeNull()
+    expect(drag.liftFoundOnlyBlanks()).toBe(true)
+  })
+
   it("grows the span to the finger's cell", () => {
     const { term, drag } = setup()
     drag.begin(at(1, 0))

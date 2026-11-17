@@ -8,14 +8,26 @@
 //! translates each variant back into concrete view mutations.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/events.rs
 //! ├── agent_job
+//! ├── attachments
+//! ├── auth
+//! ├── branch_history
 //! ├── changes_status
+//! ├── clone_project
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome
 //! ├── config
+//! ├── config_keys
+//! ├── config_queue
+//! ├── config_reload_status
+//! ├── config_write
 //! ├── engine
+//! ├── engine::lifecycle
+//! ├── engine::pending_removals
+//! ├── engine::removal
 //! ├── engine::spawn_worker
 //! ├── engine::status_op
 //! ├── engine::test_support
@@ -23,37 +35,48 @@
 //! ├── git
 //! ├── home_path
 //! ├── ids
+//! ├── leftover_folders
 //! ├── logger
 //! ├── model
+//! ├── operations
 //! ├── peer
 //! ├── peer::session_store
 //! ├── poller_status
+//! ├── process_sessions
 //! ├── project_browser
 //! ├── prose
 //! ├── pty
+//! ├── resume_recovery
+//! ├── serve_log
 //! ├── startup
 //! ├── status_text
 //! ├── statusline
 //! ├── storage
 //! ├── tab_verdict
+//! ├── term_identity
 //! ├── test_git
 //! ├── wire
 //! ├── worker
 //! ├── working_copy
-//! └── worktree_manager
+//! ├── worktree_manager
+//! └── worktree_ops
 //! External: anyhow, chrono, rusqlite, serde_json, std, tempfile, tracing
 //!
 //! Used by:
 //! engine/events.rs
 //! ├── engine
+//! ├── engine::clone
 //! ├── engine::command
 //! ├── engine::limits
+//! ├── engine::pending_removals
 //! ├── engine::provider_sessions
 //! ├── engine::resume_fallback
-//! └── engine::spawn_worker
+//! ├── engine::review23_tests
+//! ├── engine::spawn_worker
+//! └── engine::worktree_removal_race_tests
+//! ```
 //! <module-headers:end>
 
-use std::path::Path;
 use std::time::Instant;
 
 use chrono::Utc;
@@ -63,13 +86,13 @@ use crate::engine::{CreateLaunchOutcome, Engine, InFlightKey, ResolvedFinal};
 use crate::ids::{SessionIdRef, TabId, TabIdRef};
 use crate::logger;
 use crate::model::{
-    AgentSession, GhStatus, PrState, Project, ProjectBranchStatus, ProviderKind, SessionStatus,
+    AgentSession, GhStatus, Project, ProjectBranchStatus, ProviderKind, SessionStatus,
 };
+use crate::poller_status::PollerNotice;
 use crate::prose::ProseSegment;
 use crate::startup::StartupCommandLogListing;
 use crate::status_text::StatusText;
 use crate::statusline::{QuietSurfaces, StatusScope, StatusTone};
-use crate::storage::StoredPr;
 use crate::worker::{
     AgentLaunchFailedData, AgentLaunchKind, AgentLaunchReadyData, BranchWarningKind, BrowserEntry,
     CreateAgentBranchInspection, NonDefaultBranchAction, ProjectPersistenceAction,
@@ -113,6 +136,7 @@ pub(crate) fn branch_drift_log_line(
 /// Status-line update returned from the Engine for the App to apply.
 #[derive(Clone, Debug)]
 pub struct StatusUpdate {
+    /// How the message reads: busy, info, warning or error.
     pub tone: StatusTone,
     /// The plain sentence: what the terminal UI prints, byte for byte.
     pub message: String,
@@ -120,6 +144,10 @@ pub struct StatusUpdate {
     /// [`crate::status_text!`], so the web can draw its names as chips. `None`
     /// for a sentence handed over as a finished string. The TUI never reads it.
     pub segments: Option<Vec<ProseSegment>>,
+    /// The question this status puts to the user, when it is one. The TUI
+    /// answers it with a prompt and the web with a dialog; every other reader
+    /// shows the sentence, which says it all in words.
+    pub ask: Option<crate::status_text::StatusAsk>,
     /// Optional correlation key. `None` = an unkeyed transient. `Some` = a
     /// keyed op whose later success/error/clear carries the same key so both
     /// surfaces can correlate the pair. Ignored by the TUI today; copied into
@@ -145,12 +173,16 @@ pub struct StatusUpdate {
 }
 
 impl StatusUpdate {
+    /// An info-toned status saying `message`.
     pub fn info(message: impl Into<StatusText>) -> Self {
-        let (message, segments) = message.into().into_parts();
+        let message = message.into();
+        let ask = message.ask().cloned();
+        let (message, segments) = message.into_parts();
         Self {
             tone: StatusTone::Info,
             message,
             segments,
+            ask,
             key: None,
             scope: StatusScope::All,
             sticky: false,
@@ -164,35 +196,46 @@ impl StatusUpdate {
     ///
     /// [`StatusOp`]: crate::engine::StatusOp
     pub(crate) fn busy(message: impl Into<StatusText>) -> Self {
-        let (message, segments) = message.into().into_parts();
+        let message = message.into();
+        let ask = message.ask().cloned();
+        let (message, segments) = message.into_parts();
         Self {
             tone: StatusTone::Busy,
             message,
             segments,
+            ask,
             key: None,
             scope: StatusScope::All,
             sticky: false,
             quiet_on: QuietSurfaces::LOUD,
         }
     }
+    /// A warning-toned status saying `message`.
     pub fn warning(message: impl Into<StatusText>) -> Self {
-        let (message, segments) = message.into().into_parts();
+        let message = message.into();
+        let ask = message.ask().cloned();
+        let (message, segments) = message.into_parts();
         Self {
             tone: StatusTone::Warning,
             message,
             segments,
+            ask,
             key: None,
             scope: StatusScope::All,
             sticky: false,
             quiet_on: QuietSurfaces::LOUD,
         }
     }
+    /// An error-toned status saying `message`.
     pub fn error(message: impl Into<StatusText>) -> Self {
-        let (message, segments) = message.into().into_parts();
+        let message = message.into();
+        let ask = message.ask().cloned();
+        let (message, segments) = message.into_parts();
         Self {
             tone: StatusTone::Error,
             message,
             segments,
+            ask,
             key: None,
             scope: StatusScope::All,
             sticky: false,
@@ -200,16 +243,27 @@ impl StatusUpdate {
         }
     }
 
-    /// Construct a keyed status update. Both the busy and the final
-    /// (info/error) for the same operation should carry the same key so
-    /// `WireStatus::from_update` can propagate it and the web layer can
-    /// dismiss the correct toast.
+    /// Construct a keyed status update in a FINAL tone (info, warning or
+    /// error). The key lets `WireStatus::from_update` propagate it so the web
+    /// layer replaces or dismisses the right toast. A busy is never built here:
+    /// like [`Self::busy`], it is born only from a [`StatusOp`], which declares
+    /// its outcomes and registers its key as running.
+    ///
+    /// [`StatusOp`]: crate::engine::StatusOp
     pub fn keyed(key: impl Into<String>, tone: StatusTone, message: impl Into<StatusText>) -> Self {
-        let (message, segments) = message.into().into_parts();
+        debug_assert_ne!(
+            tone,
+            StatusTone::Busy,
+            "a busy status comes from a StatusOp, never from StatusUpdate::keyed"
+        );
+        let message = message.into();
+        let ask = message.ask().cloned();
+        let (message, segments) = message.into_parts();
         Self {
             tone,
             message,
             segments,
+            ask,
             key: Some(key.into()),
             scope: StatusScope::All,
             sticky: false,
@@ -220,6 +274,7 @@ impl StatusUpdate {
     /// Mark this status as one that waits for the user (builder form). Reserved
     /// for the small set of outcomes where the user must act outside the toast
     /// to recover, or where something may have been lost or left half-done.
+    #[must_use]
     pub fn sticky(mut self) -> Self {
         self.sticky = true;
         self
@@ -227,6 +282,7 @@ impl StatusUpdate {
 
     /// Attach a correlation key to this update (builder form). Lets callers
     /// start from one of the tone helpers and then chain `.with_key(k)`.
+    #[must_use]
     pub fn with_key(mut self, key: impl Into<String>) -> Self {
         self.key = Some(key.into());
         self
@@ -234,6 +290,7 @@ impl StatusUpdate {
 
     /// Set this update's delivery [`StatusScope`] (builder form). Used by the
     /// engine mint sites to stamp `current_origin` onto a freshly-minted status.
+    #[must_use]
     pub fn with_scope(mut self, scope: StatusScope) -> Self {
         self.scope = scope;
         self
@@ -242,6 +299,7 @@ impl StatusUpdate {
     /// Withhold this message from the named surfaces (builder form). The
     /// surfaces decide separately, so the caller states both halves at once and
     /// says which tenet case the quieted half fails.
+    #[must_use]
     pub fn quiet_on(mut self, quiet_on: QuietSurfaces) -> Self {
         self.quiet_on = quiet_on;
         self
@@ -250,13 +308,14 @@ impl StatusUpdate {
 
 /// The one status key every "GitHub features came back / went away" message
 /// carries, so the surfaces replace the standing one instead of stacking.
-pub const GH_AVAILABILITY_STATUS_KEY: &str = "gh-availability";
+pub(crate) const GH_AVAILABILITY_STATUS_KEY: &str = "gh-availability";
 
 /// What the App must do after the Engine processed a `WorkerEvent`. The Engine
 /// handles all domain-state mutations (sessions, projects, providers,
-/// session_store, sync entries, in-flight maps, env, etc.); anything that
-/// touches view state (status line, prompt, focus, input_target, derived caches
+/// `session_store`, sync entries, in-flight maps, env, etc.); anything that
+/// touches view state (status line, prompt, focus, `input_target`, derived caches
 /// like `left_items_cache` and `files_index`) is described here.
+#[derive(Debug)]
 pub enum EventReaction {
     /// Engine fully handled the event; no view follow-up needed.
     Nothing,
@@ -270,22 +329,33 @@ pub enum EventReaction {
     Multi(Vec<EventReaction>),
 
     // -- View-sync triggers (the App's derived cache lives in App state). --
+    /// Rebuild the sidebar rows from the engine's state.
     RebuildLeftItems,
+    /// Read the watched worktree's changed files again.
     ReloadChangedFiles,
+    /// Clamp the changed-files cursor to the list it now points into.
     ClampFilesCursor,
 
     // -- Agent launch (T2b: Engine performs all domain-state mutations and
     //    returns a typed view-only outcome the App applies). --
+    /// A provider launch came up; the engine has done its part.
     AgentLaunchReadyView(Box<AgentLaunchReadyOutcome>),
+    /// A provider launch failed; the engine has done its part.
     AgentLaunchFailedView(Box<AgentLaunchFailedOutcome>),
 
     // -- Picker/browser prompts. --
+    /// A folder browser listing arrived.
     BrowserEntriesArrived {
+        /// The directory listed.
         dir: std::path::PathBuf,
-        entries: Vec<BrowserEntry>,
+        /// Its rows, or the sentence saying why it could not be listed.
+        entries: Result<Vec<BrowserEntry>, String>,
     },
+    /// A project's worktrees arrived for the adopt picker.
     ProjectWorktreesArrived {
+        /// The project listed.
         project_id: String,
+        /// The worktrees, or why they could not be listed.
         result: Result<Vec<ProjectWorktreeEntry>, String>,
         /// Correlation id for a TUI `HandlerStatusOp` whose final is resolved in
         /// the completion handler. `None` for the web/wire path.
@@ -295,13 +365,21 @@ pub enum EventReaction {
     /// The worktree manager's listing arrived (TUI only; the web reads the
     /// same core function through its REST route).
     ManageableWorktreesArrived {
+        /// The project listed.
         project_id: String,
+        /// The managed worktrees, or why they could not be listed.
         result: Result<Vec<crate::worktree_manager::ManagedWorktree>, String>,
+        /// The left-over folders recorded for the project (empty when the
+        /// worktrees could not be listed).
+        leftovers: Vec<crate::leftover_folders::LeftoverFolder>,
+        /// The op whose final the handler resolves, if any.
         status_op_id: Option<String>,
     },
 
     // -- PR / refs follow-ups. --
+    /// A pull request resolved for a new agent: name the agent, or create it.
     OpenNewAgentPromptForPr {
+        /// The pull request resolved.
         pr: Box<ResolvedPullRequest>,
         /// Correlation id for a web PR-lookup `HandlerStatusOp`. `Some` on the web
         /// handoff path (the followup clears this op's busy once the create
@@ -310,19 +388,37 @@ pub enum EventReaction {
     },
 
     // -- Worktree delete follow-up. --
+    /// A deleted agent's worktree was removed.
     WorktreeRemoveSucceeded {
+        /// The agent deleted.
         session_id: String,
+        /// What happened to each branch.
         branches: RemovedBranches,
+        /// The busy this delete put on the status line, so only that one is
+        /// cleared.
         our_busy_message: Option<StatusText>,
     },
+    /// A deleted agent's worktree could not be removed; its record is kept.
     WorktreeRemoveFailed {
+        /// The agent being deleted.
         session_id: String,
+        /// Why the removal failed.
         message: String,
+    },
+    /// A deleted agent's worktree removal is waiting for operations still
+    /// running in the worktree. Each surface re-emits its own delete op's busy
+    /// with `message`, so the spinner says what it is waiting for.
+    WorktreeRemoveWaiting {
+        /// The agent being deleted.
+        session_id: String,
+        /// What the removal is waiting for.
+        message: StatusText,
     },
 
     // -- Deletion `Command` view follow-ups (E4a). --
+    /// The engine half of a delete finished.
     FinishDeleteSessionView(Box<FinishDeleteSessionView>),
-    DoDeleteSessionView(Box<DoDeleteSessionView>),
+    /// A delete began, inline or with its worktree removal deferred.
     BeginDeleteSessionView(Box<BeginDeleteSessionView>),
 
     // -- Resource monitor. --
@@ -331,10 +427,15 @@ pub enum EventReaction {
     ResourceStatsArrived(Vec<ResourceStats>, bool),
 
     // -- Add-project / branch-checkout follow-ups (App helpers). --
+    /// A checkout switched off a non-default branch: register the project.
     AddProjectAfterBranchCheckout {
+        /// The folder to register.
         path: String,
+        /// The project's display name.
         name: String,
+        /// The branch the checkout was switched to.
         target_branch: String,
+        /// The branch the project leads with.
         leading_branch: String,
         /// Correlation id for a web add-project `HandlerStatusOp`. `Some` on the
         /// web path, resolved in `drive_add_project_followup` after the inline
@@ -345,10 +446,13 @@ pub enum EventReaction {
     /// register the project on its now-born branch. Mirrors
     /// `AddProjectAfterBranchCheckout` but with no branch switch.
     AddProjectAfterInitialCommit {
+        /// The folder to register.
         path: String,
+        /// The project's display name.
         name: String,
         /// The branch the commit landed on (the repo's real current branch).
         branch: String,
+        /// The branch the project leads with.
         leading_branch: String,
         /// This add ran `git init` first (the adopt-a-folder flow).
         initialized_repo: bool,
@@ -361,13 +465,23 @@ pub enum EventReaction {
         status_op_id: Option<String>,
     },
 
+    /// A clone is ready to become a project: add it and start its first
+    /// agent, through [`Engine::finish_clone`], on exactly one surface.
+    AddProjectAfterClone(Box<crate::clone_project::ClonedProject>),
+
     // -- Branch inspection follow-ups (App helpers). --
+    /// A project checkout was read: open the New Agent prompt on it.
     ContinueCreateAgentAfterInspection {
+        /// The project inspected.
         project: Project,
+        /// What its checkout is on.
         inspection: CreateAgentBranchInspection,
     },
+    /// A project checkout is off its default branch: switch it.
     DispatchProjectDefaultBranchCheckout {
+        /// The project switched.
         project: Project,
+        /// The branch to switch to.
         default_branch: String,
         /// Correlation id for a web checkout `HandlerStatusOp`, forwarded by
         /// `drive_checkout_followup` into worker 2 so the eventual
@@ -377,10 +491,33 @@ pub enum EventReaction {
     },
 
     // -- Config reload (App helpers). --
+    /// A reloaded config is ready for the surface to apply.
     ApplyReloadedConfig(Box<Config>),
+    /// A config reload failed; say why and offer recovery.
     OpenConfigReloadFailedModal(String),
+    /// The engine adopted a reloaded config it could not fully apply (its
+    /// own apply of a coalesced reload failed): `engine.config` is the new
+    /// config, and `before` is the one it replaced. The surface does what it
+    /// does after a successful reload's swap, comparing `before` with
+    /// `engine.config` (its view state, the serve and Tailscale switches,
+    /// the restart warning), so nothing claims a setting that is not in
+    /// force, and reports `error` with
+    /// [`crate::config_reload_status::adopted_but_apply_failed`].
+    /// `github_was_enabled` is whether the GitHub integration was on before
+    /// the reload started; the apply asked `gh` for nothing, so the surface
+    /// asks for the fresh answer a reload owes (see
+    /// [`crate::engine::Engine::probe_gh_after_reload`]).
+    ConfigAdopted {
+        /// The config the reload replaced.
+        before: Box<Config>,
+        /// Whether the GitHub integration was on before the reload.
+        github_was_enabled: bool,
+        /// Why the apply failed.
+        error: String,
+    },
 
     // -- Project persistence (App applies view follow-up; Engine performed mutations). --
+    /// A project change was saved; the engine has mirrored it in memory.
     ProjectPersistenceOutcome(Box<ProjectPersistenceOutcome>),
 
     // -- Startup command / log picker (App opens the overlay). --
@@ -388,13 +525,17 @@ pub enum EventReaction {
     /// emitted when the listing is NON-empty: an empty scope is reported by the
     /// load's keyed status and opens nothing.
     StartupLogsArrived {
+        /// Whose startup command runs were listed.
         scope_label: String,
+        /// The runs, newest first, with the newest one's contents.
         listing: StartupCommandLogListing,
     },
     /// A run the picker moved onto finished reading. The App applies it only if
     /// `path` is still the selected run.
     StartupLogContentArrived {
+        /// The run file that was read.
         path: std::path::PathBuf,
+        /// Its contents, or why it could not be read.
         result: Result<String, String>,
     },
 
@@ -419,26 +560,38 @@ pub enum EventReaction {
     /// which stashes `pending_server_flip` (on `Ok`) or surfaces the error, and
     /// shows the non-fatal `warning` when present.
     ServerFlipPreflightReady {
+        /// The bound listeners and their display URLs, or why binding failed.
         result: Result<(Vec<std::net::TcpListener>, Vec<String>), String>,
+        /// A non-fatal note to show beside the result.
         warning: Option<String>,
+        /// The pre-flight's warnings and Tailscale facts, for the flip's log.
+        startup: crate::serve_log::StartupNotes,
     },
     /// The BACKGROUND web server's bind pre-flight finished. Same shape and same
     /// pass-through as `ServerFlipPreflightReady`: the listeners are the App's,
     /// and the engine has nothing to mutate. Distinct from it because the flip
     /// ends a TUI session and this starts a serve beside one.
     BackgroundServerPreflightReady {
+        /// The bound listeners and their display URLs, or why binding failed.
         result: Result<(Vec<std::net::TcpListener>, Vec<String>), String>,
+        /// A non-fatal note to show beside the result.
         warning: Option<String>,
+        /// The pre-flight's warnings and Tailscale facts, for the serve's log.
+        startup: crate::serve_log::StartupNotes,
     },
     /// The background web server finished applying a live `[server] tailscale`
     /// change. The terminal UI resolves its pending status op with it.
     TailscaleModeApplied {
+        /// The mode asked for.
         mode: crate::config::TailscaleMode,
+        /// What applying it did.
         outcome: crate::config::TailscaleModeOutcome,
     },
     /// The background web server finished applying a live `[cloud] mode` change.
     CloudModeApplied {
+        /// The mode now in force.
         mode: crate::cloud::leg_identity::CloudMode,
+        /// What applying it did.
         outcome: crate::cloud::leg_outcome::CloudModeOutcome,
     },
     /// Whether GitHub features work has CHANGED (a probe answered differently
@@ -450,8 +603,17 @@ pub enum EventReaction {
     /// fetched once at connect, so without a nudge it keeps hiding the
     /// pull-request entries until reloaded.
     GhAvailabilityChanged {
+        /// Whether GitHub features work now.
         available: bool,
     },
+    /// The GitHub facts a browser holds in its bootstrap document moved
+    /// without an availability transition: a `gh` probe moved the hosts a
+    /// typed clone address is read as GitHub's on
+    /// ([`Engine::clone_github_hosts`]), or the terminal UI switched the
+    /// integration. Like [`Self::GhAvailabilityChanged`] it is for the
+    /// browser, which refetches the document; the terminal UI reads it all
+    /// live.
+    GithubFactsChanged,
 }
 
 /// Result of `Engine::detach_conflicting_worktree_session`. The App caller
@@ -459,23 +621,28 @@ pub enum EventReaction {
 /// messages.
 #[derive(Clone, Debug)]
 pub struct DetachedSession {
-    pub id: String,
+    pub(crate) id: String,
+    /// The detached agent's label, for the status.
     pub label: String,
 }
 
 /// View-only follow-up for `WorkerEvent::AgentLaunchReady`. The Engine has
 /// already performed all domain-state mutations (the `in_flight` set,
-/// sessions, providers, session_store, mark_session_* helpers,
-/// resume_fallback_*, update_branch_sync_sessions, and the pure-engine
-/// portion of detach_conflicting_worktree_session). The App applies
+/// sessions, providers, `session_store`, `mark_session`_* helpers,
+/// `resume_fallback`_*, `update_branch_sync_sessions`, and the pure-engine
+/// portion of `detach_conflicting_worktree_session`). The App applies
 /// `last_pty_size`, clears the engine's `pty_activity` entry for any
 /// `detached_session_id`, runs view rebuilds, sets surfaces/overlays/status.
+#[derive(Debug)]
 pub struct AgentLaunchReadyOutcome {
+    /// The agent the launched tab belongs to.
     pub session: AgentSession,
     /// The tab whose launch completed (the slot tab id for the session-slot tab). Lets a
     /// surface route an extra-tab ready to the correct pane without re-deriving.
     pub tab_id: String,
+    /// The terminal size the provider was spawned at, as rows and columns.
     pub pty_size: (u16, u16),
+    /// The agent detached because it held the same worktree's live PTY, if any.
     pub detached_session_id: Option<String>,
     /// Copied from `AgentLaunchRequest::wants_fullscreen`: the TUI lands this
     /// completion fullscreen when `true` and focused-but-minimized otherwise.
@@ -484,55 +651,70 @@ pub struct AgentLaunchReadyOutcome {
     /// Copied from `AgentLaunchRequest::status_quiet`: which surfaces withhold
     /// this launch's completion message. Each surface honours its own half.
     pub status_quiet: QuietSurfaces,
+    /// What the surface does with the launch.
     pub view: AgentLaunchReadyView,
 }
 
+/// What a surface does once a provider launch came up.
+#[derive(Debug)]
 pub enum AgentLaunchReadyView {
     /// Create-kind launch: `session_store.upsert_session` failed before the
     /// session could be committed. App surfaces the error; no view rebuild.
-    CreatePersistFailed { error: String },
+    CreatePersistFailed {
+        /// The store's error.
+        error: String,
+    },
     /// Create-kind launch committed. App rebuilds left items, selects the
     /// new session, reloads changed files, shows the agent surface, and
     /// surfaces either the startup-command error or the create status.
     CreateCommitted {
+        /// The create's success line.
         status_message: crate::status_text::StatusText,
+        /// The startup command's error, when it failed.
         startup_result_error: Option<String>,
     },
     /// Non-Create launch found the session vanished. App does nothing
     /// (Engine has already logged the "dropping launched PTY" line).
     SessionMissing,
-    /// Reconnect / ForceReconnect: App shows the agent surface + sets info.
+    /// Reconnect / `ForceReconnect`: App shows the agent surface + sets info.
     Reconnect {
+        /// The line the relaunch reports.
         status_message: crate::status_text::StatusText,
     },
-    /// ResumeFallback: App shows the agent surface only if `session_id` is
+    /// `ResumeFallback`: App shows the agent surface only if `session_id` is
     /// the currently selected session, and always sets info.
     ResumeFallback {
+        /// The agent relaunched.
         session_id: String,
+        /// The line the relaunch reports.
         status_message: crate::status_text::StatusText,
     },
-    /// StartupAutoReopen: App does nothing.
+    /// `StartupAutoReopen`: App does nothing.
     StartupAutoReopen,
 }
 
 /// View-only follow-up for `WorkerEvent::AgentLaunchFailed`. Engine has
 /// already cleared `InFlightKey::AgentLaunch(session_id)`, cleared
 /// `InFlightKey::CreateAgent` for Create-kind failures, logged the
-/// ResumeFallback / StartupAutoReopen cases, and marked ResumeFallback
+/// `ResumeFallback` / `StartupAutoReopen` cases, and marked `ResumeFallback`
 /// sessions Detached. The App only formats the status message.
+#[derive(Debug)]
 pub enum AgentLaunchFailedOutcome {
+    /// A create's first launch failed.
     Create {
         /// The project the failed create belonged to, or `None` when it was a
         /// standalone agent, which belongs to no project. Carried as an option
         /// rather than an empty string so a consumer that keys work by project
         /// cannot silently key it under one that does not exist.
         project_id: Option<String>,
+        /// Why the launch failed.
         message: String,
     },
     /// Reconnect-family failure. `session_id` is the pre-existing session that
     /// was being relaunched, used by the wire layer to key the failure status
     /// so it replaces the corresponding "launching…" busy toast.
     Reconnect {
+        /// The agent whose launch failed.
         session_id: String,
         /// The agent's DISPLAY LABEL, not a branch: its title when it has one,
         /// otherwise the branch it tracks, and for a standalone agent its folder's
@@ -540,11 +722,13 @@ pub enum AgentLaunchFailedOutcome {
         /// agent has no branch to print, so naming this field for a branch would
         /// be a lie the surfaces render.
         agent_label: String,
+        /// Why the launch failed.
         message: String,
     },
     /// Force-reconnect failure. `session_id` carries the pre-existing session
     /// id for the same keying purpose as `Reconnect`.
     ForceReconnect {
+        /// The agent whose launch failed.
         session_id: String,
         /// The agent's DISPLAY LABEL, not a branch: its title when it has one,
         /// otherwise the branch it tracks, and for a standalone agent its folder's
@@ -552,6 +736,7 @@ pub enum AgentLaunchFailedOutcome {
         /// agent has no branch to print, so naming this field for a branch would
         /// be a lie the surfaces render.
         agent_label: String,
+        /// Why the launch failed.
         message: String,
     },
     /// Engine logged + marked Detached; App has nothing to do.
@@ -559,6 +744,7 @@ pub enum AgentLaunchFailedOutcome {
     /// Startup-auto-reopen failure. `session_id` carries the pre-existing
     /// session id for the same keying purpose as `Reconnect`.
     StartupAutoReopen {
+        /// The agent whose launch failed.
         session_id: String,
         /// The agent's DISPLAY LABEL, not a branch: its title when it has one,
         /// otherwise the branch it tracks, and for a standalone agent its folder's
@@ -566,6 +752,7 @@ pub enum AgentLaunchFailedOutcome {
         /// agent has no branch to print, so naming this field for a branch would
         /// be a lie the surfaces render.
         agent_label: String,
+        /// Why the launch failed.
         message: String,
     },
     /// A tab launch failed. `tab_id` keys the failure toast to the specific tab.
@@ -574,7 +761,9 @@ pub enum AgentLaunchFailedOutcome {
     /// a dormant relaunch, or for a tab a promotion put in the slot while the
     /// launch was in flight, the row is kept so the user can retry.
     Tab {
+        /// The agent the tab belongs to.
         session_id: String,
+        /// The tab whose launch failed.
         tab_id: String,
         /// The agent's DISPLAY LABEL, not a branch: its title when it has one,
         /// otherwise the branch it tracks, and for a standalone agent its folder's
@@ -582,6 +771,7 @@ pub enum AgentLaunchFailedOutcome {
         /// agent has no branch to print, so naming this field for a branch would
         /// be a lie the surfaces render.
         agent_label: String,
+        /// Why the launch failed.
         message: String,
     },
     /// A launch failure for an extra tab whose row was deleted while the
@@ -597,45 +787,75 @@ pub enum AgentLaunchFailedOutcome {
 /// needs for its view follow-up. The Engine never calls
 /// `persist_config_projects_from_runtime` itself, because that helper uses
 /// binary-only `RuntimeBindings` and `save_config`.
+#[derive(Debug)]
 pub struct ProjectPersistenceOutcome {
+    /// The change that was saved, or failed to be.
     pub action: ProjectPersistenceAction,
+    /// What the surface reports.
     pub view: ProjectPersistenceView,
     /// Correlation id for a TUI `HandlerStatusOp` whose final is resolved in the
     /// completion handler (the post-worker config write is fallible, producing a
-    /// third outcome the worker never sees). `None` for callers that don't drive
-    /// a handler-resolved status (web/wire, engine internals).
+    /// third outcome the worker never sees), or for a web project-settings save
+    /// whose route waits for this completion
+    /// ([`Engine::dispatch_project_setting`]). `None` for callers that wait on
+    /// neither (engine internals).
     pub status_op_id: Option<String>,
 }
 
+/// What a surface reports once a project change was saved, or failed to be.
+#[derive(Debug)]
 pub enum ProjectPersistenceView {
+    /// The save failed.
     PersistenceFailed {
+        /// Why it failed.
         error: String,
     },
+    /// A project was registered.
     Added {
+        /// The project registered.
         project_id: String,
+        /// The line to report.
         status_message: crate::status_text::StatusText,
     },
+    /// A project was forgotten, its worktrees kept.
     Removed {
+        /// Its display name.
         project_name: String,
     },
+    /// A project and its worktrees were deleted.
     Deleted {
+        /// Its display name.
         project_name: String,
     },
+    /// A project's default provider changed.
     DefaultProviderUpdated {
+        /// Its display name.
         project_name: String,
+        /// The provider it now defaults to, or `None` to follow the global
+        /// default.
         provider: Option<ProviderKind>,
+        /// The global default, named when the project follows it.
         global_default: ProviderKind,
     },
+    /// Whether a project's agents reopen at startup changed.
     AutoReopenUpdated {
+        /// Its display name.
         project_name: String,
+        /// The project's choice, or `None` to follow the global setting.
         auto_reopen_agents: Option<bool>,
     },
+    /// A project's startup command changed.
     StartupCommandUpdated {
+        /// Its display name.
         project_name: String,
+        /// The command new agents run, or `None` for none.
         startup_command: Option<String>,
     },
+    /// A project's environment variables changed.
     EnvUpdated {
+        /// Its display name.
         project_name: String,
+        /// How many variables the project now sets.
         env_count: usize,
     },
 }
@@ -655,6 +875,26 @@ pub enum RemovedBranches {
     /// Carries WHY, because the two reasons say different things to the user
     /// (see [`crate::model::BranchKeptReason`]).
     Kept(crate::model::BranchKeptReason),
+    /// An agent delete's account of every branch its worktree had been on:
+    /// each deleted at the commit the user was shown, or kept with why (see
+    /// [`crate::branch_history::BranchPlan`]).
+    Outcomes(Vec<crate::branch_history::BranchOutcome>),
+}
+
+impl RemovedBranches {
+    /// Whether git refused a branch, which leaves it for the user to remove.
+    pub fn refused_a_branch(&self) -> bool {
+        match self {
+            Self::Deleted(result) => result.refused_a_branch(),
+            Self::Kept(_) => false,
+            Self::Outcomes(outcomes) => outcomes.iter().any(|outcome| {
+                matches!(
+                    outcome.fate,
+                    crate::branch_history::BranchFate::Refused { .. }
+                )
+            }),
+        }
+    }
 }
 
 /// What a delete dialog needs in order to ask git about the branch it is
@@ -673,20 +913,25 @@ pub struct BranchDeleteInputs {
     pub branch_name: String,
     /// The branch the agent was born on, empty when it was never recorded.
     pub initial_branch: String,
-    pub branch_provenance: crate::model::BranchProvenance,
+    pub(crate) branch_provenance: crate::model::BranchProvenance,
+    /// The agent's worktree, whose HEAD reflog the offer reads again.
+    pub(crate) worktree_path: String,
+    /// When the agent was created.
+    pub(crate) created_at: chrono::DateTime<Utc>,
+    /// Every branch recorded for the agent.
+    pub(crate) history: Vec<crate::branch_history::BranchHistoryEntry>,
+    /// The project's own branches, never offered.
+    pub(crate) protected: Vec<String>,
+    /// The agent's id, for the branches the offer finds to be recorded.
+    pub session_id: String,
 }
 
+#[cfg(test)]
 impl BranchDeleteInputs {
-    /// Every branch the delete would remove, which is exactly what the dialogs
-    /// name and count commits on.
-    ///
-    /// The consent rule. A delete that removes the branch removes both the one
-    /// the worktree is on now and the one the agent was born on (see
-    /// [`crate::git::remove_worktree`]), so a dialog naming only one asks
-    /// permission for something smaller than what happens. An agent that never
-    /// drifted has one branch under both names, and this is one name. The
-    /// current branch leads, because every other surface shows that one.
-    pub fn warned_branches(&self) -> Vec<&str> {
+    /// The branches the older single "also delete the branch" answer removes
+    /// when ticked: the one the worktree is on now and, when the agent moved
+    /// off it, the one it was born on.
+    pub(crate) fn warned_branches(&self) -> Vec<&str> {
         let mut branches = vec![self.branch_name.as_str()];
         if !self.initial_branch.is_empty() && self.initial_branch != self.branch_name {
             branches.push(self.initial_branch.as_str());
@@ -695,27 +940,636 @@ impl BranchDeleteInputs {
     }
 }
 
-/// Why a removal that kept the branches kept them, given the provenance and
-/// the delete dialog's answer.
+/// The warning for a branch move the branch check saw but could not save.
+fn unsaved_branch_drift(
+    session_id: &str,
+    label: &str,
+    actual_branch: &str,
+    err: &anyhow::Error,
+) -> StatusUpdate {
+    StatusUpdate::warning(crate::status_text![
+        "The branch of agent ",
+        q(label),
+        " changed to ",
+        q(actual_branch),
+        format!(
+            " outside yaran, but yaran could not save it: {err:#}. yaran saves it the next time it \
+             checks the agent's branch, once its database can be written again; until then the \
+             agent shows its old branch. Check that the disk has room, and see yaran.log."
+        )
+    ])
+    .with_key(format!("branch-drift-save:{session_id}"))
+}
+
+/// What a removal takes from the worktree registry: its claim on the path
+/// (leading the removal, or joining one already running), how long it may
+/// wait for operations still in the worktree, and where to say it is waiting.
+pub(crate) struct RemovalCoordinationInputs<'a> {
+    pub(crate) claim: crate::worktree_ops::RemovalClaim,
+    pub(crate) wait: std::time::Duration,
+    pub(crate) waiting_tx: Option<&'a std::sync::mpsc::Sender<crate::worker::WorkerEvent>>,
+    /// The process registry, for the last look before git runs: a session
+    /// started in the folder that this removal did not already end.
+    pub(crate) registry: crate::process_sessions::AgentProcessRegistry,
+    /// The live registry of this run: every session yaran follows, whose
+    /// processes' working directories are read for anything standing in the
+    /// folder. The same as `registry` except for a removal resumed at a start,
+    /// whose `registry` is the one its row was written with.
+    pub(crate) live: crate::process_sessions::AgentProcessRegistry,
+    /// The session database, for the last look's occupancy question over the
+    /// agents and projects as they are now.
+    pub(crate) db_path: std::path::PathBuf,
+    /// Every registered project checkout, read on the engine thread when the
+    /// removal was dispatched: git refuses to remove a worktree that is,
+    /// contains or sits inside one (`git::guard_whole_workspace_removal`). An
+    /// inventory that could not be read refuses the removal, before anything
+    /// is ended, rather than running it half-guarded.
+    pub(crate) protected: Result<Vec<std::path::PathBuf>, String>,
+}
+
+/// The removal itself, shared by the delete's worker and the next start's
+/// resumption of one yaran did not finish. In order, each step bounded:
 ///
-/// One function, so the synchronous and deferred removal paths cannot word the
-/// same outcome differently. Only ever called on the keeping arm.
+/// 1. End everything yaran started for the agent (its process sessions).
+/// 2. Wait for operations yaran is running in the worktree (the registry's
+///    holds: a pull, a save, a rename), or join a removal of the same path
+///    that is already running rather than run git twice.
+/// 3. Let git remove the worktree and, where the user asked for it or yaran made
+///    it, the branch, by the name it has now.
 ///
-/// The provenance sentence wins whenever it is true, and the unticked-box
-/// sentence is reserved for the one case provenance cannot describe: a branch
-/// yaran created, spared because the user unticked the box. Unticking on a
-/// pre-existing branch leaves it at its default, so telling that user their own
-/// click is why the branch survived would be untrue.
-pub(crate) fn branch_kept_reason(
-    provenance: crate::model::BranchProvenance,
-    delete_branch: Option<bool>,
-) -> crate::model::BranchKeptReason {
-    match delete_branch {
-        Some(false) if provenance.yaran_may_delete_branch() => {
-            crate::model::BranchKeptReason::UserDeclined
+/// A leading claim is finished on every exit, success and failure alike, so a
+/// joiner always gets an answer and the path never stays "being removed".
+/// Blocking: a worker thread's call. A panic becomes an `Err`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the removal re-checks every guard against live state before it deletes anything, in order"
+)]
+pub(crate) fn perform_deferred_removal(
+    session_id: &str,
+    project_path: &str,
+    managed: &crate::model::ManagedWorkspace,
+    branches: &crate::branch_history::BranchPlan,
+    processes: &crate::engine::RemovalProcesses,
+    coordination: RemovalCoordinationInputs<'_>,
+) -> Result<RemovedBranches, String> {
+    use std::panic::AssertUnwindSafe;
+    let RemovalCoordinationInputs {
+        claim,
+        wait,
+        waiting_tx,
+        registry,
+        live,
+        db_path,
+        protected,
+    } = coordination;
+    // Held outside the unwind boundary, so even a panic below finishes it.
+    let mut lease = None;
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let protected = match protected {
+            Ok(protected) => protected,
+            Err(message) => {
+                if let crate::worktree_ops::RemovalClaim::Lead(leading) = claim {
+                    lease = Some(leading);
+                }
+                return Err(message);
+            }
+        };
+        // A standalone agent's processes are never ended; while any run in
+        // the worktree, it is kept, before anything else is ended.
+        if let Some(message) = standalone_processes_keep(&registry, &managed.worktree_path) {
+            if let crate::worktree_ops::RemovalClaim::Lead(leading) = claim {
+                lease = Some(leading);
+            }
+            return Err(message);
         }
-        _ => crate::model::BranchKeptReason::NotYarans(provenance),
+        // Nor is anything else yaran started (a project or standalone terminal
+        // whose shell was `cd`'d into the worktree) ended to make way: while
+        // one stands in it, the worktree is kept, before anything is ended.
+        if let Some(message) = cwd_keeps(&live, &managed.worktree_path, processes) {
+            if let crate::worktree_ops::RemovalClaim::Lead(leading) = claim {
+                lease = Some(leading);
+            }
+            return Err(message);
+        }
+        // Nothing yaran started for the agent may still be running in the
+        // worktree when git starts deleting it: a writer there turns
+        // `git worktree remove --force` into a half-done removal.
+        let processes_ended =
+            end_agent_processes_before_removal(processes, &registry, &managed.worktree_path);
+        let leading = match claim {
+            crate::worktree_ops::RemovalClaim::Lead(leading) => lease.insert(leading),
+            // Another removal of this same worktree is already running (two
+            // agents of one project shared it): take its outcome rather than
+            // run git a second time.
+            crate::worktree_ops::RemovalClaim::Join(join) => {
+                processes_ended?;
+                let path = join.path().to_path_buf();
+                return join
+                    .wait(wait.saturating_mul(2) + std::time::Duration::from_secs(60))
+                    .unwrap_or_else(|| {
+                        Err(format!(
+                            "another removal of the worktree at {} is still running; \
+                             check the worktree manager once it finishes",
+                            crate::home_path::shorten_home(&path)
+                        ))
+                    });
+            }
+        };
+        processes_ended?;
+        let leading: &crate::worktree_ops::RemovalLease = leading;
+        let look = || {
+            wait_then_last_look(
+                leading,
+                &managed.worktree_path,
+                wait,
+                |holders| {
+                    if let Some(tx) = waiting_tx {
+                        let _ = tx.send(crate::worker::WorkerEvent::WorktreeRemoveWaiting {
+                            session_id: session_id.to_string(),
+                            waiting_for: crate::worktree_ops::describe_holders(holders),
+                        });
+                    }
+                },
+                &[&registry, &live],
+                || {
+                    occupant_after_wait(
+                        leading,
+                        &registry,
+                        &live,
+                        processes,
+                        Some((&db_path, Some(session_id))),
+                    )
+                },
+            )
+        };
+        remove_after_last_look(look, || {
+            remove_by_current_names(project_path, managed, leading, branches, &protected).map_err(
+                |err| {
+                    // A folder git let go of but could not delete is listed by the
+                    // project's worktree manager from here on.
+                    crate::leftover_folders::record_if_leftover(
+                        &db_path,
+                        std::path::Path::new(project_path),
+                        &managed.project_id,
+                        Some(managed.branch_provenance),
+                        err,
+                    )
+                },
+            )
+        })
+    }))
+    .unwrap_or_else(|payload| {
+        let reason = crate::engine::spawn_worker::format_panic_payload(&*payload);
+        crate::logger::error(&format!(
+            "deferred worktree-remove worker panicked for session {session_id}: {reason}"
+        ));
+        Err(format!("Worker panicked: {reason}"))
+    });
+    if let Some(lease) = lease {
+        lease.finish(result.clone());
     }
+    result
+}
+
+/// Let git remove the worktree, and do what the plan says with the branches.
+/// A rename yaran made while the removal waited moved a branch, so each is
+/// addressed by the name it has NOW, still only at its pinned commit.
+fn remove_by_current_names(
+    project_path: &str,
+    managed: &crate::model::ManagedWorkspace,
+    leading: &crate::worktree_ops::RemovalLease,
+    branches: &crate::branch_history::BranchPlan,
+    protected: &[std::path::PathBuf],
+) -> anyhow::Result<RemovedBranches> {
+    let plan = branches.renamed(|name| leading.renamed(name));
+    crate::branch_history::remove_worktree_with_plan(
+        std::path::Path::new(project_path),
+        std::path::Path::new(&managed.worktree_path),
+        &plan,
+        managed.branch_provenance,
+        protected,
+    )
+    .map(RemovedBranches::Outcomes)
+}
+
+/// The final when processes a standalone agent started are still running in
+/// (or under) the folder being removed: yaran never ends them, so the folder is
+/// kept. `None` when none are running. Blocking: a worker thread's call.
+pub(crate) fn standalone_processes_keep(
+    registry: &crate::process_sessions::AgentProcessRegistry,
+    folder: &str,
+) -> Option<String> {
+    let sessions = registry.standalone_sessions_in(std::path::Path::new(folder));
+    if sessions.is_empty() {
+        return None;
+    }
+    let running = match registry.running_members(&sessions, &[]) {
+        Ok(running) => running,
+        // A record still being written: fail closed, the folder is kept.
+        Err(reason) => {
+            return Some(format!(
+                "the worktree at {} was kept: {reason}.",
+                crate::home_path::shorten_home(std::path::Path::new(folder))
+            ));
+        }
+    };
+    if running.is_empty() {
+        return None;
+    }
+    let started_in = registry
+        .folders_of(&sessions)
+        .into_iter()
+        .map(|folder| crate::home_path::shorten_home(&folder))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "the worktree at {} was kept: {} that a standalone agent started in {started_in} \
+         {} still running ({}). yaran never ends a standalone agent's processes; stop {}, then \
+         remove the worktree from the worktree manager.",
+        crate::home_path::shorten_home(std::path::Path::new(folder)),
+        if running.len() == 1 {
+            "a process"
+        } else {
+            "processes"
+        },
+        if running.len() == 1 { "is" } else { "are" },
+        crate::process_sessions::describe(&running),
+        if running.len() == 1 { "it" } else { "them" },
+    ))
+}
+
+/// What still occupies a folder once a removal has waited for everything it
+/// knew of: an agent being created in it, or a process session started there
+/// that the removal did not end (with what is running in it). `None` when the
+/// folder is free.
+pub(crate) fn occupant_after_wait(
+    lease: &crate::worktree_ops::RemovalLease,
+    registry: &crate::process_sessions::AgentProcessRegistry,
+    live: &crate::process_sessions::AgentProcessRegistry,
+    processes: &crate::engine::RemovalProcesses,
+    stored: Option<(&std::path::Path, Option<&str>)>,
+) -> Option<String> {
+    if lease
+        .holders()
+        .contains(&crate::worktree_ops::WorktreeOpKind::CreateAgent)
+    {
+        return Some("an agent is being created in it".to_string());
+    }
+    // The one occupancy rule over the agents and projects as the session
+    // database has them now: a project added inside the folder, an agent
+    // made there. `stored` names the database and the agent this removal is
+    // for, which is never in its own way.
+    if let Some((db_path, removing)) = stored {
+        match super::pending_removals::stored_occupant(db_path, lease.ops(), lease.path(), removing)
+        {
+            Ok(Some(occupant)) => return Some(occupant.reason()),
+            Ok(None) => {}
+            Err(message) => return Some(message),
+        }
+    }
+    let unknown: Vec<_> = registry
+        .sessions_in(lease.path())
+        .into_iter()
+        .filter(|session| !processes.sessions.contains(session))
+        .collect();
+    if !unknown.is_empty() {
+        let alive = match registry.running_members(&unknown, &[]) {
+            Ok(alive) => alive,
+            Err(reason) => return Some(reason),
+        };
+        if !alive.is_empty() {
+            return Some(format!(
+                "something yaran started there after the delete is running in it ({})",
+                crate::process_sessions::describe(&alive)
+            ));
+        }
+    }
+    // Where every process yaran follows is standing NOW: a shell that was
+    // `cd`'d into the folder while the removal waited occupies it too.
+    live.cwd_occupant(lease.path(), &processes.sessions)
+}
+
+/// How long a removal waits for the registry's writer to save what it knows
+/// before git runs.
+const RECORD_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The final when the registry's record could not be saved before git would
+/// run: the worktree is kept rather than deleted ahead of the record a later
+/// start would recover from. `None` once it is saved. Blocking.
+pub(crate) fn record_not_saved(
+    registries: &[&crate::process_sessions::AgentProcessRegistry],
+    folder: &str,
+) -> Option<String> {
+    if registries
+        .iter()
+        .all(|registry| registry.flush(RECORD_SAVE_WAIT))
+    {
+        return None;
+    }
+    Some(format!(
+        "the worktree at {} was kept: yaran could not save its record of what it started there \
+         within {} seconds (the session database may be busy). Remove it from the worktree \
+         manager in a moment.",
+        crate::home_path::shorten_home(std::path::Path::new(folder)),
+        RECORD_SAVE_WAIT.as_secs()
+    ))
+}
+
+/// The final when a process yaran started (and is not ending for this removal)
+/// has the folder, or a folder inside it, as its current folder: yaran never
+/// ends it to make way, so the folder is kept. `None` when nothing stands
+/// there. Blocking: a worker thread's call.
+pub(crate) fn cwd_keeps(
+    live: &crate::process_sessions::AgentProcessRegistry,
+    folder: &str,
+    processes: &crate::engine::RemovalProcesses,
+) -> Option<String> {
+    let reason = live.cwd_occupant(std::path::Path::new(folder), &processes.sessions)?;
+    Some(format!(
+        "the worktree at {} was kept: {reason}, then remove the worktree from the worktree \
+         manager.",
+        crate::home_path::shorten_home(std::path::Path::new(folder))
+    ))
+}
+
+/// THE order every removal keeps between holding its claim and running git,
+/// so it cannot drift between the agent delete, the worktree manager and a
+/// failed create's rollback:
+///
+/// 1. HOLDS: the operations holding paths in the folder finish;
+/// 2. CLAIMS: a removal or destructive claim of a folder around or inside it
+///    finishes;
+/// 3. SPAWNS: every process yaran began starting in the folder before it was
+///    claimed has its session registered;
+/// 4. FLUSH: the registry's record, those sessions included, reaches the
+///    database;
+/// 5. LAST LOOK: the whole occupancy rule, working directories included;
+/// 6. and then the caller runs git with nothing blocking in between.
+///
+/// A look taken before a wait is stale by the time git runs: a shell `cd`'d
+/// into the folder during the wait would lose it. A caller that runs git
+/// again (see [`remove_after_last_look`]) goes through all of it again first.
+/// `on_waiting` is told what the removal is waiting for, when anything.
+/// `last_look` answers what still occupies the folder. Blocking: a worker
+/// thread's call.
+pub(crate) fn wait_then_last_look(
+    lease: &crate::worktree_ops::RemovalLease,
+    folder: &str,
+    wait: std::time::Duration,
+    on_waiting: impl FnOnce(&[crate::worktree_ops::WorktreeOpKind]),
+    registries: &[&crate::process_sessions::AgentProcessRegistry],
+    last_look: impl FnOnce() -> Option<String>,
+) -> Result<(), String> {
+    #[cfg(test)]
+    removal_steps::note("holds");
+    let holders = lease.holders();
+    if !holders.is_empty() {
+        on_waiting(&holders);
+    }
+    if let Err(still) = lease.wait_for_holders(wait) {
+        return Err(crate::engine::removal::removal_wait_expired_message(
+            lease.path(),
+            wait,
+            &crate::worktree_ops::describe_holders(&still),
+        ));
+    }
+    // A removal of a folder around this one, or inside it, or an editor's or
+    // the changes pane's delete of one, never runs at the same time as this
+    // one: wait for the earlier one. If it took this folder with it, git
+    // finds it gone and only forgets its registration.
+    #[cfg(test)]
+    removal_steps::note("claims");
+    if !lease.wait_for_overlapping_removals(wait) {
+        return Err(format!(
+            "the worktree at {} was kept: a removal of a folder around or inside it was still \
+             running after {}s. Remove it from the worktree manager once that has finished.",
+            crate::home_path::shorten_home(std::path::Path::new(folder)),
+            wait.as_secs()
+        ));
+    }
+    // A spawn that began before the claim registers its session in a
+    // moment; nothing new can begin now that the folder is claimed.
+    #[cfg(test)]
+    removal_steps::note("spawns");
+    for registry in registries {
+        if !registry.wait_for_spawns(
+            std::path::Path::new(folder),
+            crate::process_sessions::SPAWN_WAIT,
+        ) {
+            return Err(occupied_after_wait_message(
+                folder,
+                "something yaran is starting in it has not finished starting",
+            ));
+        }
+    }
+    // The record a later start recovers from is never behind a deletion that
+    // already happened, the sessions just registered included.
+    #[cfg(test)]
+    removal_steps::note("flush");
+    if let Some(message) = record_not_saved(registries, folder) {
+        return Err(message);
+    }
+    #[cfg(test)]
+    removal_steps::note("look");
+    // Last: nothing new can take the folder any more (every create, launch,
+    // terminal and add is refused under the claim), so whatever is found here
+    // arrived before the claim and has not gone, or is a process yaran started
+    // that walked in. Anything that occupies the folder keeps it.
+    let looked = last_look();
+    match looked {
+        Some(occupant) => Err(occupied_after_wait_message(folder, &occupant)),
+        None => Ok(()),
+    }
+}
+
+/// Run `remove` (the git step) right after `look` (a full
+/// [`wait_then_last_look`]), and when git refuses in a way worth one more try
+/// ([`crate::git::RemovalWorthRetrying`]: the worktree is still registered and
+/// still there), pause and go through the whole look again before the one
+/// retry. git never runs a second time on the strength of a look taken before
+/// the first. Blocking: a worker thread's call.
+pub(crate) fn remove_after_last_look<T>(
+    look: impl Fn() -> Result<(), String>,
+    remove: impl Fn() -> anyhow::Result<T>,
+) -> Result<T, String> {
+    look()?;
+    match remove() {
+        Err(err)
+            if err
+                .downcast_ref::<crate::git::RemovalWorthRetrying>()
+                .is_some() =>
+        {
+            std::thread::sleep(crate::git::WORKTREE_REMOVAL_RETRY_PAUSE);
+            look()?;
+            remove().map_err(|e| format!("{e:#}"))
+        }
+        other => other.map_err(|e| format!("{e:#}")),
+    }
+}
+
+/// Test-only: hold a removal's process snapshot, per engine (keyed by its
+/// session database), so a test can let something happen before it is taken.
+#[cfg(test)]
+pub(crate) mod removal_snapshot_hooks {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    static DELAYS: Mutex<Option<HashMap<PathBuf, Duration>>> = Mutex::new(None);
+
+    pub(crate) fn delay_for(db_path: &Path, delay: Duration) {
+        DELAYS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(db_path.to_path_buf(), delay);
+    }
+
+    pub(super) fn delay(db_path: &Path) {
+        let delay = DELAYS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|delays| delays.get(db_path).copied());
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
+    }
+}
+
+/// The steps [`wait_then_last_look`] took, in order, on this thread (test
+/// builds only), so a test can pin the order.
+#[cfg(test)]
+pub(crate) mod removal_steps {
+    std::thread_local! {
+        static STEPS: std::cell::RefCell<Vec<&'static str>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn note(step: &'static str) {
+        STEPS.with(|steps| steps.borrow_mut().push(step));
+    }
+
+    pub(crate) fn take() -> Vec<&'static str> {
+        STEPS.with(|steps| std::mem::take(&mut *steps.borrow_mut()))
+    }
+}
+
+/// The final when the folder turned out to be in use after the removal's
+/// wait: it is kept, whole.
+pub(crate) fn occupied_after_wait_message(worktree_path: &str, occupant: &str) -> String {
+    format!(
+        "the worktree at {} was kept: {occupant}. Remove it from the worktree manager once \
+         that has finished, if you still want it gone.",
+        crate::home_path::shorten_home(std::path::Path::new(worktree_path))
+    )
+}
+
+/// Clear a pending removal's row from a worker thread, on a connection of its
+/// own. A failure is logged: the cost is the next start running a removal that
+/// is already done, which git answers as a no-op.
+pub(crate) fn forget_pending_removal_in(db_path: &std::path::Path, session_id: &str) {
+    let cleared = crate::storage::SessionStore::open_live(db_path)
+        .and_then(|store| store.delete_pending_worktree_removal(session_id));
+    if let Err(err) = cleared {
+        logger::warn(&format!(
+            "could not clear the finished worktree removal of agent {session_id}: {err:#}"
+        ));
+    }
+}
+
+/// How long a removal waits for the delete's own snapshot of the agent's
+/// processes, which a thread takes the moment the delete begins. A look at the
+/// process table takes milliseconds; this only bounds a thread that never ran.
+const REMOVAL_SNAPSHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// End everything yaran started for a deleted agent before its worktree is
+/// removed, or say why the removal is not going ahead. Blocking: runs on the
+/// removal worker, never the UI thread.
+///
+/// An `Err` keeps the worktree: removing a folder something is still writing
+/// into is exactly the half-done removal this exists to prevent, and the
+/// message names what refused to die.
+pub(crate) fn end_agent_processes_before_removal(
+    processes: &crate::engine::RemovalProcesses,
+    registry: &crate::process_sessions::AgentProcessRegistry,
+    worktree_path: &str,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + REMOVAL_SNAPSHOT_WAIT;
+    let mut snapshot = loop {
+        if let Some(found) = processes.snapshot.get() {
+            break found.clone();
+        }
+        if std::time::Instant::now() >= deadline {
+            logger::warn(&format!(
+                "removing {worktree_path} without the snapshot of the agent's processes taken \
+                 when the delete began; their sessions are still ended"
+            ));
+            break Vec::new();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    // What yaran saw still running in each session when it saw its leader exit:
+    // with the leader gone, the only evidence a member is yaran's. A recording
+    // of a leader's exit that started before this removal is waited for, so it
+    // is never read before it has been written.
+    registry.wait_for_recordings(&processes.sessions, REMOVAL_SNAPSHOT_WAIT);
+    snapshot.extend(registry.survivors_of(&processes.sessions));
+    let outcome = crate::process_sessions::purge(
+        &mut crate::process_sessions::SystemProcesses,
+        &processes.sessions,
+        &snapshot,
+        processes.grace,
+    );
+    match outcome {
+        crate::process_sessions::PurgeOutcome::Clean { stopped } => {
+            if stopped > 0 {
+                logger::info(&format!(
+                    "stopped {} the deleted agent left running before removing {worktree_path}",
+                    crate::text::count_of_with(stopped, "process", "processes")
+                ));
+            }
+            Ok(())
+        }
+        crate::process_sessions::PurgeOutcome::Survivors(rows) => {
+            let message = survivors_kept_worktree_message(worktree_path, &rows);
+            logger::warn(&message);
+            Err(message)
+        }
+        crate::process_sessions::PurgeOutcome::Unreadable(why) => {
+            let path = crate::home_path::shorten_home(std::path::Path::new(worktree_path));
+            let message = format!(
+                "the worktree at {path} was kept, untouched: yaran could not read the process \
+                 list ({why}), so it could not stop what the agent started there or confirm \
+                 that nothing is still writing into it. Try the delete again in a moment."
+            );
+            logger::warn(&message);
+            Err(message)
+        }
+    }
+}
+
+/// The final when something yaran started for a deleted agent would not stop:
+/// the worktree is kept whole rather than deleted out from under it.
+pub fn survivors_kept_worktree_message(
+    worktree_path: &str,
+    rows: &[crate::process_sessions::ProcRow],
+) -> String {
+    let path = crate::home_path::shorten_home(std::path::Path::new(worktree_path));
+    format!(
+        "the worktree at {path} was kept, untouched: {} that the agent started there \
+         would not stop, even after SIGKILL ({}). Deleting a folder something is still \
+         writing into leaves a half-removed folder behind, so nothing was deleted. Stop \
+         {}, then remove the worktree from the worktree manager.",
+        if rows.len() == 1 {
+            "a process"
+        } else {
+            "processes"
+        },
+        crate::process_sessions::describe(rows),
+        if rows.len() == 1 { "it" } else { "them" },
+    )
 }
 
 /// The refusal for a delete that asked yaran to remove a standalone agent's
@@ -729,7 +1583,7 @@ pub(crate) fn branch_kept_reason(
 /// The refusal for a worktree-removing delete of an agent whose directory yaran
 /// never removes: a standalone agent's folder, or a shared agent's registered
 /// project checkout.
-pub fn delete_directory_refusal(session: &AgentSession) -> crate::status_text::StatusText {
+pub(crate) fn delete_directory_refusal(session: &AgentSession) -> crate::status_text::StatusText {
     if session.shared_workspace() {
         return shared_delete_directory_refusal(&session.display_label(), session.directory());
     }
@@ -737,7 +1591,7 @@ pub fn delete_directory_refusal(session: &AgentSession) -> crate::status_text::S
 }
 
 /// Shared main-workspace mode: the agent runs in the project's own checkout.
-pub fn shared_delete_directory_refusal(agent_name: &str, checkout: &str) -> StatusText {
+pub(crate) fn shared_delete_directory_refusal(agent_name: &str, checkout: &str) -> StatusText {
     crate::status_text![
         "Agent ",
         q(agent_name),
@@ -750,7 +1604,7 @@ pub fn shared_delete_directory_refusal(agent_name: &str, checkout: &str) -> Stat
     ]
 }
 
-pub fn standalone_delete_directory_refusal(agent_name: &str, folder: &str) -> StatusText {
+pub(crate) fn standalone_delete_directory_refusal(agent_name: &str, folder: &str) -> StatusText {
     crate::status_text![
         "Agent ",
         q(agent_name),
@@ -778,14 +1632,20 @@ pub enum WorktreeRemoval {
     /// report for BOTH branches the removal targeted (the one the worktree was
     /// on and, when the agent drifted, the one it was born on), or that they
     /// were deliberately kept because they were not yaran's to delete.
-    Performed { branches: RemovedBranches },
+    Performed {
+        /// What became of each branch the removal targeted.
+        branches: RemovedBranches,
+    },
     /// There was no worktree, because this was a STANDALONE agent: it ran in a
     /// folder the user already had, and deleting the agent removed yaran's record
     /// of it and nothing else. Its own variant rather than one of the
     /// "preserved" ones above, because those all describe a worktree yaran
     /// decided not to remove, and there was never one here to decide about.
     /// The folder is carried so the message can name it.
-    NothingToRemove { folder_label: String },
+    NothingToRemove {
+        /// The folder the agent ran in, home-shortened.
+        folder_label: String,
+    },
 }
 
 impl WorktreeRemoval {
@@ -794,9 +1654,7 @@ impl WorktreeRemoval {
     pub fn refused_a_branch(&self) -> bool {
         matches!(
             self,
-            WorktreeRemoval::Performed {
-                branches: RemovedBranches::Deleted(result),
-            } if result.refused_a_branch()
+            WorktreeRemoval::Performed { branches } if branches.refused_a_branch()
         )
     }
 
@@ -804,11 +1662,11 @@ impl WorktreeRemoval {
     /// decision, given user intent and whether siblings share the worktree.
     /// `performed` is `Some(result)` when git actually removed the worktree,
     /// `None` when it was not run. The caller guarantees `performed.is_some()`
-    /// exactly when `delete_worktree && !other_sessions`.
+    /// exactly when the worktree was to be removed and no other agent shares it.
     fn from_decision(
         session: &AgentSession,
-        delete_worktree: bool,
-        other_sessions_on_worktree: bool,
+        worktree: WorktreeOnDelete,
+        sharing: WorktreeSharing,
         performed: Option<RemovedBranches>,
     ) -> Self {
         // A standalone agent never had a worktree, so none of the worktree
@@ -822,17 +1680,41 @@ impl WorktreeRemoval {
                 )),
             };
         }
-        match (delete_worktree, other_sessions_on_worktree, performed) {
+        match (worktree, sharing, performed) {
             (_, _, Some(branches)) => WorktreeRemoval::Performed { branches },
-            (true, true, None) => WorktreeRemoval::SkippedForSiblings,
-            (false, true, None) => WorktreeRemoval::PreservedShared,
-            (false, false, None) => WorktreeRemoval::PreservedOrphan,
-            // delete requested, no siblings, but git did not run: impossible by
-            // the caller's contract. Default to the most truthful preserved
+            (WorktreeOnDelete::Remove, WorktreeSharing::SharedWithAnotherAgent, None) => {
+                WorktreeRemoval::SkippedForSiblings
+            }
+            (WorktreeOnDelete::Keep, WorktreeSharing::SharedWithAnotherAgent, None) => {
+                WorktreeRemoval::PreservedShared
+            }
+            // A kept worktree with no siblings is an orphan. A delete requested
+            // with no siblings where git did not run is impossible by the
+            // caller's contract; it defaults to the most truthful preserved
             // state rather than panicking.
-            (true, false, None) => WorktreeRemoval::PreservedOrphan,
+            (WorktreeOnDelete::Keep | WorktreeOnDelete::Remove, WorktreeSharing::Alone, None) => {
+                WorktreeRemoval::PreservedOrphan
+            }
         }
     }
+}
+
+/// What deleting an agent does with the agent's worktree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorktreeOnDelete {
+    /// Remove the worktree with the agent, unless another agent shares it.
+    Remove,
+    /// Leave the worktree where it is.
+    Keep,
+}
+
+/// Whether another agent works in the same worktree as the one being deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorktreeSharing {
+    /// Another agent shares it, so it stays.
+    SharedWithAnotherAgent,
+    /// No other agent works in it.
+    Alone,
 }
 
 /// Result of `Engine::finish_delete_session`. Carries the deleted session
@@ -840,23 +1722,16 @@ impl WorktreeRemoval {
 /// (`pty_activity` clear, `clear_companion_terminals_for_session`,
 /// `rebuild_left_items`, `selected_left` adjustment, `reload_changed_files`)
 /// and to format the 4-branch status message.
+#[derive(Debug)]
 pub struct FinishDeleteSessionOutcome {
+    /// The agent deleted.
     pub session: AgentSession,
+    /// Its project, when it had one yaran still knows.
     pub project: Option<Project>,
+    /// Whether another agent still works in the same worktree.
     pub other_sessions_on_worktree: bool,
+    /// Whether the project still has agents.
     pub project_still_has_sessions: bool,
-}
-
-/// Result of `Engine::do_delete_session`. Engine has performed the git
-/// worktree removal (if needed) and the full finish-delete-session cascade
-/// (store delete + providers/pins/resume_fallback removal + sessions retain
-/// + branch-sync refresh); the App still has to apply view follow-up.
-pub struct DoDeleteSessionOutcome {
-    /// Finish-cascade outcome (same shape T3f-1 introduced).
-    pub finish: FinishDeleteSessionOutcome,
-    /// What happened to the worktree. Drives status formatting in
-    /// `apply_finish_delete_session_outcome`.
-    pub removal: WorktreeRemoval,
 }
 
 /// Result of `Engine::begin_delete_session`. The four branches mirror the
@@ -875,7 +1750,7 @@ pub enum BeginDeleteSessionOutcome {
     /// the still-spawning process. The caller shows a "try again" error and does
     /// NOT delete.
     TabLaunching,
-    /// Worktree-removing delete: the Engine has already SIGTERMed the agent PTY
+    /// Worktree-removing delete: the Engine has already `SIGTERMed` the agent PTY
     /// and the session's terminals and moved them to the terminating set,
     /// capturing the worktree removal to run once the agent exits. The caller
     /// vanishes the session now, through `finish_delete_session` with
@@ -883,39 +1758,49 @@ pub enum BeginDeleteSessionOutcome {
     /// `busy_message`. Once the PTY is reaped, `reap_terminating_ptys` hands the
     /// removal to `dispatch_deferred_worktree_removal`, whose worker posts
     /// `WorktreeRemoveCompleted` and resolves that op.
-    AsyncStarted { busy_message: StatusText },
+    AsyncStarted {
+        /// The busy the caller shows while the removal waits.
+        busy_message: StatusText,
+    },
     /// Inline path: no worktree removal needed (no `delete_worktree` request
     /// or shared with siblings). App should call the existing
     /// `finish_delete_session` wrapper to complete cleanup + emit status.
-    Inline { removal: WorktreeRemoval },
+    Inline {
+        /// What happened to the worktree.
+        removal: WorktreeRemoval,
+    },
     /// The caller asked to remove a directory yaran may not remove: a standalone
     /// agent's folder. Nothing was deleted, not even the agent record, and the
     /// message says why. Distinct from every other arm because it is the one
     /// where the DELETE ITSELF did not happen.
-    Refused { message: StatusText },
+    Refused {
+        /// Why the delete was refused.
+        message: StatusText,
+    },
 }
 
 /// View follow-up data for a `Command::FinishDeleteSession`. Wraps the
 /// engine outcome with the App-context fields needed for status formatting.
+#[derive(Debug)]
 pub struct FinishDeleteSessionView {
+    /// The agent deleted.
     pub session_id: String,
+    /// What the engine removed.
     pub outcome: FinishDeleteSessionOutcome,
+    /// What happened to its worktree.
     pub removal: WorktreeRemoval,
+    /// Whether the surface reports a status; `false` when it keys its own.
     pub update_status: bool,
-}
-
-/// View follow-up data for a `Command::DoDeleteSession`. Wraps the engine
-/// outcome with the App-context fields needed for status formatting.
-pub struct DoDeleteSessionView {
-    pub session_id: String,
-    pub outcome: DoDeleteSessionOutcome,
 }
 
 /// View follow-up data for a `Command::BeginDeleteSession`. Wraps the
 /// engine outcome with the App-context fields needed for status
 /// formatting and the inline cleanup follow-up.
+#[derive(Debug)]
 pub struct BeginDeleteSessionView {
+    /// The agent being deleted.
     pub session_id: String,
+    /// How the delete began.
     pub outcome: BeginDeleteSessionOutcome,
 }
 
@@ -924,11 +1809,15 @@ pub struct BeginDeleteSessionView {
 /// site-specific follow-up. `status` is `Some` only on the already-in-flight
 /// path. `session_id` is populated on both branches, so an observer can
 /// correlate the dispatch with its session without re-deriving it.
+#[derive(Debug)]
 pub struct DispatchAgentLaunchView {
+    /// The agent the launch was for.
     pub session_id: String,
     /// The tab whose launch was dispatched (the slot tab id for the session-slot tab).
     pub tab_id: String,
+    /// Whether a launch worker was started.
     pub launched: bool,
+    /// The status to show when no launch started.
     pub status: Option<StatusUpdate>,
 }
 
@@ -936,8 +1825,11 @@ pub struct DispatchAgentLaunchView {
 /// if the terminal existed; `None` if it was already gone. The App caller
 /// clears `active_terminal_id` if it matches and clamps the terminal
 /// cursor.
+#[derive(Debug)]
 pub struct DeleteTerminalView {
+    /// The terminal closed.
     pub terminal_id: String,
+    /// Its label, or `None` when no such terminal was open.
     pub label: Option<String>,
 }
 
@@ -957,6 +1849,29 @@ fn launch_kind_label(kind: &AgentLaunchKind) -> &'static str {
         AgentLaunchKind::ResumeFallback { .. } => "resume_fallback",
         AgentLaunchKind::StartupAutoReopen => "startup_auto_reopen",
         AgentLaunchKind::Tab { .. } => "tab",
+    }
+}
+
+/// Ends, when dropped, the reservations a launch of one tab holds against
+/// attaching to the agents it stops: its report has come back, and whatever
+/// it was going to stop is stopped by then.
+struct LaunchReservations {
+    attachments: crate::attachments::Attachments,
+    key: String,
+}
+
+impl LaunchReservations {
+    fn of(engine: &Engine, tab_id: &str) -> Self {
+        Self {
+            attachments: engine.attachments.clone(),
+            key: crate::operations::launch_binding_key(tab_id),
+        }
+    }
+}
+
+impl Drop for LaunchReservations {
+    fn drop(&mut self) {
+        self.attachments.finish_key(&self.key);
     }
 }
 
@@ -1017,8 +1932,7 @@ impl Engine {
         }
 
         logger::info(&format!(
-            "auto-detached {} agent \"{}\" to avoid worktree conflict",
-            provider, label,
+            "auto-detached {provider} agent \"{label}\" to avoid worktree conflict",
         ));
         Some(DetachedSession {
             id: conflicting.id,
@@ -1069,11 +1983,11 @@ impl Engine {
     fn resolve_create_op(
         &mut self,
         status_op_id: &str,
-        outcome: CreateLaunchOutcome,
+        outcome: &CreateLaunchOutcome,
     ) -> Option<ResolvedFinal> {
         self.pending_create_ops
             .remove(status_op_id)
-            .map(|op| op.resolve(&outcome))
+            .map(|op| op.resolve(outcome))
     }
 
     /// Put a freshly launched provider under its tab id, unless a LIVE one is
@@ -1104,10 +2018,8 @@ impl Engine {
         if let Some(running) = self.providers.get(tab_id)
             && running.is_live()
         {
-            let describe = |pid: Option<u32>| {
-                pid.map(|pid| pid.to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            };
+            let describe =
+                |pid: Option<u32>| pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string());
             logger::warn(&format!(
                 "dropping the PTY just launched for tab {tab_id} (process {}): \
                  process {} is already running in it",
@@ -1116,16 +2028,46 @@ impl Engine {
             ));
             return LaunchedProviderInsert::Dropped;
         }
+        // Remembered for the agent's whole life, so a later worktree removal
+        // can end whatever this run leaves behind after it exits.
+        if let (Some(session_id), Some(process)) = (
+            self.owning_session_for_tab(tab_id.as_str()),
+            client.process_session(),
+        ) {
+            let standalone = self
+                .session_by_id(&session_id)
+                .is_some_and(|session| session.workspace.as_managed().is_none());
+            if standalone {
+                self.process_registry
+                    .register_standalone(&session_id, process, client.spawn_dir());
+            } else {
+                self.process_registry
+                    .register(&session_id, process, client.spawn_dir());
+            }
+            client.set_leader_exit_hook(self.process_registry.leader_exit_hook(process));
+            let registry = self.process_registry.clone();
+            client.set_recorded_members(Box::new(move || registry.survivors_of(&[process])));
+            if let Some(session) = self.session_by_id(&session_id) {
+                self.process_registry
+                    .label(process, format!("agent \"{}\"", session.display_label()));
+            }
+        }
         self.providers.insert(tab_id.clone(), client);
         LaunchedProviderInsert::Kept
     }
 
-    pub fn process_agent_launch_ready(
+    pub(crate) fn process_agent_launch_ready(
         &mut self,
         data: AgentLaunchReadyData,
     ) -> (AgentLaunchReadyOutcome, Option<ResolvedFinal>) {
-        let AgentLaunchReadyData { request, client } = data;
-        let mut session = request.session.clone();
+        // Released when this returns: the session is registered by then, or
+        // the client (and its process) was dropped.
+        let AgentLaunchReadyData {
+            request,
+            client,
+            spawn_ticket: _spawn_ticket,
+        } = data;
+        let session = request.session.clone();
         let pty_size = request.pty_size;
         // Runtime PTY/provider state is keyed by tab id (the slot tab id for the
         // session-slot tab). Use it for the in-flight clear, the providers insert, and
@@ -1134,153 +2076,13 @@ impl Engine {
         let wants_fullscreen = request.wants_fullscreen;
         let status_quiet = request.status_quiet;
         self.clear_in_flight(&InFlightKey::AgentLaunch(tab_id.clone()));
+        // The launch reserved the agents it stops; they are stopped below,
+        // before anything can attach again.
+        let _launch_reservations = LaunchReservations::of(self, tab_id.as_str());
 
-        if let AgentLaunchKind::Create {
-            status_op_id,
-            repo_path,
-            owns_worktree,
-            ..
-        } = &request.kind
-        {
+        if let AgentLaunchKind::Create { status_op_id, .. } = &request.kind {
             let status_op_id = status_op_id.clone();
-            self.clear_in_flight(&InFlightKey::CreateAgent);
-            // A brand-new agent's session row, its first tab's row and the
-            // pointer between them land in one transaction: a session whose slot
-            // tab is missing has a PTY address nothing resolves.
-            //
-            // The handle is made locally unique first (tombstones included),
-            // right before the insert, so two agents on same-named worktrees
-            // never share an AMQ inbox.
-            let persisted = self
-                .session_store
-                .assign_unique_agent_handle(&mut session)
-                .and_then(|()| self.session_store.create_session(&session));
-            if let Err(err) = persisted {
-                logger::error(&format!(
-                    "session store upsert failed for {}: {err}",
-                    session.id,
-                ));
-                // Fork 773a6b04 (P1-27): an agent yaran cannot record is one it
-                // forgets on restart, so the worktree it just made would be left
-                // behind with nothing pointing at it. Stop the provider first
-                // (dropping the client kills it, so nothing is writing into the
-                // directory), then roll the create back off the engine thread:
-                // the worktree only when yaran made it, the branch only when yaran
-                // minted it (`rollback_managed_create`, the same rule the
-                // spawn-failure path uses).
-                drop(client);
-                let rollback_session = session.clone();
-                let rollback_repo = std::path::PathBuf::from(repo_path);
-                let owns_worktree = *owns_worktree;
-                let _ = std::thread::Builder::new()
-                    .name("yaran-create-rollback".into())
-                    .spawn(move || {
-                        crate::agent_job::rollback_managed_create(
-                            &rollback_repo,
-                            &rollback_session,
-                            owns_worktree,
-                        );
-                    });
-                let create_final = self.resolve_create_op(
-                    &status_op_id,
-                    CreateLaunchOutcome::PersistFailed {
-                        error: err.to_string(),
-                    },
-                );
-                return (
-                    AgentLaunchReadyOutcome {
-                        session,
-                        tab_id: tab_id.as_str().to_string(),
-                        pty_size,
-                        detached_session_id: None,
-                        wants_fullscreen,
-                        status_quiet,
-                        view: AgentLaunchReadyView::CreatePersistFailed {
-                            error: err.to_string(),
-                        },
-                    },
-                    create_final,
-                );
-            }
-            // The insert decides FIRST, and everything that speaks for the
-            // just-launched process is gated on it having actually joined the
-            // tab. See the non-create path below for the whole ordering rule; a
-            // create's tab is brand new, so its client is never the latecomer,
-            // and the two paths are written the same way so neither can be read
-            // as the exception.
-            let inserted = self.insert_launched_provider(&tab_id, client);
-            let detached = inserted
-                .kept()
-                .then(|| self.detach_conflicting_worktree_session(session.directory(), &session.id))
-                .flatten();
-            if inserted.kept() {
-                self.record_launched_drop_paste(
-                    &tab_id,
-                    &request.provider,
-                    &request.provider_config,
-                );
-            }
-            self.sessions.insert(0, session.clone());
-            // Correlate this create op with the session it just produced so a REST
-            // create handler holding the op id (from `WireCommandOutcome.created_op_id`)
-            // resolves its exact session without a racy set-difference scan.
-            self.record_created_session(status_op_id.clone(), session.id.clone());
-            self.mark_session_provider_started(&session.id, &session.provider);
-            // A brand-new STANDALONE agent's folder is classified now, so its
-            // changes panel, its mutation gate and its upload seed all know the
-            // truth from the first frame instead of starting at "not looked
-            // yet" (which fails closed). A no-op for every other kind.
-            self.spawn_folder_repo_probe(&session.id);
-            // The new worktree should show up under the project's
-            // `dux-worktrees` link (port of fork 1d69de16).
-            if let Some(project_id) = session.project_id() {
-                self.spawn_project_worktree_link_for(project_id);
-            }
-            if inserted.kept() && request.resumes_a_conversation() {
-                self.note_resume_launch(&tab_id);
-            }
-            self.update_branch_sync_sessions();
-
-            // Extract Create-kind payload for the view outcome.
-            let AgentLaunchKind::Create {
-                status_message,
-                startup_result,
-                ..
-            } = request.kind
-            else {
-                unreachable!("matched AgentLaunchKind::Create above")
-            };
-            let startup_result_error = startup_result.and_then(|r| r.status.err());
-
-            // Resolve the shared create op engine-side so both surfaces replace the
-            // create busy with the SAME final (success line or startup-failure).
-            let create_outcome = match &startup_result_error {
-                Some(error) => CreateLaunchOutcome::StartupFailed {
-                    branch_name: session.display_label(),
-                    error: error.clone(),
-                },
-                None => CreateLaunchOutcome::Committed {
-                    status_message: status_message.clone(),
-                    quiet_on: status_quiet,
-                },
-            };
-            let create_final = self.resolve_create_op(&status_op_id, create_outcome);
-
-            return (
-                AgentLaunchReadyOutcome {
-                    session,
-                    tab_id: tab_id.as_str().to_string(),
-                    pty_size,
-                    detached_session_id: detached.map(|d| d.id),
-                    wants_fullscreen,
-                    status_quiet,
-                    view: AgentLaunchReadyView::CreateCommitted {
-                        status_message,
-                        startup_result_error,
-                    },
-                },
-                create_final,
-            );
+            return self.process_create_launch_ready(request, client, &status_op_id);
         }
 
         // Non-Create branches share the "drop on missing session" guard.
@@ -1357,7 +2159,7 @@ impl Engine {
         // not persist desired_running, or the agent comes back running the
         // provider of a tab nobody asked to be the agent.
         if is_slot_tab {
-            self.mark_session_desired_running(&session.id, true);
+            self.mark_session_desired_running(&session.id, crate::model::DesiredRunning::Running);
         }
         // STATUS is an any-tab rollup, exactly like liveness and attention, so
         // any tab coming up makes the agent active. Adding a tab to a dormant
@@ -1379,7 +2181,11 @@ impl Engine {
 
         let view = match request.kind {
             AgentLaunchKind::Reconnect { status_message }
-            | AgentLaunchKind::ForceReconnect { status_message } => {
+            | AgentLaunchKind::ForceReconnect { status_message }
+            // An extra-tab ready behaves like a reconnect for the view (show the
+            // surface + info); it is never resumed and never moves the
+            // session-level running state.
+            | AgentLaunchKind::Tab { status_message, .. } => {
                 AgentLaunchReadyView::Reconnect { status_message }
             }
             AgentLaunchKind::ResumeFallback { status_message } => {
@@ -1389,12 +2195,6 @@ impl Engine {
                 }
             }
             AgentLaunchKind::StartupAutoReopen => AgentLaunchReadyView::StartupAutoReopen,
-            // An extra-tab ready behaves like a reconnect for the view (show the
-            // surface + info); it is never resumed and never moves the
-            // session-level running state.
-            AgentLaunchKind::Tab { status_message, .. } => {
-                AgentLaunchReadyView::Reconnect { status_message }
-            }
             AgentLaunchKind::Create { .. } => unreachable!("create launch handled above"),
         };
 
@@ -1412,7 +2212,339 @@ impl Engine {
         )
     }
 
-    pub fn process_project_persistence_completed(
+    /// The create half of [`Self::process_agent_launch_ready`]: commit the new
+    /// agent's rows, take over its tab and resolve the create op, or take
+    /// back what the launch made when its project is gone or its rows cannot
+    /// be written. The create keeps its folder held until this returns.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a create commits its rows, its process and its status in one ordered step"
+    )]
+    fn process_create_launch_ready(
+        &mut self,
+        request: crate::worker::AgentLaunchRequest,
+        client: crate::pty::PtyClient,
+        status_op_id: &str,
+    ) -> (AgentLaunchReadyOutcome, Option<ResolvedFinal>) {
+        let mut session = request.session.clone();
+        let pty_size = request.pty_size;
+        let tab_id = request.tab_id.clone();
+        let wants_fullscreen = request.wants_fullscreen;
+        let status_quiet = request.status_quiet;
+        self.clear_in_flight(&InFlightKey::CreateAgent);
+        // The create keeps its folder held until this function returns,
+        // after the agent's row is written below: a removal re-checking
+        // the folder finds the hold or the row, never neither.
+        let _create_hold = self.note_create_finished_holding(status_op_id);
+        // The defence behind the project deletion's wait: a create that
+        // outlasted it lands for a project that no longer exists. Nothing is
+        // committed; the process is stopped and what this launch made is
+        // taken back.
+        if let Some(project_id) = session.project_id()
+            && !self.projects.iter().any(|project| project.id == project_id)
+        {
+            return self.take_back_create_for_gone_project(&request, client, status_op_id);
+        }
+        // A brand-new agent's session row, its first tab's row and the
+        // pointer between them land in one transaction: a session whose slot
+        // tab is missing has a PTY address nothing resolves.
+        let birth_identity = match &request.kind {
+            AgentLaunchKind::Create { birth_identity, .. } => birth_identity.as_deref(),
+            _ => None,
+        };
+        // The handle is made locally unique first (tombstones included),
+        // right before the insert, so two agents on same-named worktrees
+        // never share an AMQ inbox.
+        if let Err(err) = self
+            .session_store
+            .assign_unique_agent_handle(&mut session)
+            .and_then(|()| {
+                self.session_store
+                    .create_session_with_birth(&session, birth_identity)
+            })
+        {
+            return self.create_persist_failed(&request, client, status_op_id, &err);
+        }
+        self.refresh_branch_history(&session.id);
+        // The insert decides FIRST, and everything that speaks for the
+        // just-launched process is gated on it having actually joined the
+        // tab. See the non-create path below for the whole ordering rule; a
+        // create's tab is brand new, so its client is never the latecomer,
+        // and the two paths are written the same way so neither can be read
+        // as the exception.
+        let inserted = self.insert_launched_provider(&tab_id, client);
+        let detached = inserted
+            .kept()
+            .then(|| self.detach_conflicting_worktree_session(session.directory(), &session.id))
+            .flatten();
+        if inserted.kept() {
+            self.record_launched_drop_paste(&tab_id, &request.provider, &request.provider_config);
+        }
+        self.sessions.insert(0, session.clone());
+        // Correlate this create op with the session it just produced so a REST
+        // create handler holding the op id (from `WireCommandOutcome.created_op_id`)
+        // resolves its exact session without a racy set-difference scan.
+        self.record_created_session(status_op_id.to_string(), session.id.clone());
+        self.mark_session_provider_started(&session.id, &session.provider);
+        // A brand-new STANDALONE agent's folder is classified now, so its
+        // changes panel, its mutation gate and its upload seed all know the
+        // truth from the first frame instead of starting at "not looked
+        // yet" (which fails closed). A no-op for every other kind.
+        self.spawn_folder_repo_probe(&session.id);
+        // The new worktree should show up under the project's
+        // `dux-worktrees` link (port of fork 1d69de16).
+        if let Some(project_id) = session.project_id() {
+            self.spawn_project_worktree_link_for(project_id);
+        }
+        if inserted.kept() && request.resumes_a_conversation() {
+            self.note_resume_launch(&tab_id);
+        }
+        self.update_branch_sync_sessions();
+        // The new agent joins the pull-request plan now. Nothing else is
+        // owed a rebuild by a create (its status is born Active, so the
+        // launch's status-change rebuild never fires for it), and an agent
+        // can push, open and merge a pull request long before an unrelated
+        // rebuild would have enrolled it.
+        self.update_pr_sync_sessions();
+
+        // Extract Create-kind payload for the view outcome.
+        let AgentLaunchKind::Create {
+            mut status_message,
+            mut status_warns,
+            mut status_notes,
+            pull_request_pin,
+            startup_result,
+            ..
+        } = request.kind
+        else {
+            unreachable!("matched AgentLaunchKind::Create above")
+        };
+        // A fresh copy of a pull request is pinned to it now that its row
+        // exists, exactly as a manual attach would pin it, and only here,
+        // where the pin is actually made, does the final say it is linked.
+        // The agent is committed either way: a pin that cannot be written
+        // is logged and told in the create's own final, which becomes a
+        // warning, and the user can still attach the pull request by hand.
+        if let Some(pin) = pull_request_pin {
+            let told = match self.link_created_pull_request(&session.id, &pin) {
+                Ok(told) => told,
+                Err(told) => {
+                    status_warns = true;
+                    told
+                }
+            };
+            status_message = crate::status_text![status_message, " ", told.clone()];
+            status_notes = Some(Box::new(match status_notes {
+                Some(notes) => crate::status_text![*notes, " ", told],
+                None => told,
+            }));
+        } else {
+            // An agent created on a branch that already existed may already
+            // have a pull request, so it is asked about once now rather
+            // than at the next poll. A pinned copy was resolved moments
+            // ago and needs no second look.
+            self.spawn_pr_check_for_session(&session.id, crate::engine::PR_CHECK_MIN_INTERVAL);
+        }
+        let startup_result_error = startup_result.and_then(|r| r.status.err());
+
+        // Resolve the shared create op engine-side so both surfaces replace the
+        // create busy with the SAME final (success line or startup-failure).
+        let create_outcome = match &startup_result_error {
+            Some(error) => CreateLaunchOutcome::StartupFailed {
+                branch_name: session.display_label(),
+                error: error.clone(),
+                notes: status_notes.map(|notes| *notes),
+            },
+            None => CreateLaunchOutcome::Committed {
+                status_message: status_message.clone(),
+                quiet_on: status_quiet,
+                warns: status_warns,
+            },
+        };
+        let create_final = self.resolve_create_op(status_op_id, &create_outcome);
+
+        (
+            AgentLaunchReadyOutcome {
+                session,
+                tab_id: tab_id.as_str().to_string(),
+                pty_size,
+                detached_session_id: detached.map(|d| d.id),
+                wants_fullscreen,
+                status_quiet,
+                view: AgentLaunchReadyView::CreateCommitted {
+                    status_message,
+                    startup_result_error,
+                },
+            },
+            create_final,
+        )
+    }
+
+    /// Pin a fresh copy of a pull request to it now that the agent's row
+    /// exists, exactly as a manual attach would. Answers the sentence the
+    /// create's final adds: `Ok` when linked, `Err` (logged, and the final
+    /// becomes a warning) when the pin could not be written, in which case the
+    /// user can still attach the pull request by hand.
+    fn link_created_pull_request(
+        &mut self,
+        session_id: &str,
+        pin: &crate::worker::PullRequestPin,
+    ) -> Result<StatusText, StatusText> {
+        let pr = format!("#{}", pin.number);
+        match self.apply_pr_attach(
+            session_id,
+            &pin.host,
+            &pin.owner_repo,
+            pin.number,
+            &pin.title,
+            &pin.state,
+            "",
+        ) {
+            Ok(_) => Ok(crate::status_text!["It is linked to PR ", n(pr), "."]),
+            Err(err) => {
+                logger::error(&format!(
+                    "could not pin agent {} to PR #{} of {}: {err:#}",
+                    session_id, pin.number, pin.owner_repo
+                ));
+                let reason = format!("{err:#}");
+                Err(crate::status_text![
+                    "yaran could not link it to PR ",
+                    n(pr),
+                    format!(
+                        ": {}. Attach the pull request to the agent by hand.",
+                        reason.trim_end_matches('.')
+                    )
+                ])
+            }
+        }
+    }
+
+    /// A create whose session rows could not be written: the op fails with the
+    /// store's error, which the view reports too. An agent yaran cannot record
+    /// is one it forgets on restart (fork 773a6b04, P1-27), so it is stopped
+    /// and what this create made is taken back, exactly as for a create that
+    /// outlasted its project: the worktree only when this create made it, the
+    /// branch only when yaran minted it, once the process has exited.
+    fn create_persist_failed(
+        &mut self,
+        request: &crate::worker::AgentLaunchRequest,
+        client: crate::pty::PtyClient,
+        status_op_id: &str,
+        err: &anyhow::Error,
+    ) -> (AgentLaunchReadyOutcome, Option<ResolvedFinal>) {
+        let session = request.session.clone();
+        logger::error(&format!(
+            "session store upsert failed for {}: {err:#}",
+            session.id,
+        ));
+        let AgentLaunchKind::Create {
+            repo_path,
+            owns_worktree,
+            ..
+        } = &request.kind
+        else {
+            unreachable!("only a create persists a new session")
+        };
+        let owns_worktree = *owns_worktree;
+        let managed = session.workspace.as_managed().filter(|_| owns_worktree);
+        let removing_folder = managed.map(|managed| {
+            crate::home_path::shorten_home(std::path::Path::new(&managed.worktree_path))
+        });
+        let removing_branch = managed
+            .filter(|managed| managed.branch_provenance.yaran_may_delete_branch())
+            .map(|managed| managed.branch_name.clone());
+        self.take_back_unrecorded_create(
+            &session,
+            &request.tab_id,
+            client,
+            repo_path,
+            if owns_worktree {
+                crate::agent_job::WorktreeOwnership::CreatedByThisJob
+            } else {
+                crate::agent_job::WorktreeOwnership::Preexisting
+            },
+        );
+        let create_final = self.resolve_create_op(
+            status_op_id,
+            &CreateLaunchOutcome::PersistFailed {
+                error: format!("{err:#}"),
+                attempted_name: Some(session.display_label()),
+                removing_folder,
+                removing_branch,
+            },
+        );
+        (
+            AgentLaunchReadyOutcome {
+                session,
+                tab_id: request.tab_id.as_str().to_string(),
+                pty_size: request.pty_size,
+                detached_session_id: None,
+                wants_fullscreen: request.wants_fullscreen,
+                status_quiet: request.status_quiet,
+                view: AgentLaunchReadyView::CreatePersistFailed {
+                    error: format!("{err:#}"),
+                },
+            },
+            create_final,
+        )
+    }
+
+    /// A create that outlasted its project's deletion: nothing is committed,
+    /// the process is stopped and what this launch made is taken back.
+    fn take_back_create_for_gone_project(
+        &mut self,
+        request: &crate::worker::AgentLaunchRequest,
+        client: crate::pty::PtyClient,
+        status_op_id: &str,
+    ) -> (AgentLaunchReadyOutcome, Option<ResolvedFinal>) {
+        let session = request.session.clone();
+        let tab_id = &request.tab_id;
+        let pty_size = request.pty_size;
+        let wants_fullscreen = request.wants_fullscreen;
+        let status_quiet = request.status_quiet;
+        let AgentLaunchKind::Create {
+            repo_path,
+            owns_worktree,
+            ..
+        } = &request.kind
+        else {
+            unreachable!("matched AgentLaunchKind::Create above")
+        };
+        let message = self.stop_create_for_deleted_project(
+            &session,
+            tab_id,
+            client,
+            repo_path,
+            if *owns_worktree {
+                crate::agent_job::WorktreeOwnership::CreatedByThisJob
+            } else {
+                crate::agent_job::WorktreeOwnership::Preexisting
+            },
+        );
+        let create_final = self.resolve_create_op(
+            status_op_id,
+            &CreateLaunchOutcome::Failed {
+                message: message.clone(),
+                attempted_name: Some(session.display_label()),
+            },
+        );
+        (
+            AgentLaunchReadyOutcome {
+                session,
+                tab_id: tab_id.as_str().to_string(),
+                pty_size,
+                detached_session_id: None,
+                wants_fullscreen,
+                status_quiet,
+                view: AgentLaunchReadyView::CreatePersistFailed {
+                    error: message.to_string(),
+                },
+            },
+            create_final,
+        )
+    }
+
+    pub(crate) fn process_project_persistence_completed(
         &mut self,
         action: ProjectPersistenceAction,
         result: Result<(), String>,
@@ -1426,7 +2558,22 @@ impl Engine {
             };
         }
 
-        let view = match &action {
+        let view = self.apply_persisted_project_action(&action);
+
+        ProjectPersistenceOutcome {
+            action,
+            view,
+            status_op_id,
+        }
+    }
+
+    /// Mirror a saved project change in memory and answer the view that reports
+    /// it.
+    fn apply_persisted_project_action(
+        &mut self,
+        action: &ProjectPersistenceAction,
+    ) -> ProjectPersistenceView {
+        match action {
             ProjectPersistenceAction::Add {
                 project,
                 status_message,
@@ -1468,7 +2615,7 @@ impl Engine {
                 global_default,
             } => {
                 if let Some(project) = self.projects.iter_mut().find(|p| p.id == *project_id) {
-                    project.explicit_default_provider = provider.clone();
+                    project.explicit_default_provider.clone_from(provider);
                 }
                 self.refresh_project_defaults();
                 ProjectPersistenceView::DefaultProviderUpdated {
@@ -1496,7 +2643,7 @@ impl Engine {
                 startup_command,
             } => {
                 if let Some(project) = self.projects.iter_mut().find(|p| p.id == *project_id) {
-                    project.startup_command = startup_command.clone();
+                    project.startup_command.clone_from(startup_command);
                 }
                 ProjectPersistenceView::StartupCommandUpdated {
                     project_name: project_name.clone(),
@@ -1517,12 +2664,6 @@ impl Engine {
                     env_count,
                 }
             }
-        };
-
-        ProjectPersistenceOutcome {
-            action,
-            view,
-            status_op_id,
         }
     }
 
@@ -1583,6 +2724,7 @@ impl Engine {
         self.pty_activity.remove(tab_id.as_str());
         self.pty_input.remove(tab_id.as_str());
         self.pty_pointer.remove(tab_id.as_str());
+        self.pty_used.remove(tab_id.as_str());
         // Attention/progress runtime state is torn down with the tab so a
         // detach/relaunch/delete can never leave a stale flag or a stuck
         // "working" progress override behind.
@@ -1608,13 +2750,19 @@ impl Engine {
     /// `companion_terminals`.
     pub fn clear_terminal_runtime(&mut self, terminal_id: &str) {
         self.pty_activity.remove(terminal_id);
+        self.terminal_activity_at.remove(terminal_id);
         self.pty_input.remove(terminal_id);
         self.pty_pointer.remove(terminal_id);
+        self.pty_used.remove(terminal_id);
     }
 
     /// Every registered project checkout, for the whole-worktree removal guard
     /// (`git::guard_whole_workspace_removal`). Fails closed on a project path
     /// that does not expand to a safe absolute one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a registered project's path is not a safe absolute path.
     pub fn registered_project_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>> {
         crate::git::registered_project_paths(self.projects.iter().map(|p| p.path.as_str()))
     }
@@ -1630,6 +2778,11 @@ impl Engine {
     /// and the caller then does view-side cleanup. In the gap, view-only maps
     /// still hold entries for the deleted session id, so an engine helper called
     /// from inside here must not read them for that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session database cannot delete the session; the
+    /// in-memory state is then left as it was.
     pub fn finish_delete_session(
         &mut self,
         session_id: &str,
@@ -1671,11 +2824,11 @@ impl Engine {
             // so there is nothing of ours to tombstone.
             return;
         };
-        let peer = crate::peer::session_store::peer_session(
-            session,
-            session.agent_handle().to_string(),
-            true,
-        );
+        // The row is on its way out even while memory still shows it live.
+        let peer = crate::peer::PeerSession {
+            deleted: true,
+            ..crate::peer::session_store::peer_session(session, session.agent_handle().to_string())
+        };
         let paths = self.paths.clone();
         std::thread::spawn(move || {
             let _ = crate::peer::tombstone_amq_session(&paths, &store_id, &peer);
@@ -1694,6 +2847,10 @@ impl Engine {
         session_id: &str,
     ) -> Option<FinishDeleteSessionOutcome> {
         let session = self.sessions.iter().find(|s| s.id == session_id).cloned()?;
+        self.stop_agent_restarts(
+            session_id,
+            crate::engine::lifecycle::RestartsStop::AgentDeleted,
+        );
         // The session is being removed now, so drop any "closing" marker set at the
         // start of its delete (both the async and synchronous delete paths clear it
         // here, in addition to the async worktree-removal-completed path).
@@ -1704,6 +2861,10 @@ impl Engine {
                 .find(|project| project.id == project_id)
                 .cloned()
         });
+        // Which agents SHARE this worktree (several agents of a project may
+        // work in one): identity, not occupancy. Whether anything lives in it
+        // or anywhere inside it is decided by the occupancy rule (containment)
+        // before the removal runs, and keeps the worktree, naming what.
         let other_sessions_on_worktree = self.sessions.iter().any(|s| {
             s.id != session.id
                 && crate::project_browser::same_directory(s.directory(), session.directory())
@@ -1745,12 +2906,12 @@ impl Engine {
         // late result is separately guarded at `PrStatusReady`, and the store
         // rows go with the session row, so anything left here would be pure
         // in-memory residue for an agent that no longer exists.
-        self.pr_statuses.remove(&session.id);
-        self.pr_last_checked.remove(&session.id);
-        // The in-memory pin goes too (its store row is deleted with the
-        // session); leaving it would ghost-gate the identity guard and the
+        // The attached one goes with the rest; leaving it would ghost-gate the
         // detach palette entry for a later session reusing the id.
-        self.pr_overrides.remove(&session.id);
+        self.agent_prs.remove(&session.id);
+        self.branch_histories.remove(&session.id);
+        self.pr_revision.remove(&session.id);
+        self.pr_last_checked.remove(&session.id);
         // The folder-repository verdict is runtime state keyed by session id,
         // so it goes with the session too. A verdict arriving after this point
         // is dropped by the `FolderRepoStatusReady` handler's own
@@ -1758,11 +2919,16 @@ impl Engine {
         // stored.
         self.folder_repo_statuses.remove(&session.id);
         // So does the changed-files failure streak: an agent that is gone owes
-        // no recovery for a warning about a repository nobody is watching.
+        // no withdrawal of a warning about a repository nobody is watching.
         self.changed_files_failures.forget(&session.id);
+        // And branch sync's answer about its worktree's checkout.
+        self.no_branch_checked_out.remove(&session.id);
         // The detach state goes with the session too, so a later session that
         // reuses the id does not inherit a detach it never asked for.
-        self.pr_suppressions.remove(&session.id);
+        self.pr_prefs.remove(&session.id);
+        self.pr_unsaved.remove(&session.id);
+        self.pr_branch_asks.remove(&session.id);
+        self.pr_branch_checks_owed.remove(&session.id);
         // Re-derive the PR-sync plan from the surviving sessions. The periodic
         // poller snapshots this list every cycle, so leaving the deleted
         // agent's entry in it means yaran keeps asking GitHub about a pull
@@ -1808,207 +2974,31 @@ impl Engine {
             branch_name: managed.branch_name.clone(),
             initial_branch: managed.initial_branch.clone(),
             branch_provenance: managed.branch_provenance,
+            worktree_path: managed.worktree_path.clone(),
+            created_at: session.created_at,
+            history: self.branch_history_for(&session.id, managed),
+            protected: self.protected_branches(managed),
+            session_id: session.id.clone(),
         })
     }
 
-    /// Synchronous engine half of deleting a session: look up the session and
-    /// project, optionally call `git::remove_worktree`, then run the full
-    /// `finish_delete_session` cascade.
-    ///
-    /// `Ok(None)` when the session was already gone or an async delete worker is
-    /// in flight for it, `Ok(Some(outcome))` otherwise, `Err` when
-    /// `git::remove_worktree` or `session_store.delete_session` fails. A missing
-    /// project record does not abort the deletion: the session record still goes
-    /// but its worktree is kept, since `git worktree remove` needs the repo.
-    ///
-    /// Callers must ensure no async worker is already removing this worktree, so
-    /// `pending_deletions` must not contain `session_id`. A caller that bypasses
-    /// that contract gets a soft `Ok(None)` and a logged error rather than a
-    /// race against the in-flight deletion: the path is destructive and a
-    /// debug-only check would not catch it in a release build.
-    pub fn do_delete_session(
+    /// Record branches a delete dialog's offer found in the agent's HEAD
+    /// reflog that its list did not have yet, so the delete that follows
+    /// decides over them too.
+    pub fn record_offered_branches(
         &mut self,
         session_id: &str,
-        delete_worktree: bool,
-        delete_branch: Option<bool>,
-    ) -> anyhow::Result<Option<DoDeleteSessionOutcome>> {
-        let Some(session) = self.sessions.iter().find(|s| s.id == session_id).cloned() else {
-            return Ok(None);
-        };
-        // THE EXPLICIT WIRE CONTRACT for `delete_worktree=true` on a standalone
-        // id: refuse, out loud. Quietly ignoring it would be success theater
-        // about a destructive request, and the user would come away believing
-        // yaran had cleaned something up. The default is already false, so only
-        // a caller that asked on purpose can reach this.
-        if delete_worktree && !session.deletion_may_remove_directory() {
-            anyhow::bail!(delete_directory_refusal(&session));
+        names: &[crate::branch_history::SeenBranch],
+    ) {
+        if names.is_empty() || !self.sessions.iter().any(|s| s.id == session_id) {
+            return;
         }
-        logger::info(&format!(
-            "deleting session {} at {} (delete_worktree={}, sync)",
-            session.id,
-            session.directory(),
-            delete_worktree
-        ));
-        // The project may be ABSENT for an orphaned session; we can still delete
-        // the record but cannot remove its worktree without the project repo, so
-        // an orphan always keeps its worktree.
-        let project = session.project_id().and_then(|project_id| {
-            self.projects
-                .iter()
-                .find(|project| project.id == project_id)
-                .cloned()
-        });
-        let other_sessions_on_worktree = self.sessions.iter().any(|s| {
-            s.id != session.id
-                && crate::project_browser::same_directory(s.directory(), session.directory())
-        });
-
-        // A removal needs a project to run git in and a managed working copy to
-        // remove, resolved as one pair up front so the block below is entered
-        // only when both exist and no arm in it can delete a directory yaran did
-        // not create. A standalone agent has no managed workspace, so
-        // `removal_target` is `None` and the block is unreachable rather than
-        // guarded: deleting one removes yaran's record and nothing else.
-        let removal_target = match (project.as_ref(), session.workspace.as_managed()) {
-            (Some(project), Some(managed))
-                if delete_worktree
-                    && !other_sessions_on_worktree
-                    && session.deletion_may_remove_directory() =>
-            {
-                Some((project, managed))
-            }
-            _ => None,
-        };
-        let should_remove_worktree = removal_target.is_some();
-
-        if self.pending_deletions.contains(session_id) {
-            crate::logger::error(&format!(
-                "do_delete_session called while an async delete worker is in-flight for {session_id} \u{2014} refusing to proceed to avoid racing git::remove_worktree",
+        if let Err(err) = self.session_store.record_branches_seen(session_id, names) {
+            logger::error(&format!(
+                "could not record the branches agent {session_id} was on: {err:#}"
             ));
-            return Ok(None);
         }
-        // Refuse if any tab of this session has a launch in flight: such a tab is
-        // marked in-flight but not yet in `providers`, so the pre-kill below cannot
-        // reach it and `git::remove_worktree` could race the provider mid-spawn in
-        // the worktree (git-lock / cwd-deleted-under-fork). Mirrors the blanket
-        // precondition in `begin_delete_session`.
-        if should_remove_worktree
-            && self
-                .tab_ids_for_session(session_id)
-                .iter()
-                .any(|id| self.is_in_flight(&InFlightKey::AgentLaunch(id.clone())))
-        {
-            crate::logger::error(&format!(
-                "do_delete_session for {session_id}: a tab is still launching \u{2014} refusing to remove its worktree to avoid racing the spawning provider",
-            ));
-            return Ok(None);
-        }
-        // Mark the session "closing" so a concurrent `create_tab`/`launch_agent`
-        // can't spawn a fresh provider into the worktree we are about to remove.
-        // `finish_delete_session_memory` (called below) clears it. This path is
-        // synchronous so the window is tiny, but the flag keeps the invariant with
-        // `begin_delete_session` uniform.
-        if should_remove_worktree {
-            self.closing_sessions.insert(session.id.clone());
-        }
-        let remove_outcome = if let Some((project, managed)) = removal_target {
-            // Hard-kill every live tab PTY (Main + Support) and companion terminal
-            // of this session BEFORE removing the worktree: dropping a `PtyClient`
-            // SIGKILLs its whole process group, so no provider process is alive in
-            // the directory when `git::remove_worktree` runs. `finish_delete_session`
-            // below then clears the remaining runtime map entries. (This is the
-            // synchronous counterpart to `begin_delete_session`'s deferred group
-            // barrier: the project-delete loop that calls us is synchronous.)
-            for tab_id in self.tab_ids_for_session(session_id) {
-                self.providers.remove(&tab_id);
-            }
-            let removed_terminals: Vec<String> = self
-                .companion_terminals
-                .iter()
-                .filter(|(_, t)| t.owner.closed_by_session_delete(session_id))
-                .map(|(id, _)| id.clone())
-                .collect();
-            for terminal_id in &removed_terminals {
-                self.companion_terminals.remove(terminal_id);
-                self.clear_terminal_runtime(terminal_id);
-            }
-            // Clear `closing_sessions` even if removal fails: the session record
-            // survives an `Err`, and nothing else would clear the flag, leaving
-            // the agent permanently barred from creating or relaunching tabs.
-            //
-            // The gate. Unasked, yaran deletes only the branches it created: an
-            // agent attached to an existing branch, or adopted with an existing
-            // worktree, gives up its worktree and keeps its branches. The delete
-            // dialog's checkbox overrides that in either direction and arrives
-            // as `delete_branch`. Deciding it here means the project-delete
-            // cascade, which calls this per agent with no answer, inherits the
-            // provenance default.
-            // Every registered checkout is protected from this whole-worktree
-            // removal, not only this agent's own project: a corrupt row can
-            // point a worktree at ANY project. An unreadable inventory refuses
-            // the removal rather than running it half-guarded.
-            let protected = match self.registered_project_paths() {
-                Ok(protected) => protected,
-                Err(err) => {
-                    self.closing_sessions.remove(session_id);
-                    return Err(err);
-                }
-            };
-            let result = if managed
-                .branch_provenance
-                .resolve_branch_deletion(delete_branch)
-            {
-                match crate::git::remove_worktree(
-                    std::path::Path::new(&project.path),
-                    std::path::Path::new(&managed.worktree_path),
-                    &managed.branch_name,
-                    // The BIRTH branch too: `branch_name` tracks whatever the
-                    // worktree drifted onto, so deleting only that leaves the
-                    // original behind and recreating the agent collides with it.
-                    Some(managed.initial_branch.as_str()),
-                    &protected,
-                ) {
-                    Ok(result) => RemovedBranches::Deleted(result),
-                    Err(err) => {
-                        self.closing_sessions.remove(session_id);
-                        return Err(err);
-                    }
-                }
-            } else {
-                match crate::git::remove_worktree_keep_branch(
-                    std::path::Path::new(&project.path),
-                    std::path::Path::new(&managed.worktree_path),
-                    &protected,
-                ) {
-                    Ok(()) => RemovedBranches::Kept(branch_kept_reason(
-                        managed.branch_provenance,
-                        delete_branch,
-                    )),
-                    Err(err) => {
-                        self.closing_sessions.remove(session_id);
-                        return Err(err);
-                    }
-                }
-            };
-            Some(result)
-        } else {
-            None
-        };
-
-        let Some(finish) = self.finish_delete_session(session_id)? else {
-            // Should be unreachable (we just confirmed the session exists
-            // above), but if a concurrent path removed it, treat as no-op.
-            return Ok(None);
-        };
-        Ok(Some(DoDeleteSessionOutcome {
-            removal: WorktreeRemoval::from_decision(
-                &finish.session,
-                delete_worktree,
-                finish.other_sessions_on_worktree,
-                remove_outcome,
-            ),
-            finish,
-        }))
+        self.refresh_branch_history(session_id);
     }
 
     fn begin_session_tab_shutdown(
@@ -2021,50 +3011,187 @@ impl Engine {
             .into_iter()
             .filter(|id| self.providers.contains_key(id.as_ref_id()))
             .collect();
-        let already_terminating: Vec<String> = self
+        let Some(mut removal) = worktree_removal else {
+            for id in &live_tabs {
+                let owner = self.terminating_owner_for_tab(&session.id, id.as_ref_id());
+                self.begin_close_provider(id, session.display_label(), Some(owner));
+            }
+            self.begin_close_session_terminals(&session.id);
+            // The record of what it started is retired, keeping its kind: a
+            // standalone agent's processes are never ended by any removal.
+            if session.workspace.as_managed().is_none() {
+                self.process_registry.mark_standalone(&session.id);
+            }
+            // A startup command still running is a process yaran started for
+            // this agent: forgetting the agent ends it too, like its
+            // terminals, whether or not the worktree goes.
+            let _ = self.process_registry.forget_agent(&session.id);
+            return;
+        };
+
+        // The worktree is going, so EVERYTHING this agent started has to be
+        // gone first: each tab, each companion terminal, a startup command,
+        // and whatever any of them left running. The PTY barrier below waits
+        // for the leaders; the removal worker then ends the rest of their
+        // sessions before git touches a file.
+        let mut sessions = self.process_registry.forget_agent(&session.id);
+        // PTYs of this agent that were already terminating when the delete
+        // came in (a tab closed a moment ago, a detach still in its grace),
+        // found through the owner each entry recorded when it started, never
+        // through the tab table, which no longer lists a closed tab.
+        let mut pending_ids: std::collections::HashSet<String> = self
             .terminating_ptys
             .iter()
-            .filter(|terminal| terminal.kind == crate::engine::PrunedPtyKind::Agent)
-            .filter(|terminal| {
-                self.owning_session_for_tab(&terminal.id).as_deref() == Some(session.id.as_str())
+            .filter(|entry| {
+                entry
+                    .owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.session_id == session.id)
             })
-            .map(|terminal| terminal.id.clone())
+            .map(|entry| {
+                sessions.extend(entry.client.process_session());
+                entry.id.clone()
+            })
             .collect();
+        let mut targets = Vec::new();
+        for id in &live_tabs {
+            if let Some(process) = self
+                .providers
+                .get(id.as_ref_id())
+                .and_then(super::super::pty::PtyClient::process_session)
+            {
+                sessions.push(process);
+            }
+            let owner = self.terminating_owner_for_tab(&session.id, id.as_ref_id());
+            if let Some(target) =
+                self.move_provider_to_terminating(id, session.display_label(), Some(owner))
+            {
+                targets.push(target);
+                pending_ids.insert(id.as_str().to_string());
+            }
+        }
+        let terminal_ids: Vec<String> = self
+            .companion_terminals
+            .iter()
+            .filter(|(_, terminal)| terminal.owner.closed_by_session_delete(&session.id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in terminal_ids {
+            if let Some(process) = self
+                .companion_terminals
+                .get(&id)
+                .and_then(|terminal| terminal.client.process_session())
+            {
+                sessions.push(process);
+            }
+            if let Some((_, target)) = self.move_companion_terminal_to_terminating(&id) {
+                targets.push(target);
+                pending_ids.insert(id);
+            }
+        }
+        removal.processes = self.removal_processes_for(sessions);
+        self.record_and_park_removal(&session.display_label(), removal, targets, pending_ids);
+    }
 
-        match worktree_removal {
-            Some(removal) if live_tabs.is_empty() && already_terminating.is_empty() => {
-                let _ = self.dispatch_deferred_worktree_removal(removal);
-            }
-            Some(removal) if live_tabs.len() == 1 && already_terminating.is_empty() => {
-                let unhandled = self.begin_close_provider(
-                    &live_tabs[0],
-                    session.display_label(),
-                    Some(removal),
-                );
-                if let Some(removal) = unhandled {
-                    let _ = self.dispatch_deferred_worktree_removal(removal);
+    /// The processes a removal must end, before anything is looked at: the
+    /// sessions, sorted, and an empty snapshot slot that
+    /// [`Self::spawn_removal_snapshot`] fills.
+    pub(crate) fn removal_processes_for(
+        &self,
+        mut sessions: Vec<crate::process_sessions::ProcessSession>,
+    ) -> super::RemovalProcesses {
+        sessions.sort_by_key(|process| process.sid);
+        sessions.dedup();
+        super::RemovalProcesses {
+            sessions,
+            snapshot: std::sync::Arc::new(std::sync::OnceLock::new()),
+            grace: self.individual_close_grace(),
+        }
+    }
+
+    /// Look at what runs in the removal's sessions, THEN send the polite
+    /// signals to `targets`, both on a thread of their own because the look
+    /// walks the process table. The order matters: a child that called
+    /// `setsid` is tied to the agent only by its parent, and the signal is what
+    /// makes that parent exit. What was found is also written to the removal's
+    /// pending row, so a later start that finishes it can tell those processes
+    /// from an unrelated program that reused a session number. The row must
+    /// already be recorded, and the PTYs must already be in the terminating
+    /// set, unsignalled, so the reaper force-kills them at their deadline
+    /// whatever happens here.
+    pub(crate) fn spawn_removal_snapshot(
+        &self,
+        processes: &super::RemovalProcesses,
+        targets: Vec<crate::pty::SignalTargets>,
+        agent_id: &str,
+    ) {
+        let snapshot_slot = std::sync::Arc::clone(&processes.snapshot);
+        let snapshot_sessions = processes.sessions.clone();
+        let db_path = self.paths.sessions_db_path.clone();
+        let row_id = agent_id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("worktree-removal-snapshot".to_string())
+            .spawn(move || {
+                #[cfg(test)]
+                removal_snapshot_hooks::delay(&db_path);
+                let found = crate::process_sessions::snapshot(&snapshot_sessions);
+                for target in &targets {
+                    target.terminate();
                 }
-            }
-            Some(removal) => {
-                for id in &live_tabs {
-                    let _ = self.begin_close_provider(id, session.display_label(), None);
+                let recorded = crate::storage::SessionStore::open_live(&db_path)
+                    .and_then(|store| store.set_pending_removal_snapshot(&row_id, &found));
+                if let Err(err) = recorded {
+                    logger::warn(&format!(
+                        "could not record the processes of agent {row_id}'s pending removal: {err:#}"
+                    ));
                 }
-                let pending_ids = live_tabs
-                    .into_iter()
-                    .map(|id| id.as_str().to_string())
-                    .chain(already_terminating)
-                    .collect();
-                self.pending_group_removals
-                    .push(super::GroupWorktreeRemoval {
-                        pending_ids,
-                        removal,
-                    });
-            }
-            None => {
-                for id in &live_tabs {
-                    let _ = self.begin_close_provider(id, session.display_label(), None);
-                }
-            }
+                let _ = snapshot_slot.set(found);
+            });
+        if let Err(err) = spawned {
+            // Without the thread nothing has been signalled either; the reaper
+            // force-kills each PTY at its deadline, and the removal worker
+            // still purges every session it knows. Only the setsid'd children
+            // go unseen, and the leftover-folder final says so if they write.
+            logger::warn(&format!(
+                "could not start the process snapshot for agent {agent_id}: {err}"
+            ));
+            let _ = processes.snapshot.set(Vec::new());
+        }
+    }
+
+    /// Write a removal down, look at its processes and signal `targets` (see
+    /// [`Self::spawn_removal_snapshot`]), then park it.
+    pub(crate) fn record_and_park_removal(
+        &mut self,
+        label: &str,
+        removal: super::DeferredWorktreeRemoval,
+        targets: Vec<crate::pty::SignalTargets>,
+        pending_ids: std::collections::HashSet<String>,
+    ) {
+        // Written down before anything else can go wrong, so a quit or a crash
+        // from here on leaves a removal the next start finishes rather than a
+        // worktree and a branch no agent owns.
+        self.record_pending_removal(label, &removal);
+        self.spawn_removal_snapshot(&removal.processes, targets, &removal.session_id);
+        self.park_removal(removal, pending_ids);
+    }
+
+    /// Dispatch a recorded removal at once when there is nothing to wait for,
+    /// or park it on a barrier over the PTYs in `pending_ids`, which
+    /// the reaper dispatches exactly once when the last of them has gone.
+    pub(crate) fn park_removal(
+        &mut self,
+        removal: super::DeferredWorktreeRemoval,
+        pending_ids: std::collections::HashSet<String>,
+    ) {
+        if pending_ids.is_empty() {
+            let _ = self.dispatch_deferred_worktree_removal(removal);
+        } else {
+            self.pending_group_removals
+                .push(super::GroupWorktreeRemoval {
+                    pending_ids,
+                    removal,
+                });
         }
     }
 
@@ -2076,8 +3203,113 @@ impl Engine {
     pub fn begin_delete_session(
         &mut self,
         session_id: &str,
-        delete_worktree: bool,
+        worktree: WorktreeOnDelete,
         delete_branch: Option<bool>,
+    ) -> BeginDeleteSessionOutcome {
+        self.begin_delete_session_with(
+            session_id,
+            worktree,
+            &crate::branch_history::BranchDeleteRequest::from_legacy(delete_branch),
+        )
+    }
+
+    /// The agent's branch list as the delete decides over it: what the
+    /// session database recorded, with the birth branch and the current one
+    /// always present even when a write to it failed.
+    pub(crate) fn branch_history_for(
+        &self,
+        session_id: &str,
+        managed: &crate::model::ManagedWorkspace,
+    ) -> Vec<crate::branch_history::BranchHistoryEntry> {
+        let mut history = self
+            .session_store
+            .load_branch_history(session_id)
+            .unwrap_or_else(|err| {
+                logger::error(&format!(
+                    "could not read the branch history of agent {session_id}: {err:#}"
+                ));
+                Vec::new()
+            });
+        if !history.iter().any(|entry| entry.born_here) && !managed.initial_branch.is_empty() {
+            history.retain(|entry| entry.name != managed.initial_branch);
+            history.insert(
+                0,
+                crate::branch_history::BranchHistoryEntry {
+                    name: managed.initial_branch.clone(),
+                    born_here: true,
+                    identity: None,
+                    tip: None,
+                    first_seen_at: None,
+                    former_names: Vec::new(),
+                },
+            );
+        }
+        if !managed.branch_name.is_empty()
+            && !history
+                .iter()
+                .any(|entry| entry.name == managed.branch_name)
+        {
+            history.push(crate::branch_history::BranchHistoryEntry {
+                name: managed.branch_name.clone(),
+                born_here: false,
+                identity: None,
+                tip: None,
+                first_seen_at: None,
+                former_names: Vec::new(),
+            });
+        }
+        history
+    }
+
+    /// The branches no delete of this agent ever removes: the project's own.
+    pub(crate) fn protected_branches(
+        &self,
+        managed: &crate::model::ManagedWorkspace,
+    ) -> Vec<String> {
+        let mut protected = Vec::new();
+        if crate::branch_history::source_branch_is_protected(managed) {
+            protected.push(managed.source_branch.clone());
+        }
+        if let Some(project) = self.projects.iter().find(|p| p.id == managed.project_id) {
+            protected.extend(project.leading_branch.clone());
+            protected.push(project.current_branch.clone());
+        }
+        protected.retain(|name| !name.is_empty());
+        protected.sort();
+        protected.dedup();
+        protected
+    }
+
+    /// What a delete of this agent does with its branches, under `request`.
+    fn branch_plan_for(
+        &self,
+        session_id: &str,
+        managed: &crate::model::ManagedWorkspace,
+        request: &crate::branch_history::BranchDeleteRequest,
+    ) -> crate::branch_history::BranchPlan {
+        let created_at = self
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.created_at);
+        crate::branch_history::plan_branch_removal(
+            &managed.branch_name,
+            &self.branch_history_for(session_id, managed),
+            managed.branch_provenance,
+            created_at,
+            request,
+            &self.protected_branches(managed),
+        )
+    }
+
+    /// [`Self::begin_delete_session`] with both delete-dialog boxes' answers.
+    /// The branch decision is made HERE, at request time, as an immutable
+    /// plan the removal carries to the worker unchanged.
+    pub fn begin_delete_session_with(
+        &mut self,
+        session_id: &str,
+        worktree: WorktreeOnDelete,
+        branches: &crate::branch_history::BranchDeleteRequest,
     ) -> BeginDeleteSessionOutcome {
         if self.pending_deletions.contains(session_id) {
             return BeginDeleteSessionOutcome::AlreadyInFlight;
@@ -2086,10 +3318,10 @@ impl Engine {
         let Some(session) = self.sessions.iter().find(|s| s.id == session_id).cloned() else {
             return BeginDeleteSessionOutcome::NotFound;
         };
-        // Same explicit contract as the synchronous path: a worktree-removing
+        // The explicit wire contract: a worktree-removing
         // delete of a standalone agent is refused rather than silently
         // downgraded to an ordinary one.
-        if delete_worktree && !session.deletion_may_remove_directory() {
+        if worktree == WorktreeOnDelete::Remove && !session.deletion_may_remove_directory() {
             return BeginDeleteSessionOutcome::Refused {
                 message: delete_directory_refusal(&session),
             };
@@ -2117,11 +3349,15 @@ impl Engine {
                 .find(|project| project.id == project_id)
                 .cloned()
         });
+        // Which agents SHARE this worktree (several agents of a project may
+        // work in one): identity, not occupancy. Whether anything lives in it
+        // or anywhere inside it is decided by the occupancy rule (containment)
+        // before the removal runs, and keeps the worktree, naming what.
         let other_sessions_on_worktree = self.sessions.iter().any(|s| {
             s.id != session.id
                 && crate::project_browser::same_directory(s.directory(), session.directory())
         });
-        let should_remove_worktree = delete_worktree
+        let should_remove_worktree = worktree == WorktreeOnDelete::Remove
             && session.deletion_may_remove_directory()
             && !other_sessions_on_worktree
             && project.is_some();
@@ -2143,53 +3379,71 @@ impl Engine {
                 session_id: session.id.clone(),
                 project_path: project.path.clone(),
                 managed: managed.clone(),
-                // Resolved at REQUEST time, not at dispatch time. The removal
+                // Decided at REQUEST time, not at dispatch time. The removal
                 // runs seconds later, once the agent's PTYs reap, and the
-                // dialog that asked the question is long gone by then; carrying
-                // the raw answer with the payload is what makes the deferred
-                // path and the synchronous one decide the same thing.
-                delete_branch,
+                // dialog that asked the question is long gone by then.
+                branches: self.branch_plan_for(&session.id, managed, branches),
                 busy_message: crate::status_text![
                     "Removing worktree for agent ",
                     q(session.display_label()),
                     "\u{2026}"
                 ],
+                // Filled in by `begin_session_tab_shutdown`, which is where the
+                // agent's processes are gathered and asked to go.
+                processes: super::RemovalProcesses::none(),
             }),
             _ => None,
         };
         let busy_message = worktree_removal.as_ref().map(|r| r.busy_message.clone());
+        // Announced NOW, at the start of the delete: from this moment nothing
+        // new may start in the folder (a pull, an editor save, an agent
+        // created on it), while whatever is already running there is waited
+        // for by the removal worker once the agent's processes are gone.
+        if let Some(removal) = &worktree_removal {
+            self.announce_session_removal(
+                &removal.session_id,
+                &removal.managed.worktree_path,
+                session.display_label(),
+            );
+        }
 
+        // A working-copy recreate waiting to start this agent's tabs again
+        // starts none of them, and says the agent was deleted.
+        self.stop_agent_restarts(
+            &session.id,
+            crate::engine::lifecycle::RestartsStop::AgentDeleted,
+        );
         self.begin_session_tab_shutdown(&session, worktree_removal);
-        self.begin_close_session_terminals(&session.id);
 
-        match busy_message {
-            Some(busy_message) => {
-                logger::info(&format!(
-                    "deleting session {} at {} (delete_worktree=true; worktree removal deferred until the agent exits)",
-                    session.id,
-                    session.directory()
-                ));
-                // The caller vanishes the session now and mints a keyed op from
-                // `busy_message`; the reaper spawns the worktree worker once the
-                // agent PTY is reaped, and its `WorktreeRemoveCompleted` resolves
-                // that op.
-                BeginDeleteSessionOutcome::AsyncStarted { busy_message }
-            }
-            None => {
-                logger::info(&format!(
-                    "deleting session {} at {} (delete_worktree={}, no worktree removal)",
-                    session.id,
-                    session.directory(),
-                    delete_worktree
-                ));
-                BeginDeleteSessionOutcome::Inline {
-                    removal: WorktreeRemoval::from_decision(
-                        &session,
-                        delete_worktree,
-                        other_sessions_on_worktree,
-                        None,
-                    ),
-                }
+        if let Some(busy_message) = busy_message {
+            logger::info(&format!(
+                "deleting session {} at {} (delete_worktree=true; worktree removal deferred until the agent exits)",
+                session.id,
+                session.directory()
+            ));
+            // The caller vanishes the session now and mints a keyed op from
+            // `busy_message`; the reaper spawns the worktree worker once the
+            // agent PTY is reaped, and its `WorktreeRemoveCompleted` resolves
+            // that op.
+            BeginDeleteSessionOutcome::AsyncStarted { busy_message }
+        } else {
+            logger::info(&format!(
+                "deleting session {} at {} (delete_worktree={}, no worktree removal)",
+                session.id,
+                session.directory(),
+                worktree == WorktreeOnDelete::Remove
+            ));
+            BeginDeleteSessionOutcome::Inline {
+                removal: WorktreeRemoval::from_decision(
+                    &session,
+                    worktree,
+                    if other_sessions_on_worktree {
+                        WorktreeSharing::SharedWithAnotherAgent
+                    } else {
+                        WorktreeSharing::Alone
+                    },
+                    None,
+                ),
             }
         }
     }
@@ -2210,98 +3464,132 @@ impl Engine {
             session_id,
             project_path,
             managed,
-            delete_branch,
+            branches,
             busy_message,
+            processes,
         } = req;
-        let crate::model::ManagedWorkspace {
-            worktree_path,
-            branch_name,
-            initial_branch,
-            branch_provenance,
-            ..
-        } = managed;
+        let worktree_path = managed.worktree_path.clone();
         // Re-check the occupancy the decision was made on: this removal was
         // planned when the delete began and runs seconds later, once the
         // agent's PTYs reap, and another agent can occupy the directory in that
-        // window. `closing_sessions` does not cover it, because it blocks new
-        // tabs on the dying agent rather than a new agent pointed at the same
-        // place. Preserving the directory is the safe direction to be wrong in:
-        // the worst case is a leftover the worktree manager can still remove,
-        // against `git worktree remove --force` on a live provider's directory.
-        if let Some(occupant) = self.sessions.iter().find(|s| {
-            s.id != session_id
-                && crate::project_browser::same_directory(s.directory(), &worktree_path)
-        }) {
-            let message = crate::status_text![
-                "Kept the worktree at ",
-                q(crate::home_path::shorten_home(std::path::Path::new(
-                    &worktree_path
-                ))),
-                ": agent ",
-                q(occupant.display_label()),
-                " started working in it while this \
-                 agent was shutting down. Remove it from the worktree manager if you still \
-                 want it gone."
-            ];
+        // window, or be on its way to it (an agent being created on this very
+        // worktree holds it in the registry until its launch lands in
+        // `sessions`). Preserving the directory is the safe direction to be
+        // wrong in: the worst case is a leftover the worktree manager can still
+        // remove, against `git worktree remove --force` on a live provider's
+        // directory. See `worktree_occupied_message`.
+        if let Some(message) = self.worktree_occupied_message(&session_id, &worktree_path) {
             logger::warn(&message);
+            // Withdraw the announcement (the folder stays in use), forget the
+            // recorded request, and answer the delete's spinner rather than
+            // leave it to time out: dispatched once, with every exit path
+            // releasing what the delete took.
+            self.forget_pending_removal(&session_id);
+            self.removal_coordination.claims.remove(&session_id);
+            let _ = self
+                .worker_tx
+                .send(crate::worker::WorkerEvent::WorktreeRemoveCompleted {
+                    session_id,
+                    result: Err(message.to_string()),
+                });
             return message;
         }
+        // The claim was announced when the delete began; a removal that never
+        // went through `begin_delete_session` announces it here.
+        let claim = self
+            .removal_coordination
+            .claims
+            .remove(&session_id)
+            .unwrap_or_else(|| {
+                self.removal_coordination
+                    .ops
+                    .announce_removal(&worktree_path)
+            });
         // Guard against a duplicate worker (e.g. a project delete racing the
         // reap); the completion handler clears it.
         self.pending_deletions.insert(session_id.clone());
         self.deletion_busy_messages
             .insert(session_id.clone(), busy_message.clone());
+        let wait = self.removal_wait();
         let tx = self.worker_tx.clone();
+        // Every process session on the path, whoever started it: a sibling
+        // agent sharing the folder that is still stopping, an agent deleted
+        // with its worktree kept a moment ago, a terminal. The removal ends
+        // them all before git runs, not only its own agent's.
+        let mut processes = processes;
+        processes
+            .sessions
+            .extend(self.process_sessions_in(std::path::Path::new(&worktree_path)));
+        processes.sessions.sort_by_key(|session| session.sid);
+        processes.sessions.dedup();
+        let registry = self.process_registry.clone();
+        let live = self.process_registry.clone();
+        let unwatch = self.process_registry.clone();
+        let db_path = self.paths.sessions_db_path.clone();
+        let unstarted = (session_id.clone(), db_path.clone());
         // Snapshotted now, on the engine thread; the worker cannot read engine
         // state. An unreadable inventory is carried into the worker as the
         // error so the removal is refused through the normal completion path.
         let protected = self
             .registered_project_paths()
             .map_err(|e| format!("{e:#}"));
-        std::thread::spawn(move || {
-            use std::panic::AssertUnwindSafe;
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let protected = protected?;
-                // The same gate as the synchronous path: unasked, only branches
-                // yaran created are yaran's to delete, and the delete dialog's
-                // answer overrides that in either direction.
-                if branch_provenance.resolve_branch_deletion(delete_branch) {
-                    crate::git::remove_worktree(
-                        std::path::Path::new(&project_path),
-                        std::path::Path::new(&worktree_path),
-                        &branch_name,
-                        // The BIRTH branch too; see `git::remove_worktree`.
-                        Some(initial_branch.as_str()),
-                        &protected,
-                    )
-                    .map(RemovedBranches::Deleted)
-                    .map_err(|e| format!("{e:#}"))
-                } else {
-                    crate::git::remove_worktree_keep_branch(
-                        std::path::Path::new(&project_path),
-                        std::path::Path::new(&worktree_path),
-                        &protected,
-                    )
-                    .map(|()| {
-                        RemovedBranches::Kept(branch_kept_reason(branch_provenance, delete_branch))
-                    })
-                    .map_err(|e| format!("{e:#}"))
-                }
-            }))
-            .unwrap_or_else(|payload| {
-                let reason = crate::engine::spawn_worker::format_panic_payload(payload);
-                crate::logger::error(&format!(
-                    "deferred worktree-remove worker panicked for session {session_id}: {reason}"
-                ));
-                Err(format!("Worker panicked: {reason}"))
+        let spawned =
+            super::spawn_worker::spawn_engine_thread("yaran-worktree-remove", move || {
+                let result = perform_deferred_removal(
+                    &session_id,
+                    &project_path,
+                    &managed,
+                    &branches,
+                    &processes,
+                    RemovalCoordinationInputs {
+                        claim,
+                        wait,
+                        waiting_tx: Some(&tx),
+                        registry,
+                        live,
+                        db_path: db_path.clone(),
+                        protected,
+                    },
+                );
+                // Finished one way or the other: a failure has told the user what
+                // is left, and running it again at the next start would only say
+                // it twice. Nothing keeps the row current any more, on any exit.
+                forget_pending_removal_in(&db_path, &session_id);
+                unwatch.unwatch_pending(&session_id);
+                let _ = tx.send(crate::worker::WorkerEvent::WorktreeRemoveCompleted {
+                    session_id,
+                    result,
+                });
             });
-            let _ =
-                tx.send(crate::worker::WorkerEvent::WorktreeRemoveCompleted { session_id, result });
-        });
+        self.removal_workers.retain(|worker| !worker.is_finished());
+        match spawned {
+            Ok(handle) => self.removal_workers.push(handle),
+            Err(err) => {
+                // The claim went down with the closure and nothing ran, so the
+                // removal ends the way the worker ends a failed one: the pending
+                // row is forgotten and the failure lands behind the busy this
+                // returns, which keeps the agent so the user can retry.
+                let (session_id, db_path) = unstarted;
+                let message = format!("Could not start background worker: {err}");
+                crate::logger::error(&message);
+                forget_pending_removal_in(&db_path, &session_id);
+                self.process_registry.unwatch_pending(&session_id);
+                let _ = self
+                    .worker_tx
+                    .send(crate::worker::WorkerEvent::WorktreeRemoveCompleted {
+                        session_id,
+                        result: Err(message),
+                    });
+            }
+        }
         busy_message
     }
 
-    pub fn process_agent_launch_failed(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one failure sentence per launch kind, with the cleanup each needs"
+    )]
+    pub(crate) fn process_agent_launch_failed(
         &mut self,
         data: AgentLaunchFailedData,
     ) -> (AgentLaunchFailedOutcome, Option<ResolvedFinal>) {
@@ -2315,6 +3603,7 @@ impl Engine {
         let tab_id = request.tab_id.clone();
         let session = request.session;
         self.clear_in_flight(&InFlightKey::AgentLaunch(tab_id.clone()));
+        let _launch_reservations = LaunchReservations::of(self, tab_id.as_str());
 
         // Port of fork bc77466f: the create/reconnect failures below reach only
         // a status line, which a burst of auto-resumes overwrites within
@@ -2340,22 +3629,7 @@ impl Engine {
 
         let outcome = match request.kind {
             AgentLaunchKind::Create { status_op_id, .. } => {
-                self.clear_in_flight(&InFlightKey::CreateAgent);
-                // Resolve the shared create op to its keyed error final so both
-                // surfaces replace the create busy in place with the same message.
-                let create_final = self.resolve_create_op(
-                    &status_op_id,
-                    CreateLaunchOutcome::Failed {
-                        message: message.clone().into(),
-                    },
-                );
-                (
-                    AgentLaunchFailedOutcome::Create {
-                        project_id: session.project_id().map(str::to_string),
-                        message,
-                    },
-                    create_final,
-                )
+                self.create_launch_failed(&status_op_id, &session, message)
             }
             AgentLaunchKind::Reconnect { .. } => (
                 AgentLaunchFailedOutcome::Reconnect {
@@ -2374,13 +3648,7 @@ impl Engine {
                 None,
             ),
             AgentLaunchKind::ResumeFallback { .. } => {
-                logger::error(&format!(
-                    "fallback PTY spawn failed for {}: {}",
-                    session.id, message,
-                ));
-                if self.mark_session_status(&session.id, SessionStatus::Detached) {
-                    self.update_pr_sync_sessions();
-                }
+                self.resume_fallback_launch_failed(&session, &tab_id, &message);
                 (AgentLaunchFailedOutcome::ResumeFallback, None)
             }
             AgentLaunchKind::StartupAutoReopen => {
@@ -2409,10 +3677,7 @@ impl Engine {
                 // this launch raced.
                 let is_slot_tab = self.is_slot_tab_of(SessionIdRef::new(&session.id), &tab_id);
                 if !is_slot_tab && !self.agent_tabs.contains_key(&tab_id) {
-                    logger::info(&format!(
-                        "dropping launch-failed event for closed extra tab {tab_id} of session {}",
-                        session.id,
-                    ));
+                    self.drop_launch_failure_of_closed_tab(&session.id, &tab_id);
                     return (AgentLaunchFailedOutcome::Silent, None);
                 }
                 logger::error(&format!(
@@ -2471,15 +3736,103 @@ impl Engine {
                 Vec::new(),
             );
         }
+        // A failure reported by agent rather than by tab: move the records
+        // following the tab that failed to the agent's failure key now, while
+        // this is still known to be the tab, so a promotion meanwhile cannot
+        // hand them another tab's report.
+        if let (
+            AgentLaunchFailedOutcome::Reconnect { session_id, .. }
+            | AgentLaunchFailedOutcome::ForceReconnect { session_id, .. }
+            | AgentLaunchFailedOutcome::StartupAutoReopen { session_id, .. },
+            _,
+        ) = &outcome
+        {
+            self.operations.hand_off(
+                &crate::operations::launch_binding_key(tab_id.as_str()),
+                &crate::operations::launch_failure_key(session_id),
+            );
+        }
         outcome
+    }
+
+    /// A launch failure for an extra tab closed while it was launching is not a
+    /// real failure: nothing reaches the screen, but a client following the
+    /// tab is told its launch did not come up.
+    fn drop_launch_failure_of_closed_tab(&mut self, session_id: &str, tab_id: &TabId) {
+        logger::info(&format!(
+            "dropping launch-failed event for closed extra tab {tab_id} of session {session_id}",
+        ));
+        self.finish_launch_operations(
+            &crate::operations::launch_binding_key(tab_id.as_str()),
+            Some(tab_id.as_str()),
+            crate::operations::LaunchEnded::Failed,
+            "",
+            None,
+        );
+    }
+
+    /// A create whose launch failed: the create op resolves to its keyed error
+    /// final, so both surfaces replace the create busy in place with the same
+    /// message.
+    fn create_launch_failed(
+        &mut self,
+        status_op_id: &str,
+        session: &AgentSession,
+        message: String,
+    ) -> (AgentLaunchFailedOutcome, Option<ResolvedFinal>) {
+        self.clear_in_flight(&InFlightKey::CreateAgent);
+        self.note_create_finished(status_op_id);
+        let create_final = self.resolve_create_op(
+            status_op_id,
+            &CreateLaunchOutcome::Failed {
+                message: message.clone().into(),
+                attempted_name: Some(session.display_label()),
+            },
+        );
+        (
+            AgentLaunchFailedOutcome::Create {
+                project_id: session.project_id().map(str::to_string),
+                message,
+            },
+            create_final,
+        )
+    }
+
+    /// A resume fallback's fresh launch failed too: the agent is left detached
+    /// and a client following the tab is told its launch did not come up,
+    /// while nothing reaches the screen.
+    fn resume_fallback_launch_failed(
+        &mut self,
+        session: &AgentSession,
+        tab_id: &TabId,
+        message: &str,
+    ) {
+        logger::error(&format!(
+            "fallback PTY spawn failed for {}: {}",
+            session.id, message,
+        ));
+        if self.mark_session_status(&session.id, SessionStatus::Detached) {
+            self.update_pr_sync_sessions();
+        }
+        self.finish_launch_operations(
+            &crate::operations::launch_binding_key(tab_id.as_str()),
+            Some(tab_id.as_str()),
+            crate::operations::LaunchEnded::Failed,
+            &format!(
+                "Agent {} could not resume its conversation, and starting it fresh \
+                 failed too: {message}",
+                session.display_label()
+            ),
+            None,
+        );
     }
 
     /// Log a pull-request badge move for one session, if it moved.
     ///
     /// Raised here rather than in the sync worker because this is the point a
-    /// result survives every guard and becomes what the user sees; a result
-    /// dropped for a deleted, detached or pinned session logs its own reason at
-    /// debug instead. A session with no branch to name logs nothing.
+    /// result becomes what the user sees; a result dropped for a deleted
+    /// session logs its own reason at debug instead. A session with no branch
+    /// to name logs nothing.
     fn log_pr_badge_change(
         session: Option<&AgentSession>,
         previous: Option<&crate::model::PrInfo>,
@@ -2509,19 +3862,47 @@ impl Engine {
     /// reloaded plus drained, whenever deferred commands ran, so the surface's
     /// richer apply cannot revert a deferred change to the pre-deferral state.
     ///
-    /// With no deferral the engine leaves `self.config` alone and returns the
-    /// bare reloaded config, because the surface does the swap and must see the
-    /// pre-swap config to diff old against new. The tradeoff: a deferral
-    /// coinciding with a `[server]` change suppresses that advisory restart
-    /// warning, since the engine pre-swapped before the diff.
+    /// Either way the surface does the final swap and must see the pre-swap
+    /// config to diff old against new. With no deferral the engine leaves
+    /// `self.config` alone; with one it swaps the reloaded config in for the
+    /// drain and then puts the old one back before returning, so a deferral
+    /// (a queued follow-up reload included) never hides a `[server]` change
+    /// from the Tailscale switch, the restart warning or the bind check.
     ///
-    /// On failure, whether the reload could not be parsed or could not be
-    /// applied to engine state, the in-memory config is unchanged, so the
-    /// deferred commands are re-applied against it rather than dropped. The
-    /// reload-failed reaction goes last in the returned `Multi` so its error
-    /// wins the status line over a deferred save's success message.
-    fn process_config_reload_ready(&mut self, result: Result<Config, String>) -> EventReaction {
+    /// The deferred commands are re-applied rather than dropped whatever the
+    /// outcome. A reload that could not be read or parsed changes nothing: the
+    /// commands re-apply against the config in force and the reload-failed
+    /// modal reports it. A reload that parsed but could not be fully applied
+    /// is adopted anyway (see [`Engine::keep_reloaded_config`]): the commands
+    /// re-apply against the new config, and the surface is told so with
+    /// [`EventReaction::ConfigAdopted`]. Either failure goes last in the
+    /// returned `Multi` so it wins the status line over a deferred save's
+    /// success message.
+    fn process_config_reload_ready(
+        &mut self,
+        result: Result<crate::worker::ReloadedConfig, String>,
+    ) -> EventReaction {
+        // The projects the worker built wait for the apply of its config; a
+        // reload with none leaves that apply to build them.
+        let result = result.map(|reloaded| {
+            if let Some(reload) = &mut self.reloaded_projects {
+                reload.built = reloaded.projects;
+            }
+            reloaded.config
+        });
+        if result.is_err() {
+            self.reloaded_projects = None;
+        }
+        // The GitHub integration's state before the reload. The drain below
+        // applies the reloaded config, which moves it; it goes back with the
+        // old config, so every surface's apply compares with the true state.
+        let github_before = self.github_integration_enabled;
+        // The reload that read the file is over; how it ended is its owner's to
+        // say once the reaction below reaches it.
+        self.operations.reload_closed();
         let deferred = std::mem::take(&mut self.deferred_commands);
+        let mut deferred_operations = std::mem::take(&mut self.deferred_operations).into_iter();
+        let mut deferred_policies = std::mem::take(&mut self.deferred_policies).into_iter();
         let has_deferred = !deferred.is_empty();
         // Pre-swap `self.config` to the reloaded config (rather than leaving the
         // surface to do the swap) whenever we must base a follow-up write on the
@@ -2533,23 +3914,39 @@ impl Engine {
         // reloaded config to engine state before clearing the barrier, but only
         // when deferred commands must drain, since they re-mutate and re-save
         // the config and need the reloaded one as their base. `failure` carries
-        // a reload-failed reaction whenever the reload could not be applied, a
-        // successful parse that engine state rejected included: that is a real
-        // failure, not a silent success on a stale config.
+        // the reload's failure: the reload-failed modal for a file that could
+        // not be read, or `ConfigAdopted` for one adopted although engine state
+        // could not take all of it, never a silent success.
         let mut failure: Option<EventReaction> = None;
+        // The config before this reload. When the engine pre-swaps, it is put
+        // back before the surfaces see the result, so each surface still
+        // compares the config before the reload with the one after it and
+        // runs what a change asks of it (the Tailscale switch, the restart
+        // warning, the bind-change check), even when a follow-up reload or a
+        // deferred command rode along.
+        let mut before_reload: Option<Config> = None;
+        self.reload_origin.reload_finished();
         let bare_apply: Option<EventReaction> = match result {
             Ok(config) => {
                 if must_preswap {
+                    before_reload = Some(self.config.clone());
                     // Apply the reloaded config so the deferred drain re-mutates it
                     // (and the surfaced config carries those edits).
-                    // If applying it FAILS, do not pretend the reload worked: open
-                    // the reload-failed modal and leave `self.config` as-is (the
-                    // deferred commands below still re-apply against the current
-                    // config, so they are never dropped).
-                    if let Err(err) = self.apply_reloaded_config(config) {
-                        failure = Some(EventReaction::OpenConfigReloadFailedModal(format!(
-                            "Config validated but could not be applied: {err:#}"
-                        )));
+                    // If applying it FAILS, the engine still keeps the new config
+                    // (`apply_reloaded_config` falls back to
+                    // `keep_reloaded_config`), so memory, the writer's base and
+                    // the file agree, and the deferred commands below re-apply
+                    // against it, so they are never dropped. The surface is told
+                    // the config was adopted and what failed, never that it was
+                    // refused.
+                    if let Err(err) = self.apply_reloaded_config_for_drain(config) {
+                        failure = Some(EventReaction::ConfigAdopted {
+                            before: Box::new(
+                                before_reload.clone().unwrap_or_else(|| self.config.clone()),
+                            ),
+                            github_was_enabled: github_before,
+                            error: format!("{err:#}"),
+                        });
                     }
                     // On success the FINAL config (reloaded + deferred) is surfaced
                     // after the drain below, so there is no bare reaction here.
@@ -2579,14 +3976,31 @@ impl Engine {
         }
 
         // Step 3: re-apply each deferred command now that the barrier is closed.
+        // Their saves change the file after the reload read it, so the count
+        // of writes is noted to learn below whether they wrote.
+        let writes_before = self.config_writer.last_written().0;
         // Each re-mutates the current config and eager-writes. The deferred write
-        // is therefore the LAST write to disk. On a failed reload the config is
-        // unchanged/current, so re-applying against it is still correct: deferred
-        // commands are never dropped. Collect status reactions so the
-        // surface still reports each save's success/failure.
+        // is therefore the LAST write to disk. The current config is the one in
+        // force whatever happened (the old one for a refused file, the new one
+        // for an adopted reload), so re-applying against it is correct: deferred
+        // commands are never dropped. Collect status reactions so the surface
+        // still reports each save's success/failure.
         let mut deferred_reactions = Vec::new();
         for command in deferred {
-            match self.apply(command) {
+            let operation = deferred_operations.next().flatten();
+            // Judged as whoever asked for it, not as whoever is draining it.
+            let asked_by = deferred_policies.next().flatten();
+            let previous = std::mem::replace(&mut self.dispatch_policy, asked_by);
+            let resumes_reload = matches!(command, crate::engine::Command::ReloadConfig);
+            if resumes_reload {
+                self.reload_origin.deferred_reload_resumes();
+            }
+            let applied = self.apply_deferred_operation(command, operation);
+            if resumes_reload {
+                self.reload_origin.end_asking_after_own_write();
+            }
+            self.dispatch_policy = previous;
+            match applied {
                 Ok(EventReaction::Nothing) => {}
                 Ok(reaction) => deferred_reactions.push(reaction),
                 Err(err) => deferred_reactions.push(EventReaction::Status(StatusUpdate::error(
@@ -2602,17 +4016,38 @@ impl Engine {
             // that JUST landed) FIRST so the surface's config swap matches the
             // engine + disk state and never reverts a deferred change. Snapshot
             // `self.config` AFTER the drain above so it carries the deferred edits.
-            reactions.push(EventReaction::ApplyReloadedConfig(Box::new(
-                self.config.clone(),
-            )));
+            let mut reloaded = match before_reload {
+                Some(before) => {
+                    self.github_integration_enabled = github_before;
+                    std::mem::replace(&mut self.config, before)
+                }
+                None => self.config.clone(),
+            };
+            // When the deferred commands wrote, the file now holds the text of
+            // their last write, not the text the reload read: that is the
+            // text the surfaced config agrees with, so it is the base a later
+            // save compares memory with (a `yaran config set` of one of those
+            // same settings is then not undone).
+            let (writes_after, written) = self.config_writer.last_written();
+            if writes_after != writes_before
+                && let Some(source) = written
+            {
+                reloaded.source_text = source;
+            }
+            // The deferred commands may have changed the projects since the
+            // worker read them; the list in force now is the one to adopt.
+            self.reloaded_projects = Some(crate::engine::ReloadProjects {
+                at_start: self.projects.clone(),
+                built: Some(self.projects.clone()),
+            });
+            reactions.push(EventReaction::ApplyReloadedConfig(Box::new(reloaded)));
         }
         reactions.extend(deferred_reactions);
         if let Some(failure) = failure {
-            // Failure: append the reload-failed modal/error LAST so its error
-            // status wins the surface's status line instead of being overwritten by
-            // a deferred save's success message (the deferred saves did land against
-            // the still-current config, but the headline state the user needs is
-            // "reload failed, review the modal").
+            // Failure: append it LAST so it wins the surface's status line
+            // instead of being overwritten by a deferred save's success message
+            // (the deferred saves did land, against the config in force, but the
+            // headline the user needs is the reload's own outcome).
             reactions.push(failure);
         }
 
@@ -2628,18 +4063,26 @@ impl Engine {
             ),
             String,
         >,
-        worktree: std::path::PathBuf,
+        worktree: &std::path::Path,
+        read: u64,
     ) -> EventReaction {
         // Poll results can outlive their watch and must not replace another
         // worktree's files, nor report a failure about a watch that has moved
         // on.
         let still_watched = self
-            .watched_worktree
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
+            .watched_worktree_path()
             .is_some_and(|current| current == worktree);
         if !still_watched {
+            return EventReaction::Nothing;
+        }
+        // The poller and the refresh worker read on threads of their own: a
+        // read that started before one already applied saw an older tree.
+        let fresh = self
+            .changed_files_refresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .admit_read(read);
+        if !fresh {
             return EventReaction::Nothing;
         }
         let session_id = self.watched_session_id.clone();
@@ -2656,17 +4099,23 @@ impl Engine {
                     worktree.display()
                 ));
                 return session_id
-                    .and_then(|id| self.note_changed_files_outcome(&id, Some(&message)))
-                    .map_or(EventReaction::Nothing, EventReaction::Status);
+                    .and_then(|id| {
+                        self.note_changed_files_outcome(
+                            &id,
+                            crate::changes_status::ReadOutcome::Failed,
+                        )
+                    })
+                    .map_or(EventReaction::Nothing, PollerNotice::into_reaction);
             }
         };
-        let recovery = session_id.and_then(|id| self.note_changed_files_outcome(&id, None));
-        self.staged_files = staged;
-        self.unstaged_files = unstaged;
-        match recovery {
-            Some(status) => EventReaction::Multi(vec![
+        let withdrawal = session_id.and_then(|id| {
+            self.note_changed_files_outcome(&id, crate::changes_status::ReadOutcome::Succeeded)
+        });
+        self.set_changed_files(staged, unstaged);
+        match withdrawal {
+            Some(notice) => EventReaction::Multi(vec![
                 EventReaction::ClampFilesCursor,
-                EventReaction::Status(status),
+                notice.into_reaction(),
             ]),
             None => EventReaction::ClampFilesCursor,
         }
@@ -2675,28 +4124,27 @@ impl Engine {
     fn process_pull_completed(
         &mut self,
         repo_path: String,
-        target: PullTarget,
-        result: Result<crate::worker::PullOutcome, String>,
+        target: &PullTarget,
+        result: &Result<crate::worker::PullOutcome, String>,
         status: ResolvedFinal,
     ) -> EventReaction {
-        self.clear_in_flight(&InFlightKey::Pull(repo_path));
+        match &target {
+            PullTarget::Project { .. } => self.end_project_folder_action(&repo_path),
+            PullTarget::Session => self.clear_in_flight(&InFlightKey::Pull(repo_path)),
+        }
         if let PullTarget::Project { project_id, .. } = &target
             && let Ok(outcome) = &result
             && let Some(branch_name) = outcome.current_branch()
             && let Some(existing) = self.projects.iter_mut().find(|c| c.id == *project_id)
         {
-            existing.current_branch = branch_name.clone();
+            existing.current_branch.clone_from(branch_name);
             existing.branch_status =
                 if existing.leading_branch.as_deref() == Some(&existing.current_branch) {
                     ProjectBranchStatus::Leading
                 } else if existing.leading_branch.is_some() {
                     ProjectBranchStatus::NotLeading
                 } else {
-                    let warning = crate::git::branch_warning_kind(
-                        Path::new(&existing.path),
-                        &existing.current_branch,
-                    );
-                    crate::git::branch_status_from_warning(warning.as_ref())
+                    crate::git::branch_status_from_warning(outcome.default_warning())
                 };
         }
         let final_reaction = status.into_reaction();
@@ -2707,22 +4155,82 @@ impl Engine {
         }
     }
 
-    fn process_branch_sync_ready(&mut self, updates: Vec<(String, String)>) -> EventReaction {
-        let mut changed = false;
-        for (session_id, actual_branch) in updates {
+    /// Record what a branch-sync pass saw in an agent's HEAD reflog, and the
+    /// identity of its birth branch when the pass read one. A failed write asks
+    /// the loop to read the reflog again on its next pass.
+    fn record_branch_sync_history(&mut self, update: &crate::worker::BranchSyncUpdate) {
+        if !self.sessions.iter().any(|s| s.id == update.session_id) {
+            return;
+        }
+        if !update.seen.is_empty()
+            && let Err(err) = self
+                .session_store
+                .record_branches_seen(&update.session_id, &update.seen)
+        {
+            logger::error(&format!(
+                "could not record the branches agent {} was on: {err:#}; the next branch check \
+                 reads them again",
+                update.session_id
+            ));
+            self.branch_sync_wait
+                .history_rescan
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(update.session_id.clone());
+        }
+        if let Some((name, identity)) = &update.birth_identity
+            && let Err(err) =
+                self.session_store
+                    .fill_birth_identity(&update.session_id, name, identity)
+        {
+            logger::error(&format!(
+                "could not record which branch yaran made for agent {}: {err:#}",
+                update.session_id
+            ));
+        }
+        self.refresh_branch_history(&update.session_id);
+    }
+
+    /// Whether a branch move the branch check saw belongs to a rename still in
+    /// flight, which owns the branch until it lands; logs what it saw.
+    fn deferred_to_a_rename(&self, session_id: &str, actual_branch: &str) -> bool {
+        if !self.is_in_flight(&InFlightKey::BranchRename(session_id.to_string())) {
+            return false;
+        }
+        match self.rename_expected.get(session_id) {
+            Some(expected) if expected.matches(actual_branch) => {}
+            Some(expected) => logger::warn(&format!(
+                "[{session_id}] branch-sync observed unexpected branch '{actual_branch}' \
+                 while a rename to '{}' (from '{}') is in flight; deferring until the rename completes",
+                expected.new_branch, expected.old_branch,
+            )),
+            None => logger::debug(&format!(
+                "[{session_id}] branch-sync skipped mid-rename (no expected branch recorded); actual '{actual_branch}'",
+            )),
+        }
+        true
+    }
+
+    fn process_branch_sync_ready(
+        &mut self,
+        updates: Vec<crate::worker::BranchSyncUpdate>,
+    ) -> EventReaction {
+        let mut moved: Vec<String> = Vec::new();
+        let mut unsaved: Vec<StatusUpdate> = Vec::new();
+        let mut identified = false;
+        for update in updates {
+            self.record_branch_sync_history(&update);
+            identified |= update.birth_identity.is_some();
+            let crate::worker::BranchSyncUpdate {
+                session_id,
+                moved_to,
+                ..
+            } = update;
+            let Some(actual_branch) = moved_to else {
+                continue;
+            };
             // Rename completion owns the authoritative branch mutation while a rename is active.
-            if self.is_in_flight(&InFlightKey::BranchRename(session_id.clone())) {
-                match self.rename_expected.get(&session_id) {
-                    Some(expected) if expected.matches(&actual_branch) => {}
-                    Some(expected) => logger::warn(&format!(
-                        "[{session_id}] branch-sync observed unexpected branch '{actual_branch}' \
-                         while a rename to '{}' (from '{}') is in flight; deferring until the rename completes",
-                        expected.new_branch, expected.old_branch,
-                    )),
-                    None => logger::debug(&format!(
-                        "[{session_id}] branch-sync skipped mid-rename (no expected branch recorded); actual '{actual_branch}'",
-                    )),
-                }
+            if self.deferred_to_a_rename(&session_id, &actual_branch) {
                 continue;
             }
             if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id)
@@ -2734,30 +4242,80 @@ impl Engine {
                 };
                 let previous = managed.branch_name.clone();
                 let original = managed.initial_branch.clone();
-                logger::warn(&branch_drift_log_line(
-                    &session.id,
-                    &label,
-                    &actual_branch,
-                    &previous,
-                    &original,
-                ));
-                managed.branch_name = actual_branch;
-                session.updated_at = Utc::now();
-                if let Err(err) = self.session_store.upsert_session(session) {
-                    logger::error(&format!(
-                        "failed to persist branch-sync update for {} (new branch: {:?}): {err}",
-                        session.id,
-                        session.branch_name(),
+                // A drift yaran could not save is met again on every branch
+                // check; it is logged and reported once, until it saves or
+                // moves on.
+                let reported = self.unsaved_branch_drifts.get(&session_id) == Some(&actual_branch);
+                if !reported {
+                    logger::warn(&branch_drift_log_line(
+                        &session.id,
+                        &label,
+                        &actual_branch,
+                        &previous,
+                        &original,
                     ));
                 }
-                changed = true;
+                let previous_updated_at = session.updated_at;
+                managed.branch_name.clone_from(&actual_branch);
+                session.updated_at = Utc::now();
+                if let Err(err) = self.session_store.upsert_session(session) {
+                    // Memory keeps what the database holds, so the next branch
+                    // check sees the drift again and saves it once the
+                    // database takes writes again.
+                    if let Some(managed) = session.workspace.as_managed_mut() {
+                        managed.branch_name = previous;
+                    }
+                    session.updated_at = previous_updated_at;
+                    if !reported {
+                        logger::error(&format!(
+                            "failed to persist branch-sync update for {session_id} (new branch: \
+                             {actual_branch:?}): {err}",
+                        ));
+                        unsaved.push(unsaved_branch_drift(
+                            &session_id,
+                            &label,
+                            &actual_branch,
+                            &err,
+                        ));
+                        self.unsaved_branch_drifts
+                            .insert(session_id.clone(), actual_branch);
+                    }
+                    continue;
+                }
+                self.unsaved_branch_drifts.remove(&session_id);
+                // A drift onto another branch ends any claim that the agent is on
+                // the branch yaran minted under a new name.
+                if let Err(err) = self.session_store.delete_minted_branch_rename(&session.id) {
+                    logger::error(&format!(
+                        "failed to forget the minted branch rename for {}: {err}",
+                        session.id,
+                    ));
+                }
+                moved.push(session.id.clone());
             }
         }
-        if !changed {
-            return EventReaction::Nothing;
+        let mut reactions: Vec<EventReaction> =
+            unsaved.into_iter().map(EventReaction::Status).collect();
+        if identified && moved.is_empty() {
+            self.update_branch_sync_sessions();
         }
-        self.update_branch_sync_sessions();
-        EventReaction::RebuildLeftItems
+        if !moved.is_empty() {
+            self.update_branch_sync_sessions();
+            // The pull-request plan names the branch too, and would otherwise
+            // keep asking GitHub about the one the agent has left. The branch it
+            // moved to may already have a pull request, so it is asked about
+            // once now.
+            self.update_pr_sync_sessions();
+            for session_id in moved {
+                self.request_branch_pr_check(&session_id);
+            }
+            reactions.push(EventReaction::RebuildLeftItems);
+        }
+        match reactions.len() {
+            0 => EventReaction::Nothing,
+            1 => reactions.pop().unwrap_or(EventReaction::Nothing),
+            _ => EventReaction::Multi(reactions),
+        }
     }
 
     fn process_worktree_remove_completed(
@@ -2767,7 +4325,17 @@ impl Engine {
     ) -> EventReaction {
         self.pending_deletions.remove(&session_id);
         self.closing_sessions.remove(&session_id);
+        // Its row is gone (the worker cleared it), so nothing keeps it current.
+        self.process_registry.unwatch_pending(&session_id);
         let our_busy_message = self.deletion_busy_messages.remove(&session_id);
+        self.removal_coordination.labels.remove(&session_id);
+        // A removal that was one agent of a project deletion reports into that
+        // deletion's single final rather than as a delete of its own.
+        if let Some(reaction) =
+            self.cascade_removal_completed(&session_id, result.as_ref().err().map(String::as_str))
+        {
+            return reaction;
+        }
         match result {
             Ok(branches) => EventReaction::WorktreeRemoveSucceeded {
                 session_id,
@@ -2781,37 +4349,59 @@ impl Engine {
         }
     }
 
-    /// `session` with the title a failed rename started from.
-    fn restore_title(mut session: AgentSession, previous_title: Option<String>) -> AgentSession {
-        session.title = previous_title;
-        session
+    fn process_worktree_remove_waiting(
+        &mut self,
+        session_id: String,
+        waiting_for: &str,
+    ) -> EventReaction {
+        if let Some(reaction) = self.cascade_removal_waiting(&session_id, waiting_for) {
+            return reaction;
+        }
+        let label = self
+            .removal_coordination
+            .labels
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_else(|| session_id.clone());
+        EventReaction::WorktreeRemoveWaiting {
+            message: crate::engine::removal_waiting_message(&label, waiting_for),
+            session_id,
+        }
     }
 
     fn process_branch_rename_completed(
         &mut self,
-        session_id: String,
-        new_branch: String,
+        session_id: &str,
+        new_branch: &str,
         previous_title: Option<String>,
-        result: Result<(), String>,
+        result: &Result<(), String>,
         status: ResolvedFinal,
     ) -> EventReaction {
         let mut status = status;
         match &result {
             Ok(()) => {
+                self.record_minted_branch_rename(session_id, new_branch);
                 if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id) {
+                    let saved = session.clone();
                     let label = session.display_label();
-                    let before = session.clone();
                     if let Some(managed) = session.workspace.as_managed_mut() {
                         let previous = managed.branch_name.clone();
                         let original = managed.initial_branch.clone();
                         logger::info(&branch_rename_log_line(
                             &session.id,
                             &label,
-                            &new_branch,
+                            new_branch,
                             &previous,
                             &original,
                         ));
-                        managed.branch_name = new_branch.clone();
+                        managed.branch_name = new_branch.to_string();
+                    }
+                    // The optimistic title was the new branch name. Kept as a
+                    // custom title it would pin the label to a copy of that
+                    // name, so a later rename of the branch would leave the
+                    // label behind; without one the label follows the branch.
+                    if session.title.as_deref() == Some(new_branch) {
+                        session.title = None;
                     }
                     session.updated_at = Utc::now();
                     if let Err(err) = self.session_store.upsert_session(session) {
@@ -2819,64 +4409,157 @@ impl Engine {
                             "failed to persist branch rename for {} (new branch: {}): {err}",
                             session.id, new_branch,
                         ));
-                        // Fork 773a6b04 (P1-27): a rename the database never
-                        // recorded would come back as the old branch on restart
-                        // while git holds the new one, and branch sync would then
-                        // call it drift. Put everything back the way the record
-                        // says: memory now, and git on a worker (the rename runs
-                        // in reverse), and say so instead of reporting success.
-                        let old_branch = before.branch_name().unwrap_or_default().to_string();
-                        let worktree = std::path::PathBuf::from(before.directory());
-                        *session = Self::restore_title(before, previous_title.clone());
-                        let revert_branch = new_branch.clone();
-                        let _ = std::thread::Builder::new()
-                            .name("yaran-branch-rename-rollback".into())
-                            .spawn(move || {
-                                if let Err(err) = crate::git::rename_branch(
-                                    &worktree,
-                                    &revert_branch,
-                                    &old_branch,
-                                ) {
-                                    logger::error(&format!(
-                                        "could not revert branch {revert_branch} to {old_branch} \
-                                         after its rename failed to persist: {err}"
-                                    ));
-                                }
-                            });
-                        status = ResolvedFinal::error(
-                            status.key.clone(),
+                        // Memory keeps what the database holds, so the branch
+                        // check sees the branch under its new name as a change
+                        // and saves it once the database takes writes again.
+                        let old_branch = saved.branch_name().unwrap_or_default().to_string();
+                        *session = saved;
+                        status.outcome = crate::engine::Final::warning(crate::status_text![
+                            "Renamed git branch ",
+                            q(old_branch),
+                            " to ",
+                            q(new_branch),
                             format!(
-                                "The branch rename couldn't be persisted ({err}); \
-                                 reverted the agent and its branch."
-                            ),
-                        )
-                        .with_scope(status.scope.clone());
+                                ", but yaran could not save the agent's new branch name: {err:#}. \
+                                 yaran saves it the next time it checks the agent's branch, once \
+                                 its database can be written again; until then the agent may \
+                                 show the old branch name. Check that the disk has room, and \
+                                 see yaran.log."
+                            )
+                        ]);
                     }
                 }
                 self.update_branch_sync_sessions();
+                // So does the pull-request plan, which asks GitHub by branch, and
+                // the renamed branch is asked about once now.
+                self.update_pr_sync_sessions();
+                self.request_branch_pr_check(session_id);
             }
             Err(err) => {
-                logger::warn(&format!(
-                    "[{session_id}] agent rename to {new_branch} failed: {err}"
-                ));
-                if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id) {
-                    session.title = previous_title;
-                    session.updated_at = Utc::now();
-                    if let Err(err) = self.session_store.upsert_session(session) {
-                        logger::error(&format!(
-                            "failed to persist branch-rename revert for {}: {err}",
-                            session.id,
-                        ));
-                    }
-                }
+                self.revert_failed_branch_rename(
+                    session_id,
+                    new_branch,
+                    previous_title,
+                    err,
+                    &mut status,
+                );
             }
         }
-        self.clear_in_flight(&InFlightKey::BranchRename(session_id.clone()));
-        self.rename_expected.remove(&session_id);
+        // A removal of this worktree that began while the rename ran captured
+        // the old name; record the new one for it before the hold is released,
+        // so it deletes the branch by the name it has now.
+        if result.is_ok()
+            && let Some(expected) = self.rename_expected.get(session_id)
+        {
+            // The branch list follows the rename: it is the same branch.
+            if let Err(err) = self.session_store.rename_history_branch(
+                session_id,
+                &expected.old_branch,
+                new_branch,
+            ) {
+                logger::error(&format!(
+                    "could not follow the rename of {} into agent {session_id}'s branch list: \
+                     {err:#}",
+                    expected.old_branch
+                ));
+            }
+            self.removal_coordination.ops.record_branch_rename(
+                &crate::worktree_ops::HoldOwner::InFlight(InFlightKey::BranchRename(
+                    session_id.to_string(),
+                )),
+                &expected.old_branch,
+                new_branch,
+            );
+            // And into the recorded request, so a removal a later start
+            // finishes after a crash deletes the branch by its new name too.
+            if let Err(err) = self.session_store.rename_pending_removal_branch(
+                session_id,
+                &expected.old_branch,
+                new_branch,
+            ) {
+                logger::warn(&format!(
+                    "could not follow the rename of {} into its pending removal: {err:#}",
+                    expected.old_branch
+                ));
+            }
+        }
+        self.clear_in_flight(&InFlightKey::BranchRename(session_id.to_string()));
+        self.rename_expected.remove(session_id);
+        self.refresh_branch_history(session_id);
         EventReaction::Multi(vec![
             EventReaction::RebuildLeftItems,
             status.into_reaction(),
         ])
+    }
+
+    /// Record whether the renamed branch is still the one yaran minted. A rename
+    /// moves a branch rather than switching to another one, so the minted
+    /// branch stays minted under its new name; a failed write is logged.
+    fn record_minted_branch_rename(&self, session_id: &str, new_branch: &str) {
+        // A rename moves a branch rather than switching to another one, so
+        // the branch yaran minted is still the one yaran minted under its new
+        // name, and the pull-request age guard must keep holding for it.
+        let renamed_from = self.minted_branch_rename(session_id);
+        let was_minted = self
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .and_then(|s| s.branch_minted_at(renamed_from.as_deref()))
+            .is_some();
+        // A rename of any other branch is not the minted one moving, and
+        // a marker left from an earlier rename must not carry over to it.
+        let recorded = if was_minted {
+            self.session_store
+                .set_minted_branch_rename(session_id, new_branch)
+        } else {
+            self.session_store.delete_minted_branch_rename(session_id)
+        };
+        if let Err(err) = recorded {
+            logger::error(&format!(
+                "failed to record whether {session_id}'s branch {new_branch} is the one yaran minted: {err}"
+            ));
+        }
+    }
+
+    /// A branch rename git refused: the optimistic title goes back to what it
+    /// was, and when even that cannot be saved, `status` says the agent keeps
+    /// showing the new name.
+    fn revert_failed_branch_rename(
+        &mut self,
+        session_id: &str,
+        new_branch: &str,
+        previous_title: Option<String>,
+        err: &str,
+        status: &mut ResolvedFinal,
+    ) {
+        logger::warn(&format!(
+            "[{session_id}] agent rename to {new_branch} failed: {err}"
+        ));
+        if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id) {
+            let saved = session.clone();
+            session.title = previous_title;
+            session.updated_at = Utc::now();
+            if let Err(save_err) = self.session_store.upsert_session(session) {
+                logger::error(&format!(
+                    "failed to persist branch-rename revert for {}: {save_err}",
+                    session.id,
+                ));
+                // The optimistic name is still what the database
+                // holds, so it is what the agent keeps showing.
+                *session = saved;
+                status.outcome = crate::engine::Final::error(crate::status_text![
+                    "Could not rename the agent's git branch to ",
+                    q(new_branch),
+                    format!(
+                        ": {err}. yaran could not put the agent's old name back either: \
+                         {save_err:#}, so it keeps showing "
+                    ),
+                    q(new_branch),
+                    ". Rename it again once yaran can write its database; check that \
+                     the disk has room, and see yaran.log."
+                ]);
+            }
+        }
     }
 
     fn process_gh_status_checked(
@@ -2898,6 +4581,7 @@ impl Engine {
         // status: a probe that moves NotInstalled to Unreachable changes
         // nothing anybody can see.
         let was_available = self.pr_agent_command_available();
+        let hosts_before = self.clone_github_hosts();
         let (status, unreachable_reason) = self.adopt_gh_probe(outcome);
         self.gh_status = status;
         if matches!(status, GhStatus::Available) && self.github_integration_enabled {
@@ -2905,9 +4589,8 @@ impl Engine {
                 "[gh-integration] gh CLI is available; host policy: {:?}",
                 self.github_host_policy(),
             ));
-            self.seed_pr_statuses_from_store();
+            self.seed_pull_requests_from_store();
             self.update_pr_sync_sessions();
-            self.spawn_refs_watcher();
             self.spawn_pr_sync_worker();
             self.spawn_initial_pr_refresh();
         } else {
@@ -2930,6 +4613,8 @@ impl Engine {
             reactions.push(EventReaction::GhAvailabilityChanged {
                 available: now_available,
             });
+        } else if self.clone_github_hosts() != hosts_before {
+            reactions.push(EventReaction::GithubFactsChanged);
         }
         // Silent on success. A status goes out when the user asked, whatever the
         // answer, or when availability was lost; a gain says nothing, because a
@@ -2956,6 +4641,7 @@ impl Engine {
         match outcome {
             crate::gh::GhProbe::NotInstalled => {
                 self.set_github_host_policy(crate::gh::GithubHostPolicy::DenyAll);
+                self.set_github_git_protocols(std::collections::BTreeMap::default());
                 (GhStatus::NotInstalled, None)
             }
             crate::gh::GhProbe::Transient(reason) => {
@@ -2974,8 +4660,13 @@ impl Engine {
                 };
                 (status, Some(reason))
             }
-            crate::gh::GhProbe::Decided { available, policy } => {
+            crate::gh::GhProbe::Decided {
+                available,
+                policy,
+                protocols,
+            } => {
                 self.set_github_host_policy(policy);
+                self.set_github_git_protocols(protocols);
                 let status = if available {
                     GhStatus::Available
                 } else {
@@ -3039,9 +4730,7 @@ impl Engine {
         // lands then must name what they just changed rather than accuse them of
         // being logged out: the integration is off, so gh's verdict on the login
         // is not why the features are gone.
-        let cause = if !self.github_integration_enabled {
-            "the GitHub integration is turned off in your config".to_string()
-        } else {
+        let cause = if self.github_integration_enabled {
             match self.gh_status {
                 GhStatus::NotInstalled => {
                     "the gh CLI is not on PATH (install it from https://cli.github.com)".to_string()
@@ -3060,6 +4749,8 @@ impl Engine {
                     }
                 }
             }
+        } else {
+            "the GitHub integration is turned off in your config".to_string()
         };
         StatusUpdate::warning(format!(
             "GitHub features are paused: {cause}. {}",
@@ -3086,12 +4777,11 @@ impl Engine {
         }
     }
 
-    fn pr_status_result_is_current(
-        &mut self,
-        session_id: &str,
-        maybe_pr: &Option<crate::model::PrInfo>,
-        checked_at: Instant,
-    ) -> bool {
+    /// Whether a sync answer for `session_id` still has an agent to apply to,
+    /// clearing its check's in-flight guard and stamping its debounce either
+    /// way it can. Answers are about a named branch or a numbered pull request,
+    /// so they stay true after the agent drifts or is renamed.
+    fn pr_status_result_is_current(&mut self, session_id: &str, checked_at: Instant) -> bool {
         self.clear_in_flight(&InFlightKey::PrCheck(session_id.to_string()));
         if !self.sessions.iter().any(|session| session.id == session_id) {
             logger::debug(&format!(
@@ -3101,28 +4791,6 @@ impl Engine {
         }
         self.pr_last_checked
             .insert(session_id.to_string(), checked_at);
-        if self.pr_suppressions.contains(session_id) && !self.pr_overrides.contains_key(session_id)
-        {
-            logger::debug(&format!(
-                "[gh-integration] dropping PR result for detached session {session_id}",
-            ));
-            return false;
-        }
-        if let Some(pin) = self.pr_overrides.get(session_id) {
-            let matches_pin = maybe_pr.as_ref().is_some_and(|pr| {
-                pr.number == pin.pr_number
-                    && pr.owner_repo.eq_ignore_ascii_case(&pin.owner_repo)
-                    && pr.host.eq_ignore_ascii_case(&pin.host)
-            });
-            if !matches_pin {
-                logger::debug(&format!(
-                    "[gh-integration] dropping PR result for pinned session \
-                     {session_id} (does not match the pin, PR #{})",
-                    pin.pr_number,
-                ));
-                return false;
-            }
-        }
         true
     }
 
@@ -3136,75 +4804,163 @@ impl Engine {
             .sessions
             .iter()
             .find(|session| session.id == session_id)
-            .map(|session| session.display_label().to_string())
-            .unwrap_or_else(|| session_id.to_string());
+            .map_or_else(
+                || session_id.to_string(),
+                super::super::model::AgentSession::display_label,
+            );
         self.post_status(crate::poller_status::pr_status_not_saved(
             session_id, &label, error,
         ));
     }
 
-    fn apply_pr_status_result(
+    /// Store what one sync brought back for an agent. An answer only adds a
+    /// row or updates one: nothing is ever removed, because no answer proves a
+    /// pull request is not the agent's. A row keeps whether it is attached or
+    /// hidden and its place in the manual order; a new one is hidden when the
+    /// agent had detection switched off and it was opened on GitHub before
+    /// then, or nobody can say when it was. Nothing is added while the
+    /// preferences that hold that cutoff could not be read. Reports what it
+    /// changed.
+    pub(crate) fn apply_pr_sync_answers(
         &mut self,
-        session_id: String,
-        maybe_pr: Option<crate::model::PrInfo>,
-    ) -> bool {
+        session_id: &str,
+        answers: Vec<crate::worker::PrSyncAnswer>,
+        asked: Vec<(String, crate::worker::BranchAskRecord)>,
+        now: chrono::DateTime<Utc>,
+    ) -> PrSyncApplied {
+        if !asked.is_empty() {
+            let asks = self
+                .pr_branch_asks
+                .entry(session_id.to_string())
+                .or_default();
+            asks.extend(asked);
+        }
+        let previous = self
+            .shown_pr(session_id)
+            .map(crate::model::AgentPr::to_info);
+        let before = self.agent_prs.get(session_id).cloned().unwrap_or_default();
+        let mut rows = before.clone();
+        let cutoff = self
+            .pr_prefs
+            .get(session_id)
+            .and_then(|prefs| prefs.hide_created_before);
+        let prefs_unread = self.pr_prefs_retry_at.is_some();
+        let mut touched: Vec<usize> = Vec::new();
+        for answer in answers {
+            let (info, found) = match answer {
+                crate::worker::PrSyncAnswer::Found(info) => (info, true),
+                crate::worker::PrSyncAnswer::Refreshed(info) => (info, false),
+                crate::worker::PrSyncAnswer::Unanswered(key) => {
+                    if let Some(index) = rows.iter().position(|row| row.is(&key)) {
+                        rows[index].last_refreshed_at = Some(now);
+                        if !touched.contains(&index) {
+                            touched.push(index);
+                        }
+                    }
+                    continue;
+                }
+            };
+            let key =
+                crate::model::PrKey::new(info.host.clone(), info.owner_repo.clone(), info.number);
+            let index = if let Some(index) = rows.iter().position(|row| row.is(&key)) {
+                rows[index].refresh_from(&info);
+                rows[index].found |= found;
+                index
+            } else if found && !prefs_unread {
+                let mut row = crate::model::AgentPr::found(&info, now);
+                row.hidden = cutoff.is_some_and(|cutoff| {
+                    info.gh_created_at.is_none_or(|created| created < cutoff)
+                });
+                rows.push(row);
+                rows.len() - 1
+            } else {
+                continue;
+            };
+            rows[index].last_refreshed_at = Some(now);
+            if !touched.contains(&index) {
+                touched.push(index);
+            }
+        }
+        for &index in &touched {
+            if let Err(err) = self.session_store.upsert_agent_pr(session_id, &rows[index]) {
+                logger::error(&format!(
+                    "failed to persist PR status for {session_id} (PR #{}): {err}",
+                    rows[index].number,
+                ));
+                self.report_unsaved_pr_status(session_id, &err.to_string());
+            }
+        }
+        // When GitHub last answered is bookkeeping, not anything an agent
+        // shows, so it alone moves no revision.
+        let shown_changed = rows.len() != before.len()
+            || rows.iter().zip(&before).any(|(new, old)| {
+                let mut old = old.clone();
+                old.last_refreshed_at = new.last_refreshed_at;
+                *new != old
+            });
+        if shown_changed {
+            self.set_agent_prs(session_id, rows);
+        } else if !touched.is_empty() {
+            self.agent_prs.insert(session_id.to_string(), rows);
+        }
         Self::log_pr_badge_change(
             self.sessions
                 .iter()
                 .find(|session| session.id == session_id),
-            self.pr_statuses.get(&session_id),
-            maybe_pr.as_ref(),
+            previous.as_ref(),
+            self.shown_pr(session_id)
+                .map(crate::model::AgentPr::to_info)
+                .as_ref(),
         );
-        match maybe_pr {
-            Some(pr) => {
-                let state = match pr.state {
-                    PrState::Open => "OPEN",
-                    PrState::Merged => "MERGED",
-                    PrState::Closed => "CLOSED",
-                };
-                let pr_number = pr.number;
-                let row = StoredPr {
-                    session_id: session_id.clone(),
-                    pr_number,
-                    host: pr.host.clone(),
-                    owner_repo: pr.owner_repo.clone(),
-                    state: state.to_string(),
-                    title: pr.title.clone(),
-                    url: pr.url.clone(),
-                };
-                if self.pr_overrides.contains_key(&session_id) {
-                    if let Err(err) = self.session_store.upsert_pr_override(&row) {
-                        logger::error(&format!(
-                            "failed to refresh pinned PR for {session_id}: {err}",
-                        ));
-                        self.report_unsaved_pr_status(&session_id, &err.to_string());
-                    }
-                    self.pr_overrides.insert(session_id.clone(), row);
-                } else if let Err(err) = self.session_store.upsert_pr(&row) {
-                    logger::error(&format!(
-                        "failed to persist PR status for {session_id} (PR #{pr_number}): {err}",
-                    ));
-                    self.report_unsaved_pr_status(&session_id, &err.to_string());
-                }
-                self.pr_statuses.insert(session_id, pr);
-                true
-            }
-            None => self.pr_statuses.remove(&session_id).is_some(),
+        if shown_changed {
+            PrSyncApplied::Shown
+        } else if touched.is_empty() {
+            PrSyncApplied::Nothing
+        } else {
+            PrSyncApplied::Bookkeeping
         }
     }
 
     fn process_pr_status_ready(
         &mut self,
-        results: Vec<(String, Option<crate::model::PrInfo>)>,
+        results: Vec<crate::worker::PrStatusResult>,
     ) -> EventReaction {
         let checked_at = Instant::now();
+        let now = Utc::now();
         let mut changed = false;
-        for (session_id, maybe_pr) in results {
-            if self.pr_status_result_is_current(&session_id, &maybe_pr, checked_at) {
-                changed |= self.apply_pr_status_result(session_id, maybe_pr);
+        // What the plan carries moved: when a branch or a row was last
+        // asked, which decides what the next cycle asks.
+        let mut plan_stale = false;
+        let mut finished: Vec<String> = Vec::new();
+        for crate::worker::PrStatusResult {
+            session_id,
+            answers,
+            asked,
+            own_repo,
+        } in results
+        {
+            finished.push(session_id.clone());
+            if self.pr_status_result_is_current(&session_id, checked_at) {
+                if let Some(own_repo) = own_repo {
+                    changed |= self.record_own_pr_repository(&session_id, own_repo);
+                }
+                plan_stale |= !asked.is_empty();
+                match self.apply_pr_sync_answers(&session_id, answers, asked, now) {
+                    PrSyncApplied::Shown => changed = true,
+                    PrSyncApplied::Bookkeeping => plan_stale = true,
+                    PrSyncApplied::Nothing => {}
+                }
             }
         }
+        // Each finished check may have been holding up the one an agent is
+        // owed for the branch it moved to.
+        for session_id in finished {
+            self.retry_owed_branch_check(&session_id);
+        }
         if !changed {
+            if plan_stale {
+                self.write_pr_sync_plan();
+            }
             return EventReaction::Nothing;
         }
         self.update_pr_sync_sessions();
@@ -3220,7 +4976,9 @@ impl Engine {
             Ok(inspection) => {
                 if let Some(existing) = self.projects.iter_mut().find(|item| item.id == project.id)
                 {
-                    existing.current_branch = inspection.current_branch.clone();
+                    existing
+                        .current_branch
+                        .clone_from(&inspection.current_branch);
                     existing.leading_branch = Some(inspection.leading_branch.clone());
                     existing.branch_status = if existing.current_branch == inspection.leading_branch
                     {
@@ -3240,7 +4998,7 @@ impl Engine {
 
     fn process_project_branch_status_ready(
         &mut self,
-        project_id: String,
+        project_id: &str,
         result: Result<(String, ProjectBranchStatus), String>,
     ) -> EventReaction {
         match result {
@@ -3308,7 +5066,7 @@ impl Engine {
         // Every answer but a known default ends the chain here; that one hands
         // the repository on to the switch, whose completion releases it.
         if !matches!(result, Ok((_, Some(BranchWarningKind::Known { .. })))) {
-            self.end_default_branch_checkout(&project.path);
+            self.end_project_folder_action(&project.path);
         }
         match result {
             Ok((current_branch, warning_kind)) => match warning_kind {
@@ -3341,7 +5099,7 @@ impl Engine {
                     if let Some(existing) =
                         self.projects.iter_mut().find(|item| item.id == project.id)
                     {
-                        existing.current_branch = current_branch.clone();
+                        existing.current_branch.clone_from(&current_branch);
                         existing.branch_status = ProjectBranchStatus::Leading;
                     }
                     // The user asked for the default branch, and the folder is
@@ -3388,7 +5146,7 @@ impl Engine {
         status_op_id: Option<String>,
     ) -> EventReaction {
         if let NonDefaultBranchAction::CheckoutProjectDefault { project } = &action {
-            self.end_default_branch_checkout(&project.path);
+            self.end_project_folder_action(&project.path);
         }
         match result {
             Ok(()) => match action {
@@ -3407,7 +5165,7 @@ impl Engine {
                     if let Some(existing) =
                         self.projects.iter_mut().find(|item| item.id == project.id)
                     {
-                        existing.current_branch = target_branch.clone();
+                        existing.current_branch.clone_from(&target_branch);
                         existing.branch_status = ProjectBranchStatus::Leading;
                     }
                     // Checking out the default branch means new worktrees
@@ -3464,25 +5222,53 @@ impl Engine {
         }
     }
 
-    /// Take the project's repository for a "check out the default branch", or
-    /// answer why not: one already running there would race this one's
-    /// `git switch`, and the loser would report a failure that is not one.
-    /// Both surfaces ask here before starting the chain.
-    pub fn begin_default_branch_checkout(&mut self, project: &Project) -> Result<(), StatusUpdate> {
-        if self.mark_in_flight(InFlightKey::CheckoutDefaultBranch(project.path.clone())) {
-            Ok(())
-        } else {
-            Err(StatusUpdate::warning(
-                crate::engine::default_branch_checkout_running_message(&project.name),
-            ))
+    /// Take the project's folder for `action`, or answer why not: an operation
+    /// already switching that folder (see [`crate::engine::ProjectFolderAction`])
+    /// would race this one's `git switch`, and the loser would report a failure
+    /// that is not one. The refusal is an ordinary warning naming the running
+    /// operation. Every surface asks here before starting any of the three.
+    ///
+    /// `project_path` is the folder (the project's `path`), `project_name` the
+    /// name the refusal chips.
+    ///
+    /// # Errors
+    ///
+    /// Returns the warning to show when another operation already holds the
+    /// project folder.
+    pub fn begin_project_folder_action(
+        &mut self,
+        project_path: &str,
+        project_name: &str,
+        action: crate::engine::ProjectFolderAction,
+    ) -> Result<(), StatusUpdate> {
+        if let Some(running) = self.project_folder_action(project_path) {
+            return Err(StatusUpdate::warning(
+                crate::engine::project_folder_busy_message(project_name, running),
+            ));
         }
+        self.mark_in_flight(InFlightKey::ProjectFolder {
+            path: project_path.to_string(),
+            action,
+        });
+        Ok(())
     }
 
-    /// Release the repository at every ending of the chain.
-    fn end_default_branch_checkout(&mut self, project_path: &str) {
-        self.clear_in_flight(&InFlightKey::CheckoutDefaultBranch(
-            project_path.to_string(),
-        ));
+    /// The operation holding the project folder at `project_path`, if any.
+    pub fn project_folder_action(
+        &self,
+        project_path: &str,
+    ) -> Option<crate::engine::ProjectFolderAction> {
+        self.in_flight.iter().find_map(|key| match key {
+            InFlightKey::ProjectFolder { path, action } if path == project_path => Some(*action),
+            _ => None,
+        })
+    }
+
+    /// Release the project folder at every ending of the operation holding it.
+    pub(crate) fn end_project_folder_action(&mut self, project_path: &str) {
+        self.in_flight.retain(
+            |key| !matches!(key, InFlightKey::ProjectFolder { path, .. } if path == project_path),
+        );
     }
 
     /// The end of a "check out the default branch" that left the folder on
@@ -3499,7 +5285,11 @@ impl Engine {
             String,
             crate::engine::ProjectBaseAdoption,
         ) -> crate::engine::WebCheckoutOutcome,
-        message: fn(&str, &str, bool) -> crate::status_text::StatusText,
+        message: fn(
+            &str,
+            &str,
+            &crate::engine::ProjectBaseAdoption,
+        ) -> crate::status_text::StatusText,
     ) -> EventReaction {
         let base = self.adopt_project_base(project, &branch);
         if let Some(id) = status_op_id
@@ -3511,7 +5301,7 @@ impl Engine {
         // disk, a locked database), and then the checkout has to run again.
         let update = match base.save_failure_message(&project.name, &branch) {
             Some(error) => StatusUpdate::error(error).sticky(),
-            None => StatusUpdate::info(message(&project.name, &branch, base.moved())),
+            None => StatusUpdate::info(message(&project.name, &branch, &base)),
         };
         EventReaction::Status(update)
     }
@@ -3519,7 +5309,7 @@ impl Engine {
     /// Make `branch` the base new worktrees of `project` branch from: saved to
     /// SQLite first (never config: the base is derived state), and moved in
     /// memory only once saved, so the two never disagree.
-    fn adopt_project_base(
+    pub(crate) fn adopt_project_base(
         &mut self,
         project: &Project,
         branch: &str,
@@ -3553,7 +5343,7 @@ impl Engine {
 
     fn process_pull_request_resolved(
         &mut self,
-        result: Result<ResolvedPullRequest, String>,
+        result: Result<ResolvedPullRequest, StatusText>,
         purpose: crate::worker::PrLookupPurpose,
         status_op_id: Option<String>,
     ) -> EventReaction {
@@ -3593,6 +5383,9 @@ impl Engine {
                 } else {
                     match result {
                         Ok(pr) => {
+                            if let Some(remote) = pr.project_remote.clone() {
+                                self.record_own_pr_repository(&session_id, remote);
+                            }
                             match self.apply_pr_attach(
                                 &session_id,
                                 &pr.host,
@@ -3612,9 +5405,7 @@ impl Engine {
                                 },
                             }
                         }
-                        Err(message) => crate::engine::PrAttachOutcome::Failed {
-                            message: message.into(),
-                        },
+                        Err(message) => crate::engine::PrAttachOutcome::Failed { message },
                     }
                 };
                 let attached = matches!(outcome, crate::engine::PrAttachOutcome::Attached { .. });
@@ -3646,10 +5437,10 @@ impl Engine {
 
     fn process_create_agent_progress(
         &self,
-        status_op_id: String,
+        status_op_id: &str,
         message: StatusText,
     ) -> EventReaction {
-        match self.pending_create_ops.get(&status_op_id) {
+        match self.pending_create_ops.get(status_op_id) {
             Some(op) => EventReaction::Status(op.progress(message)),
             None => EventReaction::Nothing,
         }
@@ -3659,11 +5450,16 @@ impl Engine {
         &mut self,
         status_op_id: String,
         message: StatusText,
+        attempted_name: Option<String>,
     ) -> EventReaction {
         self.clear_in_flight(&InFlightKey::CreateAgent);
+        self.note_create_finished(&status_op_id);
         match self.pending_create_ops.remove(&status_op_id) {
             Some(op) => op
-                .resolve(&CreateLaunchOutcome::Failed { message })
+                .resolve(&CreateLaunchOutcome::Failed {
+                    message,
+                    attempted_name,
+                })
                 .into_reaction(),
             None => EventReaction::Status(StatusUpdate::error(message).with_key(status_op_id)),
         }
@@ -3701,17 +5497,12 @@ impl Engine {
         ) {
             self.record_branch_minted_by_recreate(session_id);
         }
-        let live_providers = self.live_tab_providers(session_id);
-        let Some(op) = self.pending_recreate_ops.remove(session_id) else {
+        let Some(pending) = self.pending_recreate_ops.remove(session_id) else {
             // No op means no spinner is waiting on this checkout, which only a
             // synthesised completion reaches. There is nothing to answer.
             return EventReaction::Nothing;
         };
-        op.resolve(&crate::engine::RecreateOutcome {
-            result: outcome,
-            live_providers,
-        })
-        .into_reaction()
+        self.settle_recreate(session_id, pending, outcome)
     }
 
     /// Record that the branch under this agent is one yaran minted, in the record
@@ -3735,14 +5526,35 @@ impl Engine {
                  {err:#}"
             ));
         }
+        self.refresh_branch_history(session_id);
+    }
+
+    /// Branch sync's answer to whether a branch is checked out in an agent's
+    /// worktree. An agent that has gone since the pass read it is ignored, so
+    /// nothing is kept for it.
+    fn process_branch_checkout_changed(
+        &mut self,
+        session_id: String,
+        checkout: crate::worker::BranchCheckout,
+    ) {
+        match checkout {
+            crate::worker::BranchCheckout::OnBranch => {
+                self.no_branch_checked_out.remove(&session_id);
+            }
+            crate::worker::BranchCheckout::NoBranch => {
+                if self.sessions.iter().any(|session| session.id == session_id) {
+                    self.no_branch_checked_out.insert(session_id);
+                }
+            }
+        }
     }
 
     fn process_folder_repo_status_ready(
         &mut self,
-        session_id: String,
+        session_id: &str,
         status: crate::git::FolderRepoStatus,
     ) -> EventReaction {
-        self.clear_in_flight(&InFlightKey::FolderRepoProbe(session_id.clone()));
+        self.clear_in_flight(&InFlightKey::FolderRepoProbe(session_id.to_string()));
         if !self.sessions.iter().any(|session| session.id == session_id) {
             return EventReaction::Nothing;
         }
@@ -3750,8 +5562,9 @@ impl Engine {
         // entry: a managed agent answers WorkingRepo before its first probe
         // lands, so comparing against an absent entry would report a change on
         // every first probe and re-arm the watch for nothing.
-        let changed = self.folder_repo_status(&session_id) != status;
-        self.folder_repo_statuses.insert(session_id.clone(), status);
+        let changed = self.folder_repo_status(session_id) != status;
+        self.folder_repo_statuses
+            .insert(session_id.to_string(), status);
         if changed {
             // Both enumerators gate on this verdict, so a change to it is what
             // takes an agent out of them or puts it back. Without this the
@@ -3760,10 +5573,10 @@ impl Engine {
             self.update_branch_sync_sessions();
             self.update_pr_sync_sessions();
         }
-        if !changed || self.watched_session_id.as_deref() != Some(session_id.as_str()) {
+        if !changed || self.watched_session_id.as_deref() != Some(session_id) {
             return EventReaction::Nothing;
         }
-        if let Some(worktree) = self.set_watched_session(Some(&session_id)) {
+        if let Some(worktree) = self.set_watched_session(Some(session_id)) {
             self.spawn_changed_files_refresh(worktree);
         }
         EventReaction::ClampFilesCursor
@@ -3771,10 +5584,22 @@ impl Engine {
 
     /// Apply engine mutations for a worker event and return any view reaction.
     /// The engine never mutates view state directly.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one short arm per WorkerEvent variant, each handing the event's fields to the handler that applies it"
+    )]
     pub fn process_worker_event(&mut self, event: WorkerEvent) -> EventReaction {
         match event {
             WorkerEvent::CommandWorkerStarted(status) | WorkerEvent::PollerStatus(status) => {
                 EventReaction::Status(status)
+            }
+            WorkerEvent::PollerStatusWithdrawn(key) => EventReaction::ClearStatus(key),
+            WorkerEvent::BranchCheckoutChanged {
+                session_id,
+                checkout,
+            } => {
+                self.process_branch_checkout_changed(session_id, checkout);
+                EventReaction::Nothing
             }
             WorkerEvent::WorkingCopyRecreated {
                 session_id,
@@ -3783,11 +5608,12 @@ impl Engine {
             WorkerEvent::CreateAgentProgress {
                 status_op_id,
                 message,
-            } => self.process_create_agent_progress(status_op_id, message),
+            } => self.process_create_agent_progress(&status_op_id, message),
             WorkerEvent::CreateAgentFailed {
                 status_op_id,
                 message,
-            } => self.process_create_agent_failed(status_op_id, message),
+                attempted_name,
+            } => self.process_create_agent_failed(status_op_id, message, attempted_name),
             WorkerEvent::AgentLaunchReady(boxed) => {
                 // A shared agent that just started fresh because its provider
                 // cannot resume by id is told why, after the launch's own final.
@@ -3795,7 +5621,9 @@ impl Engine {
                     && boxed.request.session.is_slot_tab(&boxed.request.tab_id))
                 .then(|| self.shared_targeted_resume_warning(&boxed.request.session.id))
                 .flatten();
+                let tab_id = boxed.request.tab_id.clone();
                 let (outcome, create_final) = self.process_agent_launch_ready(*boxed);
+                self.note_restart_launch_answer(&tab_id, None);
                 let view = Self::launch_view_with_final(
                     EventReaction::AgentLaunchReadyView(Box::new(outcome)),
                     create_final,
@@ -3809,25 +5637,31 @@ impl Engine {
                 }
             }
             WorkerEvent::AgentLaunchFailed(boxed) => {
+                let tab_id = boxed.request.tab_id.clone();
+                let error = boxed.message.clone();
                 let (outcome, create_final) = self.process_agent_launch_failed(*boxed);
+                self.note_restart_launch_answer(&tab_id, Some(&error));
                 Self::launch_view_with_final(
                     EventReaction::AgentLaunchFailedView(Box::new(outcome)),
                     create_final,
                 )
             }
-            WorkerEvent::ChangedFilesReady { outcome, worktree } => {
-                self.process_changed_files_ready(outcome, worktree)
-            }
+            WorkerEvent::ChangedFilesReady {
+                outcome,
+                worktree,
+                read,
+            } => self.process_changed_files_ready(outcome, &worktree, read),
             WorkerEvent::FolderRepoStatusReady { session_id, status } => {
-                self.process_folder_repo_status_ready(session_id, status)
+                self.process_folder_repo_status_ready(&session_id, status)
             }
             WorkerEvent::StatusOpCompleted { resolved } => resolved.into_reaction(),
+            WorkerEvent::WorktreeFilesChanged => EventReaction::ReloadChangedFiles,
             WorkerEvent::PullCompleted {
                 repo_path,
                 target,
                 result,
                 status,
-            } => self.process_pull_completed(repo_path, target, result, status),
+            } => self.process_pull_completed(repo_path, &target, &result, status),
             WorkerEvent::ClipboardCopyCompleted {
                 label: _,
                 result: _,
@@ -3844,10 +5678,10 @@ impl Engine {
                 result,
                 status,
             } => self.process_branch_rename_completed(
-                session_id,
-                new_branch,
+                &session_id,
+                &new_branch,
                 previous_title,
-                result,
+                &result,
                 status,
             ),
             WorkerEvent::BranchSyncReady(updates) => self.process_branch_sync_ready(updates),
@@ -3856,10 +5690,15 @@ impl Engine {
                 outcome,
             } => self.process_gh_status_checked(generation, outcome),
             WorkerEvent::PrStatusReady(results) => self.process_pr_status_ready(results),
+            WorkerEvent::PrCheckOwedDue(session_id) => {
+                self.retry_owed_branch_check(&session_id);
+                EventReaction::Nothing
+            }
             WorkerEvent::PrCheckAborted(session_id) => {
                 // The one-shot check worker panicked; clear its guard so the next
                 // trigger can retry. The badge is left untouched.
-                self.clear_in_flight(&InFlightKey::PrCheck(session_id));
+                self.clear_in_flight(&InFlightKey::PrCheck(session_id.clone()));
+                self.retry_owed_branch_check(&session_id);
                 EventReaction::Nothing
             }
             WorkerEvent::PullRequestReferenceResolved { .. } => {
@@ -3872,14 +5711,6 @@ impl Engine {
                 status_op_id,
                 purpose,
             } => self.process_pull_request_resolved(result, purpose, status_op_id),
-            WorkerEvent::RefsChanged(session_id) => {
-                logger::debug(&format!(
-                    "[gh-integration] refs watcher: triggering PR check for session {}",
-                    session_id,
-                ));
-                self.spawn_pr_check_for_session(&session_id, crate::engine::PR_CHECK_MIN_INTERVAL);
-                EventReaction::Nothing
-            }
             WorkerEvent::BrowserEntriesReady { dir, entries } => {
                 EventReaction::BrowserEntriesArrived { dir, entries }
             }
@@ -3895,14 +5726,23 @@ impl Engine {
             WorkerEvent::ManageableWorktreesReady {
                 project_id,
                 result,
+                leftovers,
                 status_op_id,
             } => EventReaction::ManageableWorktreesArrived {
                 project_id,
                 result,
+                leftovers,
                 status_op_id,
             },
             WorkerEvent::WorktreeRemoveCompleted { session_id, result } => {
                 self.process_worktree_remove_completed(session_id, result)
+            }
+            WorkerEvent::WorktreeRemoveWaiting {
+                session_id,
+                waiting_for,
+            } => self.process_worktree_remove_waiting(session_id, &waiting_for),
+            WorkerEvent::ProjectDeletionContinue { project_id } => {
+                self.process_project_deletion_continue(&project_id)
             }
             WorkerEvent::ResourceStatsReady(stats, was_baseline) => {
                 self.clear_in_flight(&InFlightKey::ResourceStats);
@@ -3928,6 +5768,21 @@ impl Engine {
                 result,
                 status_op_id,
             } => self.process_initial_commit_created(add, result, status_op_id),
+            WorkerEvent::RepositoryCloned {
+                status_op_id,
+                path,
+                agent_name,
+                repository_key,
+                mode,
+                result,
+            } => self.process_repository_cloned(
+                status_op_id,
+                path,
+                agent_name,
+                repository_key,
+                mode,
+                result,
+            ),
             WorkerEvent::CreateAgentBranchInspected {
                 project,
                 result,
@@ -3936,7 +5791,7 @@ impl Engine {
                 status_op_id: _,
             } => self.process_create_agent_branch_inspected(project, result),
             WorkerEvent::ProjectBranchStatusReady { project_id, result } => {
-                self.process_project_branch_status_ready(project_id, result)
+                self.process_project_branch_status_ready(&project_id, result)
             }
             WorkerEvent::CheckoutProjectDefaultBranchInspected {
                 project,
@@ -3947,6 +5802,12 @@ impl Engine {
                 result,
                 status_op_id,
             ),
+            WorkerEvent::ProjectBaseBranchChanged {
+                project,
+                branch,
+                result,
+                status_op_id,
+            } => self.process_project_base_branch_changed(&project, branch, result, status_op_id),
             WorkerEvent::ConfigReloadReady(result) => self.process_config_reload_ready(*result),
             WorkerEvent::ProjectPersistenceCompleted {
                 action,
@@ -3973,14 +5834,30 @@ impl Engine {
             WorkerEvent::StartupCommandLogContentLoaded { path, result } => {
                 EventReaction::StartupLogContentArrived { path, result }
             }
-            WorkerEvent::ServerFlipPreflightReady { result, warning } => {
+            WorkerEvent::ServerFlipPreflightReady {
+                result,
+                warning,
+                startup,
+            } => {
                 // No engine domain state to mutate: the listeners and the flip
                 // are TUI concerns. Hand them straight to the App.
-                EventReaction::ServerFlipPreflightReady { result, warning }
+                EventReaction::ServerFlipPreflightReady {
+                    result,
+                    warning,
+                    startup,
+                }
             }
-            WorkerEvent::BackgroundServerPreflightReady { result, warning } => {
+            WorkerEvent::BackgroundServerPreflightReady {
+                result,
+                warning,
+                startup,
+            } => {
                 // Same story: the listeners belong to whoever asked to serve.
-                EventReaction::BackgroundServerPreflightReady { result, warning }
+                EventReaction::BackgroundServerPreflightReady {
+                    result,
+                    warning,
+                    startup,
+                }
             }
             WorkerEvent::TailscaleModeApplied { mode, outcome } => {
                 EventReaction::TailscaleModeApplied { mode, outcome }
@@ -4003,6 +5880,18 @@ impl Engine {
     }
 }
 
+/// What applying one agent's sync answers changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrSyncApplied {
+    /// No row was touched.
+    Nothing,
+    /// Only when GitHub last answered moved, which nothing shows but the
+    /// next cycle's plan reads.
+    Bookkeeping,
+    /// Something an agent shows changed.
+    Shown,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4018,6 +5907,28 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn clearing_a_finished_removal_leaves_a_tab_another_writer_is_moving_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("sessions.sqlite3");
+        let store = crate::storage::SessionStore::open(&db).unwrap();
+        let mut session = sample_session("s1", "p1", "feat/x");
+        session.slot_tab_id = "slot-1".to_string();
+        store.create_session(&session).unwrap();
+        store
+            .insert_agent_tab(&sample_tab("t2", "s1", "codex", 1))
+            .unwrap();
+        // Mid-change on the engine's connection: the first tab's row is gone
+        // and its pointer has not moved yet.
+        store.delete_agent_tab("slot-1").unwrap();
+
+        forget_pending_removal_in(&db, "s1");
+
+        let stored = store.load_sessions().unwrap();
+        assert_eq!(stored[0].slot_tab_id, "slot-1");
+        assert_eq!(store.count_agent_tabs("s1").unwrap(), 1);
+    }
 
     #[test]
     fn finish_delete_session_unknown_id_returns_none() {
@@ -4216,6 +6127,7 @@ mod tests {
             .pty_activity
             .insert("tab-2".to_string(), Instant::now());
         engine.pty_input.insert("tab-2".to_string(), Instant::now());
+        engine.pty_used.insert("tab-2".to_string());
         // `pty_pointer` is asserted below alongside the others because its field
         // doc claims it is cleared wherever `pty_activity` is, and a claim
         // nothing pins is a claim that quietly stops being true.
@@ -4239,6 +6151,7 @@ mod tests {
             assert!(!engine.pty_activity.contains_key(key));
             assert!(!engine.pty_input.contains_key(key));
             assert!(!engine.pty_pointer.contains_key(key));
+            assert!(!engine.pty_used.contains(key));
             assert!(
                 !engine
                     .running_provider_pins
@@ -4254,11 +6167,9 @@ mod tests {
     }
 
     #[test]
-    fn do_delete_session_clears_closing_flag_when_worktree_removal_fails() {
-        // A failed synchronous worktree removal must still clear `closing_sessions`
-        // so the agent isn't permanently barred from creating/relaunching tabs
-        // (the async `WorktreeRemoveCompleted` handler already guarantees this;
-        // the sync path must match it).
+    fn a_delete_clears_closing_flag_when_worktree_removal_fails() {
+        // A failed worktree removal must still clear `closing_sessions`, so a
+        // later agent on the same id is not barred from creating tabs.
         let (mut engine, tmp) = test_engine();
         // A real (existing) worktree dir under a NON-git project: `git -C <proj>
         // worktree remove` fails, and because the path exists on disk
@@ -4279,7 +6190,12 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let result = engine.do_delete_session("s1", true, None);
+        let result = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        );
 
         assert!(
             result.is_err(),
@@ -4287,10 +6203,170 @@ mod tests {
         );
         assert!(
             !engine.closing_sessions.contains("s1"),
-            "closing_sessions must be cleared after a failed sync worktree removal"
+            "closing_sessions must be cleared after a failed worktree removal"
         );
-        // The delete aborted, so the session record survives.
-        assert!(engine.sessions.iter().any(|s| s.id == "s1"));
+        assert!(!engine.pending_deletions.contains("s1"));
+    }
+
+    /// End to end through the engine and a REAL repo: an agent yaran made a
+    /// branch for switches onto a branch of its own making, and is deleted with
+    /// its worktree by a caller nobody asked (the cascade's shape). The branch
+    /// yaran made goes, so recreating the agent under its old name does not hit
+    /// "branch already exists"; the one it moved to is kept, because git cannot
+    /// prove yaran made it.
+    #[test]
+    fn an_unasked_delete_of_a_drifted_agent_removes_its_birth_branch_and_keeps_the_one_it_moved_to()
+    {
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = crate::test_git::fixture_git()
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        let (mut engine, tmp) = test_engine();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--initial-branch=main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("f.txt"), "hi").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        let worktree = tmp.path().join("wt-born-here");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "born-here",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        // The drift: the user switches the worktree onto a new branch, and the
+        // branch-sync poller rewrites `branch_name` to follow it.
+        git(&worktree, &["switch", "-c", "drifted"]);
+
+        engine
+            .projects
+            .push(sample_project("p1", repo.to_str().unwrap()));
+        let mut session = sample_session("s1", "p1", "drifted");
+        session
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .initial_branch = "born-here".to_string();
+        session
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .worktree_path = worktree.to_str().unwrap().to_string();
+        // Created the way a create records it: with the identity of the ref
+        // yaran made.
+        let seen = crate::branch_history::identities_of(&repo, vec!["born-here".to_string()])
+            .pop()
+            .filter(|seen| seen.identity.is_some())
+            .expect("the minted branch has a creation entry");
+        engine
+            .session_store
+            .create_session_with_birth(&session, Some(&seen))
+            .unwrap();
+        engine.sessions.push(session);
+
+        let outcome = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        )
+        .unwrap()
+        .expect("the delete should have run");
+
+        assert_eq!(
+            outcome.removal,
+            WorktreeRemoval::Performed {
+                branches: crate::engine::RemovedBranches::Outcomes(vec![
+                    crate::branch_history::BranchOutcome {
+                        role: crate::branch_history::BranchRole::Current,
+                        name: "drifted".to_string(),
+                        fate: crate::branch_history::BranchFate::Kept(
+                            crate::branch_history::KeptBecause::NobodyAsked
+                        ),
+                    },
+                    crate::branch_history::BranchOutcome {
+                        role: crate::branch_history::BranchRole::Other,
+                        name: "born-here".to_string(),
+                        fate: crate::branch_history::BranchFate::Deleted,
+                    },
+                ]),
+            },
+            "both branches must be reported so the status line can name them"
+        );
+        let listed = crate::test_git::fixture_git()
+            .args(["-C", repo.to_str().unwrap(), "branch", "--list"])
+            .output()
+            .unwrap();
+        let branches = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            branches.contains("drifted"),
+            "nobody was asked, and yaran did not make the branch it moved to: {branches}"
+        );
+        assert!(
+            !branches.contains("born-here"),
+            "the branch yaran made for the agent must be gone, or recreating it \
+             fails with \"branch already exists\": {branches}"
+        );
+    }
+
+    /// An adopted worktree's source branch is the agent's own branch, so it is
+    /// not protected from the agent's own delete; the branch an agent was made
+    /// from still is, even after the agent once checked it out.
+    #[test]
+    fn an_adopted_agents_own_branch_is_not_protected_from_its_delete() {
+        let (mut engine, _tmp) = test_engine();
+        let mut session = sample_session("s1", "p1", "adopted");
+        {
+            let managed = session.workspace.as_managed_mut().expect("managed");
+            managed.source_branch = "adopted".to_string();
+            managed.branch_provenance = crate::model::BranchProvenance::Adopted;
+        }
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session.clone());
+        let managed = session.workspace.as_managed().expect("managed");
+        assert!(
+            !engine
+                .protected_branches(managed)
+                .contains(&"adopted".to_string())
+        );
+        // An agent yaran made from `release-1.2` that once checked it out: the
+        // visit does not make it the agent's, so it stays protected.
+        let mut made = managed.clone();
+        made.source_branch = "release-1.2".to_string();
+        made.branch_provenance = crate::model::BranchProvenance::CreatedByYaran;
+        engine
+            .session_store
+            .record_branches_seen(
+                "s1",
+                &[crate::branch_history::SeenBranch {
+                    name: "release-1.2".to_string(),
+                    identity: None,
+                    tip: None,
+                }],
+            )
+            .unwrap();
+        assert!(
+            engine
+                .protected_branches(&made)
+                .contains(&"release-1.2".to_string())
+        );
     }
 
     /// Fork f4f2257a (`begin_delete_session_applies_registered_project_overlap_guard`):
@@ -4327,25 +6403,35 @@ mod tests {
             engine.session_store.upsert_session(&session).unwrap();
             engine.sessions.push(session);
 
-            let Err(err) = engine.do_delete_session("s1", true, None) else {
+            // The delete pipeline lets the record go at once and refuses the
+            // removal on its worker; what must hold is that nothing on disk
+            // was touched and the refusal says why.
+            let Err(err) = crate::engine::test_support::delete_through_pipeline(
+                &mut engine,
+                "s1",
+                WorktreeOnDelete::Remove,
+                None,
+            ) else {
                 panic!("an overlapping worktree removal must be refused");
             };
+            // A project inside the worktree is refused by the removal's own
+            // project check, one around it by the overlap guard; either way it
+            // says why and touches nothing.
+            let said = format!("{err:#}");
             assert!(
-                format!("{err:#}").contains("overlaps the registered project"),
-                "unexpected error: {err:#}"
+                said.contains("overlaps the registered project")
+                    || said.contains("has its repository at"),
+                "unexpected error: {said}"
             );
             assert!(worktree.exists());
             assert!(protected.exists());
-            assert!(!engine.closing_sessions.contains("s1"));
-            assert!(engine.sessions.iter().any(|s| s.id == "s1"));
         }
     }
 
-    /// The reported journey, end to end through the engine and a REAL repo:
-    /// create an agent, let its branch drift, delete it with its worktree, and
-    /// recreating it under the old name must not hit "branch already exists".
-    /// Before the fix the birth branch survived, because the delete only ever
-    /// saw `branch_name`, which the branch-sync poller had already rewritten.
+    /// The same for an agent recorded before identities were (a legacy row,
+    /// as an upgrade leaves it): its birth branch's own creation entry is from
+    /// the moment the agent was created, which proves yaran made it, so it goes
+    /// though the worktree moved off it before the upgrade.
     #[test]
     fn deleting_an_agent_whose_branch_drifted_removes_the_branch_it_was_born_on() {
         fn git(dir: &std::path::Path, args: &[&str]) {
@@ -4400,21 +6486,36 @@ mod tests {
             .as_managed_mut()
             .expect("managed test session")
             .worktree_path = worktree.to_str().unwrap().to_string();
-        engine.session_store.upsert_session(&session).unwrap();
+        // Recorded as an older yaran recorded it: no identity for the birth row.
+        engine.session_store.create_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine
-            .do_delete_session("s1", true, None)
-            .unwrap()
-            .expect("the delete should have run");
+        let outcome = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        )
+        .unwrap()
+        .expect("the delete should have run");
 
         assert_eq!(
             outcome.removal,
             WorktreeRemoval::Performed {
-                branches: crate::engine::RemovedBranches::Deleted(crate::git::RemoveResult {
-                    branch: crate::git::BranchDeletion::Deleted,
-                    initial_branch: Some(crate::git::BranchDeletion::Deleted),
-                }),
+                branches: crate::engine::RemovedBranches::Outcomes(vec![
+                    crate::branch_history::BranchOutcome {
+                        role: crate::branch_history::BranchRole::Current,
+                        name: "drifted".to_string(),
+                        fate: crate::branch_history::BranchFate::Kept(
+                            crate::branch_history::KeptBecause::NobodyAsked
+                        ),
+                    },
+                    crate::branch_history::BranchOutcome {
+                        role: crate::branch_history::BranchRole::Other,
+                        name: "born-here".to_string(),
+                        fate: crate::branch_history::BranchFate::Deleted,
+                    },
+                ]),
             },
             "both branches must be reported so the status line can name them"
         );
@@ -4424,27 +6525,23 @@ mod tests {
             .unwrap();
         let branches = String::from_utf8_lossy(&listed.stdout);
         assert!(
-            !branches.contains("drifted"),
-            "the current branch must be gone: {branches}"
+            branches.contains("drifted"),
+            "nobody was asked, and yaran did not make the branch it moved to: {branches}"
         );
         assert!(
             !branches.contains("born-here"),
-            "the branch the agent was born on must be gone too, or recreating it \
+            "the branch yaran made for the agent must be gone, or recreating it \
              fails with \"branch already exists\": {branches}"
         );
     }
 
-    /// THE CONSENT PROPERTY: the branches the dialog names are exactly the
-    /// branches the delete removes.
-    ///
-    /// Both halves are read from the real thing rather than asserted against a
-    /// hand-written list: the names come from `warned_branches`, which is what
-    /// both dialogs render, and the deletions are the difference between the
-    /// repository's branches before and after. A drifted agent is the case that
-    /// separates them, and the branch the user is being asked about here is one
-    /// yaran did not create, so the tick is the only permission there is.
+    /// A caller that predates the two boxes and ticks its single answer gets
+    /// what such a caller always got: the branch the worktree is on and the one
+    /// the agent was born on, and nothing else. The names come from
+    /// `warned_branches`, and the deletions are the difference between the
+    /// repository's branches before and after.
     #[test]
-    fn a_drifted_delete_removes_exactly_the_branches_the_dialog_named() {
+    fn a_drifted_delete_with_the_older_answer_removes_exactly_its_two_branches() {
         fn git(dir: &std::path::Path, args: &[&str]) {
             let out = crate::test_git::fixture_git()
                 .args(args)
@@ -4470,7 +6567,7 @@ mod tests {
                 .unwrap();
             String::from_utf8_lossy(&out.stdout)
                 .lines()
-                .map(|line| line.to_string())
+                .map(std::string::ToString::to_string)
                 .collect()
         }
 
@@ -4514,14 +6611,18 @@ mod tests {
             .expect("a managed agent with a project has branch inputs")
             .warned_branches()
             .into_iter()
-            .map(|branch| branch.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let before = branches(&repo);
 
-        engine
-            .do_delete_session("s1", true, Some(true))
-            .unwrap()
-            .expect("the delete should have run");
+        crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            Some(true),
+        )
+        .unwrap()
+        .expect("the delete should have run");
 
         let gone: std::collections::BTreeSet<String> =
             before.difference(&branches(&repo)).cloned().collect();
@@ -4616,17 +6717,19 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine
-            .do_delete_session("s1", true, None)
-            .unwrap()
-            .expect("the delete should have run");
+        let outcome = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        )
+        .unwrap()
+        .expect("the delete should have run");
 
         assert_eq!(
             outcome.removal,
             WorktreeRemoval::Performed {
-                branches: RemovedBranches::Kept(crate::model::BranchKeptReason::NotYarans(
-                    crate::model::BranchProvenance::AttachedExisting,
-                )),
+                branches: current_only("develop", not_yarans("attached")),
             },
             "nothing was deleted, so the outcome must not carry a deletion report"
         );
@@ -4636,6 +6739,21 @@ mod tests {
             branches.contains("develop"),
             "a branch that existed before the agent must survive it: {branches}"
         );
+    }
+
+    /// What a removal reports about its one current branch.
+    fn current_only(name: &str, fate: crate::branch_history::BranchFate) -> RemovedBranches {
+        RemovedBranches::Outcomes(vec![crate::branch_history::BranchOutcome {
+            role: crate::branch_history::BranchRole::Current,
+            name: name.to_string(),
+            fate,
+        }])
+    }
+
+    fn not_yarans(provenance: &str) -> crate::branch_history::BranchFate {
+        crate::branch_history::BranchFate::Kept(crate::branch_history::KeptBecause::NotYarans {
+            provenance: provenance.to_string(),
+        })
     }
 
     /// The new capability: a ticked "also delete the branch" box removes a
@@ -4662,20 +6780,21 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine
-            .do_delete_session("s1", true, Some(true))
-            .unwrap()
-            .expect("the delete should have run");
+        let outcome = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            Some(true),
+        )
+        .unwrap()
+        .expect("the delete should have run");
 
-        assert!(
-            matches!(
-                outcome.removal,
-                WorktreeRemoval::Performed {
-                    branches: RemovedBranches::Deleted(_),
-                }
-            ),
-            "an explicit yes must produce a deletion report, got {:?}",
-            outcome.removal
+        assert_eq!(
+            outcome.removal,
+            WorktreeRemoval::Performed {
+                branches: current_only("develop", crate::branch_history::BranchFate::Deleted),
+            },
+            "an explicit yes must produce a deletion report"
         );
         let branches = branch_list(&repo);
         assert!(
@@ -4707,15 +6826,24 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine
-            .do_delete_session("s1", true, Some(false))
-            .unwrap()
-            .expect("the delete should have run");
+        let outcome = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            Some(false),
+        )
+        .unwrap()
+        .expect("the delete should have run");
 
         assert_eq!(
             outcome.removal,
             WorktreeRemoval::Performed {
-                branches: RemovedBranches::Kept(crate::model::BranchKeptReason::UserDeclined),
+                branches: current_only(
+                    "yaran-made",
+                    crate::branch_history::BranchFate::Kept(
+                        crate::branch_history::KeptBecause::UserDeclined
+                    ),
+                ),
             },
             "the status line must say the user declined, not invent a provenance excuse"
         );
@@ -4743,7 +6871,12 @@ mod tests {
             ));
 
         for answer in [None, Some(true), Some(false)] {
-            let Err(err) = engine.do_delete_session("sa1", true, answer) else {
+            let Err(err) = crate::engine::test_support::delete_through_pipeline(
+                &mut engine,
+                "sa1",
+                crate::engine::WorktreeOnDelete::Remove,
+                answer,
+            ) else {
                 panic!("a worktree-removing delete of a standalone agent must be refused");
             };
             assert!(
@@ -4794,10 +6927,14 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine
-            .do_delete_session("s1", true, None)
-            .unwrap()
-            .expect("ran");
+        let outcome = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        )
+        .unwrap()
+        .expect("ran");
 
         let branches = branch_list(&repo);
         assert!(
@@ -4811,16 +6948,19 @@ mod tests {
             &outcome.removal,
         );
         assert!(
-            message.contains("\"feature-x\" was created inside this agent's worktree and was kept")
-                && message.contains("\"develop\" existed before this agent and was kept"),
+            message.contains(
+                "Its branch \"feature-x\" was kept: this agent was on it, but nobody was asked"
+            ) && message.contains("\"develop\" existed before this agent and was kept"),
             "each kept branch needs its own reason: {message}"
         );
     }
 
     #[test]
     fn deleting_a_project_keeps_the_branch_of_an_attached_agent() {
-        // The cascade calls `do_delete_session` per agent, so it inherits the
-        // gate: removing a project must not take the user's `develop` with it.
+        // The cascade sends each agent through the same deferred removal a
+        // single delete takes, with nobody asked about the branch, so it
+        // inherits the gate: removing a project must not take the user's
+        // `develop` with it.
         let (mut engine, tmp) = test_engine();
         let repo = repo_with_branches(tmp.path(), &["develop", "yaran-made"]);
         let attached = attach_worktree(&repo, "develop");
@@ -4858,6 +6998,18 @@ mod tests {
                 project_name: "repo".to_string(),
             })
             .unwrap();
+        // Both removals run on workers; wait for both to land.
+        let mut landed = 0;
+        while landed < 2 {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .expect("each removal reports");
+            if matches!(event, WorkerEvent::WorktreeRemoveCompleted { .. }) {
+                landed += 1;
+            }
+            engine.process_worker_event(event);
+        }
 
         let branches = branch_list(&repo);
         assert!(
@@ -4900,10 +7052,14 @@ mod tests {
         engine.sessions.push(first);
 
         // Delete WITHOUT the checkbox: worktree and branch stay, row goes.
-        engine
-            .do_delete_session("s1", false, None)
-            .unwrap()
-            .expect("ran");
+        crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Keep,
+            None,
+        )
+        .unwrap()
+        .expect("ran");
         assert!(worktree.exists());
 
         // Re-adopt the orphan.
@@ -4921,17 +7077,19 @@ mod tests {
         engine.session_store.upsert_session(&second).unwrap();
         engine.sessions.push(second);
 
-        let outcome = engine
-            .do_delete_session("s2", true, None)
-            .unwrap()
-            .expect("ran");
+        let outcome = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s2",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        )
+        .unwrap()
+        .expect("ran");
 
         assert_eq!(
             outcome.removal,
             WorktreeRemoval::Performed {
-                branches: RemovedBranches::Kept(crate::model::BranchKeptReason::NotYarans(
-                    crate::model::BranchProvenance::Adopted,
-                )),
+                branches: current_only("yaran-made", not_yarans("adopted")),
             }
         );
         let branches = branch_list(&repo);
@@ -5230,6 +7388,7 @@ mod tests {
             EventReaction::TailscaleModeApplied { .. } => "TailscaleModeApplied",
             EventReaction::CloudModeApplied { .. } => "CloudModeApplied",
             EventReaction::GhAvailabilityChanged { .. } => "GhAvailabilityChanged",
+            EventReaction::GithubFactsChanged => "GithubFactsChanged",
             EventReaction::Multi(_) => "Multi",
             EventReaction::RebuildLeftItems => "RebuildLeftItems",
             EventReaction::ReloadChangedFiles => "ReloadChangedFiles",
@@ -5242,9 +7401,11 @@ mod tests {
             EventReaction::OpenNewAgentPromptForPr { .. } => "OpenNewAgentPromptForPr",
             EventReaction::WorktreeRemoveSucceeded { .. } => "WorktreeRemoveSucceeded",
             EventReaction::WorktreeRemoveFailed { .. } => "WorktreeRemoveFailed",
+            EventReaction::WorktreeRemoveWaiting { .. } => "WorktreeRemoveWaiting",
             EventReaction::ResourceStatsArrived(_, _) => "ResourceStatsArrived",
             EventReaction::AddProjectAfterBranchCheckout { .. } => "AddProjectAfterBranchCheckout",
             EventReaction::AddProjectAfterInitialCommit { .. } => "AddProjectAfterInitialCommit",
+            EventReaction::AddProjectAfterClone(_) => "AddProjectAfterClone",
             EventReaction::ContinueCreateAgentAfterInspection { .. } => {
                 "ContinueCreateAgentAfterInspection"
             }
@@ -5253,11 +7414,11 @@ mod tests {
             }
             EventReaction::ApplyReloadedConfig(_) => "ApplyReloadedConfig",
             EventReaction::OpenConfigReloadFailedModal(_) => "OpenConfigReloadFailedModal",
+            EventReaction::ConfigAdopted { .. } => "ConfigAdopted",
             EventReaction::ProjectPersistenceOutcome(_) => "ProjectPersistenceOutcome",
             EventReaction::StartupLogsArrived { .. } => "StartupLogsArrived",
             EventReaction::StartupLogContentArrived { .. } => "StartupLogContentArrived",
             EventReaction::FinishDeleteSessionView(_) => "FinishDeleteSessionView",
-            EventReaction::DoDeleteSessionView(_) => "DoDeleteSessionView",
             EventReaction::BeginDeleteSessionView(_) => "BeginDeleteSessionView",
             EventReaction::DispatchAgentLaunchView(_) => "DispatchAgentLaunchView",
             EventReaction::DeleteTerminalView(_) => "DeleteTerminalView",
@@ -5270,13 +7431,21 @@ mod tests {
 
     // ── PullCompleted (Project) ──────────────────────────────────────────
 
+    /// The key a running project pull holds its folder with.
+    fn project_pull_key(repo_path: &str) -> InFlightKey {
+        InFlightKey::ProjectFolder {
+            path: repo_path.to_string(),
+            action: crate::engine::ProjectFolderAction::Pull,
+        }
+    }
+
     #[test]
     fn pull_completed_project_ok_updates_branch_and_clears_inflight() {
         let (mut engine, _tmp) = test_engine();
         let project = sample_project("p1", "/tmp/p1");
         engine.projects.push(project);
         let repo_path = "/tmp/p1".to_string();
-        engine.mark_in_flight(InFlightKey::Pull(repo_path.clone()));
+        engine.mark_in_flight(project_pull_key(&repo_path));
 
         let reaction = engine.process_worker_event(WorkerEvent::PullCompleted {
             repo_path: repo_path.clone(),
@@ -5287,6 +7456,7 @@ mod tests {
             },
             result: Ok(crate::worker::PullOutcome::Pulled {
                 current_branch: Some("feature-x".to_string()),
+                default_warning: None,
             }),
             status: crate::engine::ResolvedFinal::new(
                 "pull-project:p1",
@@ -5297,7 +7467,7 @@ mod tests {
         });
 
         // In-flight entry is cleared regardless of result.
-        assert!(!engine.is_in_flight(&InFlightKey::Pull(repo_path.clone())));
+        assert_eq!(engine.project_folder_action(&repo_path), None);
 
         // Project's current branch is updated; status is NotLeading because
         // leading_branch is Some("main") and current_branch is "feature-x".
@@ -5313,6 +7483,42 @@ mod tests {
         );
     }
 
+    /// With no leading branch on record, the branch status comes from what
+    /// the pull worker read about the default branch, not from git asked again
+    /// on the engine thread: a worker that found the checkout on its default
+    /// leaves it leading, whatever the branch is called.
+    #[test]
+    fn pull_completed_project_takes_the_default_warning_from_the_worker() {
+        let (mut engine, _tmp) = test_engine();
+        let mut project = sample_project("p1", "/tmp/p1");
+        project.leading_branch = None;
+        engine.projects.push(project);
+        let repo_path = "/tmp/p1".to_string();
+        engine.mark_in_flight(project_pull_key(&repo_path));
+
+        engine.process_worker_event(WorkerEvent::PullCompleted {
+            repo_path,
+            target: PullTarget::Project {
+                project_id: "p1".to_string(),
+                project_name: "p1-name".to_string(),
+                leading_branch: None,
+            },
+            result: Ok(crate::worker::PullOutcome::Pulled {
+                current_branch: Some("trunk".to_string()),
+                default_warning: None,
+            }),
+            status: crate::engine::ResolvedFinal::new(
+                "pull-project:p1",
+                crate::engine::Final::info("Refreshed."),
+            ),
+        });
+
+        assert_eq!(
+            engine.projects[0].branch_status,
+            ProjectBranchStatus::Leading
+        );
+    }
+
     /// A no-origin refresh still updates the project's current branch and
     /// resolves the keyed info final (nothing to pull is not a failure).
     #[test]
@@ -5321,7 +7527,7 @@ mod tests {
         let project = sample_project("p1", "/tmp/p1");
         engine.projects.push(project);
         let repo_path = "/tmp/p1".to_string();
-        engine.mark_in_flight(InFlightKey::Pull(repo_path.clone()));
+        engine.mark_in_flight(project_pull_key(&repo_path));
 
         let reaction = engine.process_worker_event(WorkerEvent::PullCompleted {
             repo_path: repo_path.clone(),
@@ -5332,6 +7538,7 @@ mod tests {
             },
             result: Ok(crate::worker::PullOutcome::NoOrigin {
                 current_branch: Some("feature-x".to_string()),
+                default_warning: None,
             }),
             status: crate::engine::ResolvedFinal::new(
                 "pull-project:p1",
@@ -5341,7 +7548,7 @@ mod tests {
             ),
         });
 
-        assert!(!engine.is_in_flight(&InFlightKey::Pull(repo_path.clone())));
+        assert_eq!(engine.project_folder_action(&repo_path), None);
         let p = &engine.projects[0];
         assert_eq!(p.current_branch, "feature-x");
 
@@ -5354,7 +7561,7 @@ mod tests {
     fn pull_completed_project_err_still_clears_inflight() {
         let (mut engine, _tmp) = test_engine();
         let repo_path = "/tmp/p1".to_string();
-        engine.mark_in_flight(InFlightKey::Pull(repo_path.clone()));
+        engine.mark_in_flight(project_pull_key(&repo_path));
 
         let reaction = engine.process_worker_event(WorkerEvent::PullCompleted {
             repo_path: repo_path.clone(),
@@ -5370,7 +7577,7 @@ mod tests {
             ),
         });
 
-        assert!(!engine.is_in_flight(&InFlightKey::Pull(repo_path.clone())));
+        assert_eq!(engine.project_folder_action(&repo_path), None);
         let status = unwrap_status(reaction);
         assert_eq!(status.tone, StatusTone::Error);
         assert_eq!(
@@ -5384,10 +7591,12 @@ mod tests {
     #[test]
     fn branch_sync_ready_changed_branch_returns_rebuild() {
         let (mut engine, _tmp) = test_engine();
+        engine.github_integration_enabled = true;
+        engine.gh_status = crate::model::GhStatus::Available;
         engine.sessions.push(sample_session("s1", "p1", "old"));
         let before_updated_at = engine.sessions[0].updated_at;
 
-        let reaction = engine.process_worker_event(WorkerEvent::BranchSyncReady(vec![(
+        let reaction = engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
             "s1".to_string(),
             "new".to_string(),
         )]));
@@ -5401,6 +7610,64 @@ mod tests {
         let loaded = engine.session_store.load_sessions().expect("load");
         let stored = loaded.iter().find(|s| s.id == "s1").expect("stored s1");
         assert_eq!(stored.branch_name(), Some("new"));
+
+        // The pull-request plan asks about the branch the agent is on now.
+        let planned: Vec<String> = engine
+            .pr_sync_sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.current.name.clone())
+            .collect();
+        assert_eq!(planned, vec!["new".to_string()]);
+        assert!(
+            engine.pr_last_checked.contains_key("s1"),
+            "the branch it moved to is asked about at once"
+        );
+    }
+
+    /// A move that lands while a check for the old branch is still running,
+    /// and inside the debounce that check started, is not lost: the new
+    /// branch's check runs once the old one has finished and the window has
+    /// passed, with the blind poll switched off.
+    #[test]
+    fn a_branch_check_refused_by_a_running_check_runs_once_it_can() {
+        let (mut engine, _tmp) = test_engine();
+        engine.github_integration_enabled = true;
+        engine.gh_status = crate::model::GhStatus::Available;
+        engine.sessions.push(sample_session("s1", "p1", "feat/a"));
+        // A check for feat/a is running, dispatched 9.5 seconds ago.
+        engine.mark_in_flight(InFlightKey::PrCheck("s1".to_string()));
+        let dispatched = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(9_500))
+            .expect("the monotonic clock reads later than the rewind");
+        engine.pr_last_checked.insert("s1".to_string(), dispatched);
+        let asked_for_a = pr_status_ready(vec![("s1".to_string(), None)]);
+
+        engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
+            "s1".to_string(),
+            "feat/b".to_string(),
+        )]));
+        assert_eq!(
+            engine.pr_last_checked.get("s1"),
+            Some(&dispatched),
+            "refused while the feat/a check runs"
+        );
+        engine.process_worker_event(asked_for_a);
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while engine.pr_last_checked.get("s1") == Some(&dispatched) {
+            assert!(
+                Instant::now() < deadline,
+                "feat/b was never checked after the feat/a check finished"
+            );
+            if let Ok(event) = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+            {
+                engine.process_worker_event(event);
+            }
+        }
     }
 
     #[test]
@@ -5408,7 +7675,7 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(sample_session("s1", "p1", "same"));
 
-        let reaction = engine.process_worker_event(WorkerEvent::BranchSyncReady(vec![(
+        let reaction = engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
             "s1".to_string(),
             "same".to_string(),
         )]));
@@ -5431,7 +7698,7 @@ mod tests {
             .initial_branch = "server-mode".into();
         engine.sessions.push(session);
 
-        engine.process_worker_event(WorkerEvent::BranchSyncReady(vec![(
+        engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
             "s1".to_string(),
             "agent-tabs".to_string(),
         )]));
@@ -5496,7 +7763,7 @@ mod tests {
         engine.mark_in_flight(InFlightKey::BranchRename("s1".into()));
 
         // The poller observes the (about-to-be) renamed branch first.
-        let reaction = engine.process_worker_event(WorkerEvent::BranchSyncReady(vec![(
+        let reaction = engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
             "s1".to_string(),
             "agent-tabs".to_string(),
         )]));
@@ -5512,6 +7779,50 @@ mod tests {
         // The session store was never upserted for s1 (no drift persisted).
         let loaded = engine.session_store.load_sessions().expect("load");
         assert!(loaded.iter().all(|s| s.id != "s1"));
+    }
+
+    /// A drift yaran could not save leaves the agent in memory as the database
+    /// holds it, so the next branch check meets the drift again and saves it
+    /// once the database takes writes. It is reported on a surface once, not
+    /// on every check.
+    #[test]
+    fn branch_sync_drift_that_cannot_be_saved_is_reported_once() {
+        let (mut engine, _tmp) = test_engine();
+        let session = sample_session("s1", "p1", "server-mode");
+        engine.session_store.upsert_session(&session).unwrap();
+        engine.sessions.push(session);
+        rusqlite::Connection::open(&engine.paths.sessions_db_path)
+            .unwrap()
+            .execute_batch(
+                "create trigger refuse_session_update before update on agent_sessions \
+                 begin select raise(abort, 'disk is full'); end",
+            )
+            .unwrap();
+
+        let drift =
+            || WorkerEvent::branch_sync_moved(vec![("s1".to_string(), "agent-tabs".to_string())]);
+
+        let first = engine.process_worker_event(drift());
+        let EventReaction::Status(status) = first else {
+            panic!("expected one warning, got {first:?}");
+        };
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(
+            status
+                .message
+                .contains("changed to \"agent-tabs\" outside yaran, but yaran could not save it")
+                && status.message.contains("disk is full"),
+            "{}",
+            status.message
+        );
+        assert_eq!(engine.sessions[0].branch_name(), Some("server-mode"));
+
+        let again = engine.process_worker_event(drift());
+        assert!(
+            matches!(again, EventReaction::Nothing),
+            "the same unsaved drift is not reported on every check: {again:?}"
+        );
+        assert_eq!(engine.sessions[0].branch_name(), Some("server-mode"));
     }
 
     #[test]
@@ -5537,13 +7848,13 @@ mod tests {
         );
 
         // Observing the expected NEW branch mid-rename is skipped.
-        let r = engine.process_worker_event(WorkerEvent::BranchSyncReady(vec![(
+        let r = engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
             "s1".to_string(),
             "new-branch".to_string(),
         )]));
         assert!(matches!(r, EventReaction::Nothing));
         // Observing the still-pending OLD branch is also skipped.
-        let r = engine.process_worker_event(WorkerEvent::BranchSyncReady(vec![(
+        let r = engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
             "s1".to_string(),
             "old-branch".to_string(),
         )]));
@@ -5587,7 +7898,7 @@ mod tests {
 
         let message =
             engine.dispatch_deferred_worktree_removal(crate::engine::DeferredWorktreeRemoval {
-                delete_branch: None,
+                branches: crate::branch_history::BranchPlan::default(),
                 session_id: "s1".to_string(),
                 project_path: repo.to_string_lossy().to_string(),
                 managed: crate::model::ManagedWorkspace {
@@ -5600,6 +7911,7 @@ mod tests {
                     worktree_path: worktree.to_string_lossy().to_string(),
                 },
                 busy_message: "Removing worktree\u{2026}".to_string().into(),
+                processes: crate::engine::RemovalProcesses::none(),
             });
 
         assert!(
@@ -5640,7 +7952,7 @@ mod tests {
             },
         );
 
-        let r = engine.process_worker_event(WorkerEvent::BranchSyncReady(vec![(
+        let r = engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
             "s1".to_string(),
             "surprise-branch".to_string(),
         )]));
@@ -5703,6 +8015,8 @@ mod tests {
     #[test]
     fn branch_rename_completed_success_updates_branch_and_clears_guards() {
         let (mut engine, _tmp) = test_engine();
+        engine.github_integration_enabled = true;
+        engine.gh_status = crate::model::GhStatus::Available;
         let session = sample_session("s1", "p1", "old-branch");
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
@@ -5732,10 +8046,109 @@ mod tests {
         assert_eq!(engine.sessions[0].branch_name(), Some("new-branch"));
         let stored = engine.session_store.load_sessions().unwrap();
         assert_eq!(stored[0].branch_name(), Some("new-branch"));
+        // The pull-request plan asks about the renamed branch from now on.
+        let planned: Vec<String> = engine
+            .pr_sync_sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.current.name.clone())
+            .collect();
+        assert_eq!(planned, vec!["new-branch".to_string()]);
+        assert!(
+            engine.pr_last_checked.contains_key("s1"),
+            "the renamed branch is asked about at once"
+        );
+        // Renaming the branch yaran minted keeps it the branch yaran minted, then,
+        // so a pull request older than the agent is still refused for it, and
+        // that survives a restart.
+        let created_at = engine.sessions[0].created_at;
+        let minted = engine.pr_sync_sessions.lock().unwrap()[0]
+            .current
+            .identity_at;
+        assert_eq!(minted, Some(created_at));
+        assert_eq!(
+            engine.session_store.load_minted_branch_renames().unwrap(),
+            vec![("s1".to_string(), "new-branch".to_string())]
+        );
+        // A later switch to some other branch is drift, and drops it.
+        engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
+            "s1".to_string(),
+            "develop".to_string(),
+        )]));
+        let minted = engine.pr_sync_sessions.lock().unwrap()[0]
+            .current
+            .identity_at;
+        assert_eq!(minted, None);
+        // And renaming that other branch to the name the minted one once had
+        // does not make it the minted one: the drift ended the marker.
+        engine.process_worker_event(WorkerEvent::BranchRenameCompleted {
+            session_id: "s1".into(),
+            new_branch: "new-branch".into(),
+            previous_title: None,
+            result: Ok(()),
+            status: crate::engine::ResolvedFinal::new(
+                "rename:s1",
+                crate::engine::Final::info("renamed"),
+            ),
+        });
+        let minted = engine.pr_sync_sessions.lock().unwrap()[0]
+            .current
+            .identity_at;
+        assert_eq!(minted, None);
+        assert_eq!(
+            engine.session_store.load_minted_branch_renames().unwrap(),
+            Vec::<(String, String)>::new()
+        );
+    }
+
+    /// A rename that moved the branch to the agent's new name leaves no custom
+    /// title behind, so the label keeps following the branch afterwards; a
+    /// custom title that differs from the branch is kept.
+    #[test]
+    fn branch_rename_completed_drops_a_title_that_only_repeats_the_branch() {
+        let (mut engine, _tmp) = test_engine();
+        let mut session = sample_session("s1", "p1", "old-branch");
+        session.title = Some("new-branch".into());
+        engine.session_store.upsert_session(&session).unwrap();
+        engine.sessions.push(session);
+        let mut other = sample_session("s2", "p1", "other-old");
+        other.title = Some("Something else".into());
+        engine.session_store.upsert_session(&other).unwrap();
+        engine.sessions.push(other);
+
+        for (id, branch) in [("s1", "new-branch"), ("s2", "other-new")] {
+            engine.mark_in_flight(InFlightKey::BranchRename(id.into()));
+            engine.process_worker_event(WorkerEvent::BranchRenameCompleted {
+                session_id: id.into(),
+                new_branch: branch.into(),
+                previous_title: None,
+                result: Ok(()),
+                status: crate::engine::ResolvedFinal::new(
+                    "rename",
+                    crate::engine::Final::info("renamed"),
+                ),
+            });
+        }
+
+        let stored = engine.session_store.load_sessions().unwrap();
+        let title = |id: &str| {
+            stored
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.title.clone())
+        };
+        assert_eq!(title("s1"), None, "the label follows the branch again");
+        assert_eq!(engine.sessions[0].display_label(), "new-branch");
+        assert_eq!(title("s2").as_deref(), Some("Something else"));
     }
 
     /// Fork 773a6b04 (P1-27): a rename git made but the database refused is
-    /// undone in memory and in git, and reported as a failure, never success.
+    /// never reported as success, and memory never claims what the database
+    /// does not hold. Upstream's answer supersedes the fork's git revert: the
+    /// branch keeps its new name in git, memory keeps what the database holds,
+    /// and the branch check saves the new name once the database takes writes
+    /// again, so nothing races the agent working on that branch.
     #[test]
     fn branch_rename_db_failure_restores_git_and_memory_without_success() {
         let (mut engine, tmp) = test_engine();
@@ -5789,9 +8202,12 @@ mod tests {
 
         let memory = engine.sessions.iter().find(|s| s.id == "s1").unwrap();
         assert_eq!(memory.branch_name(), Some("old-branch"));
-        assert_eq!(memory.title, None);
         let durable = engine.session_store.load_sessions().unwrap();
         assert_eq!(durable[0].branch_name(), Some("old-branch"));
+        assert_eq!(
+            memory.title, durable[0].title,
+            "memory is what the database holds"
+        );
         let EventReaction::Multi(items) = reaction else {
             panic!("expected Multi");
         };
@@ -5805,20 +8221,12 @@ mod tests {
             })
             .collect();
         assert!(
-            texts
-                .iter()
-                .any(|t| t.contains("Error") && t.contains("couldn't be persisted")),
+            texts.iter().any(|t| t.contains("Warning")
+                && t.contains("could not save the agent's new branch name")),
             "{texts:?}"
         );
         assert!(!texts.iter().any(|t| t.contains("Renamed agent and branch")));
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while crate::git::current_branch(&repo).ok().as_deref() != Some("old-branch")
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert_eq!(crate::git::current_branch(&repo).unwrap(), "old-branch");
+        assert_eq!(crate::git::current_branch(&repo).unwrap(), "new-branch");
     }
 
     #[test]
@@ -5922,6 +8330,7 @@ mod tests {
             binary: false,
             diff_excluded: false,
             renamed_from: None,
+            kind: crate::model::ChangedFileKind::File,
         }
     }
 
@@ -5937,6 +8346,7 @@ mod tests {
                 vec![sample_changed_file("unstaged.txt")],
             )),
             worktree,
+            read: 0,
         });
 
         // The view follow-up that repaints the TUI's changed-files pane.
@@ -5945,6 +8355,30 @@ mod tests {
         assert_eq!(engine.staged_files[0].path, "staged.txt");
         assert_eq!(engine.unstaged_files.len(), 1);
         assert_eq!(engine.unstaged_files[0].path, "unstaged.txt");
+    }
+
+    /// A listing whose read started before one already applied saw an older
+    /// tree, and does not replace it however late it lands.
+    #[test]
+    fn an_older_changed_files_read_never_replaces_a_newer_one() {
+        let (mut engine, _tmp) = test_engine();
+        let worktree = PathBuf::from("/tmp/wt-current");
+        *engine.watched_worktree.lock().unwrap() = Some(worktree.clone());
+        let (older, newer) = {
+            let mut queue = engine.changed_files_refresh.lock().unwrap();
+            (queue.start_read(), queue.start_read())
+        };
+        let listing = |path: &str, read: u64| WorkerEvent::ChangedFilesReady {
+            outcome: Ok((vec![sample_changed_file(path)], Vec::new())),
+            worktree: worktree.clone(),
+            read,
+        };
+
+        engine.process_worker_event(listing("after-the-stage.txt", newer));
+        let late = engine.process_worker_event(listing("before-the-stage.txt", older));
+
+        assert!(matches!(late, EventReaction::Nothing));
+        assert_eq!(engine.staged_files[0].path, "after-the-stage.txt");
     }
 
     /// A read git could not answer must not be flattened into "no changes":
@@ -5962,6 +8396,7 @@ mod tests {
         let reaction = engine.process_worker_event(WorkerEvent::ChangedFilesReady {
             outcome: Err("git status failed: index.lock exists".to_string()),
             worktree,
+            read: 0,
         });
 
         assert!(matches!(reaction, EventReaction::Nothing));
@@ -5989,6 +8424,7 @@ mod tests {
             let reaction = engine.process_worker_event(WorkerEvent::ChangedFilesReady {
                 outcome: Err("git status failed: index.lock exists".to_string()),
                 worktree: worktree.clone(),
+                read: 0,
             });
             if let EventReaction::Status(status) = reaction {
                 warnings.push(status);
@@ -6003,31 +8439,33 @@ mod tests {
             Some(crate::changes_status::warn_key("s1").as_str())
         );
         assert!(
-            warning.message.contains("index.lock exists"),
-            "{}",
+            warning.message.contains("yaran.log") && !warning.message.contains("index.lock"),
+            "git's text stays in yaran.log: {}",
             warning.message
         );
 
-        // And the recovery rides the same key, so the surfaces replace rather
-        // than stack.
+        // A read that works again takes the warning down on its key, with no
+        // message in its place.
         let reaction = engine.process_worker_event(WorkerEvent::ChangedFilesReady {
             outcome: Ok((Vec::new(), Vec::new())),
             worktree,
+            read: 0,
         });
         let EventReaction::Multi(parts) = reaction else {
-            panic!("a recovering read owes both a repaint and a status")
+            panic!("a read that works again owes both a repaint and a withdrawal")
         };
-        let recovered = parts
-            .iter()
-            .find_map(|part| match part {
-                EventReaction::Status(status) => Some(status),
-                _ => None,
-            })
-            .expect("the recovery status");
-        assert_eq!(recovered.tone, crate::statusline::StatusTone::Info);
-        assert_eq!(
-            recovered.key.as_deref(),
-            Some(crate::changes_status::warn_key("s1").as_str())
+        assert!(
+            !parts
+                .iter()
+                .any(|part| matches!(part, EventReaction::Status(_))),
+            "nothing is said in the warning's place: {parts:?}"
+        );
+        assert!(
+            parts.iter().any(|part| matches!(
+                part,
+                EventReaction::ClearStatus(key) if *key == crate::changes_status::warn_key("s1")
+            )),
+            "{parts:?}"
         );
     }
 
@@ -6047,6 +8485,7 @@ mod tests {
             )),
             // Computed for the worktree we have since stopped watching.
             worktree: PathBuf::from("/tmp/wt-stale"),
+            read: 0,
         });
 
         // Dropped: no view follow-up, and engine state is unchanged.
@@ -6070,6 +8509,7 @@ mod tests {
                 vec![sample_changed_file("stale.txt")],
             )),
             worktree: PathBuf::from("/tmp/wt-stale"),
+            read: 0,
         });
 
         assert!(matches!(reaction, EventReaction::Nothing));
@@ -6079,6 +8519,34 @@ mod tests {
     }
 
     // ── PrStatusReady ────────────────────────────────────────────────────
+
+    /// The repository `owner_repo` on github.com, as the sync reports an
+    /// agent's own.
+    fn own_repository(owner_repo: &str) -> crate::git::GitHubRemote {
+        crate::git::GitHubRemote {
+            host: "github.com".to_string(),
+            owner_repo: owner_repo.to_string(),
+        }
+    }
+
+    /// A `PrStatusReady` in which discovery found each agent's pull request,
+    /// or nothing for a `None`.
+    fn pr_status_ready(results: Vec<(String, Option<PrInfo>)>) -> WorkerEvent {
+        WorkerEvent::PrStatusReady(
+            results
+                .into_iter()
+                .map(|(session_id, pr)| crate::worker::PrStatusResult {
+                    session_id,
+                    answers: pr
+                        .into_iter()
+                        .map(crate::worker::PrSyncAnswer::Found)
+                        .collect(),
+                    asked: Vec::new(),
+                    own_repo: None,
+                })
+                .collect(),
+        )
+    }
 
     #[test]
     fn pr_status_ready_batch_applies_live_results_and_drops_deleted_ones() {
@@ -6093,17 +8561,18 @@ mod tests {
             host: "github.com".into(),
             owner_repo: "o/r".into(),
             url: "https://github.com/o/r/pull/17".into(),
+            ..Default::default()
         };
 
-        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+        let reaction = engine.process_worker_event(pr_status_ready(vec![
             ("deleted".into(), Some(pr.clone())),
             ("live".into(), Some(pr)),
         ]));
 
         assert!(matches!(reaction, EventReaction::RebuildLeftItems));
-        assert!(!engine.pr_statuses.contains_key("deleted"));
+        assert!(engine.shown_pr("deleted").is_none());
         assert!(!engine.pr_last_checked.contains_key("deleted"));
-        assert_eq!(engine.pr_statuses.get("live").map(|pr| pr.number), Some(17));
+        assert_eq!(engine.shown_pr("live").map(|pr| pr.number), Some(17));
         assert!(engine.pr_last_checked.contains_key("live"));
     }
 
@@ -6172,6 +8641,7 @@ mod tests {
         let (status, reason) = engine.adopt_gh_probe(crate::gh::GhProbe::Decided {
             available: true,
             policy: crate::gh::GithubHostPolicy::LegacyNameRule,
+            protocols: BTreeMap::default(),
         });
         assert_eq!(status, GhStatus::Available);
         assert_eq!(reason, None);
@@ -6183,6 +8653,7 @@ mod tests {
         let (status, _) = engine.adopt_gh_probe(crate::gh::GhProbe::Decided {
             available: false,
             policy: crate::gh::GithubHostPolicy::LegacyNameRule,
+            protocols: BTreeMap::default(),
         });
         assert_eq!(status, GhStatus::NotAuthenticated);
     }
@@ -6224,6 +8695,7 @@ mod tests {
             outcome: crate::gh::GhProbe::Decided {
                 available: true,
                 policy: crate::gh::GithubHostPolicy::LegacyNameRule,
+                protocols: BTreeMap::default(),
             },
         });
 
@@ -6232,6 +8704,40 @@ mod tests {
             EventReaction::GhAvailabilityChanged { available: true }
         ));
         assert_eq!(engine.gh_status, GhStatus::Available);
+    }
+
+    /// A probe that moves only the hosts tells the browser to refetch the
+    /// clone dialog's hosts; one that moves nothing tells it nothing.
+    #[test]
+    fn gh_status_checked_moving_only_the_hosts_says_so() {
+        let (mut engine, _tmp) = test_engine();
+        engine.github_integration_enabled = true;
+        engine.gh_status = GhStatus::Available;
+        let decided = |hosts: &[&str]| crate::gh::GhProbe::Decided {
+            available: true,
+            policy: crate::gh::GithubHostPolicy::Hosts(
+                hosts.iter().map(|host| (*host).to_string()).collect(),
+            ),
+            protocols: BTreeMap::default(),
+        };
+        engine.set_github_host_policy(crate::gh::GithubHostPolicy::Hosts(
+            ["github.com".to_string()].into(),
+        ));
+
+        let moved = engine.process_worker_event(WorkerEvent::GhStatusChecked {
+            generation: engine.gh_probe.generation,
+            outcome: decided(&["github.com", "ghe.corp.example"]),
+        });
+        assert!(
+            matches!(moved, EventReaction::GithubFactsChanged),
+            "{moved:?}"
+        );
+
+        let same = engine.process_worker_event(WorkerEvent::GhStatusChecked {
+            generation: engine.gh_probe.generation,
+            outcome: decided(&["github.com", "ghe.corp.example"]),
+        });
+        assert!(matches!(same, EventReaction::Nothing), "{same:?}");
     }
 
     #[test]
@@ -6245,6 +8751,7 @@ mod tests {
             outcome: crate::gh::GhProbe::Decided {
                 available: true,
                 policy: crate::gh::GithubHostPolicy::LegacyNameRule,
+                protocols: BTreeMap::default(),
             },
         });
 
@@ -6265,6 +8772,7 @@ mod tests {
             outcome: crate::gh::GhProbe::Decided {
                 available: false,
                 policy: crate::gh::GithubHostPolicy::DenyAll,
+                protocols: BTreeMap::default(),
             },
         });
 
@@ -6297,6 +8805,7 @@ mod tests {
             outcome: crate::gh::GhProbe::Decided {
                 available: true,
                 policy: crate::gh::GithubHostPolicy::LegacyNameRule,
+                protocols: BTreeMap::default(),
             },
         });
 
@@ -6647,7 +9156,7 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         crate::project_browser::run_checkout_project_default_branch_inspection_job(
-            project, tx, None,
+            project, &tx, None,
         );
         let reaction = engine.process_worker_event(rx.recv().unwrap());
 
@@ -6727,6 +9236,9 @@ mod tests {
                 state: "OPEN".into(),
                 head_ref_name: "feat".into(),
                 custom_name: None,
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: None,
+                project_remote: None,
             }),
             purpose: crate::worker::PrLookupPurpose::Attach {
                 session_id: "deleted".into(),
@@ -6857,11 +9369,10 @@ mod tests {
             host: "github.com".to_string(),
             owner_repo: "octo/repo".to_string(),
             url: "https://github.com/octo/repo/pull/42".to_string(),
+            ..Default::default()
         };
-        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![(
-            "s1".to_string(),
-            Some(pr.clone()),
-        )]));
+        let reaction =
+            engine.process_worker_event(pr_status_ready(vec![("s1".to_string(), Some(pr))]));
 
         // changed -> RebuildLeftItems (engine writes the timestamp directly).
         assert!(
@@ -6871,20 +9382,69 @@ mod tests {
         );
         assert!(engine.pr_last_checked.contains_key("s1"));
 
-        // pr_statuses populated; sqlite has the row.
-        assert!(engine.pr_statuses.contains_key("s1"));
-        let stored = engine
-            .session_store
-            .load_all_latest_prs()
-            .expect("load prs");
+        // The row is in memory and in sqlite.
+        assert!(engine.shown_pr("s1").is_some());
+        let stored = engine.session_store.latest_found_prs_for_tests();
         let row = stored.iter().find(|p| p.session_id == "s1").expect("row");
         assert_eq!(row.pr_number, 42);
         assert_eq!(row.state, "OPEN");
         assert_eq!(row.title, "Add feature");
+
+        // A row carried over from before this table existed was never
+        // refreshed and may say OPEN for a pull request long merged; the first
+        // refresh puts it right.
+        engine.session_store.seed_pr_for_tests(
+            &crate::storage::StoredPr {
+                session_id: "s1".to_string(),
+                pr_number: 10,
+                host: "github.com".to_string(),
+                owner_repo: "octo/repo".to_string(),
+                state: "OPEN".to_string(),
+                title: "Migrated".to_string(),
+                url: String::new(),
+            },
+            crate::storage::SeededPr::Found,
+        );
+        engine.github_integration_enabled = true;
+        engine.seed_pull_requests_from_store();
+        let migrated = |engine: &Engine| {
+            engine.agent_prs["s1"]
+                .iter()
+                .find(|row| row.number == 10)
+                .cloned()
+                .expect("the migrated row")
+        };
+        assert_eq!(migrated(&engine).last_refreshed_at, None);
+        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+            crate::worker::PrStatusResult {
+                session_id: "s1".to_string(),
+                answers: vec![crate::worker::PrSyncAnswer::Refreshed(PrInfo {
+                    number: 10,
+                    state: PrState::Merged,
+                    title: "Migrated".to_string(),
+                    host: "github.com".to_string(),
+                    owner_repo: "octo/repo".to_string(),
+                    url: "https://github.com/octo/repo/pull/10".to_string(),
+                    head_branch: Some("old-branch".to_string()),
+                    ..Default::default()
+                })],
+                asked: Vec::new(),
+                own_repo: None,
+            },
+        ]));
+        assert!(matches!(reaction, EventReaction::RebuildLeftItems));
+        let row = migrated(&engine);
+        assert_eq!(row.state, PrState::Merged);
+        assert_eq!(row.head_branch.as_deref(), Some("old-branch"));
+        assert!(row.last_refreshed_at.is_some());
+        let stored = engine.session_store.load_agent_prs_of("s1").unwrap();
+        let stored = stored.iter().find(|row| row.number == 10).unwrap();
+        assert_eq!(stored.state, PrState::Merged);
+        assert_eq!(stored.head_branch.as_deref(), Some("old-branch"));
     }
 
     #[test]
-    fn pr_status_ready_skips_results_for_deleted_sessions() {
+    fn pr_status_ready_drops_results_for_deleted_sessions_and_keeps_them_across_a_drift() {
         // The PR check is async: its result can land AFTER the session was
         // deleted. Applying it anyway would (a) attempt an sqlite upsert that
         // fails the sessions FOREIGN KEY, logging a scary ERROR on every
@@ -6898,28 +9458,115 @@ mod tests {
             host: "github.com".into(),
             owner_repo: "o/r".into(),
             url: "https://example".into(),
+            ..Default::default()
         };
 
         // "ghost" is not a session the engine knows (deleted before the
         // result arrived). The result must be dropped whole: no status, no
         // timestamp, no store row, and no changed-flag rebuild.
-        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![(
-            "ghost".to_string(),
-            Some(pr),
-        )]));
+        let reaction =
+            engine.process_worker_event(pr_status_ready(vec![("ghost".to_string(), Some(pr))]));
 
         assert!(
             matches!(reaction, EventReaction::Nothing),
             "a ghost-only batch changes nothing, got {}",
             reaction_kind(&reaction),
         );
-        assert!(!engine.pr_statuses.contains_key("ghost"));
+        assert!(engine.shown_pr("ghost").is_none());
         assert!(!engine.pr_last_checked.contains_key("ghost"));
-        let stored = engine
-            .session_store
-            .load_all_latest_prs()
-            .expect("load prs");
+        let stored = engine.session_store.latest_found_prs_for_tests();
         assert!(stored.iter().all(|p| p.session_id != "ghost"));
+
+        // A check in flight while the agent's local branch is renamed asked
+        // GitHub about the same branch (a rename never touches the remote, so
+        // the pull request still names the old one), and its answer stands.
+        let session = sample_session("s1", "p1", "feat/a");
+        engine.session_store.upsert_session(&session).unwrap();
+        engine.sessions.push(session);
+        let pr = |number: u64| PrInfo {
+            number,
+            state: PrState::Open,
+            title: format!("PR {number}"),
+            host: "github.com".into(),
+            owner_repo: "o/r".into(),
+            url: "https://example".into(),
+            ..Default::default()
+        };
+        let asked_before_rename = pr_status_ready(vec![("s1".into(), Some(pr(12)))]);
+        engine.process_worker_event(WorkerEvent::BranchRenameCompleted {
+            session_id: "s1".into(),
+            new_branch: "feat/b".into(),
+            previous_title: None,
+            result: Ok(()),
+            status: crate::engine::ResolvedFinal::new(
+                "rename:s1",
+                crate::engine::Final::info("renamed"),
+            ),
+        });
+        engine.process_worker_event(asked_before_rename);
+        assert_eq!(engine.shown_pr("s1").map(|p| p.number), Some(12));
+
+        // One in flight while the agent drifts onto another branch is about
+        // the branch it asked under, which is still one of the agent's, so it
+        // is kept too.
+        let asked_before_drift = pr_status_ready(vec![("s1".into(), Some(pr(13)))]);
+        engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
+            "s1".to_string(),
+            "develop".to_string(),
+        )]));
+        let reaction = engine.process_worker_event(asked_before_drift);
+        assert!(matches!(reaction, EventReaction::RebuildLeftItems));
+        let mut numbers: Vec<u64> = engine.agent_prs["s1"].iter().map(|p| p.number).collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, vec![12, 13]);
+
+        // An agent that moves from branch-a (open #20) to branch-b (open #12)
+        // keeps both, each on its own branch, and the newer one is the one a
+        // rename would affect, however the numbers compare.
+        let session = sample_session("s2", "p1", "branch-a");
+        engine.session_store.upsert_session(&session).unwrap();
+        engine.sessions.push(session);
+        let on = |number: u64, head: &str, created: &str| PrInfo {
+            head_branch: Some(head.to_string()),
+            gh_created_at: Some(created.parse().unwrap()),
+            ..pr(number)
+        };
+        engine.process_worker_event(pr_status_ready(vec![(
+            "s2".into(),
+            Some(on(20, "branch-a", "2026-11-01T00:00:00Z")),
+        )]));
+        engine.process_worker_event(WorkerEvent::branch_sync_moved(vec![(
+            "s2".to_string(),
+            "branch-b".to_string(),
+        )]));
+        engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+            crate::worker::PrStatusResult {
+                session_id: "s2".into(),
+                answers: vec![
+                    crate::worker::PrSyncAnswer::Found(on(12, "branch-b", "2026-11-05T00:00:00Z")),
+                    crate::worker::PrSyncAnswer::Refreshed(on(
+                        20,
+                        "branch-a",
+                        "2026-11-01T00:00:00Z",
+                    )),
+                ],
+                asked: Vec::new(),
+                own_repo: Some(own_repository("o/r")),
+            },
+        ]));
+        let mut rows: Vec<(u64, Option<String>)> = engine.agent_prs["s2"]
+            .iter()
+            .map(|p| (p.number, p.head_branch.clone()))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                (12, Some("branch-b".to_string())),
+                (20, Some("branch-a".to_string())),
+            ]
+        );
+        assert_eq!(engine.rename_open_pull_request("s2"), Some(12));
     }
 
     #[test]
@@ -6941,48 +9588,46 @@ mod tests {
             host: "github.com".into(),
             owner_repo: "o/r".into(),
             url: "https://example".into(),
+            ..Default::default()
         };
-        engine.pr_statuses.insert(session_id.clone(), pr);
+        let mut row = crate::model::AgentPr::found(&pr, chrono::Utc::now());
+        row.attached = true;
+        engine.agent_prs.insert(session_id.clone(), vec![row]);
         engine
             .pr_last_checked
             .insert(session_id.clone(), Instant::now());
-        engine.pr_overrides.insert(
-            session_id.clone(),
-            crate::storage::StoredPr {
-                session_id: session_id.clone(),
-                pr_number: 9,
-                host: "github.com".to_string(),
-                owner_repo: "o/r".to_string(),
-                state: "OPEN".to_string(),
-                title: "doomed".to_string(),
-                url: "https://example".to_string(),
-            },
-        );
 
         engine
             .finish_delete_session_memory(&session_id)
             .expect("delete the session");
 
-        assert!(!engine.pr_statuses.contains_key(&session_id));
+        assert!(engine.shown_pr(&session_id).is_none());
         assert!(!engine.pr_last_checked.contains_key(&session_id));
         assert!(
-            !engine.pr_overrides.contains_key(&session_id),
+            engine.attached_pr(&session_id).is_none(),
             "the in-memory pin must not outlive its session"
         );
     }
 
     #[test]
-    fn the_pr_sync_plan_marks_the_sidebar_s_inactive_agents() {
+    fn the_pr_sync_plan_marks_inactive_agents_and_branches_yaran_minted() {
         // The poller's slow clock and the sidebar's Inactive tail must mean the
         // same thing, so the plan carries the sidebar's own verdict.
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/tmp/p1"));
         let mut live = sample_session("live", "p1", "feat/a");
         live.status = crate::model::SessionStatus::Active;
+        let live_created_at = live.created_at;
         let mut detached = sample_session("detached", "p1", "feat/b");
         detached.status = crate::model::SessionStatus::Detached;
+        detached
+            .workspace
+            .as_managed_mut()
+            .unwrap()
+            .branch_provenance = crate::model::BranchProvenance::AttachedExisting;
         let mut exited = sample_session("exited", "p1", "feat/c");
         exited.status = crate::model::SessionStatus::Exited;
+        exited.workspace.as_managed_mut().unwrap().branch_name = "elsewhere".into();
         engine.sessions.extend([live, detached, exited]);
 
         engine.update_pr_sync_sessions();
@@ -6992,6 +9637,92 @@ mod tests {
         assert_eq!(flag("live"), Some(false));
         assert_eq!(flag("detached"), Some(true));
         assert_eq!(flag("exited"), Some(true));
+
+        // A pull request found by head name is bounded by when yaran minted the
+        // branch, which only an agent still on its own minted branch has.
+        let minted = |id: &str| {
+            plan.iter()
+                .find(|e| e.session_id == id)
+                .map(|e| e.current.identity_at)
+        };
+        assert_eq!(minted("live"), Some(Some(live_created_at)));
+        assert_eq!(
+            minted("detached"),
+            Some(None),
+            "a branch that predates the agent"
+        );
+        assert_eq!(
+            minted("exited"),
+            Some(None),
+            "the agent has moved off its own branch"
+        );
+
+        // Every branch the worktree has been on is in the plan, under every
+        // name it had, except the project's leading branch; what the last
+        // cycle learned about each rides along, and so do the two settings.
+        let history_entry = |name: &str| crate::branch_history::BranchHistoryEntry {
+            name: name.to_string(),
+            born_here: false,
+            identity: None,
+            tip: None,
+            first_seen_at: None,
+            former_names: Vec::new(),
+        };
+        engine.branch_histories.insert(
+            "live".to_string(),
+            vec![
+                crate::branch_history::BranchHistoryEntry {
+                    former_names: vec!["feat/a0".to_string()],
+                    ..history_entry("feat/a")
+                },
+                history_entry("main"),
+                crate::branch_history::BranchHistoryEntry {
+                    identity: Some(crate::branch_history::BranchIdentity {
+                        unix: 1_790_000_000,
+                        oid: "a".repeat(40),
+                    }),
+                    tip: Some("b".repeat(40)),
+                    former_names: vec!["spike-0".to_string()],
+                    ..history_entry("spike")
+                },
+            ],
+        );
+        engine.config.ui.pr_history_branches_per_cycle = 99;
+        engine.config.ui.pr_settled_recheck_seconds = 600;
+        engine.update_pr_sync_sessions();
+        let plan = engine.pr_sync_sessions.lock().unwrap().clone();
+        let live = plan.iter().find(|e| e.session_id == "live").unwrap();
+        assert_eq!(live.current.former_names, vec!["feat/a0".to_string()]);
+        let history: Vec<(&str, &[String])> = live
+            .history
+            .iter()
+            .map(|b| (b.name.as_str(), b.former_names.as_slice()))
+            .collect();
+        assert_eq!(history, vec![("spike", &["spike-0".to_string()][..])]);
+        assert_eq!(
+            live.history[0].identity_at,
+            chrono::DateTime::from_timestamp(1_790_000_000, 0)
+        );
+        assert_eq!(live.history[0].tip, Some("b".repeat(40)));
+        assert_eq!(live.history[0].last_ask, None);
+        assert_eq!(live.history_per_cycle, 50, "clamped");
+        assert_eq!(live.settled_recheck, chrono::TimeDelta::seconds(600));
+
+        let record = crate::worker::BranchAskRecord {
+            at: "2026-11-06T12:00:00Z".parse().unwrap(),
+            ref_gone: true,
+            returned: Vec::new(),
+        };
+        engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+            crate::worker::PrStatusResult {
+                session_id: "live".to_string(),
+                asked: vec![("spike".to_string(), record.clone())],
+                ..Default::default()
+            },
+        ]));
+        let plan = engine.pr_sync_sessions.lock().unwrap().clone();
+        let live = plan.iter().find(|e| e.session_id == "live").unwrap();
+        assert_eq!(live.history[0].last_ask, Some(record));
     }
 
     #[test]
@@ -7210,17 +9941,16 @@ mod tests {
     }
 
     #[test]
-    fn pr_status_ready_none_removes_existing_and_records_timestamps() {
+    fn pr_status_ready_none_keeps_what_is_known_and_records_timestamps() {
         let (mut engine, _tmp) = test_engine();
         // Results only apply to sessions the engine still knows (late results
         // for deleted sessions are dropped), so s1/s2 must exist.
         engine.projects.push(sample_project("p1", "/tmp/p1"));
         engine.sessions.push(sample_session("s1", "p1", "feat/a"));
         engine.sessions.push(sample_session("s2", "p1", "feat/b"));
-        // Pre-seed pr_statuses for s1 so the None path actually removes
-        // something (and flips `changed`). s2 has no PR, so None for s2 leaves
-        // `changed` alone for s2 but its id must still get a timestamp in
-        // `pr_last_checked`.
+        // s1 has a pull request an empty answer must not take away: no answer
+        // proves a pull request is not the agent's. Both ids still get a
+        // timestamp in `pr_last_checked`.
         let pr = PrInfo {
             number: 1,
             state: PrState::Open,
@@ -7228,23 +9958,24 @@ mod tests {
             host: "github.com".into(),
             owner_repo: "o/r".into(),
             url: "https://example".into(),
+            ..Default::default()
         };
-        engine.pr_statuses.insert("s1".to_string(), pr);
+        engine.agent_prs.insert(
+            "s1".to_string(),
+            vec![crate::model::AgentPr::found(&pr, chrono::Utc::now())],
+        );
 
-        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+        let reaction = engine.process_worker_event(pr_status_ready(vec![
             ("s1".to_string(), None),
             ("s2".to_string(), None),
         ]));
 
-        // s1 was removed -> changed -> RebuildLeftItems.
         assert!(
-            matches!(reaction, EventReaction::RebuildLeftItems),
-            "expected RebuildLeftItems, got {}",
+            matches!(reaction, EventReaction::Nothing),
+            "expected Nothing, got {}",
             reaction_kind(&reaction),
         );
-        assert!(!engine.pr_statuses.contains_key("s1"));
-        // Both ids must get a timestamp in pr_last_checked even though only
-        // s1 caused a state change.
+        assert_eq!(engine.shown_pr("s1").map(|pr| pr.number), Some(1));
         assert!(engine.pr_last_checked.contains_key("s1"));
         assert!(engine.pr_last_checked.contains_key("s2"));
     }
@@ -7255,9 +9986,8 @@ mod tests {
         // s1 must exist for its result to apply at all (ghost results drop).
         engine.projects.push(sample_project("p1", "/tmp/p1"));
         engine.sessions.push(sample_session("s1", "p1", "feat/a"));
-        // No pre-seeded pr_statuses; sending None for s1 leaves changed=false.
-        let reaction =
-            engine.process_worker_event(WorkerEvent::PrStatusReady(vec![("s1".to_string(), None)]));
+        // No pull request known; sending None for s1 leaves changed=false.
+        let reaction = engine.process_worker_event(pr_status_ready(vec![("s1".to_string(), None)]));
 
         assert!(
             matches!(reaction, EventReaction::Nothing),
@@ -7265,123 +9995,74 @@ mod tests {
             reaction_kind(&reaction),
         );
         assert!(engine.pr_last_checked.contains_key("s1"));
-    }
 
-    /// The identity guard, in both directions. While a session is pinned, a
-    /// sync result is accepted ONLY when its (host, owner_repo, number) matches
-    /// the pin: a `Some(other_pr)` (the one-shot check racing an attach, or an
-    /// early-return path answering from a stale `known_pr`) must not overwrite
-    /// the pin, and a `None` must not clear it.
-    #[test]
-    fn pr_status_ready_identity_guard_drops_results_that_do_not_match_the_pin() {
-        let (mut engine, _tmp) = test_engine();
-        let session = sample_session("s1", "p1", "feat");
-        engine
-            .session_store
-            .upsert_session(&session)
-            .expect("seed session");
-        engine.sessions.push(session);
-        let pinned = crate::storage::StoredPr {
-            session_id: "s1".to_string(),
-            pr_number: 12,
-            host: "github.com".to_string(),
-            owner_repo: "forker/Hello-World".to_string(),
-            state: "OPEN".to_string(),
-            title: "Pinned".to_string(),
-            url: "https://github.com/forker/Hello-World/pull/12".to_string(),
-        };
-        engine.pr_statuses.insert(
-            "s1".to_string(),
-            crate::gh::reconstruct_pr_from_stored(&pinned).unwrap(),
-        );
-        engine.pr_overrides.insert("s1".to_string(), pinned);
-
-        // Direction 1: a racing one-shot answers with a DIFFERENT PR.
-        let other = PrInfo {
-            number: 50,
+        // A refresh that says what the row already says is only bookkeeping:
+        // when GitHub answered is stored, and nothing an agent shows moves.
+        let pr = PrInfo {
+            number: 1,
             state: PrState::Open,
-            title: "Autodetected".to_string(),
-            host: "github.com".to_string(),
-            owner_repo: "octocat/Hello-World".to_string(),
-            url: "https://github.com/octocat/Hello-World/pull/50".to_string(),
+            title: "x".into(),
+            host: "github.com".into(),
+            owner_repo: "o/r".into(),
+            url: "https://github.com/o/r/pull/1".into(),
+            ..Default::default()
         };
-        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![(
-            "s1".to_string(),
-            Some(other),
-        )]));
-        assert!(
-            matches!(reaction, EventReaction::Nothing),
-            "a non-pin result changes nothing, got {}",
-            reaction_kind(&reaction),
-        );
-        assert_eq!(
-            engine.pr_statuses.get("s1").map(|p| p.number),
-            Some(12),
-            "the badge still shows the pin"
-        );
-        assert!(
-            engine
-                .session_store
-                .load_all_latest_prs()
-                .unwrap()
-                .is_empty(),
-            "the dropped result never reaches upsert_pr"
-        );
-
-        // Direction 2: a None (e.g. discovery finding nothing) cannot clear it.
-        let reaction =
-            engine.process_worker_event(WorkerEvent::PrStatusReady(vec![("s1".to_string(), None)]));
+        engine.process_worker_event(pr_status_ready(vec![("s1".to_string(), Some(pr.clone()))]));
+        let revision = engine.pr_revision.get("s1").copied();
+        // The plan the next cycle reads holds the row as of an hour ago, so a
+        // refresh that only stamps the answer must still reach it, or the
+        // row's cadence is judged on a stale stamp.
+        let an_hour_ago = Utc::now() - chrono::TimeDelta::hours(1);
+        engine.agent_prs.get_mut("s1").unwrap()[0].last_refreshed_at = Some(an_hour_ago);
+        engine.write_pr_sync_plan();
+        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+            crate::worker::PrStatusResult {
+                session_id: "s1".to_string(),
+                answers: vec![crate::worker::PrSyncAnswer::Refreshed(pr)],
+                asked: Vec::new(),
+                own_repo: None,
+            },
+        ]));
         assert!(matches!(reaction, EventReaction::Nothing));
-        assert_eq!(engine.pr_statuses.get("s1").map(|p| p.number), Some(12));
-
-        // A result matching the pin IS accepted, and refreshes the override
-        // row's cached state so a restart renders the fresh state.
-        let refreshed = PrInfo {
-            number: 12,
-            state: PrState::Merged,
-            title: "Pinned".to_string(),
-            host: "github.com".to_string(),
-            owner_repo: "forker/Hello-World".to_string(),
-            url: "https://github.com/forker/Hello-World/pull/12".to_string(),
-        };
-        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![(
-            "s1".to_string(),
-            Some(refreshed),
-        )]));
-        assert!(matches!(reaction, EventReaction::RebuildLeftItems));
-        assert_eq!(
-            engine.pr_statuses.get("s1").map(|p| p.state.clone()),
-            Some(PrState::Merged)
-        );
-        let rows = engine.session_store.load_pr_overrides().unwrap();
-        assert_eq!(rows[0].state, "MERGED", "the pin's cached state refreshes");
-        assert_eq!(
-            engine.pr_overrides.get("s1").map(|p| p.state.as_str()),
-            Some("MERGED"),
-            "the in-memory pin refreshes too"
-        );
-        // An accepted PINNED result must never land in `session_prs`: the
-        // override row is the pin's durable cache, and a fork row written into
-        // `session_prs` would become the post-detach `known_pr`, making the
-        // next cycle emit the FORK's number against the session's OWN repo.
+        assert_eq!(engine.pr_revision.get("s1").copied(), revision);
+        let planned = engine.pr_sync_sessions.lock().unwrap()[0].known[0].last_refreshed_at;
         assert!(
-            engine
-                .session_store
-                .load_all_latest_prs()
-                .unwrap()
-                .is_empty(),
-            "a pinned cycle leaves session_prs untouched"
+            planned.is_some_and(|at| at > an_hour_ago),
+            "the plan carries the new stamp, got {planned:?}"
+        );
+
+        // A refresh GitHub answered null for (the pull request or its
+        // repository gone) keeps what the row knew and stamps that it asked,
+        // so the row waits for its cadence instead of being asked every cycle.
+        let before = engine.agent_prs["s1"][0].clone();
+        engine.agent_prs.get_mut("s1").unwrap()[0].last_refreshed_at = Some(an_hour_ago);
+        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+            crate::worker::PrStatusResult {
+                session_id: "s1".to_string(),
+                answers: vec![crate::worker::PrSyncAnswer::Unanswered(
+                    crate::model::PrKey::new("github.com", "o/r", 1),
+                )],
+                ..Default::default()
+            },
+        ]));
+        assert!(matches!(reaction, EventReaction::Nothing));
+        let row = &engine.agent_prs["s1"][0];
+        assert!(row.last_refreshed_at.is_some_and(|at| at > an_hour_ago));
+        assert_eq!((&row.state, &row.title), (&before.state, &before.title));
+        let stored = engine.session_store.load_agent_prs_of("s1").unwrap();
+        assert!(
+            stored[0]
+                .last_refreshed_at
+                .is_some_and(|at| at > an_hour_ago)
         );
     }
 
-    /// The full detach cycle: pin a FORK PR, accept one pinned
-    /// sync result, detach, and check what the next cycle would do. Under the
-    /// detach-suppresses-everything rule the session is simply absent from the
-    /// snapshot, so there is no cycle to smuggle the fork into; the residue
-    /// half is still asserted at the store, because a resume later puts the
-    /// session back in the plan and `session_prs` is what feeds its `known_pr`.
+    /// A pull request the user attached from another repository is refreshed
+    /// by its number like any other, and a refresh never claims the sync found
+    /// it: a later detach leaves nothing of it behind, and a refresh asked
+    /// before the detach that answers after it does not bring it back.
     #[test]
-    fn detaching_a_fork_pin_leaves_no_fork_residue_for_the_next_cycle() {
+    fn a_refreshed_attachment_is_never_marked_found_and_a_detach_leaves_nothing() {
         let (mut engine, _tmp) = test_engine();
         engine.github_integration_enabled = true;
         engine.gh_status = crate::model::GhStatus::Available;
@@ -7391,66 +10072,80 @@ mod tests {
             .upsert_session(&session)
             .expect("seed session");
         engine.sessions.push(session);
+        engine.process_worker_event(pr_status_ready(vec![(
+            "s1".to_string(),
+            Some(PrInfo {
+                number: 50,
+                state: PrState::Open,
+                title: "Found".to_string(),
+                host: "github.com".to_string(),
+                owner_repo: "o/r".to_string(),
+                url: "https://github.com/o/r/pull/50".to_string(),
+                ..Default::default()
+            }),
+        )]));
         engine
-            .apply_pr_attach(
-                "s1",
-                "github.com",
-                "forker/Hello-World",
-                12,
-                "Pinned",
-                "OPEN",
-                "",
-            )
-            .expect("attach the fork pin");
+            .apply_pr_attach("s1", "github.com", "acme/infra", 77, "Pinned", "CLOSED", "")
+            .expect("attach the other repository's pull request");
 
-        // One accepted pinned cycle (the state refresh path).
-        let refreshed = PrInfo {
-            number: 12,
+        let reopened = PrInfo {
+            number: 77,
             state: PrState::Open,
             title: "Pinned".to_string(),
             host: "github.com".to_string(),
-            owner_repo: "forker/Hello-World".to_string(),
-            url: "https://github.com/forker/Hello-World/pull/12".to_string(),
+            owner_repo: "acme/infra".to_string(),
+            url: "https://github.com/acme/infra/pull/77".to_string(),
+            ..Default::default()
         };
-        engine.process_worker_event(WorkerEvent::PrStatusReady(vec![(
-            "s1".to_string(),
-            Some(refreshed),
-        )]));
+        let refresh = |info: &PrInfo| {
+            WorkerEvent::PrStatusReady(vec![crate::worker::PrStatusResult {
+                session_id: "s1".to_string(),
+                answers: vec![crate::worker::PrSyncAnswer::Refreshed(info.clone())],
+                asked: Vec::new(),
+                own_repo: None,
+            }])
+        };
+        let reaction = engine.process_worker_event(refresh(&reopened));
 
-        engine.clear_pull_request_override("s1").expect("detach");
+        assert!(matches!(reaction, EventReaction::RebuildLeftItems));
+        let row = engine.attached_pr("s1").expect("still attached");
+        assert_eq!(row.state, PrState::Open, "the reopen is noticed");
+        assert!(!row.found, "a refresh is not a discovery");
+        assert_eq!(
+            engine.session_store.attached_prs_for_tests()[0].state,
+            "OPEN"
+        );
 
-        // The next cycle's snapshot: the detached session is not in it at all.
-        assert!(
-            engine.pr_sync_sessions.lock().unwrap().is_empty(),
-            "a detached session is excluded from the plan entirely"
-        );
-        // And the fork left no residue behind for a later resume to pick up:
-        // a pinned cycle never writes `session_prs`, so the row that would
-        // become a resumed session's `known_pr` does not exist.
-        assert!(
-            engine
-                .session_store
-                .load_all_latest_prs()
-                .expect("load stored prs")
-                .is_empty(),
-            "the fork pin must leave nothing in session_prs to resume onto"
-        );
-        engine.resume_pr_autodetection("s1").expect("resume");
+        engine
+            .detach_pull_request(
+                "s1",
+                &crate::model::PrKey::new("github.com", "acme/infra", 77),
+            )
+            .expect("detach");
         let entries = engine.pr_sync_sessions.lock().unwrap().clone();
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].pinned.is_none());
         assert!(
-            entries[0].known_pr.is_none(),
-            "the fork pin must not survive detach as known_pr, got {:?}",
-            entries[0].known_pr,
+            entries[0].known.iter().all(|row| row.number != 77),
+            "the detached pull request is gone from the next cycle, got {:?}",
+            entries[0].known,
+        );
+
+        engine.process_worker_event(refresh(&reopened));
+        let numbers =
+            |rows: &[crate::model::AgentPr]| rows.iter().map(|row| row.number).collect::<Vec<_>>();
+        assert_eq!(numbers(&engine.agent_prs["s1"]), vec![50]);
+        assert_eq!(
+            numbers(&engine.session_store.load_agent_prs_of("s1").unwrap()),
+            vec![50]
         );
     }
 
-    /// The in-flight race: a PR check dispatched BEFORE the detach answers
-    /// after it. The result must be dropped before it can reach `upsert_pr` or
-    /// the badge, or the agent re-badges one tick after the user detached it.
+    /// An agent that had detection switched off before pull requests were
+    /// kept per row records what discovery finds later out of sight when
+    /// GitHub opened it before the upgrade, or nobody can say when, and in
+    /// sight when it was opened after.
     #[test]
-    fn an_in_flight_pr_result_for_a_suppressed_session_is_dropped() {
+    fn a_pull_request_found_for_an_agent_detached_before_the_upgrade_is_kept_out_of_sight() {
         let (mut engine, _tmp) = test_engine();
         engine.github_integration_enabled = true;
         engine.gh_status = crate::model::GhStatus::Available;
@@ -7460,7 +10155,15 @@ mod tests {
             .upsert_session(&session)
             .expect("seed session");
         engine.sessions.push(session);
-        engine.clear_pull_request_override("s1").expect("detach");
+        let migrated = crate::model::PrPrefs {
+            hide_created_before: Some(Utc::now()),
+            ..Default::default()
+        };
+        engine
+            .session_store
+            .replace_agent_prs("s1", &[], &migrated)
+            .unwrap();
+        engine.seed_pull_requests_from_store();
 
         let late = PrInfo {
             number: 12,
@@ -7469,27 +10172,83 @@ mod tests {
             host: "github.com".to_string(),
             owner_repo: "o/r".to_string(),
             url: "https://github.com/o/r/pull/12".to_string(),
+            ..Default::default()
         };
-        let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![(
-            "s1".to_string(),
-            Some(late),
-        )]));
+        engine.process_worker_event(pr_status_ready(vec![("s1".to_string(), Some(late))]));
 
         assert!(
-            !engine.pr_statuses.contains_key("s1"),
-            "a late result must not re-badge a detached agent"
+            engine.shown_pr("s1").is_none(),
+            "one with no opening time does not badge the agent"
         );
+        let rows = engine.session_store.load_agent_prs_of("s1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].hidden, "it is kept, out of sight");
+
+        // Opened before the upgrade: out of sight. Opened after it: shown.
+        let cutoff = engine.pr_prefs["s1"]
+            .hide_created_before
+            .expect("the imported cutoff");
+        let opened = |number: u64, at: chrono::DateTime<Utc>| PrInfo {
+            number,
+            state: PrState::Open,
+            title: format!("PR {number}"),
+            host: "github.com".to_string(),
+            owner_repo: "o/r".to_string(),
+            url: format!("https://github.com/o/r/pull/{number}"),
+            gh_created_at: Some(at),
+            ..Default::default()
+        };
+        let cycle = |engine: &mut Engine| {
+            engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
+                crate::worker::PrStatusResult {
+                    session_id: "s1".to_string(),
+                    answers: vec![
+                        crate::worker::PrSyncAnswer::Found(opened(
+                            20,
+                            cutoff - chrono::TimeDelta::days(1),
+                        )),
+                        crate::worker::PrSyncAnswer::Found(opened(
+                            21,
+                            cutoff + chrono::TimeDelta::hours(1),
+                        )),
+                    ],
+                    asked: Vec::new(),
+                    own_repo: None,
+                },
+            ]));
+        };
+        cycle(&mut engine);
+        let hidden = |engine: &Engine, number: u64| {
+            engine.agent_prs["s1"]
+                .iter()
+                .find(|row| row.number == number)
+                .map(|row| row.hidden)
+        };
+        assert_eq!(hidden(&engine, 20), Some(true));
+        assert_eq!(hidden(&engine, 21), Some(false));
+        assert_eq!(engine.shown_pr("s1").map(|row| row.number), Some(21));
+
+        // Shown again by the user, it stays shown however often it is found.
+        let mut rows = engine.agent_prs["s1"].clone();
+        for row in &mut rows {
+            row.hidden = false;
+        }
+        let prefs = engine.pr_prefs["s1"].clone();
+        engine
+            .session_store
+            .replace_agent_prs("s1", &rows, &prefs)
+            .unwrap();
+        engine.set_agent_prs("s1", rows);
+        cycle(&mut engine);
+        cycle(&mut engine);
+        assert_eq!(hidden(&engine, 20), Some(false));
         assert!(
             engine
                 .session_store
-                .load_all_latest_prs()
-                .expect("load stored prs")
-                .is_empty(),
-            "and it must not be persisted either, or a restart would resurrect it"
-        );
-        assert!(
-            matches!(reaction, EventReaction::Nothing),
-            "nothing changed, so there is nothing to rebuild"
+                .load_agent_prs_of("s1")
+                .unwrap()
+                .iter()
+                .all(|row| !row.hidden)
         );
     }
 
@@ -7583,7 +10342,7 @@ mod tests {
             .with_live_keys(engine.live_status_keys.clone());
         let op = crate::engine::status_op("Creating a new agent\u{2026}").resolve_in_handler(
             |o: &crate::engine::CreateLaunchOutcome| match o {
-                crate::engine::CreateLaunchOutcome::Failed { message } => {
+                crate::engine::CreateLaunchOutcome::Failed { message, .. } => {
                     crate::engine::Final::error(message.clone())
                 }
                 _ => crate::engine::Final::clear(),
@@ -7615,6 +10374,7 @@ mod tests {
 
         let reaction = engine.process_worker_event(WorkerEvent::CreateAgentFailed {
             status_op_id: op_id.clone(),
+            attempted_name: None,
             message: "nope".to_string().into(),
         });
         let final_status = unwrap_status(reaction);
@@ -7638,7 +10398,7 @@ mod tests {
         // same-key error final.
         let op = crate::engine::status_op("Creating a new agent\u{2026}").resolve_in_handler(
             |o: &crate::engine::CreateLaunchOutcome| match o {
-                crate::engine::CreateLaunchOutcome::Failed { message } => {
+                crate::engine::CreateLaunchOutcome::Failed { message, .. } => {
                     crate::engine::Final::error(message.clone())
                 }
                 _ => crate::engine::Final::clear(),
@@ -7649,6 +10409,7 @@ mod tests {
 
         let reaction = engine.process_worker_event(WorkerEvent::CreateAgentFailed {
             status_op_id: op_id.clone(),
+            attempted_name: None,
             message: "nope".to_string().into(),
         });
 
@@ -7669,6 +10430,7 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(sample_session("s1", "p1", "feat"));
         engine.sessions.push(sample_session("s2", "p1", "feat2"));
+        engine.open_operation("op-1", crate::operations::OperationKind::AgentCreate);
 
         // Recording an op→session pair makes it resolvable by op id.
         engine.record_created_session("op-1".to_string(), "s1".to_string());
@@ -7676,6 +10438,16 @@ mod tests {
             engine.created_session_for_op("op-1"),
             Some("s1".to_string())
         );
+        // A followed create holds the agent it made until its record finishes.
+        let refused = engine
+            .apply_wire(crate::wire::WireCommand::DeleteSession {
+                branches: None,
+                session_id: "s1".to_string(),
+                delete_worktree: false,
+                delete_branch: None,
+            })
+            .expect_err("the create still holds its agent");
+        assert!(refused.to_string().contains("op-1"), "{refused}");
         assert_eq!(engine.created_session_for_op("missing"), None);
 
         // An entry whose session no longer exists is pruned on the next insert,
@@ -7693,7 +10465,9 @@ mod tests {
             "op-stale".to_string(),
             (
                 "s1".to_string(),
-                Instant::now() - (crate::engine::CREATED_SESSION_TTL + Duration::from_secs(1)),
+                Instant::now()
+                    .checked_sub(crate::engine::CREATED_SESSION_TTL + Duration::from_secs(1))
+                    .expect("the monotonic clock reads later than the rewind"),
             ),
         );
         assert_eq!(engine.created_session_for_op("op-stale"), None);
@@ -7739,7 +10513,7 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         let op = crate::engine::status_op("Creating a new agent\u{2026}").resolve_in_handler(
             |o: &crate::engine::CreateLaunchOutcome| match o {
-                crate::engine::CreateLaunchOutcome::Failed { message } => {
+                crate::engine::CreateLaunchOutcome::Failed { message, .. } => {
                     crate::engine::Final::error(message.clone())
                 }
                 _ => crate::engine::Final::clear(),
@@ -7756,43 +10530,22 @@ mod tests {
                     .into(),
             }),
         );
-        controller.set(
-            now,
-            progress.key.clone(),
-            Tone::Busy,
-            progress.message.clone(),
-        );
+        controller.set(now, progress.key.clone(), Tone::Busy, progress.message);
         assert_eq!(controller.snapshot().len(), 1);
         assert_eq!(controller.snapshot()[0].tone, "busy");
 
         let failure = engine.process_worker_event(WorkerEvent::CreateAgentFailed {
             status_op_id: op_id.clone(),
+            attempted_name: None,
             message: "Failed to create a new worktree.".to_string().into(),
         });
         let failure = unwrap_status(failure);
-        controller.set(
-            now,
-            failure.key.clone(),
-            Tone::Error,
-            failure.message.clone(),
-        );
+        controller.set(now, failure.key.clone(), Tone::Error, failure.message);
         // Still one entry on the same id: the busy was replaced, not stacked.
         let snap = controller.snapshot();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].key.as_deref(), Some(op_id.as_str()));
         assert_eq!(snap[0].tone, "error");
-    }
-
-    // Sanity: the unused-import linter won't catch AgentLaunchFailedData
-    // because we reference it via a no-op assertion to prove the test module
-    // compiles against the same shape the dispatcher uses.
-    #[allow(dead_code)]
-    fn _agent_launch_failed_shape_compiles(req: AgentLaunchRequest, msg: String) {
-        let _boxed = Box::new(AgentLaunchFailedData {
-            request: req,
-            message: msg,
-        });
-        let _kind = AgentLaunchKind::StartupAutoReopen;
     }
 
     // ── process_agent_launch_failed + detach_conflicting_worktree_session ──
@@ -7811,14 +10564,14 @@ mod tests {
                 session,
                 provider_config: ProviderCommandConfig::default(),
                 env: Vec::new(),
-                identity: Default::default(),
+                identity: crate::term_identity::TerminalIdentity::default(),
                 resume: false,
                 pty_size: (24, 80),
                 scrollback_lines: 1000,
                 kind,
                 wants_fullscreen: false,
                 status_quiet: QuietSurfaces::LOUD,
-                provider_session: Default::default(),
+                provider_session: crate::resume_recovery::ProviderSessionLaunch::default(),
                 yolo_args: Vec::new(),
             },
             message: message.to_string(),
@@ -7869,7 +10622,7 @@ mod tests {
     /// candidate is about the process that was launched, and that process is
     /// gone; the child left in the tab is the OLD one, which was never resuming.
     /// Left armed, a survivor that simply stayed quiet past its resume wait was
-    /// read as a hung resume, and the sweep tore the tab down and SIGKILLed a
+    /// read as a hung resume, and the sweep tore the tab down and `SIGKILLed` a
     /// healthy agent.
     /// Fork name (5531378f). The fork persisted the row before spawn and the
     /// ready event consumed it; upstream writes the row AT ready, in one
@@ -7880,6 +10633,10 @@ mod tests {
     #[test]
     fn create_agent_ready_consumes_the_already_persisted_row() {
         let (mut engine, tmp) = test_engine();
+        // The ready path refuses a create whose project was removed meanwhile.
+        engine
+            .projects
+            .push(sample_project("project-1", &tmp.path().to_string_lossy()));
         let worktree = tmp.path().join("wt-created");
         std::fs::create_dir_all(&worktree).unwrap();
         let session = sample_session("created", "project-1", "agent-created");
@@ -7893,7 +10650,7 @@ mod tests {
                 session,
                 provider_config: ProviderCommandConfig::default(),
                 env: Vec::new(),
-                identity: Default::default(),
+                identity: crate::term_identity::TerminalIdentity::default(),
                 resume: false,
                 pty_size: (24, 80),
                 scrollback_lines: 1000,
@@ -7903,13 +10660,18 @@ mod tests {
                     owns_worktree: true,
                     startup_result: None,
                     status_op_id: String::new(),
+                    birth_identity: None,
+                    pull_request_pin: None,
+                    status_notes: None,
+                    status_warns: false,
                 },
                 wants_fullscreen: false,
                 status_quiet: QuietSurfaces::LOUD,
-                provider_session: Default::default(),
+                provider_session: crate::resume_recovery::ProviderSessionLaunch::default(),
                 yolo_args: Vec::new(),
             },
             client,
+            spawn_ticket: None,
         };
 
         let (outcome, _) = engine.process_agent_launch_ready(data);
@@ -7918,7 +10680,7 @@ mod tests {
             AgentLaunchReadyView::CreateCommitted { status_message, .. } => {
                 assert!(status_message.contains("ready from persisted row"));
             }
-            _ => panic!("a persisted create must report success"),
+            other => panic!("a persisted create must report success, got {other:?}"),
         }
         assert!(!engine.is_in_flight(&InFlightKey::CreateAgent));
         assert!(engine.sessions.iter().any(|s| s.id == "created"));
@@ -7942,6 +10704,10 @@ mod tests {
     /// nothing would point at after a restart. A branch yaran did not mint
     /// survives (`attached_branch_survives` below).
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "two runs, a minted branch and an attached one, each driven to its removal"
+    )]
     fn create_agent_db_failure_removes_owned_worktree_without_success() {
         let (mut engine, tmp) = test_engine();
         let repo = tmp.path().join("repo");
@@ -7971,6 +10737,11 @@ mod tests {
             "-m",
             "seed",
         ]);
+
+        // The ready path refuses a create whose project was removed meanwhile.
+        engine
+            .projects
+            .push(sample_project("project-1", &repo.to_string_lossy()));
 
         let run = |engine: &mut Engine, id: &str, provenance: crate::model::BranchProvenance| {
             let worktree = tmp.path().join(format!("wt-{id}"));
@@ -8009,7 +10780,7 @@ mod tests {
                     session,
                     provider_config: ProviderCommandConfig::default(),
                     env: Vec::new(),
-                    identity: Default::default(),
+                    identity: crate::term_identity::TerminalIdentity::default(),
                     resume: false,
                     pty_size: (24, 80),
                     scrollback_lines: 1000,
@@ -8019,13 +10790,18 @@ mod tests {
                         owns_worktree: true,
                         startup_result: None,
                         status_op_id: String::new(),
+                        birth_identity: None,
+                        pull_request_pin: None,
+                        status_notes: None,
+                        status_warns: false,
                     },
                     wants_fullscreen: false,
                     status_quiet: QuietSurfaces::LOUD,
-                    provider_session: Default::default(),
+                    provider_session: crate::resume_recovery::ProviderSessionLaunch::default(),
                     yolo_args: Vec::new(),
                 },
                 client,
+                spawn_ticket: None,
             };
             let (outcome, _) = engine.process_agent_launch_ready(data);
             assert!(
@@ -8051,9 +10827,17 @@ mod tests {
                 .unwrap()
                 .success()
         };
-        let wait_gone = |path: &std::path::Path| {
+        // The take-back stops the process first and removes the worktree once
+        // it has exited, as the run loop drives it: reap, dispatch, land.
+        let wait_gone = |engine: &mut Engine, path: &std::path::Path| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
             while path.exists() && std::time::Instant::now() < deadline {
+                for removal in engine.reap_terminating_ptys().removals {
+                    engine.dispatch_deferred_worktree_removal(removal);
+                }
+                while let Ok(event) = engine.worker_rx.try_recv() {
+                    let _ = engine.process_worker_event(event);
+                }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
         };
@@ -8063,9 +10847,9 @@ mod tests {
             "minted",
             crate::model::BranchProvenance::CreatedByYaran,
         );
-        wait_gone(&worktree);
-        // The rollback thread removes the worktree first and deletes the
-        // branch after, so poll for the branch too before asserting.
+        wait_gone(&mut engine, &worktree);
+        // The removal deletes the worktree first and the branch after, so poll
+        // for the branch too before asserting.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while branch_exists(&branch) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -8087,7 +10871,7 @@ mod tests {
             "attached",
             crate::model::BranchProvenance::AttachedExisting,
         );
-        wait_gone(&worktree);
+        wait_gone(&mut engine, &worktree);
         assert!(!worktree.exists());
         assert!(
             branch_exists(&branch),
@@ -8118,13 +10902,14 @@ mod tests {
             "the two children must be distinguishable for this test to say anything"
         );
         let data = AgentLaunchReadyData {
+            spawn_ticket: None,
             request: AgentLaunchRequest {
                 tab_id: tab.clone(),
                 provider: session.provider.clone(),
                 session,
                 provider_config: ProviderCommandConfig::default(),
                 env: Vec::new(),
-                identity: Default::default(),
+                identity: crate::term_identity::TerminalIdentity::default(),
                 // The launch this drop is about is the one kind that arms a
                 // candidate; without it the test would pass on any code.
                 resume: true,
@@ -8135,7 +10920,7 @@ mod tests {
                 },
                 wants_fullscreen: false,
                 status_quiet: QuietSurfaces::LOUD,
-                provider_session: Default::default(),
+                provider_session: crate::resume_recovery::ProviderSessionLaunch::default(),
                 yolo_args: Vec::new(),
             },
             client: latecomer,
@@ -8175,7 +10960,11 @@ mod tests {
             "s1",
             "feat/x",
             AgentLaunchKind::Create {
+                birth_identity: None,
                 status_message: crate::status_text::StatusText::default(),
+                status_warns: false,
+                status_notes: None,
+                pull_request_pin: None,
                 repo_path: String::from("/tmp/wt"),
                 owns_worktree: true,
                 startup_result: None,
@@ -8198,6 +10987,20 @@ mod tests {
         let _ = engine.session_store.upsert_session(&session);
         engine.sessions.push(session);
         engine.mark_in_flight(InFlightKey::AgentLaunch(TabId::new("s1-slot")));
+        // A client following the tab's start waits on its launch report.
+        engine.operations.open(
+            "op-start",
+            crate::operations::OperationKind::TabStart,
+            crate::operations::OperationPolicy {
+                unknown_after: std::time::Duration::from_secs(60),
+                retention: std::time::Duration::from_secs(60),
+            },
+            std::time::Instant::now(),
+        );
+        engine.operations.await_key(
+            "op-start",
+            &crate::operations::launch_binding_key("s1-slot"),
+        );
 
         let data = make_failed_data(
             "s1",
@@ -8211,6 +11014,14 @@ mod tests {
         assert!(matches!(outcome, AgentLaunchFailedOutcome::ResumeFallback));
         assert!(!engine.is_in_flight(&InFlightKey::AgentLaunch(TabId::new("s1-slot"))));
         assert_eq!(engine.sessions[0].status, SessionStatus::Detached);
+        // The fresh start after a failed resume did not come up either: the
+        // client is told so, with the reason, rather than left waiting.
+        let record = engine
+            .operations
+            .view("op-start", std::time::Instant::now())
+            .unwrap();
+        assert_eq!(record.state, crate::operations::OperationState::Failed);
+        assert!(record.message.contains("boom"), "{}", record.message);
     }
 
     /// A launch that never came up records the tab's last run as failed, which
@@ -8261,7 +11072,11 @@ mod tests {
             "s1",
             "feat/x",
             AgentLaunchKind::Create {
+                birth_identity: None,
                 status_message: crate::status_text::StatusText::default(),
+                status_warns: false,
+                status_notes: None,
+                pull_request_pin: None,
                 repo_path: String::from("/tmp/wt"),
                 owns_worktree: true,
                 startup_result: None,
@@ -8303,7 +11118,7 @@ mod tests {
             "s1",
             "feat/x",
             AgentLaunchKind::Reconnect {
-                status_message: Default::default(),
+                status_message: StatusText::default(),
             },
             "boom",
         );
@@ -8331,15 +11146,23 @@ mod tests {
         ));
     }
 
+    /// Whether a failed tab launch was a brand-new tab or a reopened one.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum TabLaunch {
+        NewTab,
+        Reopened,
+    }
+
     /// Build failed-launch data for an extra tab: `tab_id` differs from the
     /// session id, mirroring a real extra-tab launch.
     fn make_tab_failed_data(
         session_id: &str,
         tab_id: &str,
         branch: &str,
-        is_fresh: bool,
+        launch: TabLaunch,
         message: &str,
     ) -> AgentLaunchFailedData {
+        let is_fresh = launch == TabLaunch::NewTab;
         let session = sample_session(session_id, "project-1", branch);
         AgentLaunchFailedData {
             request: AgentLaunchRequest {
@@ -8348,7 +11171,7 @@ mod tests {
                 session,
                 provider_config: ProviderCommandConfig::default(),
                 env: Vec::new(),
-                identity: Default::default(),
+                identity: crate::term_identity::TerminalIdentity::default(),
                 resume: false,
                 pty_size: (24, 80),
                 scrollback_lines: 1000,
@@ -8358,7 +11181,7 @@ mod tests {
                 },
                 wants_fullscreen: false,
                 status_quiet: QuietSurfaces::LOUD,
-                provider_session: Default::default(),
+                provider_session: crate::resume_recovery::ProviderSessionLaunch::default(),
                 yolo_args: Vec::new(),
             },
             message: message.to_string(),
@@ -8380,7 +11203,7 @@ mod tests {
         };
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
 
-        let data = make_tab_failed_data("s1", "tab-1", "feat/x", true, "boom");
+        let data = make_tab_failed_data("s1", "tab-1", "feat/x", TabLaunch::NewTab, "boom");
         let (outcome, _) = engine.process_agent_launch_failed(data);
 
         assert!(matches!(
@@ -8426,7 +11249,7 @@ mod tests {
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
 
-        let data = make_tab_failed_data("s1", "tab-1", "feat/x", false, "boom");
+        let data = make_tab_failed_data("s1", "tab-1", "feat/x", TabLaunch::Reopened, "boom");
         let (outcome, _) = engine.process_agent_launch_failed(data);
 
         assert!(matches!(
@@ -8462,11 +11285,35 @@ mod tests {
             .sessions
             .push(sample_session("s1", "project-1", "feat/x"));
 
-        let data = make_tab_failed_data("s1", "tab-1", "feat/x", true, "boom");
+        // A client following the tab's create waits on its launch report.
+        engine.operations.open(
+            "op-tab",
+            crate::operations::OperationKind::TabCreate,
+            crate::operations::OperationPolicy {
+                unknown_after: std::time::Duration::from_secs(60),
+                retention: std::time::Duration::from_secs(60),
+            },
+            std::time::Instant::now(),
+        );
+        engine
+            .operations
+            .await_key("op-tab", &crate::operations::launch_binding_key("tab-1"));
+
+        let data = make_tab_failed_data("s1", "tab-1", "feat/x", TabLaunch::NewTab, "boom");
         let (outcome, create_final) = engine.process_agent_launch_failed(data);
 
         assert!(matches!(outcome, AgentLaunchFailedOutcome::Silent));
         assert!(create_final.is_none());
+        // Silent to the screen, but the client is told the launch did not
+        // come up rather than left waiting forever.
+        assert_eq!(
+            engine
+                .operations
+                .view("op-tab", std::time::Instant::now())
+                .unwrap()
+                .state,
+            crate::operations::OperationState::Failed
+        );
     }
 
     #[test]
@@ -8507,7 +11354,7 @@ mod tests {
             project_name: "Pee One".to_string(),
         };
         let outcome = engine.process_project_persistence_completed(action, Ok(()), None);
-        assert!(engine.projects.is_empty());
+        assert_eq!(engine.projects, []);
         assert!(matches!(
             outcome.view,
             ProjectPersistenceView::Removed { ref project_name } if project_name == "Pee One"
@@ -8630,7 +11477,7 @@ mod tests {
             engine.projects[0]
                 .explicit_default_provider
                 .as_ref()
-                .map(|p| p.as_str()),
+                .map(crate::model::ProviderKind::as_str),
             Some("claude"),
         );
         assert!(matches!(
@@ -8661,13 +11508,14 @@ mod tests {
         ));
     }
 
-    // ── Engine::do_delete_session + Engine::begin_delete_session ────────────
+    // ── Engine::begin_delete_session ────────────────────────────────────────
 
     #[test]
     fn begin_delete_session_already_in_flight_returns_already_in_flight() {
         let (mut engine, _tmp) = test_engine();
         engine.pending_deletions.insert("s1".to_string());
-        let outcome = engine.begin_delete_session("s1", true, None);
+        let outcome =
+            engine.begin_delete_session("s1", crate::engine::WorktreeOnDelete::Remove, None);
         assert!(matches!(
             outcome,
             BeginDeleteSessionOutcome::AlreadyInFlight
@@ -8677,7 +11525,8 @@ mod tests {
     #[test]
     fn begin_delete_session_unknown_id_returns_not_found() {
         let (mut engine, _tmp) = test_engine();
-        let outcome = engine.begin_delete_session("missing", true, None);
+        let outcome =
+            engine.begin_delete_session("missing", crate::engine::WorktreeOnDelete::Remove, None);
         assert!(matches!(outcome, BeginDeleteSessionOutcome::NotFound));
     }
 
@@ -8695,7 +11544,8 @@ mod tests {
         // in `providers`, so it is invisible to the live-tab check. Deleting must
         // refuse rather than race the worktree removal against the spawn.
         engine.mark_in_flight(InFlightKey::AgentLaunch(TabId::new("tab-1")));
-        let outcome = engine.begin_delete_session("s1", true, None);
+        let outcome =
+            engine.begin_delete_session("s1", crate::engine::WorktreeOnDelete::Remove, None);
         assert!(matches!(outcome, BeginDeleteSessionOutcome::TabLaunching));
     }
 
@@ -8709,7 +11559,11 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine.begin_delete_session("standalone", true, None);
+        let outcome = engine.begin_delete_session(
+            "standalone",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        );
 
         assert!(matches!(
             outcome,
@@ -8737,7 +11591,8 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine.begin_delete_session("standalone", false, None);
+        let outcome =
+            engine.begin_delete_session("standalone", crate::engine::WorktreeOnDelete::Keep, None);
 
         assert!(matches!(
             outcome,
@@ -8757,7 +11612,8 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
         // delete_worktree=false → no git work needed → inline path
-        let outcome = engine.begin_delete_session("s1", false, None);
+        let outcome =
+            engine.begin_delete_session("s1", crate::engine::WorktreeOnDelete::Keep, None);
         assert!(matches!(
             outcome,
             BeginDeleteSessionOutcome::Inline {
@@ -8777,7 +11633,8 @@ mod tests {
         // Even requesting worktree removal, a missing project takes the inline
         // path (we cannot run git worktree remove without the repo), NOT NotFound,
         // which would silently no-op the user's delete.
-        let outcome = engine.begin_delete_session("s1", true, None);
+        let outcome =
+            engine.begin_delete_session("s1", crate::engine::WorktreeOnDelete::Remove, None);
         assert!(matches!(outcome, BeginDeleteSessionOutcome::Inline { .. }));
     }
 
@@ -8813,18 +11670,18 @@ mod tests {
         engine.sessions.push(s3);
         // A PR row on a doomed session proves the cascade clears session_prs too
         // (the FK cascade is unenforced, so the engine path must do it explicitly).
-        engine
-            .session_store
-            .upsert_pr(&StoredPr {
+        engine.session_store.seed_pr_for_tests(
+            &crate::storage::StoredPr {
                 session_id: "s1".to_string(),
                 pr_number: 7,
                 host: "github.com".to_string(),
                 owner_repo: "o/r".to_string(),
-                state: "open".to_string(),
+                state: "OPEN".to_string(),
                 title: "t".to_string(),
                 url: "u".to_string(),
-            })
-            .unwrap();
+            },
+            crate::storage::SeededPr::Found,
+        );
 
         let reaction = engine
             .apply(crate::engine::Command::RemoveProject {
@@ -8855,12 +11712,9 @@ mod tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(stored_projects, vec!["p2".to_string()]);
-        assert!(
-            engine
-                .session_store
-                .load_all_latest_prs()
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            engine.session_store.latest_found_prs_for_tests(),
+            Vec::<crate::storage::StoredPr>::new()
         );
         // A single success status is emitted (no silent removal).
         let status = unwrap_status(reaction);
@@ -8921,7 +11775,8 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine.begin_delete_session("s1", false, None);
+        let outcome =
+            engine.begin_delete_session("s1", crate::engine::WorktreeOnDelete::Keep, None);
         match outcome {
             BeginDeleteSessionOutcome::Inline { removal } => {
                 assert_eq!(removal, WorktreeRemoval::PreservedOrphan);
@@ -8949,7 +11804,8 @@ mod tests {
         engine.sessions.push(a);
         engine.sessions.push(b);
 
-        let outcome = engine.begin_delete_session("s1", false, None);
+        let outcome =
+            engine.begin_delete_session("s1", crate::engine::WorktreeOnDelete::Keep, None);
         match outcome {
             BeginDeleteSessionOutcome::Inline { removal } => {
                 assert_eq!(removal, WorktreeRemoval::PreservedShared);
@@ -8979,7 +11835,8 @@ mod tests {
 
         // delete_worktree=true but a sibling shares the worktree → skipped,
         // so this stays on the inline path (no git removal needed).
-        let outcome = engine.begin_delete_session("s1", true, None);
+        let outcome =
+            engine.begin_delete_session("s1", crate::engine::WorktreeOnDelete::Remove, None);
         match outcome {
             BeginDeleteSessionOutcome::Inline { removal } => {
                 assert_eq!(removal, WorktreeRemoval::SkippedForSiblings);
@@ -8989,23 +11846,25 @@ mod tests {
     }
 
     #[test]
-    fn do_delete_session_unknown_id_returns_none() {
+    fn a_delete_of_an_unknown_id_returns_none() {
         let (mut engine, _tmp) = test_engine();
         assert!(
-            engine
-                .do_delete_session("missing", false, None)
-                .unwrap()
-                .is_none()
+            crate::engine::test_support::delete_through_pipeline(
+                &mut engine,
+                "missing",
+                crate::engine::WorktreeOnDelete::Keep,
+                None
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
     #[test]
-    fn do_delete_session_soft_returns_when_async_worker_in_flight() {
-        // The in-flight guard must hold in release builds. If an async delete
-        // worker is already running for this session, the
-        // synchronous path must NOT proceed to `git::remove_worktree` or
-        // touch in-memory state. Otherwise the two paths would race on
-        // the worktree.
+    fn a_delete_is_refused_while_its_worktree_removal_is_already_running() {
+        // The in-flight guard holds in release builds: a second delete of an
+        // agent whose removal worker is already running is refused, leaving
+        // the record and the worktree to the removal in progress.
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/tmp/p1"));
         let session = sample_session("s1", "p1", "feat/x");
@@ -9013,14 +11872,18 @@ mod tests {
         engine.sessions.push(session);
         engine.pending_deletions.insert("s1".to_string());
 
-        let outcome = engine
-            .do_delete_session("s1", true, None)
-            .expect("soft-return does not error");
+        let Err(refused) = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        ) else {
+            panic!("a second delete is refused while the first is running");
+        };
         assert!(
-            outcome.is_none(),
-            "do_delete_session must soft-return Ok(None) when an async worker is in-flight",
+            refused.to_string().contains("already in progress"),
+            "{refused}"
         );
-        // The session must still be present: we soft-returned, did not delete.
         assert!(
             engine.sessions.iter().any(|s| s.id == "s1"),
             "session should be untouched when the in-flight guard fires",
@@ -9028,11 +11891,10 @@ mod tests {
     }
 
     #[test]
-    fn do_delete_session_refuses_worktree_removal_while_a_tab_is_launching() {
-        // Round-2 fix: a tab whose launch is in flight is marked in-flight but not
-        // yet in `providers`, so the pre-kill can't reach it. A worktree-removing
-        // delete must refuse rather than race git::remove_worktree against the
-        // spawning provider.
+    fn a_worktree_removing_delete_is_refused_while_a_tab_is_launching() {
+        // A tab whose launch is in flight is marked in-flight but not yet in
+        // `providers`, so nothing could stop it. A worktree-removing delete
+        // refuses rather than race git against the spawning provider.
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/tmp/p1"));
         let session = sample_session("s1", "p1", "feat/x");
@@ -9042,13 +11904,15 @@ mod tests {
         // `AgentSession::slot_tab_id` resolves to for this fixture.
         engine.mark_in_flight(InFlightKey::AgentLaunch(TabId::new("s1-slot")));
 
-        let outcome = engine
-            .do_delete_session("s1", true, None)
-            .expect("soft-return does not error");
-        assert!(
-            outcome.is_none(),
-            "do_delete_session must soft-return Ok(None) while a tab is launching",
-        );
+        let Err(refused) = crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        ) else {
+            panic!("refused while a tab is launching");
+        };
+        assert!(refused.to_string().contains("still launching"), "{refused}");
         assert!(
             engine.sessions.iter().any(|s| s.id == "s1"),
             "session should be untouched when the tab-launch guard fires",
@@ -9063,6 +11927,7 @@ mod tests {
         engine.pending_deletions.insert("s1".to_string());
         let reaction = engine
             .apply(crate::engine::Command::BeginDeleteSession {
+                branches: None,
                 delete_branch: None,
                 session_id: "s1".to_string(),
                 delete_worktree: true,
@@ -9080,6 +11945,7 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         let reaction = engine
             .apply(crate::engine::Command::BeginDeleteSession {
+                branches: None,
                 delete_branch: None,
                 session_id: "missing".to_string(),
                 delete_worktree: false,
@@ -9090,19 +11956,6 @@ mod tests {
             EventReaction::BeginDeleteSessionView(view)
                 if matches!(view.outcome, BeginDeleteSessionOutcome::NotFound)
         ));
-    }
-
-    #[test]
-    fn apply_do_delete_session_returns_nothing_for_unknown_id() {
-        let (mut engine, _tmp) = test_engine();
-        let reaction = engine
-            .apply(crate::engine::Command::DoDeleteSession {
-                delete_branch: None,
-                session_id: "missing".to_string(),
-                delete_worktree: false,
-            })
-            .unwrap();
-        assert!(matches!(reaction, EventReaction::Nothing));
     }
 
     #[test]
@@ -9168,6 +12021,7 @@ mod tests {
             use_existing_branch: false,
             pull_before_create: false,
             copy_uncommitted_changes: false,
+            cloned: None,
         };
         let reaction = engine
             .apply(crate::engine::Command::DispatchCreateAgentRequest {
@@ -9198,7 +12052,7 @@ mod tests {
             session,
             provider_config: ProviderCommandConfig::default(),
             env: Vec::new(),
-            identity: Default::default(),
+            identity: crate::term_identity::TerminalIdentity::default(),
             resume: false,
             pty_size: (24, 80),
             scrollback_lines: 1000,
@@ -9207,7 +12061,7 @@ mod tests {
             },
             wants_fullscreen: false,
             status_quiet: QuietSurfaces::LOUD,
-            provider_session: Default::default(),
+            provider_session: crate::resume_recovery::ProviderSessionLaunch::default(),
             yolo_args: Vec::new(),
         };
         let reaction = engine
@@ -9224,16 +12078,6 @@ mod tests {
         };
         assert!(!view.launched);
         assert!(view.status.is_some());
-    }
-
-    #[test]
-    fn apply_stage_file_propagates_git_error_for_missing_worktree() {
-        let (mut engine, _tmp) = test_engine();
-        let result = engine.apply(crate::engine::Command::StageFile {
-            worktree_path: PathBuf::from("/nonexistent/worktree"),
-            path: "missing.rs".to_string(),
-        });
-        assert!(result.is_err());
     }
 
     #[test]
@@ -9504,7 +12348,15 @@ mod tests {
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))
     }
 
-    fn host_signal(host: &str, remaining: Option<i64>, hard_failed: bool) -> crate::gh::HostSignal {
+    /// How one host's `gh` call ended.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum HostCall {
+        HardFailed,
+        Answered,
+    }
+
+    fn host_signal(host: &str, remaining: Option<i64>, call: HostCall) -> crate::gh::HostSignal {
+        let hard_failed = call == HostCall::HardFailed;
         crate::gh::HostSignal {
             host: host.to_string(),
             rate: remaining.map(|remaining| crate::gh::RateLimitInfo {
@@ -9530,7 +12382,11 @@ mod tests {
     fn apply_pr_backoff_pauses_and_warns_when_low_per_host() {
         let (tx, rx) = std::sync::mpsc::channel();
         let shared = backoff_map();
-        Engine::apply_pr_backoff(&shared, &[host_signal("github.com", Some(5), false)], &tx);
+        Engine::apply_pr_backoff(
+            &shared,
+            &[host_signal("github.com", Some(5), HostCall::Answered)],
+            &tx,
+        );
 
         // The window is set for that host, ~120s out (the reset), not "now".
         let until = *shared
@@ -9581,7 +12437,7 @@ mod tests {
     fn apply_pr_backoff_warns_only_once_while_active() {
         let (tx, rx) = std::sync::mpsc::channel();
         let shared = backoff_map();
-        let sig = [host_signal("github.com", Some(5), false)];
+        let sig = [host_signal("github.com", Some(5), HostCall::Answered)];
         Engine::apply_pr_backoff(&shared, &sig, &tx);
         Engine::apply_pr_backoff(&shared, &sig, &tx);
         // First call warns; the second (window still active) must be silent.
@@ -9598,7 +12454,11 @@ mod tests {
         // off (regression guard for the masking bug).
         let (tx, _rx) = std::sync::mpsc::channel();
         let shared = backoff_map();
-        Engine::apply_pr_backoff(&shared, &[host_signal("github.com", Some(5000), true)], &tx);
+        Engine::apply_pr_backoff(
+            &shared,
+            &[host_signal("github.com", Some(5000), HostCall::HardFailed)],
+            &tx,
+        );
         assert!(
             shared.lock().unwrap().contains_key("github.com"),
             "a hard failure must pause even with a healthy quota reading",
@@ -9613,8 +12473,8 @@ mod tests {
         Engine::apply_pr_backoff(
             &shared,
             &[
-                host_signal("github.com", Some(5000), false),
-                host_signal("ghe.corp", None, true),
+                host_signal("github.com", Some(5000), HostCall::Answered),
+                host_signal("ghe.corp", None, HostCall::HardFailed),
             ],
             &tx,
         );
@@ -9633,7 +12493,7 @@ mod tests {
         );
         Engine::apply_pr_backoff(
             &shared,
-            &[host_signal("github.com", Some(5000), false)],
+            &[host_signal("github.com", Some(5000), HostCall::Answered)],
             &tx,
         );
         assert!(
@@ -9651,7 +12511,7 @@ mod tests {
         let shared = backoff_map();
         Engine::apply_pr_backoff(
             &shared,
-            &[host_signal("github.com", Some(5000), false)],
+            &[host_signal("github.com", Some(5000), HostCall::Answered)],
             &tx,
         );
         assert!(shared.lock().unwrap().is_empty());
@@ -9700,6 +12560,10 @@ mod tests {
     struct RecordingConfigSurface(Arc<Mutex<Vec<String>>>);
 
     impl crate::engine::ConfigSurface for RecordingConfigSurface {
+        fn start_surface(&self) -> crate::config::Surface {
+            crate::config::Surface::YaranServer
+        }
+
         fn reload(
             &self,
             _paths: crate::config::YaranPaths,
@@ -9739,7 +12603,7 @@ mod tests {
     fn apply_reload_config_opens_barrier_and_invokes_surface() {
         let (mut engine, _tmp) = test_engine();
         let recorder = Arc::new(Mutex::new(Vec::new()));
-        engine.surface = Box::new(RecordingConfigSurface(recorder.clone()));
+        engine.surface = Box::new(RecordingConfigSurface(Arc::clone(&recorder)));
 
         let reaction = engine
             .apply(crate::engine::Command::ReloadConfig)
@@ -9751,11 +12615,720 @@ mod tests {
         assert!(engine.reload_guard.is_some());
     }
 
+    /// A surface that reloads the real file on a worker thread, as the web
+    /// surface does.
+    struct FileReloadSurface;
+
+    impl crate::engine::ConfigSurface for FileReloadSurface {
+        fn start_surface(&self) -> crate::config::Surface {
+            crate::config::Surface::YaranServer
+        }
+
+        fn reload(
+            &self,
+            paths: crate::config::YaranPaths,
+            worker_tx: std::sync::mpsc::Sender<crate::worker::WorkerEvent>,
+        ) {
+            std::thread::spawn(move || {
+                let guard = crate::engine::ReloadCompletionGuard::new(worker_tx);
+                guard.complete(crate::config::load_config(&paths).map_err(|e| e.to_string()));
+            });
+        }
+
+        fn recover_render(&self, config: &crate::config::Config) -> String {
+            crate::config_write::render_config_plain(config)
+        }
+    }
+
+    /// Two `yaran config set` runs in quick succession each ask for a reload; the
+    /// second arrives while the first is still reading. It must not be
+    /// dropped: it runs right after, so the file's final state is what runs.
+    /// A client that asked for either reload follows its own: the one asked
+    /// during the first waits for the follow-up, not for the reload that was
+    /// already reading.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario walked in order on one engine, each step asserting on the state the previous step left"
+    )]
+    fn a_reload_asked_for_during_a_reload_runs_right_after_it() {
+        use crate::operations::{OperationKind, OperationState};
+        let (mut engine, _tmp) = test_engine();
+        engine.surface = Box::new(FileReloadSurface);
+        std::fs::write(&engine.paths.config_path, "[ui]\nleft_width_pct = 21\n").unwrap();
+        let first = engine
+            .apply_wire_operation(
+                crate::wire::WireCommand::ReloadConfig {},
+                OperationKind::ConfigReload,
+            )
+            .expect("first reload")
+            .operation_id
+            .expect("a record for the first");
+        assert!(engine.reloading);
+        std::fs::write(&engine.paths.config_path, "[ui]\nleft_width_pct = 22\n").unwrap();
+        let second = engine
+            .apply_wire_operation(
+                crate::wire::WireCommand::ReloadConfig {},
+                OperationKind::ConfigReload,
+            )
+            .expect("second reload");
+        let status = second.status.expect("a status");
+        assert!(status.message.contains("right after"), "{}", status.message);
+        let second = second.operation_id.expect("a record for the second");
+        let state_of = |engine: &Engine, id: &str| {
+            engine
+                .operations
+                .peek(id, std::time::Instant::now())
+                .expect("record kept")
+                .state
+        };
+        assert_eq!(state_of(&engine, &first), OperationState::Running);
+        assert_eq!(state_of(&engine, &second), OperationState::Running);
+        // A third collapses into the same follow-up.
+        engine
+            .apply(crate::engine::Command::ReloadConfig)
+            .expect("third reload");
+        assert_eq!(
+            engine
+                .deferred_commands
+                .iter()
+                .filter(|c| matches!(c, crate::engine::Command::ReloadConfig))
+                .count(),
+            1
+        );
+
+        let mut reloads_finished = 0;
+        while let Some(event) = try_recv_worker_event(&engine) {
+            if !matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                continue;
+            }
+            reloads_finished += 1;
+            let reaction = engine.process_worker_event(event);
+            for reaction in flatten(reaction) {
+                if let EventReaction::ApplyReloadedConfig(config) = reaction {
+                    engine.apply_reloaded_config(*config).expect("apply");
+                }
+            }
+            engine.finish_config_reload_operations(
+                &crate::config_reload_status::ConfigReloadOutcome::Applied { notes: Vec::new() },
+            );
+            if reloads_finished == 1 {
+                assert_eq!(state_of(&engine, &first), OperationState::Succeeded);
+                assert_eq!(
+                    state_of(&engine, &second),
+                    OperationState::Running,
+                    "the follow-up has not read the file yet"
+                );
+            }
+            if !engine.reloading {
+                break;
+            }
+        }
+        assert_eq!(reloads_finished, 2, "the follow-up reload ran");
+        assert_eq!(engine.config.ui.left_width_pct, 22);
+        assert_eq!(state_of(&engine, &second), OperationState::Succeeded);
+
+        // A follow-up whose own dispatch fails (the writer will not pause)
+        // fails the clients waiting on it, and nothing later completes them.
+        let running = engine
+            .apply_wire_operation(
+                crate::wire::WireCommand::ReloadConfig {},
+                OperationKind::ConfigReload,
+            )
+            .expect("a reload")
+            .operation_id
+            .expect("record");
+        let queued = engine
+            .apply_wire_operation(
+                crate::wire::WireCommand::ReloadConfig {},
+                OperationKind::ConfigReload,
+            )
+            .expect("a queued reload")
+            .operation_id
+            .expect("record");
+        let live_writer = std::mem::replace(
+            &mut engine.config_writer,
+            crate::config_queue::ConfigWriteQueue::with_dead_writer(&engine.paths.config_path),
+        );
+        while let Some(event) = try_recv_worker_event(&engine) {
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                engine.process_worker_event(event);
+                break;
+            }
+        }
+        engine.finish_config_reload_operations(
+            &crate::config_reload_status::ConfigReloadOutcome::Applied { notes: Vec::new() },
+        );
+        assert_eq!(state_of(&engine, &running), OperationState::Succeeded);
+        let failed = engine
+            .operations
+            .peek(&queued, std::time::Instant::now())
+            .expect("kept");
+        assert_eq!(failed.state, OperationState::Failed);
+        assert_eq!(failed.message, "Config writer is busy; please retry.");
+        assert!(!engine.reloading, "no reload is running");
+
+        engine.config_writer = live_writer;
+        let later = engine
+            .apply_wire_operation(
+                crate::wire::WireCommand::ReloadConfig {},
+                OperationKind::ConfigReload,
+            )
+            .expect("a later reload")
+            .operation_id
+            .expect("record");
+        loop {
+            let event = try_recv_worker_event(&engine).expect("the later reload read the file");
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                engine.process_worker_event(event);
+                break;
+            }
+        }
+        engine.finish_config_reload_operations(
+            &crate::config_reload_status::ConfigReloadOutcome::Refused("no".to_string()),
+        );
+        assert_eq!(state_of(&engine, &later), OperationState::Failed);
+        assert_eq!(
+            engine
+                .operations
+                .peek(&queued, std::time::Instant::now())
+                .unwrap()
+                .message,
+            "Config writer is busy; please retry.",
+            "the later reload's outcome is not the failed follow-up's"
+        );
+    }
+
+    /// A client that asked for a reload is told how it ended, in the words of
+    /// the outcome its owner reports: applied (with what only a restart
+    /// applies), adopted but not fully applied, or refused.
+    #[test]
+    fn a_reload_record_ends_on_the_outcome_its_owner_reports() {
+        use crate::config_reload_status::ConfigReloadOutcome as Outcome;
+        use crate::operations::{OperationKind, OperationState};
+        let cases = [
+            (
+                Outcome::Applied { notes: Vec::new() },
+                OperationState::Succeeded,
+                "Configuration reloaded. New settings are active now.",
+            ),
+            (
+                Outcome::Applied {
+                    notes: vec!["Restart yaran to use the new port.".to_string()],
+                },
+                OperationState::Succeeded,
+                "Configuration reloaded. New settings are active now. Restart yaran to use the \
+                 new port.",
+            ),
+            (
+                Outcome::ApplyFailed("the database is locked".to_string()),
+                OperationState::Partial,
+                "The reloaded config.toml is in force and its settings are active, but one step \
+                 of applying it failed: the database is locked. Fix that, then reload the config \
+                 again to finish.",
+            ),
+            (
+                Outcome::Refused("config.toml no longer exists".to_string()),
+                OperationState::Failed,
+                "Config reload failed: config.toml no longer exists",
+            ),
+        ];
+        for (outcome, state, message) in cases {
+            let (mut engine, _tmp) = test_engine();
+            engine.surface = Box::new(RecordingConfigSurface(Arc::new(Mutex::new(Vec::new()))));
+            let id = engine
+                .apply_wire_operation(
+                    crate::wire::WireCommand::ReloadConfig {},
+                    OperationKind::ConfigReload,
+                )
+                .expect("reload")
+                .operation_id
+                .expect("record");
+            let event = try_recv_worker_event(&engine).expect("the reload finished");
+            engine.process_worker_event(event);
+            engine.finish_config_reload_operations(&outcome);
+            let record = engine
+                .operations
+                .peek(&id, std::time::Instant::now())
+                .expect("kept");
+            assert_eq!(record.state, state, "{outcome:?}");
+            assert_eq!(record.message, message);
+        }
+    }
+
+    /// When a follow-up reload (or any deferred command) rides on a reload,
+    /// the surfaces still see the transition from the config before it: the
+    /// engine hands back the new config while its own is still the old one,
+    /// so the Tailscale switch, the restart warning and the bind-change check
+    /// all run.
+    #[test]
+    fn a_coalesced_reload_still_shows_the_surfaces_the_old_config() {
+        let (mut engine, _tmp) = test_engine();
+        engine.surface = Box::new(FileReloadSurface);
+        assert_eq!(engine.config.server.tailscale, "auto");
+        std::fs::write(
+            &engine.paths.config_path,
+            "[server]\ntailscale = \"no\"\nport = 4999\n",
+        )
+        .unwrap();
+        engine
+            .apply(crate::engine::Command::ReloadConfig)
+            .expect("first reload");
+        engine
+            .apply(crate::engine::Command::ReloadConfig)
+            .expect("queued reload");
+        let event = loop {
+            let event = try_recv_worker_event(&engine).expect("the first reload finishes");
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                break event;
+            }
+        };
+        let applied = flatten(engine.process_worker_event(event))
+            .into_iter()
+            .find_map(|reaction| match reaction {
+                EventReaction::ApplyReloadedConfig(config) => Some(config),
+                _ => None,
+            })
+            .expect("the surfaces get the reloaded config");
+        assert_eq!(applied.server.tailscale, "no");
+        assert_eq!(applied.server.port, 4999);
+        assert_eq!(
+            engine.config.server.tailscale, "auto",
+            "the engine's own config is still the old one for the surfaces to compare"
+        );
+        assert_eq!(engine.config.server.port, Config::default().server.port);
+    }
+
+    /// Recovering over a file whose [server.auth] has no password while the
+    /// running yaran has one keeps the running password and says so, rather
+    /// than writing "no password" as if the file had decided it.
+    #[test]
+    fn recovering_keeps_the_running_password_over_an_empty_one_and_says_so() {
+        let (mut engine, _tmp) = test_engine();
+        engine.surface = Box::new(FileReloadSurface);
+        let hash = crate::auth::hash_password(&crate::auth::Password::new(
+            "the running password".to_string(),
+        ))
+        .expect("hash");
+        engine.config.server.auth.password_hash = hash.clone();
+        std::fs::write(
+            &engine.paths.config_path,
+            "[server.auth]\nrequire = \"tailnet\"\n",
+        )
+        .unwrap();
+        let status = unwrap_status(
+            engine
+                .apply(crate::engine::Command::RecoverConfig)
+                .expect("recover"),
+        );
+        let written = std::fs::read_to_string(&engine.paths.config_path).unwrap();
+        let auth = crate::config::auth_section_of(&written).expect("valid");
+        assert_eq!(auth.password_hash, hash, "{written}");
+        assert_eq!(
+            auth.require,
+            crate::config::AuthRequire::Tailnet,
+            "the file's own setting"
+        );
+        assert_eq!(status.tone, StatusTone::Warning);
+        assert!(
+            status.message.contains("running password was kept"),
+            "{}",
+            status.message
+        );
+    }
+
+    /// Make every later read of the session database fail, as a disk error
+    /// would, through a second connection that drops a table.
+    fn break_the_session_database(engine: &Engine) {
+        let connection = rusqlite::Connection::open(&engine.paths.sessions_db_path).unwrap();
+        connection.execute("DROP TABLE projects", []).unwrap();
+    }
+
+    /// A coalesced reload applies the new config to drain the deferred
+    /// commands and then puts the old one back for the surface to apply:
+    /// the GitHub integration's state goes back with it, so the surface's
+    /// apply compares with the state from before the reload, and the `gh`
+    /// probe a reload owes is asked for once, by that apply.
+    #[test]
+    fn a_coalesced_reload_hands_the_surface_the_github_state_from_before_it() {
+        for was_enabled in [false, true] {
+            let (mut engine, _tmp) = test_engine();
+            engine.surface = Box::new(FileReloadSurface);
+            engine.config.ui.github_integration = was_enabled;
+            engine.github_integration_enabled = was_enabled;
+            engine.gh_status = crate::model::GhStatus::Available;
+            std::fs::write(
+                &engine.paths.config_path,
+                "[ui]\ngithub_integration = true\n",
+            )
+            .unwrap();
+            engine
+                .apply(crate::engine::Command::ReloadConfig)
+                .expect("reload");
+            let mut env = BTreeMap::new();
+            env.insert("API".to_string(), "k".to_string());
+            engine
+                .apply(crate::engine::Command::PersistGlobalEnv { env })
+                .expect("deferred");
+            let event = loop {
+                let event = try_recv_worker_event(&engine).expect("reload finishes");
+                if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                    break event;
+                }
+            };
+            let generation = engine.gh_probe.generation;
+            let applied = flatten(engine.process_worker_event(event))
+                .into_iter()
+                .find_map(|reaction| match reaction {
+                    EventReaction::ApplyReloadedConfig(config) => Some(config),
+                    _ => None,
+                })
+                .expect("reloaded config");
+            assert_eq!(
+                engine.github_integration_enabled, was_enabled,
+                "the surface reads the state from before the reload"
+            );
+            assert_eq!(
+                engine.gh_probe.generation, generation,
+                "the coalesced apply leaves the probe to the surface's apply"
+            );
+            engine.apply_reloaded_config(*applied).expect("apply");
+            assert!(engine.github_integration_enabled);
+            let probes = engine.gh_probe.generation.wrapping_sub(generation);
+            assert_eq!(
+                probes,
+                u64::from(!was_enabled),
+                "off to on asks gh once; on to on with a settled answer does not"
+            );
+        }
+    }
+
+    /// The engine's own apply of a coalesced reload failing still adopts the
+    /// new config, so the surface is told it was adopted, with the config
+    /// from before the reload to compare against, whether the GitHub
+    /// integration was on before the apply, and what failed.
+    #[test]
+    fn an_engine_apply_failure_tells_the_surface_to_take_the_adopted_view() {
+        let (mut engine, _tmp) = test_engine();
+        engine.surface = Box::new(FileReloadSurface);
+        std::fs::write(&engine.paths.config_path, "[ui]\nleft_width_pct = 33\n").unwrap();
+        engine
+            .apply(crate::engine::Command::ReloadConfig)
+            .expect("reload");
+        let mut env = BTreeMap::new();
+        env.insert("API".to_string(), "k".to_string());
+        engine
+            .apply(crate::engine::Command::PersistGlobalEnv { env })
+            .expect("deferred");
+        let event = loop {
+            let event = try_recv_worker_event(&engine).expect("reload finishes");
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                break event;
+            }
+        };
+        break_the_session_database(&engine);
+        let was_enabled = engine.github_integration_enabled;
+        let reactions = flatten(engine.process_worker_event(event));
+        assert_eq!(engine.config.ui.left_width_pct, 33, "adopted");
+        assert!(
+            reactions.iter().any(|reaction| {
+                matches!(reaction, EventReaction::ConfigAdopted { before, github_was_enabled, error }
+                    if before.ui.left_width_pct != 33
+                        && *github_was_enabled == was_enabled
+                        && !error.is_empty())
+            }),
+            "{:?}",
+            reactions.iter().map(reaction_kind).collect::<Vec<_>>()
+        );
+        // The config is in force, so this is not a refused reload: no
+        // review-the-modal failure that would say the old settings still run.
+        assert!(
+            !reactions
+                .iter()
+                .any(|reaction| matches!(reaction, EventReaction::OpenConfigReloadFailedModal(_))),
+            "{:?}",
+            reactions.iter().map(reaction_kind).collect::<Vec<_>>()
+        );
+    }
+
+    /// The surface's apply failing after a coalesced reload pre-swapped the
+    /// config must not let the next save write the old config over the new
+    /// file: memory stays as it was, so the writer's base goes back to match
+    /// it, and the deferred change that was saved stays on disk.
+    #[test]
+    fn a_failed_apply_after_a_coalesced_reload_never_reverts_the_file() {
+        let (mut engine, _tmp) = test_engine();
+        engine.surface = Box::new(FileReloadSurface);
+        std::fs::write(
+            &engine.paths.config_path,
+            "[ui]\nleft_width_pct = 20\n\n[env]\nFOO = \"bar\"\n",
+        )
+        .unwrap();
+        engine.config = crate::config::load_config(&engine.paths).unwrap();
+        engine.retune_after_config_swap();
+        // The reloaded file changes one setting and deletes another by hand.
+        std::fs::write(
+            &engine.paths.config_path,
+            "[ui]\nleft_width_pct = 33\n\n[env]\n",
+        )
+        .unwrap();
+        engine
+            .apply(crate::engine::Command::ReloadConfig)
+            .expect("reload");
+        let mut env = BTreeMap::new();
+        env.insert("API".to_string(), "k".to_string());
+        engine
+            .apply(crate::engine::Command::PersistGlobalEnv { env })
+            .expect("deferred");
+        let event = loop {
+            let event = try_recv_worker_event(&engine).expect("reload finishes");
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                break event;
+            }
+        };
+        let applied = flatten(engine.process_worker_event(event))
+            .into_iter()
+            .find_map(|reaction| match reaction {
+                EventReaction::ApplyReloadedConfig(config) => Some(config),
+                _ => None,
+            })
+            .expect("reloaded config");
+        // An apply with no project list handed to it reads the database,
+        // which is what fails here.
+        engine.reloaded_projects = None;
+        break_the_session_database(&engine);
+        assert!(
+            engine.apply_reloaded_config(*applied).is_err(),
+            "the apply fails"
+        );
+        assert_eq!(
+            engine.config.ui.left_width_pct, 33,
+            "the engine keeps the new config anyway"
+        );
+
+        for round in 0..2 {
+            let mut memory = engine.config.clone();
+            memory.ui.copy_on_select = round == 0;
+            engine.config_writer.save_eager(memory).expect("save");
+        }
+        let after = std::fs::read_to_string(&engine.paths.config_path).unwrap();
+        assert!(
+            !after.contains("FOO"),
+            "the deletion survives two saves:\n{after}"
+        );
+        assert!(
+            after.contains("left_width_pct = 33"),
+            "not reverted:\n{after}"
+        );
+        assert!(
+            after.contains("API = \"k\""),
+            "the deferred save stays:\n{after}"
+        );
+    }
+
+    /// When a failed apply leaves the engine unable to derive its projects
+    /// from the kept config, memory and the writer's base still agree, so
+    /// the stale derived projects never count as a change memory made: a
+    /// project the reloaded file added stays in the file across saves.
+    #[test]
+    fn a_failed_apply_never_lets_stale_projects_count_as_a_change() {
+        let (mut engine, _tmp) = test_engine();
+        std::fs::write(
+            &engine.paths.config_path,
+            "[[projects]]\nid = \"a\"\npath = \"/tmp/a\"\n",
+        )
+        .unwrap();
+        engine.config = crate::config::load_config(&engine.paths).unwrap();
+        engine.retune_after_config_swap();
+        std::fs::write(
+            &engine.paths.config_path,
+            "[[projects]]\nid = \"a\"\npath = \"/tmp/a\"\n\n[[projects]]\nid = \"b\"\npath = \"/tmp/b\"\n",
+        )
+        .unwrap();
+        let reloaded = crate::config::load_config(&engine.paths).unwrap();
+        break_the_session_database(&engine);
+        assert!(engine.apply_reloaded_config(reloaded).is_err());
+        // The engine's projects could not be derived from the kept config, so
+        // they are the old ones; persisting them is a save from memory.
+        engine.persist_projects_to_config().expect("persist");
+        for round in 0..2 {
+            let mut memory = engine.config.clone();
+            memory.ui.copy_on_select = round == 0;
+            engine.config_writer.save_eager(memory).expect("save");
+            let after = std::fs::read_to_string(&engine.paths.config_path).unwrap();
+            assert!(
+                after.contains("/tmp/a") && after.contains("/tmp/b"),
+                "save {round}:\n{after}"
+            );
+        }
+    }
+
+    /// A deferred change saved during a reload is part of the file the
+    /// surfaced config agrees with: a later `yaran config set` of that same
+    /// setting is not undone when a pending save is flushed.
+    #[test]
+    fn a_set_after_a_deferred_change_survives_the_next_flush() {
+        let (mut engine, _tmp) = test_engine();
+        engine.surface = Box::new(FileReloadSurface);
+        std::fs::write(&engine.paths.config_path, "[ui]\nleft_width_pct = 20\n").unwrap();
+        engine.config = crate::config::load_config(&engine.paths).unwrap();
+        engine.retune_after_config_swap();
+        engine
+            .apply(crate::engine::Command::ReloadConfig)
+            .expect("reload");
+        let mut env = BTreeMap::new();
+        env.insert("API".to_string(), "deferred".to_string());
+        engine
+            .apply(crate::engine::Command::PersistGlobalEnv { env })
+            .expect("deferred");
+        let event = loop {
+            let event = try_recv_worker_event(&engine).expect("reload finishes");
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                break event;
+            }
+        };
+        let applied = flatten(engine.process_worker_event(event))
+            .into_iter()
+            .find_map(|reaction| match reaction {
+                EventReaction::ApplyReloadedConfig(config) => Some(config),
+                _ => None,
+            })
+            .expect("reloaded config");
+        engine.apply_reloaded_config(*applied).expect("apply");
+
+        let key = crate::config_keys::lookup("env.API").unwrap();
+        crate::config_keys::set_secret_text(
+            &engine.paths.config_path,
+            &key,
+            &crate::auth::Password::new("from-set".to_string()),
+        )
+        .unwrap();
+        let mut memory = engine.config.clone();
+        memory.ui.copy_on_select = !memory.ui.copy_on_select;
+        engine.config_writer.save_lazy(memory);
+        drop(engine.config_writer.quiesce());
+        let after = std::fs::read_to_string(&engine.paths.config_path).unwrap();
+        assert!(
+            after.contains("API = \"from-set\""),
+            "the set survives:\n{after}"
+        );
+    }
+
+    // Sixth review cases.
+
+    #[test]
+    fn rv_failed_apply_resurrects_project_deleted_by_hand() {
+        let (mut engine, _tmp) = test_engine();
+        std::fs::write(
+            &engine.paths.config_path,
+            "[[projects]]\nid = \"a\"\npath = \"/tmp/a\"\n\n[[projects]]\nid = \"c\"\npath = \"/tmp/c\"\n",
+        )
+        .unwrap();
+        let loaded = crate::config::load_config(&engine.paths).unwrap();
+        for (i, p) in loaded.projects.iter().enumerate() {
+            engine
+                .session_store
+                .upsert_project_at(p, i64::try_from(i).expect("project index fits in i64"))
+                .unwrap();
+        }
+        engine.apply_reloaded_config(loaded).expect("first apply");
+        eprintln!(
+            "engine projects: {:?}",
+            engine
+                .projects
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>()
+        );
+        std::fs::write(
+            &engine.paths.config_path,
+            "[[projects]]\nid = \"a\"\npath = \"/tmp/a\"\n",
+        )
+        .unwrap();
+        let reloaded = crate::config::load_config(&engine.paths).unwrap();
+        break_the_session_database(&engine);
+        assert!(engine.apply_reloaded_config(reloaded).is_err());
+        for round in 0..3 {
+            let mut memory = engine.config.clone();
+            memory.ui.copy_on_select = round % 2 == 0;
+            engine.config_writer.save_eager(memory).expect("save");
+            let after = std::fs::read_to_string(&engine.paths.config_path).unwrap();
+            eprintln!(
+                "ROUND {round}:\n{}",
+                after.lines().take(12).collect::<Vec<_>>().join("\n")
+            );
+            assert!(
+                !after.contains("/tmp/c"),
+                "save {round}: hand-deleted project came back\n{after}"
+            );
+        }
+    }
+
+    #[test]
+    fn rv_set_between_reload_read_and_deferred_write_is_reverted() {
+        let (mut engine, _tmp) = test_engine();
+        engine.surface = Box::new(FileReloadSurface);
+        std::fs::write(&engine.paths.config_path, "[ui]\nleft_width_pct = 20\n").unwrap();
+        engine.config = crate::config::load_config(&engine.paths).unwrap();
+        engine.retune_after_config_swap();
+        engine
+            .apply(crate::engine::Command::ReloadConfig)
+            .expect("reload");
+        let mut env = BTreeMap::new();
+        env.insert("API".to_string(), "deferred".to_string());
+        engine
+            .apply(crate::engine::Command::PersistGlobalEnv { env })
+            .expect("deferred");
+        let event = loop {
+            let event = try_recv_worker_event(&engine).expect("reload finishes");
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                break event;
+            }
+        };
+        // `yaran config set ui.left_width_pct 40` lands after the reload read the file.
+        let key = crate::config_keys::lookup("ui.left_width_pct").unwrap();
+        crate::config_keys::set_plain(&engine.paths.config_path, &key, "40").unwrap();
+        let applied = flatten(engine.process_worker_event(event))
+            .into_iter()
+            .find_map(|reaction| match reaction {
+                EventReaction::ApplyReloadedConfig(config) => Some(config),
+                _ => None,
+            })
+            .expect("reloaded config");
+        engine.apply_reloaded_config(*applied).expect("apply");
+        let mid = std::fs::read_to_string(&engine.paths.config_path).unwrap();
+        assert!(
+            mid.contains("left_width_pct = 40"),
+            "after deferred:\n{mid}"
+        );
+        let mut memory = engine.config.clone();
+        memory.ui.copy_on_select = !memory.ui.copy_on_select;
+        engine.config_writer.save_lazy(memory);
+        drop(engine.config_writer.quiesce());
+        let after = std::fs::read_to_string(&engine.paths.config_path).unwrap();
+        assert!(
+            after.contains("left_width_pct = 40"),
+            "the set was reverted:\n{}",
+            after
+                .lines()
+                .filter(|l| l.contains("left_width") || l.contains("API"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    fn flatten(reaction: EventReaction) -> Vec<EventReaction> {
+        match reaction {
+            EventReaction::Multi(list) => list.into_iter().flat_map(flatten).collect(),
+            other => vec![other],
+        }
+    }
+
     #[test]
     fn apply_recover_config_renders_via_surface_and_writes() {
         let (mut engine, _tmp) = test_engine();
         let recorder = Arc::new(Mutex::new(Vec::new()));
-        engine.surface = Box::new(RecordingConfigSurface(recorder.clone()));
+        engine.surface = Box::new(RecordingConfigSurface(Arc::clone(&recorder)));
 
         let reaction = engine
             .apply(crate::engine::Command::RecoverConfig)
@@ -9878,6 +13451,7 @@ mod tests {
                 already_running_status: None,
                 panic_event: Some(Box::new(|reason| WorkerEvent::CreateAgentFailed {
                     status_op_id: "op-test".to_string(),
+                    attempted_name: None,
                     message: format!("panic: {reason}").into(),
                 })),
             },
@@ -9977,7 +13551,7 @@ mod tests {
         let project = sample_project("p1", "/tmp/p1");
         engine.projects.push(project);
         let repo_path = "/tmp/p1".to_string();
-        engine.mark_in_flight(InFlightKey::Pull(repo_path.clone()));
+        engine.mark_in_flight(project_pull_key(&repo_path));
 
         let reaction = engine.process_worker_event(WorkerEvent::PullCompleted {
             repo_path: repo_path.clone(),
@@ -9988,6 +13562,7 @@ mod tests {
             },
             result: Ok(crate::worker::PullOutcome::Pulled {
                 current_branch: None,
+                default_warning: None,
             }),
             status: crate::engine::ResolvedFinal::new(
                 "pull-project:p1",
@@ -10010,7 +13585,7 @@ mod tests {
     fn pull_completed_project_err_carries_keyed_status() {
         let (mut engine, _tmp) = test_engine();
         let repo_path = "/tmp/p1".to_string();
-        engine.mark_in_flight(InFlightKey::Pull(repo_path.clone()));
+        engine.mark_in_flight(project_pull_key(&repo_path));
 
         let reaction = engine.process_worker_event(WorkerEvent::PullCompleted {
             repo_path,
@@ -10048,6 +13623,7 @@ mod tests {
             target: PullTarget::Session,
             result: Ok(crate::worker::PullOutcome::Pulled {
                 current_branch: None,
+                default_warning: None,
             }),
             status: crate::engine::ResolvedFinal::new(
                 "pull-session:/tmp/wt-session",
@@ -10114,9 +13690,9 @@ mod tests {
 
     #[test]
     fn status_update_keyed_constructor() {
-        let s = StatusUpdate::keyed("op-key", StatusTone::Busy, "working…");
-        assert_eq!(s.tone, StatusTone::Busy);
-        assert_eq!(s.message, "working\u{2026}");
+        let s = StatusUpdate::keyed("op-key", StatusTone::Warning, "slow…");
+        assert_eq!(s.tone, StatusTone::Warning);
+        assert_eq!(s.message, "slow\u{2026}");
         assert_eq!(s.key.as_deref(), Some("op-key"));
     }
 
@@ -10153,9 +13729,7 @@ mod tests {
                 // the count below measures rather than there having been one
                 // panic to report.
                 let n = counter_for_body.fetch_add(1, Ordering::Relaxed);
-                if n < 2 {
-                    panic!("this iteration panics");
-                }
+                assert!(n >= 2, "this iteration panics");
                 LoopControl::Break
             },
         );
@@ -10203,7 +13777,8 @@ mod tests {
         let (engine, _tmp) = test_engine();
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_for_body = Arc::clone(&counter);
-        let clean = crate::poller_status::REARM_AFTER_SUCCESSES as usize;
+        let clean = usize::try_from(crate::poller_status::REARM_AFTER_SUCCESSES)
+            .expect("the re-arm count fits in usize");
         engine.spawn_loop_worker(
             LoopWorkerSpec {
                 label: "rearm-loop-test".into(),
@@ -10212,9 +13787,7 @@ mod tests {
             },
             move |_tx| {
                 let n = counter_for_body.fetch_add(1, Ordering::Relaxed);
-                if n == 0 || n == clean + 1 {
-                    panic!("this iteration panics");
-                }
+                assert!(!(n == 0 || n == clean + 1), "this iteration panics");
                 if n > clean + 1 {
                     return LoopControl::Break;
                 }
@@ -10253,7 +13826,18 @@ mod tests {
         let worktree = attach_worktree(&repo, "develop");
 
         engine.dispatch_deferred_worktree_removal(crate::engine::DeferredWorktreeRemoval {
-            delete_branch: None,
+            branches: crate::branch_history::BranchPlan {
+                keep: vec![crate::branch_history::PlannedKeep {
+                    role: crate::branch_history::BranchRole::Current,
+                    name: "develop".to_string(),
+                    because: crate::branch_history::KeptBecause::NotYarans {
+                        provenance: "attached".to_string(),
+                    },
+                    identity: None,
+                    tip: None,
+                }],
+                ..Default::default()
+            },
             session_id: "s1".to_string(),
             project_path: repo.to_string_lossy().to_string(),
             managed: crate::model::ManagedWorkspace {
@@ -10266,6 +13850,7 @@ mod tests {
                 worktree_path: worktree.to_string_lossy().to_string(),
             },
             busy_message: "Removing worktree\u{2026}".to_string().into(),
+            processes: crate::engine::RemovalProcesses::none(),
         });
 
         let event = engine
@@ -10276,9 +13861,7 @@ mod tests {
             crate::worker::WorkerEvent::WorktreeRemoveCompleted { result, .. } => {
                 assert_eq!(
                     result.unwrap(),
-                    RemovedBranches::Kept(crate::model::BranchKeptReason::NotYarans(
-                        crate::model::BranchProvenance::AttachedExisting,
-                    ))
+                    current_only("develop", not_yarans("attached"))
                 );
             }
             _ => panic!("expected a WorktreeRemoveCompleted event"),
@@ -10314,7 +13897,7 @@ mod tests {
                 },
             ))
             .unwrap_or_else(|payload| {
-                let reason = crate::engine::format_panic_payload(payload);
+                let reason = crate::engine::format_panic_payload(&*payload);
                 Err(format!("Worker panicked: {reason}"))
             });
             let _ = tx.send(crate::worker::WorkerEvent::WorktreeRemoveCompleted {

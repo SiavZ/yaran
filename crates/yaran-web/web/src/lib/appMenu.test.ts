@@ -24,7 +24,9 @@ const sortAgents = vi.fn()
 const openWelcomeScreen = vi.fn()
 const openReleaseNotes = vi.fn()
 const openAddProject = vi.fn()
+const openProjects = vi.fn()
 const openAddProjectForInit = vi.fn()
+const openCloneProject = vi.fn()
 const openCreateAgentFromPr = vi.fn()
 const openNewAgentPicker = vi.fn()
 const createStandaloneTerminal = vi.fn()
@@ -43,23 +45,34 @@ vi.mock("@/lib/store", () => ({
   openWelcomeScreen: () => openWelcomeScreen(),
   openReleaseNotes: () => openReleaseNotes(),
   openAddProject: () => openAddProject(),
+  openProjects: () => openProjects(),
   openAddProjectForInit: () => openAddProjectForInit(),
+  openCloneProject: () => openCloneProject(),
   openCreateAgentFromPr: (projectId: string | null) =>
     openCreateAgentFromPr(projectId),
   openNewAgentPicker: (intent: string) => openNewAgentPicker(intent),
   createStandaloneTerminal: () => createStandaloneTerminal(),
   openConnectPhone: () => openConnectPhone(),
 }))
+const signOut = vi.fn(async () => ({ kind: "ok" }) as { kind: string; message?: string })
+vi.mock("@/lib/authGate", () => ({ signOut: () => signOut() }))
+const notifyError = vi.fn()
+const notifyInfo = vi.fn()
+vi.mock("@/lib/notify", () => ({
+  notifyError: (m: unknown) => notifyError(m),
+  notifyInfo: (m: unknown) => notifyInfo(m),
+}))
 vi.mock("@/lib/configApi", () => ({
   configApi: { reload: () => reload(), recheckGithub: () => recheckGithub() },
 }))
 
-import { SquarePen } from "lucide-react"
+import { FolderKanban, LogOut, SquarePen } from "lucide-react"
 
 import {
   appMenuModel,
   findSubmenu,
   type AppMenuEntry,
+  type AppMenuItem,
 } from "@/lib/appMenu"
 import { addProjectMenuItems, newMenuItems } from "@/lib/creationMenus"
 
@@ -71,7 +84,7 @@ function walk(entries: AppMenuEntry[]): AppMenuEntry[] {
 }
 
 // Most tests build the fullest menu: gh available, so the from-PR entry exists.
-const off = { nativeShell: false, phonePairing: false }
+const off = { nativeShell: false, phonePairing: false, canSignOut: false }
 const ctx = { ghAvailable: true, githubIntegrationEnabled: true, ...off }
 
 describe("appMenuModel", () => {
@@ -83,6 +96,9 @@ describe("appMenuModel", () => {
       // reason to reach for the cog.
       ["submenu", "new-agent"],
       ["submenu", "add-project"],
+      // Every project and orphaned group with its whole menu, beside the way
+      // to add one: the home for managing a project that has no agents.
+      ["item", "projects"],
       ["separator", "sep-create"],
       ["item", "preferences"],
       ["separator", "sep-preferences"],
@@ -100,9 +116,16 @@ describe("appMenuModel", () => {
   })
 
   // THE ANTI-DRIFT PIN for the creation submenus: their entries are the same
-  // shared lists the launcher corner's ⋯ menu renders (creationMenus.ts), so
+  // shared lists the launcher's New dialog reads (creationMenus.ts), so
   // the cog menu and the sidebar cannot disagree about labels, icons, order, or
   // gating.
+  it("titles the Projects entry as a dialog and gives it the board icon", () => {
+    const entry = appMenuModel(ctx).find((e) => e.id === "projects")
+    if (entry?.kind !== "item") throw new Error("projects is not an item")
+    expect(entry.title).toBe("Projects…")
+    expect(entry.icon).toBe(FolderKanban)
+  })
+
   it("builds the creation submenus from the shared sidebar lists", () => {
     // `run` is a fresh closure per construction, so compare everything else;
     // the run behavior itself is pinned by the store-routing test below.
@@ -130,7 +153,7 @@ describe("appMenuModel", () => {
         sharedShape(newMenuItems({ ghAvailable })),
       )
       // The cog keeps the whole list, separator and standalone terminal
-      // included: unlike the launcher corner there is no adjacent verb here.
+      // included.
       expect(agentSub?.entries.map((e) => e.id)).toContain(
         "new-standalone-terminal",
       )
@@ -202,11 +225,13 @@ describe("appMenuModel", () => {
       "global-env",
       "task-manager",
       "yaran-cloud",
+      "projects",
       // Every creation variant opens a dialog (picker or from-PR dialog).
       "new-agent-plain",
       "new-agent-from-pr",
       "new-agent-from-worktree",
       "add-project-picker",
+      "clone-repository",
       "init-repository",
       // Both first-load entries open the shared dialog.
       "welcome-screen",
@@ -312,6 +337,8 @@ describe("appMenuModel", () => {
     expect(openTaskManager).toHaveBeenCalledOnce()
     run("yaran-cloud")
     expect(openCloudDialog).toHaveBeenCalledOnce()
+    run("projects")
+    expect(openProjects).toHaveBeenCalledOnce()
     run("reload-config")
     expect(reload).toHaveBeenCalledOnce()
     run("welcome-screen")
@@ -327,6 +354,8 @@ describe("appMenuModel", () => {
     expect(openNewAgentPicker).toHaveBeenCalledWith("from_worktree")
     run("add-project-picker")
     expect(openAddProject).toHaveBeenCalledOnce()
+    run("clone-repository")
+    expect(openCloneProject).toHaveBeenCalledOnce()
     run("init-repository")
     expect(openAddProjectForInit).toHaveBeenCalledOnce()
 
@@ -394,7 +423,7 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows Connect a phone… on a paired machine in a browser", () => {
-    expect(top({ phonePairing: true }).slice(8, 12)).toEqual([
+    expect(top({ phonePairing: true }).slice(9, 13)).toEqual([
       "task-manager",
       "yaran-cloud",
       "sep-device",
@@ -404,7 +433,7 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows the native entries inside the app, in order", () => {
-    expect(top({ nativeShell: true }).slice(8, 14)).toEqual([
+    expect(top({ nativeShell: true }).slice(9, 15)).toEqual([
       "task-manager",
       "yaran-cloud",
       "sep-device",
@@ -442,5 +471,61 @@ describe("appMenuModel device group", () => {
     run("phone-app-settings")
     expect(assign.mock.calls).toEqual([["yaranapp://home"], ["yaranapp://settings"]])
     vi.unstubAllGlobals()
+  })
+})
+
+describe("Sign out", () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it("is absent where there is no session to end", () => {
+    expect(walk(appMenuModel(ctx)).some((e) => e.id === "sign-out")).toBe(false)
+    expect(
+      walk(appMenuModel({ ...ctx, canSignOut: false })).some((e) => e.id === "sign-out"),
+    ).toBe(false)
+  })
+
+  it("closes the menu, behind its own separator, as an immediate action", () => {
+    const model = appMenuModel({ ...ctx, canSignOut: true })
+    expect(model.slice(-2).map((e) => [e.kind, e.id])).toEqual([
+      ["separator", "sep-sign-out"],
+      ["item", "sign-out"],
+    ])
+    const item = model.at(-1) as AppMenuItem
+    // No ellipsis: it asks nothing and opens nothing.
+    expect(item.title).toBe("Sign out")
+    expect(item.icon).toBe(LogOut)
+  })
+
+  it("ends the session through the gate", async () => {
+    const item = appMenuModel({ ...ctx, canSignOut: true }).at(-1) as AppMenuItem
+    item.run()
+    await vi.waitFor(() => expect(signOut).toHaveBeenCalledTimes(1))
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it("says so when the server could not be reached, because nothing changed", async () => {
+    signOut.mockResolvedValueOnce({ kind: "unreachable" })
+    const item = appMenuModel({ ...ctx, canSignOut: true }).at(-1) as AppMenuItem
+    item.run()
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledTimes(1))
+    expect(String(notifyError.mock.calls[0][0])).toContain("still signed in")
+  })
+
+  it("says so when yaran opened again because this connection needs no password", async () => {
+    signOut.mockResolvedValueOnce({ kind: "ok", reopened: true } as never)
+    const item = appMenuModel({ ...ctx, canSignOut: true }).at(-1) as AppMenuItem
+    item.run()
+    await vi.waitFor(() =>
+      expect(notifyInfo).toHaveBeenCalledWith(
+        "Signed out. This connection doesn't need a password, so yaran opened again.",
+      ),
+    )
+  })
+
+  it("passes the server's own refusal on", async () => {
+    signOut.mockResolvedValueOnce({ kind: "refused", message: "no" })
+    const item = appMenuModel({ ...ctx, canSignOut: true }).at(-1) as AppMenuItem
+    item.run()
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("no"))
   })
 })

@@ -1,6 +1,7 @@
 //! Tests for `yaran cloud` through `run_with`, against a mock Worker.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cli/tests.rs
 //! ├── cloud::cli
@@ -12,6 +13,7 @@
 //! Used by:
 //! cloud/cli/tests.rs
 //! └── cloud::cli
+//! ```
 //! <module-headers:end>
 
 use super::*;
@@ -26,6 +28,10 @@ struct Run {
     out: String,
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "is_tty is handed straight to the CloudDeps field of the same name"
+)]
 fn run(
     root: &std::path::Path,
     worker: &MockWorker,
@@ -42,7 +48,7 @@ fn run(
         open_browser: Box::new(|_| Err("no browser in tests".into())),
         pickup_wait: Duration::ZERO,
     };
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let mut out = Vec::new();
     let code = run_with(
         &args,
@@ -114,7 +120,7 @@ fn logout_unpairs_and_deletes_on_202_and_on_410() {
         let root = tempfile::tempdir().unwrap();
         let paths = CloudPaths::from_root(root.path());
         pair_sample(&paths, SAMPLE_ORG);
-        let w = worker(move |_| MockResponse::json(status, body.clone()));
+        let w = worker(move |_| MockResponse::json(status, &body.clone()));
         let r = run(root.path(), &w, true, "y\n", &["logout"]);
         assert_eq!(r.code, 0, "{}", r.out);
         assert!(r.out.contains("no longer paired"));
@@ -194,7 +200,7 @@ fn rotate_token_keeps_the_consent_key() {
     let w = worker(|_| {
         MockResponse::json(
             200,
-            serde_json::json!({
+            &serde_json::json!({
                 "tunnel": {"id": crate::cloud::test_support::SAMPLE_TUNNEL_ID, "token": "t2", "token_version": 2},
                 "rotated": true
             }),
@@ -240,7 +246,7 @@ fn login_prints_the_fingerprint_and_url_and_times_out() {
     let w = worker(|req| match req.path.as_str() {
         "/v1/meta" => MockResponse::json(
             200,
-            serde_json::json!({
+            &serde_json::json!({
                 "service": "yaran-cloud", "protocol": {"min": 1, "max": 1}, "setup": "closed",
                 "org": {"name": "Example Org", "url": SAMPLE_ORG},
                 "access": {"team_domain": "team.cloudflareaccess.com"}, "worker": {"version": "1.0.0"},

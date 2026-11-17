@@ -1,7 +1,18 @@
-import { Bot, Check, ChevronDown, Ellipsis, Plus, Replace, X } from "lucide-react"
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  CircleStop,
+  Ellipsis,
+  Pin,
+  Plus,
+  Replace,
+  X,
+} from "lucide-react"
 import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
 
 import { SimpleTooltip } from "@/components/SimpleTooltip"
+import { SortableStrip } from "@/components/SortableStrip"
 import { AttentionDot } from "@/components/AttentionDot"
 import {
   DropdownMenu,
@@ -18,24 +29,37 @@ import {
 import {
   ONLY_TAB_CLOSE_REFUSAL,
   defaultProviderForSession,
+  isFirstTab,
+  sessionAsShown,
   tabLabels,
 } from "@/lib/agentTabs"
+import { useKeepCueClocks } from "@/hooks/use-keep-cue-clocks"
+import { usePillSort } from "@/hooks/use-pill-sort"
 import {
   addTab,
+  clickTab,
   openCloseTab,
+  openStopTab,
+  reorderTabs,
   retargetTab,
-  selectTab,
   useYaran,
 } from "@/lib/store"
 import { DEFAULT_AGENT_TABS_MAX } from "@/lib/bootstrapApi"
 import { ALWAYS_REVEALED_ON_TOUCH } from "@/lib/touchReveal"
 import { cn } from "@yaran/ui-kit/cn"
+import { WorkingGlyph } from "@/components/WorkingGlyph"
 import type { AgentTabView, SessionView } from "@/lib/types"
+
+const FIRST_TAB_HINT =
+  "The agent's first tab: the one that starts when you open a stopped agent."
 
 // The provider-tab strip at the top of the center pane, rendered by App only
 // when a session has two or more tabs. All tabs render uniformly: clicking a
 // pill focuses it, the hover-revealed ⋯ retargets the provider and closes the
-// tab, and the trailing + adds one, disabled at the cap or mid-create.
+// tab, and the trailing + adds one, disabled at the cap or mid-create. A pill
+// drags along the strip to reorder it, like a browser tab; the order is the
+// agent's own and survives a restart. The agent's first tab, the one that starts
+// and resumes the agent, wears a pin while there are two or more tabs.
 export function AgentTabsStrip({
   session,
   activeTabId,
@@ -45,11 +69,20 @@ export function AgentTabsStrip({
   activeTabId: string
   maxTabs?: number
 }) {
-  const { bootstrap, spine, createTabInFlight } = useYaran()
+  const { bootstrap, spine, createTabInFlight, pendingTabOrder, pendingSlotTab } =
+    useYaran()
   const providers = bootstrap?.available_providers ?? []
-  const labels = tabLabels(session.tabs)
+  // The order just dragged shows at once; the server's answer replaces it.
+  const shown = sessionAsShown(
+    session,
+    pendingTabOrder[session.id],
+    pendingSlotTab[session.id],
+  )
+  const tabs = shown.tabs
+  const labels = tabLabels(tabs)
+  const attachStrip = useKeepCueClocks(tabs.map((t) => t.id).join("\n"))
   const cap = maxTabs ?? DEFAULT_AGENT_TABS_MAX
-  const atCap = session.tabs.length >= cap
+  const atCap = tabs.length >= cap
   const creating = createTabInFlight.includes(session.id)
   const defaultProvider = defaultProviderForSession(spine, session)
   const disabled = atCap || creating
@@ -59,22 +92,28 @@ export function AgentTabsStrip({
     // shorter phone pill below: shrinking the pill alone would leave the strip
     // the same height. Desktop padding is unchanged.
     <TabsPrimitive.Root
+      ref={attachStrip}
       value={activeTabId}
-      onValueChange={(id: string) => selectTab(session.id, id)}
       className="flex items-center gap-1 overflow-x-auto border-b bg-muted/30 px-2 py-1 max-md:py-0.5"
     >
       {/* Manual activation keeps arrow-key navigation from reconnecting PTYs. */}
       <TabsPrimitive.List aria-label="Agent tabs" className="flex shrink-0 items-center gap-1">
-        {session.tabs.map((tab, i) => (
-          <TabPill
-            key={tab.id}
-            session={session}
-            tab={tab}
-            label={labels[i]}
-            active={tab.id === activeTabId}
-            providers={providers}
-          />
-        ))}
+        <SortableStrip
+          ids={tabs.map((t) => t.id)}
+          onReorder={(next) => reorderTabs(session.id, next)}
+        >
+          {tabs.map((tab, i) => (
+            <TabPill
+              key={tab.id}
+              session={session}
+              tab={tab}
+              label={labels[i]}
+              active={tab.id === activeTabId}
+              providers={providers}
+              pinned={tabs.length >= 2 && isFirstTab(shown, tab.id)}
+            />
+          ))}
+        </SortableStrip>
       </TabsPrimitive.List>
       {/* Split "+" control: the main button quick-adds the project default
           provider, the adjacent caret opens a menu to pick another configured
@@ -146,13 +185,17 @@ function TabPill({
   label,
   active,
   providers,
+  pinned,
 }: {
   session: SessionView
   tab: AgentTabView
   label: string
   active: boolean
   providers: string[]
+  /** This is the agent's first tab and the agent has two or more. */
+  pinned: boolean
 }) {
+  const { setNodeRef, style, listeners, isDragging } = usePillSort(tab.id)
   // No successor means no slot to hand on, which is the one close the server
   // refuses. Answered from the tab list rather than from slot-ness, because
   // "this is the first tab" and "this is the only tab" are different facts and
@@ -161,6 +204,10 @@ function TabPill({
 
   return (
     <div
+      ref={setNodeRef}
+      style={style}
+      data-cue-key={tab.id}
+      {...listeners}
       // `max-md:min-h-9` (36px) relaxes the 40px touch-target floor on the
       // vertical axis only. The neighbours there are the mobile header, whose
       // controls end at its bottom edge, and the PTY, where a mis-tap costs a
@@ -170,7 +217,8 @@ function TabPill({
       className={cn(
         // `max-md:py-0` goes with it: the pill's own 4px padding would sit on
         // top of the 32px ⋯ hit area inside and overshoot the 36px again.
-        "group/tab flex shrink-0 items-stretch gap-1.5 rounded-md border px-2 py-1 text-sm transition-colors max-md:min-h-9 max-md:py-0",
+        "group/tab flex shrink-0 touch-manipulation select-none [-webkit-touch-callout:none] items-stretch gap-1.5 rounded-md border px-2 py-1 text-sm transition-colors max-md:min-h-9 max-md:py-0",
+        isDragging && "relative z-10 shadow-lg",
         active
           ? "border-border bg-background text-foreground"
           : "border-transparent bg-muted text-muted-foreground hover:text-foreground",
@@ -178,18 +226,34 @@ function TabPill({
     >
       <TabsPrimitive.Tab
         value={tab.id}
+        // A click on the tab already shown still counts (it clears the ended
+        // tab's notice), so the click selects rather than a value change.
+        onClick={() => clickTab(session.id, tab.id)}
         className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
       >
-        <Bot
-          className={cn(
-            "size-3.5 shrink-0 motion-safe:transition-opacity motion-safe:duration-300",
-            tab.working && "motion-safe:animate-working-pulse",
-          )}
+        {/* The same glyph cue as the sidebar, on the pill's own ladder: typing
+            and needs-you outrank working, so either one stands the cue down.
+            Every stop finishes the bounce at rest and eases the glyph back to
+            full; the attention dot is a separate element beside it, so it
+            appears at once. */}
+        <WorkingGlyph
+          icon={Bot}
+          working={tab.working && !tab.typing && !tab.needs_attention}
+          className="size-3.5"
         />
         {/* Cyan attention dot on the flagged tab's pill (a permission prompt or a
             finished turn on this specific tab). */}
         {tab.needs_attention && <AttentionDot />}
         <span className="max-w-40 truncate">{label}</span>
+        {/* The pin marks the tab that starts and resumes the agent, in the quiet
+            text color. It follows the slot when the slot passes on. */}
+        {pinned ? (
+          <SimpleTooltip content={FIRST_TAB_HINT}>
+            <span role="img" aria-label={FIRST_TAB_HINT} className="shrink-0 text-muted-foreground">
+              <Pin className="size-3" aria-hidden />
+            </span>
+          </SimpleTooltip>
+        ) : null}
       </TabsPrimitive.Tab>
       {/* The ⋯ trigger consumes no layout space at rest: the wrapper's
           max-width collapses to zero rather than opacity alone, which would
@@ -243,9 +307,17 @@ function TabPill({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuSeparator />
+            {/* Unlike Close, the only tab can stop too, since the tab stays.
+                Absent rather than disabled with no process, like Detach. */}
+            {tab.has_live_process ? (
+              <DropdownMenuItem onClick={() => openStopTab(session.id, tab.id)}>
+                <CircleStop />
+                Stop tab…
+              </DropdownMenuItem>
+            ) : null}
             {/* Every tab closes the same way, the agent's FIRST included: the
                 slot is a pointer, so closing the tab holding it hands the slot
-                to the next tab in strip order rather than being refused. The
+                to the leftmost other tab rather than being refused. The
                 confirmation dialog is where the difference is spelled out.
 
                 The exception is an agent's ONLY tab, which has no successor to

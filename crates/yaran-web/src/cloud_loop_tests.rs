@@ -4,6 +4,7 @@
 //! - Test-only; spawns real child processes, no network.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_loop_tests.rs
 //! ├── cloud_loop
@@ -16,9 +17,11 @@
 //! Used by:
 //! cloud_loop_tests.rs
 //! └── cloud_loop
+//! ```
 //! <module-headers:end>
 
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
@@ -80,15 +83,22 @@ fn machine(port: u16) -> PairedMachine {
 
 struct Rig {
     _dir: tempfile::TempDir,
-    _origin: std::net::TcpListener,
+    origin: std::net::TcpListener,
     fake: Arc<Fake>,
     control: CloudModeControl,
     ready: Arc<AtomicU8>,
 }
 
+/// Whether the fake control plane starts with this machine paired.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pairing {
+    Paired,
+    Unpaired,
+}
+
 /// A loop with a paired (or not) fake, already started, driven on its own task.
-async fn rig(
-    paired: bool,
+fn rig(
+    pairing: Pairing,
     mode: CloudMode,
 ) -> (
     Rig,
@@ -104,12 +114,11 @@ async fn rig(
         "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'cloudflared version 2026.11.0'; exit 0; fi\nwhile true; do sleep 0.1; done\n",
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     let fake = Arc::new(Fake {
         dir: dir.path().to_path_buf(),
-        machine: Mutex::new(paired.then(|| machine(port))),
-        rev: Default::default(),
+        machine: Mutex::new((pairing == Pairing::Paired).then(|| machine(port))),
+        rev: std::sync::atomic::AtomicU64::default(),
     });
     let ingress = crate::cloud_test_support::offline_ingress();
     let (control, rx) = CloudModeControl::new(tokio::runtime::Handle::current(), ingress);
@@ -120,11 +129,11 @@ async fn rig(
         ..CloudLegSettings::default()
     };
     let ready = Arc::new(AtomicU8::new(1));
-    let probe_ready = ready.clone();
+    let probe_ready = std::sync::Arc::clone(&ready);
     let mut cloud = CloudLoop::new(
         rx,
         control.clone(),
-        fake.clone(),
+        Arc::<Fake>::clone(&fake),
         settings,
         port,
         None,
@@ -151,7 +160,7 @@ async fn rig(
     (
         Rig {
             _dir: dir,
-            _origin: origin,
+            origin,
             fake,
             control,
             ready,
@@ -175,7 +184,7 @@ async fn wait_state(control: &CloudModeControl, want: CloudLegState) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_paired_machine_reaches_ready_and_shutdown_leaves_no_child() {
-    let (rig, task, stop) = rig(true, CloudMode::Auto).await;
+    let (rig, task, stop) = rig(Pairing::Paired, CloudMode::Auto);
     wait_state(&rig.control, CloudLegState::Ready).await;
     let binding = rig.control.ingress().binding().expect("bound on Ready");
     assert_eq!(binding.hostname, "laptop.example.com");
@@ -194,7 +203,9 @@ async fn a_paired_machine_reaches_ready_and_shutdown_leaves_no_child() {
     // `child_registry::wait_all` is process-global, so tests running beside this one
     // would be swept too; wait on this child alone.
     let until = std::time::Instant::now() + Duration::from_secs(10);
-    while !child_registry::live().is_empty() && child_registry::live().contains(&(pid as i32)) {
+    while !child_registry::live().is_empty()
+        && child_registry::live().contains(&i32::try_from(pid).unwrap())
+    {
         assert!(
             std::time::Instant::now() < until,
             "the child outlived shutdown"
@@ -210,7 +221,7 @@ async fn a_paired_machine_reaches_ready_and_shutdown_leaves_no_child() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_mode_request_is_answered() {
-    let (rig, task, stop) = rig(true, CloudMode::Auto).await;
+    let (rig, task, stop) = rig(Pairing::Paired, CloudMode::Auto);
     wait_state(&rig.control, CloudLegState::Ready).await;
     assert_eq!(
         rig.control.set_mode(CloudMode::Yes).await,
@@ -237,7 +248,7 @@ async fn every_mode_request_is_answered() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_closed_lane_answers_not_serving() {
-    let (rig, task, stop) = rig(false, CloudMode::Auto).await;
+    let (rig, task, stop) = rig(Pairing::Unpaired, CloudMode::Auto);
     stop.send(()).unwrap();
     drop(task.await.unwrap());
     assert_eq!(
@@ -248,13 +259,13 @@ async fn a_closed_lane_answers_not_serving() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_login_and_logout_start_and_stop_the_leg() {
-    let (rig, task, stop) = rig(false, CloudMode::Auto).await;
+    let (rig, task, stop) = rig(Pairing::Unpaired, CloudMode::Auto);
     wait_state(&rig.control, CloudLegState::Unpaired).await;
     assert_eq!(
         rig.control.set_mode(CloudMode::Yes).await,
         CloudModeOutcome::NotPaired
     );
-    let port = rig._origin.local_addr().unwrap().port();
+    let port = rig.origin.local_addr().unwrap().port();
     *rig.fake.machine.lock().unwrap() = Some(machine(port));
     rig.fake.rev.fetch_add(1, Ordering::SeqCst);
     wait_state(&rig.control, CloudLegState::Ready).await;

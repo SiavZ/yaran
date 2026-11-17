@@ -19,25 +19,34 @@
 //! not with a close, since a swallowed click teaches the user nothing.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/overlay_dismiss.rs
 //! ├── app
 //! ├── app::cloud_commands
+//! ├── app::first_load
+//! ├── app::human_board
 //! ├── app::input
 //! ├── app::render
 //! ├── app::test_support
+//! ├── app::text_input
 //! ├── config
-//! └── yaran-core::welcome_screen
+//! ├── yaran-core::welcome_screen
+//! └── yaran-core::worker
 //! External: crossterm, ratatui, std
 //!
 //! Used by:
 //! app/overlay_dismiss.rs
 //! └── app
+//! ```
 //! <module-headers:end>
 
 use super::cloud_commands::CloudPrompt;
 use super::input::contains_point;
-use super::*;
+use super::{App, ConfirmAnswer, PromptState, RefusalBlink};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+use std::time::Instant;
 
 /// What an outside click should do to the prompt that is currently open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +97,7 @@ pub(super) fn refusal_blink_is_running(elapsed_ms: u128) -> bool {
 ///
 /// `None` (no modal painted this frame) is not outside anything; see the
 /// fail-closed contract on [`OverlayMouseLayoutState::frame`].
-pub(super) fn click_outside_frame(frame: Option<Rect>, mouse: &MouseEvent) -> bool {
+pub(super) fn click_outside_frame(frame: Option<Rect>, mouse: MouseEvent) -> bool {
     let Some(rect) = frame else {
         return false;
     };
@@ -108,6 +117,14 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         // Nothing open: nothing to dismiss.
         PromptState::None => Ignore,
 
+        // A card dialog with a reply typed into it holds free text the user
+        // has not sent: an outside click must not throw it away. A cloud
+        // login, which holds a typed address or a running browser login, is
+        // with the other text surfaces at the end.
+        PromptState::HumanBoardCard {
+            reply: Some(reply), ..
+        } if !reply.input.text.trim().is_empty() => Blink,
+
         // Informational and pick-one surfaces: an outside click is unambiguous.
         PromptState::AgentInfo(_)
         | PromptState::FirstLoad(_)
@@ -118,7 +135,11 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::PickProjectWorktree(_)
         | PromptState::ManageWorktrees(_)
         | PromptState::OrphanWorktrees(_)
+        | PromptState::LeftoverFolderActions(_)
         | PromptState::PickProject { .. }
+        | PromptState::ProjectActions(_)
+        | PromptState::ProjectInfo(_)
+        | PromptState::ChangeBaseBranch(_)
         | PromptState::ChangeAgentProvider(_)
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
@@ -126,27 +147,23 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::SetCloudMode(_)
         | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_)
+        | PromptState::PullRequests(_)
         | PromptState::ChangeTheme(_)
         | PromptState::AddProjectFailed { .. }
         | PromptState::ConfigReloadFailed { .. }
-        | PromptState::Command { .. } => Cancel,
-
+        | PromptState::Command { .. }
         // Confirmations. Dismissal IS cancel here, and every one of these
         // already defaults its focus to Cancel, so an outside click resolves
         // them the same way the safe default button does.
-        // A card dialog with a reply typed into it holds free text the user
-        // has not sent: an outside click must not throw it away.
-        PromptState::HumanBoardCard {
-            reply: Some(reply), ..
-        } if !reply.input.text.trim().is_empty() => Blink,
-
-        PromptState::ConfirmDeleteAgent { .. }
+        | PromptState::ConfirmDeleteAgent { .. }
         | PromptState::HumanBoardCard { .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
+        | PromptState::ConfirmStopTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
         | PromptState::ConfirmRecreateWorkingCopy { .. }
         | PromptState::ConfirmCheckoutDefaultBranch { .. }
+        | PromptState::ConfirmChangeBaseBranch(_)
         | PromptState::ConfirmDeleteProject { .. }
         | PromptState::ConfirmRemoveProject { .. }
         | PromptState::ConfirmDiscardFile { .. }
@@ -159,19 +176,18 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::ConfirmSharedWriter { .. }
         // The worktree-removal confirm cancels back to the manager it was
         // raised from, exactly as its Esc arm does.
-        | PromptState::ConfirmDeleteWorktree(_) => Cancel,
-
-        // A login holds a typed address or a running browser login, so a stray
-        // click blinks rather than cancelling it. The confirms default to
-        // Cancel and the reports hold nothing, so they dismiss.
-        PromptState::Cloud(CloudPrompt::Login(_)) => Blink,
-        PromptState::Cloud(
+        | PromptState::ConfirmDeleteWorktree(_)
+        // The left-over folder delete cancels back to the folder's actions.
+        | PromptState::ConfirmDeleteLeftoverFolder(_)
+        // A login holds a typed address or a running browser login, so it
+        // blinks (above); the confirms default to Cancel and the reports hold
+        // nothing, so they dismiss.
+        | PromptState::Cloud(
             CloudPrompt::Logout(_)
             | CloudPrompt::Rotate(_)
             | CloudPrompt::Status(_)
             | CloudPrompt::PairPhone(_),
-        ) => Cancel,
-
+        )
         // `EditMacros` is three modals in one variant, so it answers three
         // ways. Its nested delete-confirm is a confirmation like any other and
         // dismisses. Its LIST is a Picker over saved rows, holding no unsaved
@@ -179,7 +195,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         // other picker above; the blink justification ("unsaved free text, or a
         // multi-step selection") is true of the EDITOR and not of the list. The
         // editor itself, below, is the half that really does hold unsaved text.
-        PromptState::EditMacros {
+        | PromptState::EditMacros {
             pending_delete: Some(_),
             ..
         }
@@ -201,13 +217,16 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::ConfigureStartupCommand { .. }
         | PromptState::ConfigureProjectEnv { .. }
         | PromptState::ConfigureGlobalEnv { .. }
+        | PromptState::CommentDiffLine { .. }
         | PromptState::RenameSession { .. }
         | PromptState::PullRequestInput { .. }
         | PromptState::AttachPullRequestInput { .. }
         | PromptState::NameStandaloneAgent { .. }
         | PromptState::NameNewAgent { .. }
+        | PromptState::CloneProject { .. }
         | PromptState::KillRunning(_)
-        | PromptState::SessionSettings(_) => Blink,
+        | PromptState::SessionSettings(_)
+        | PromptState::Cloud(CloudPrompt::Login(_)) => Blink,
     }
 }
 
@@ -262,6 +281,10 @@ impl App {
     /// announces some dismissals, and firing that on every stray click would be
     /// noise for something the user just watched happen. Helpers that own a
     /// message keep theirs, since parity with Esc is the point.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive arm per prompt kind, so a new modal must decide how it cancels"
+    )]
     pub(crate) fn cancel_prompt(&mut self) -> bool {
         // A press cannot outlive the modal it was made in.
         self.pressed_button = None;
@@ -272,33 +295,55 @@ impl App {
         self.clear_prompt_hint();
 
         match &self.prompt {
-            PromptState::None => return false,
-
             // Plain closes: these match their Esc arms exactly.
             PromptState::AgentInfo(_)
             | PromptState::ResourceMonitor { .. }
             | PromptState::DebugInput { .. }
             | PromptState::PickEditor { .. }
             | PromptState::PickProjectWorktree(_)
-            | PromptState::ManageWorktrees(_)
             | PromptState::PickProject { .. }
             | PromptState::ChangeAgentProvider(_)
             | PromptState::ChangeDefaultProvider(_)
-            | PromptState::ChangeProjectDefaultProvider(_)
             | PromptState::SetTailscaleMode(_)
             | PromptState::SetCloudMode(_)
             | PromptState::WatchRules(_)
+            | PromptState::PullRequests(_)
             | PromptState::Command { .. }
-            | PromptState::ConfirmNonDefaultBranch { .. } => {
+            | PromptState::ConfirmNonDefaultBranch { .. }
+            // The macro LIST closes the overlay, exactly as its close binding
+            // does. Nothing is saved and nothing is lost: the rows on screen
+            // are the ones already in config.
+            | PromptState::EditMacros {
+                editing: None,
+                pending_delete: None,
+                ..
+            } => {
                 self.prompt = PromptState::None;
+            }
+
+            // Steps back to the project list (or closes), exactly as Escape.
+            PromptState::ProjectActions(_) => {
+                self.leave_project_actions();
+            }
+            // Back onto the action list it came from, as its Close does.
+            PromptState::ProjectInfo(_) => self.close_project_info(),
+            // Back onto the action list it came from, as Escape with an empty
+            // search row does; an outside click never just clears the filter.
+            PromptState::ChangeBaseBranch(_) => self.dismiss_change_base_branch(),
+            // Steps back to the picker, the kill-running idiom.
+            PromptState::ConfirmChangeBaseBranch(_) => {
+                self.resolve_confirm_change_base_branch(ConfirmAnswer::Cancel);
             }
 
             // Closing the log viewer must also drop the drag-selection state,
             // or a stale selection outlives the modal that owned it.
-            PromptState::StartupCommandLogs(_) => {
-                self.prompt = PromptState::None;
-                self.startup_log_selection = None;
-            }
+            PromptState::StartupCommandLogs(_) => self.close_startup_command_logs(),
+            // Both step back to the action list they were opened from, as
+            // their Escape does.
+            PromptState::ChangeProjectDefaultProvider(_) => self.close_provider_picker(),
+            PromptState::ManageWorktrees(_) => self.close_worktree_manager(),
+            // Back onto the manager it was opened from, as its Escape does.
+            PromptState::LeftoverFolderActions(_) => self.close_leftover_folder_actions(),
 
             // Dismissal is what records the running version as seen, so this
             // must go through the stamping helper.
@@ -317,24 +362,24 @@ impl App {
             // Same resolve path as its Close button (see `handle_prompt_key`,
             // which now also routes Esc here).
             PromptState::ConfigReloadFailed { .. } => {
-                self.resolve_config_reload_failed(false);
+                self.resolve_config_reload_failed(ConfirmAnswer::Cancel);
             }
 
             // Restores the KillRunning list this confirm was raised from, so
             // cancelling the nested confirm steps back rather than closing the
             // whole stack.
             PromptState::ConfirmKillRunning(_) => {
-                self.resolve_confirm_kill_running(false);
+                self.resolve_confirm_kill_running(ConfirmAnswer::Cancel);
             }
 
             // Restores its `return_prompt` (the browser, as the user left it).
             PromptState::ConfirmInitRepo { .. } => {
-                self.resolve_confirm_init_repo(false);
+                self.resolve_confirm_init_repo(ConfirmAnswer::Cancel);
             }
 
             // Drops the pending add and explains why (its helper's message).
             PromptState::ConfirmCreateInitialCommit { .. } => {
-                self.resolve_confirm_create_initial_commit(false);
+                self.resolve_confirm_create_initial_commit(ConfirmAnswer::Cancel);
             }
 
             // Confirmations: route through the resolve helpers so the
@@ -342,52 +387,59 @@ impl App {
             // the app exit", and cancelling never exits, which the caller's
             // `false` return preserves.
             PromptState::ConfirmDeleteAgent { .. } => {
-                self.resolve_confirm_delete_agent(false);
+                self.resolve_confirm_delete_agent(ConfirmAnswer::Cancel);
             }
             // Steps back to the manager's list rather than closing the stack,
             // the kill-running idiom.
             PromptState::ConfirmDeleteWorktree(_) => {
-                self.resolve_confirm_delete_worktree(false);
+                self.resolve_confirm_delete_worktree(ConfirmAnswer::Cancel);
+            }
+            // Steps back to the folder's actions, as its Escape does.
+            PromptState::ConfirmDeleteLeftoverFolder(_) => {
+                self.resolve_confirm_delete_leftover_folder(ConfirmAnswer::Cancel);
             }
             // Same as its Esc: a confirmation steps back to the list.
             PromptState::OrphanWorktrees(_) => self.cancel_orphan_worktrees_prompt(),
             PromptState::HumanBoardCard { .. } => {
-                self.resolve_human_board_card(false);
+                self.resolve_human_board_card(super::human_board::CardExit::Close);
             }
             // Same as its Esc: the card dialog it was opened from comes back.
             PromptState::AssignBoardCard(_) => self.leave_board_assign_picker(),
             PromptState::ConfirmDeleteTerminal { .. } => {
-                self.resolve_confirm_delete_terminal(false);
+                self.resolve_confirm_delete_terminal(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmCloseTab { .. } => {
-                self.resolve_confirm_close_tab(false);
+                self.resolve_confirm_close_tab(ConfirmAnswer::Cancel);
+            }
+            PromptState::ConfirmStopTab { .. } => {
+                self.resolve_confirm_stop_tab(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmRecreateWorkingCopy { .. } => {
-                self.resolve_confirm_recreate_working_copy(false);
+                self.resolve_confirm_recreate_working_copy(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmCheckoutDefaultBranch { .. } => {
-                self.resolve_confirm_checkout_default_branch(false);
+                self.resolve_confirm_checkout_default_branch(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmDeleteProject { .. } => {
-                self.resolve_confirm_delete_project(false);
+                self.resolve_confirm_delete_project(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmRemoveProject { .. } => {
-                self.resolve_confirm_remove_project(false);
+                self.resolve_confirm_remove_project(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmDetachAgent { .. } => {
-                self.resolve_confirm_detach_agent(false);
+                self.resolve_confirm_detach_agent(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmDiscardFile { .. } => {
-                self.resolve_confirm_discard_file(false);
+                self.resolve_confirm_discard_file(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmQuit { .. } => {
-                self.resolve_confirm_quit(false);
+                self.resolve_confirm_quit(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmUseExistingBranch { .. } => {
-                self.resolve_confirm_use_existing_branch(false);
+                self.resolve_confirm_use_existing_branch(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmSharedWriter { .. } => {
-                self.resolve_confirm_shared_writer(false);
+                self.resolve_confirm_shared_writer(ConfirmAnswer::Cancel);
             }
 
             // Same path as Esc: a running login is cancelled, never left behind.
@@ -399,18 +451,7 @@ impl App {
                 pending_delete: Some(_),
                 ..
             } => {
-                self.resolve_confirm_delete_macro(false);
-            }
-
-            // The macro LIST closes the overlay, exactly as its close binding
-            // does. Nothing is saved and nothing is lost: the rows on screen
-            // are the ones already in config.
-            PromptState::EditMacros {
-                editing: None,
-                pending_delete: None,
-                ..
-            } => {
-                self.prompt = PromptState::None;
+                self.resolve_confirm_delete_macro(ConfirmAnswer::Cancel);
             }
 
             // Not dismissible by an outside click (see `outside_click_policy`);
@@ -419,17 +460,21 @@ impl App {
             // "matches its Esc arm" contract above: its Esc is state-dependent
             // (in the engaged body it leaves edit mode, in the editor it cancels
             // back to the list), so there is no single statement to mirror. A
-            // stray click gets the blink instead.
-            PromptState::EditMacros { .. }
+            // stray click gets the blink instead. With nothing open there is
+            // nothing to close either.
+            PromptState::None
+            | PromptState::EditMacros { .. }
             | PromptState::BrowseProjects { .. }
             | PromptState::ConfigureStartupCommand { .. }
             | PromptState::ConfigureProjectEnv { .. }
             | PromptState::ConfigureGlobalEnv { .. }
+            | PromptState::CommentDiffLine { .. }
             | PromptState::RenameSession { .. }
             | PromptState::PullRequestInput { .. }
             | PromptState::AttachPullRequestInput { .. }
             | PromptState::NameStandaloneAgent { .. }
             | PromptState::NameNewAgent { .. }
+            | PromptState::CloneProject { .. }
             | PromptState::KillRunning(_)
             | PromptState::SessionSettings(_) => return false,
         }
@@ -445,7 +490,7 @@ impl App {
     /// row, a checkbox, a text input, or a modal's deliberate blank
     /// misclick-safe spacer row. That also means a click INSIDE a refusing
     /// modal never arms the cue: it was handled by the control it hit.
-    pub(super) fn dismiss_prompt_on_outside_click(&mut self, mouse: &MouseEvent) -> bool {
+    pub(super) fn dismiss_prompt_on_outside_click(&mut self, mouse: MouseEvent) -> bool {
         if !click_outside_frame(self.overlay_layout.frame.get(), mouse) {
             return false;
         }
@@ -463,11 +508,23 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::first_load::FirstLoadPrompt;
     use crate::app::render::centered_rect_exact;
     use crate::app::test_support::{default_bindings, test_app};
+    use crate::app::text_input::TextInput;
+    use crate::app::{
+        AgentInfoPrompt, AgentInfoTone, CenterMode, ConfigReloadFailedFocus, ConfigureFieldFocus,
+        ConfirmFocus, ConfirmKillRunningPrompt, FullscreenOverlay, KillRunningAction,
+        KillRunningFocus, KillRunningPrompt, NameNewAgentFocus, OverlayMouseLayout,
+        PendingMacroDelete, RenameSessionFocus, SearchableList, StartupCommandLogFocus,
+        StartupCommandLogPrompt,
+    };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use yaran_core::worker::CreateAgentRequest;
 
     const TERM: (u16, u16) = (120, 40);
 
@@ -534,6 +591,8 @@ mod tests {
             rename_branch: false,
             focus: RenameSessionFocus::Input,
             branch_named: true,
+            open_pr: None,
+            pushed: false,
         }
     }
 
@@ -541,6 +600,7 @@ mod tests {
         PromptState::ConfirmQuit {
             agent_count: 1,
             terminal_count: 0,
+            attached: Vec::new(),
             focus: ConfirmFocus::Cancel,
         }
     }
@@ -610,6 +670,7 @@ mod tests {
             (
                 "ConfigureStartupCommand",
                 PromptState::ConfigureStartupCommand {
+                    return_to: None,
                     project_id: project.id.clone(),
                     project_name: project.name.clone(),
                     input: TextInput::with_text("half-typed-name".to_string()),
@@ -619,6 +680,7 @@ mod tests {
             (
                 "ConfigureProjectEnv",
                 PromptState::ConfigureProjectEnv {
+                    return_to: None,
                     project_id: project.id.clone(),
                     project_name: project.name.clone(),
                     input: TextInput::with_text("half-typed-name".to_string()),
@@ -646,7 +708,7 @@ mod tests {
                 "AttachPullRequestInput",
                 PromptState::AttachPullRequestInput {
                     session_id: "session-1".to_string(),
-                    current_pr: None,
+                    back: crate::app::test_support::pull_requests_prompt("session-1"),
                     input: TextInput::with_text("half-typed-name".to_string()),
                 },
             ),
@@ -658,6 +720,20 @@ mod tests {
                 },
             ),
             ("NameNewAgent", name_new_agent_prompt(app)),
+            (
+                "CloneProject",
+                PromptState::CloneProject {
+                    address: TextInput::with_text("half-typed-name".to_string()),
+                    destination: TextInput::with_text("/srv/code/widget".to_string()),
+                    destination_edited: false,
+                    start_folder: std::path::PathBuf::from("/srv/code"),
+                    agent_name: TextInput::new(),
+                    randomize_name: false,
+                    randomized_name: None,
+                    focus: crate::app::CloneProjectFocus::Address,
+                    pull_request: None,
+                },
+            ),
             (
                 "KillRunning",
                 PromptState::KillRunning(KillRunningPrompt {
@@ -678,13 +754,15 @@ mod tests {
                 use_existing_branch: false,
                 pull_before_create: false,
                 copy_uncommitted_changes: false,
+                cloned: None,
             },
             input: TextInput::with_text("half-typed-name".to_string()),
             randomize_name: false,
             randomized_name: None,
             copy_changes: false,
+            review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         }
     }
 
@@ -702,6 +780,7 @@ mod tests {
             | PromptState::AttachPullRequestInput { input, .. }
             | PromptState::NameStandaloneAgent { input, .. }
             | PromptState::NameNewAgent { input, .. } => input.text.clone(),
+            PromptState::CloneProject { address, .. } => address.text.clone(),
             PromptState::KillRunning(prompt) => format!("{:?}", prompt.selected_ids),
             other => panic!("not a refusing modal: {other:?}"),
         }
@@ -798,7 +877,11 @@ mod tests {
                 baseline,
                 "{name} armed a cue that renders nothing"
             );
-            advance_blink(&mut app, REFUSAL_BLINK_MS as u64);
+            advance_blink(
+                &mut app,
+                u64::try_from(REFUSAL_BLINK_MS)
+                    .expect("a frame period in milliseconds fits in a u64"),
+            );
             assert_eq!(
                 render_to_buffer(&mut app),
                 baseline,
@@ -828,7 +911,10 @@ mod tests {
 
         // Past the cue's duration the modal must be indistinguishable from one
         // that was never clicked: no frozen-bright, no frozen-dim.
-        advance_blink(&mut app, REFUSAL_BLINK_MS as u64);
+        advance_blink(
+            &mut app,
+            u64::try_from(REFUSAL_BLINK_MS).expect("a frame period in milliseconds fits in a u64"),
+        );
         assert_eq!(
             render_to_buffer(&mut app),
             baseline,
@@ -1064,33 +1150,33 @@ mod tests {
     #[test]
     fn click_outside_frame_requires_a_recorded_rect() {
         // Fail-closed: with nothing recorded, no click is "outside" anything.
-        assert!(!click_outside_frame(None, &left_down(0, 0)));
+        assert!(!click_outside_frame(None, left_down(0, 0)));
     }
 
     #[test]
     fn click_outside_frame_matches_only_a_left_press_outside_the_rect() {
         let rect = Some(Rect::new(10, 5, 20, 10));
 
-        assert!(click_outside_frame(rect, &left_down(0, 0)));
-        assert!(!click_outside_frame(rect, &left_down(15, 8)));
+        assert!(click_outside_frame(rect, left_down(0, 0)));
+        assert!(!click_outside_frame(rect, left_down(15, 8)));
         // A press that starts inside and releases outside is a drag off a
         // control, not a dismissal.
         assert!(!click_outside_frame(
             rect,
-            &mouse(MouseEventKind::Up(MouseButton::Left), 0, 0)
+            mouse(MouseEventKind::Up(MouseButton::Left), 0, 0)
         ));
         assert!(!click_outside_frame(
             rect,
-            &mouse(MouseEventKind::Drag(MouseButton::Left), 0, 0)
+            mouse(MouseEventKind::Drag(MouseButton::Left), 0, 0)
         ));
         // A stray right-click is not a dismissal either.
         assert!(!click_outside_frame(
             rect,
-            &mouse(MouseEventKind::Down(MouseButton::Right), 0, 0)
+            mouse(MouseEventKind::Down(MouseButton::Right), 0, 0)
         ));
         assert!(!click_outside_frame(
             rect,
-            &mouse(MouseEventKind::ScrollUp, 0, 0)
+            mouse(MouseEventKind::ScrollUp, 0, 0)
         ));
     }
 
@@ -1249,7 +1335,8 @@ mod tests {
     #[test]
     fn clicking_a_list_row_inside_a_modal_still_selects_it() {
         let mut app = test_app(default_bindings());
-        app.open_change_theme_prompt().expect("theme picker");
+        app.open_change_theme_prompt();
+        crate::app::test_support::finish_ui_jobs(&mut app);
         render(&mut app);
         let (list, offset) = match app.overlay_layout.active {
             OverlayMouseLayout::ChangeTheme { list, offset, .. } => (list, offset),
@@ -1355,6 +1442,7 @@ mod tests {
     fn outside_click_dismisses_the_startup_command_log_viewer() {
         let mut app = test_app(default_bindings());
         app.prompt = PromptState::StartupCommandLogs(StartupCommandLogPrompt {
+            return_to: None,
             scope_label: "demo".to_string(),
             entries: Vec::new(),
             selected: 0,
@@ -1383,7 +1471,7 @@ mod tests {
             selected_row: 0,
             expanded: std::collections::HashSet::new(),
             last_refresh: std::time::Instant::now(),
-            short_window_sample: false,
+            cpu_window: crate::app::CpuWindow::Full,
         };
         render(&mut app);
 
@@ -1667,7 +1755,8 @@ mod tests {
     /// live preview is actually applied. Otherwise "cancel reverts the
     /// preview" has nothing to revert and the test would pass vacuously.
     fn open_theme_picker_with_live_preview(app: &mut App) {
-        app.open_change_theme_prompt().expect("open theme picker");
+        app.open_change_theme_prompt();
+        crate::app::test_support::finish_ui_jobs(app);
         let before = format!("{:?}", app.theme.app_bg);
         let enough_themes = match &mut app.prompt {
             PromptState::ChangeTheme(prompt) => {
@@ -1714,7 +1803,7 @@ mod tests {
                 let config_path = app.engine.paths.config_path.clone();
                 app.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(
                     yaran_core::welcome_screen::welcome_screen(&config_path),
-                    true,
+                    crate::app::first_load::SeenNote::Write,
                 ));
             },
             stamp,
@@ -1785,6 +1874,7 @@ mod tests {
         parity(
             |app| {
                 app.prompt = PromptState::ConfirmKillRunning(ConfirmKillRunningPrompt {
+                    attached: Vec::new(),
                     previous: KillRunningPrompt {
                         runtimes: Vec::new(),
                         list: SearchableList::new(),

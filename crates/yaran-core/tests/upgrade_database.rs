@@ -43,9 +43,11 @@
 use chrono::Utc;
 use rusqlite::Connection;
 use yaran_core::model::{
-    AgentSession, AgentTab, AgentWorkspace, FolderWorkspace, ProviderKind, SessionStatus,
+    AgentPr, AgentSession, AgentTab, AgentWorkspace, FolderWorkspace, PrInfo, PrPrefs,
+    ProviderKind, SessionStatus,
 };
-use yaran_core::storage::{SessionStore, StoredPr};
+use yaran_core::pr_list::PrSortMode;
+use yaran_core::storage::SessionStore;
 
 /// `sessions.sqlite3` exactly as the FIRST public yaran created it (`ed917a4`,
 /// "First upload"): ONE table, and it already carried `title` and `project_path`.
@@ -57,7 +59,7 @@ use yaran_core::storage::{SessionStore, StoredPr};
 /// `project_path` and paired `agent_sessions` with a stripped `projects` table,
 /// which is a database no yaran version ever wrote: several of its assertions
 /// therefore described a user who cannot exist.
-const FIRST_RELEASE_SCHEMA: &str = r#"
+const FIRST_RELEASE_SCHEMA: &str = r"
 create table agent_sessions (
     id text primary key,
     project_id text not null,
@@ -71,7 +73,7 @@ create table agent_sessions (
     created_at text not null,
     updated_at text not null
 );
-"#;
+";
 
 /// `sessions.sqlite3` as of `a4f628b` ("Move project state out of config"), the
 /// commit that introduced the `projects` table. It arrived ALREADY carrying
@@ -93,7 +95,7 @@ create table agent_sessions (
 /// them as trailing `alter table ... add column`s and so holds them LAST. Only the
 /// physical column order differs, and every query in `storage.rs` names its columns,
 /// so nothing under test can see it.
-const PROJECTS_ERA_SCHEMA: &str = r#"
+const PROJECTS_ERA_SCHEMA: &str = r"
 create table agent_sessions (
     id text primary key,
     project_id text not null,
@@ -129,13 +131,13 @@ create table session_prs (
     primary key (session_id, pr_number),
     foreign key (session_id) references agent_sessions(id) on delete cascade
 );
-"#;
+";
 
 /// The three session rows both eras share, written with raw SQL naming only the
 /// columns that existed then. `sess-1` carries a hand-set `title` (a renamed
 /// agent), the other two leave it NULL (auto-named agents), which is what makes
 /// the one-time title freeze observable in both directions.
-const SESSION_ROWS: &str = r#"
+const SESSION_ROWS: &str = r"
 insert into agent_sessions
   (id, project_id, provider, source_branch, branch_name, worktree_path, title, project_path, status, created_at, updated_at)
 values
@@ -148,7 +150,7 @@ values
   ('sess-3', 'proj-gadget', 'opencode', 'develop', 'yaran/quiet-moose',
    '/home/ada/.config/yaran/worktrees/quiet-moose', null, '/home/ada/code/gadget',
    'active', '2024-01-03T00:00:00Z', '2024-01-06T00:00:00Z');
-"#;
+";
 
 /// A database from the very first release: `agent_sessions` and nothing else.
 /// This is the shape a genuine early adopter still has, and until now nothing
@@ -173,14 +175,14 @@ fn old_database() -> (tempfile::TempDir, std::path::PathBuf) {
     conn.execute_batch(PROJECTS_ERA_SCHEMA)
         .expect("projects-era schema");
     conn.execute_batch(
-        r#"
+        r"
         insert into projects (id, path, name, default_provider, leading_branch, sort_order, created_at, updated_at)
         values
           ('proj-widget', '/home/ada/code/widget', 'widget', 'codex', 'trunk', 0,
            '2024-01-01T00:00:00Z', '2024-01-02T00:00:00Z'),
           ('proj-gadget', '/home/ada/code/gadget', null, null, null, 1,
            '2024-01-01T00:00:00Z', '2024-01-03T00:00:00Z');
-        "#,
+        ",
     )
     .expect("seed projects");
     conn.execute_batch(SESSION_ROWS).expect("seed sessions");
@@ -323,7 +325,7 @@ fn a_first_release_database_with_no_projects_table_at_all_opens_and_keeps_its_se
     let tabs = store.load_agent_tabs().expect("tabs");
     assert_eq!(tabs.len(), store.load_sessions().expect("sessions").len());
     assert!(store.load_extra_agent_tabs().expect("extras").is_empty());
-    assert!(store.load_prs("sess-1").expect("prs").is_empty());
+    assert!(store.load_agent_prs().expect("prs").is_empty());
     assert_eq!(store.next_changes_rev("sess-1").expect("rev"), 1);
 }
 
@@ -565,73 +567,128 @@ fn tables_added_since_are_created_empty_and_immediately_usable() {
     assert_eq!(store.next_changes_rev("sess-1").expect("rev"), 1);
     assert_eq!(store.next_changes_rev("sess-1").expect("rev"), 2);
 
-    // `session_prs`: empty, and writable.
-    assert!(store.load_prs("sess-1").expect("load prs").is_empty());
-    store
-        .upsert_pr(&StoredPr {
-            session_id: "sess-1".to_string(),
-            pr_number: 42,
+    // `session_pull_requests`: the projects-era `session_prs` table was empty,
+    // so nothing was imported, and it is writable.
+    assert!(store.load_agent_prs().expect("load prs").is_empty());
+    let found = AgentPr::found(
+        &PrInfo {
+            number: 42,
+            title: "Make it faster".to_string(),
             host: "github.com".to_string(),
             owner_repo: "ada/widget".to_string(),
-            state: "OPEN".to_string(),
-            title: "Make it faster".to_string(),
             url: "https://github.com/ada/widget/pull/42".to_string(),
-        })
-        .expect("upsert pr");
-    let prs = store.load_prs("sess-1").expect("load prs");
-    assert_eq!(prs.len(), 1);
-    assert_eq!(prs[0].pr_number, 42);
-    assert_eq!(prs[0].title, "Make it faster");
-
-    // `session_pr_overrides`: empty (nobody upgrading has a pin yet), and
-    // immediately usable for a manual attach.
-    assert!(
-        store
-            .load_pr_overrides()
-            .expect("load overrides")
-            .is_empty()
+            ..PrInfo::default()
+        },
+        Utc::now(),
     );
-    store
-        .upsert_pr_override(&StoredPr {
-            session_id: "sess-1".to_string(),
-            pr_number: 7,
-            host: "github.com".to_string(),
-            owner_repo: "forker/widget".to_string(),
-            state: "OPEN".to_string(),
-            title: "Pinned by hand".to_string(),
-            url: "https://github.com/forker/widget/pull/7".to_string(),
-        })
-        .expect("upsert override");
-    let pins = store.load_pr_overrides().expect("load overrides");
-    assert_eq!(pins.len(), 1);
-    assert_eq!(pins[0].pr_number, 7);
-    assert_eq!(pins[0].owner_repo, "forker/widget");
+    store.upsert_agent_pr("sess-1", &found).expect("upsert pr");
+    let prs = store.load_agent_prs().expect("load prs");
+    assert_eq!(prs.get("sess-1").map(Vec::as_slice), Some(&[found][..]));
 
-    // `session_pr_suppressions`: empty, so an upgrading database keeps every
-    // agent's autodetection on (nobody detached before the table existed), and
-    // immediately usable once someone does detach.
-    assert!(
-        store
-            .load_pr_suppressions()
-            .expect("load suppressions")
-            .is_empty()
-    );
+    // `session_pr_prefs`: empty, so an upgrading database has every agent's
+    // detection on, and immediately usable.
+    assert!(store.load_pr_prefs().expect("load prefs").is_empty());
+    let prefs = PrPrefs {
+        sort_mode: PrSortMode::Manual,
+        hide_created_before: None,
+    };
     store
-        .set_pr_suppressed("sess-1")
-        .expect("suppress autodetection");
+        .replace_agent_prs("sess-1", &[], &prefs)
+        .expect("write prefs");
     assert_eq!(
-        store.load_pr_suppressions().expect("load suppressions"),
-        vec!["sess-1".to_string()]
+        store.load_pr_prefs().expect("load prefs").get("sess-1"),
+        Some(&prefs)
     );
-    store
-        .delete_pr_suppression("sess-1")
-        .expect("resume autodetection");
-    assert!(
-        store
-            .load_pr_suppressions()
-            .expect("load suppressions")
-            .is_empty()
+}
+
+#[test]
+fn the_diff_comments_table_arrives_empty_usable_and_survives_a_reopen() {
+    use yaran_core::diff_comments::{DiffAnchor, DiffComment, DiffSide};
+    let (_tmp, path) = old_database();
+    let queued = DiffComment {
+        session_id: "sess-1".to_string(),
+        anchor: DiffAnchor {
+            rel_path: "src/lib.rs".to_string(),
+            side: DiffSide::Old,
+            line_number: 7,
+            line_content: "fn old() {}".to_string(),
+        },
+        text: "Keep this one".to_string(),
+    };
+    {
+        let store = SessionStore::open(&path).expect("open");
+        assert_eq!(store.load_diff_comments().expect("load"), Vec::new());
+        store.upsert_diff_comment(&queued).expect("queue");
+    }
+    let before = SessionStore::open(&path)
+        .expect("reopen")
+        .load_sessions()
+        .expect("sessions");
+    let store = SessionStore::open(&path).expect("open a third time");
+    assert_eq!(store.load_diff_comments().expect("load"), vec![queued]);
+    let after = store.load_sessions().expect("sessions");
+    assert_eq!(after.len(), before.len());
+    for (b, a) in before.iter().zip(&after) {
+        assert_reopened_unchanged(b, a);
+    }
+}
+
+/// `after` is `before` as a reopen read it back, field by field.
+fn assert_reopened_unchanged(before: &AgentSession, after: &AgentSession) {
+    // Field-by-field: `AgentSession` has no `PartialEq`, and naming the
+    // fields is the point anyway (a new field added without a thought about
+    // reopen stability shows up here as a compile error, not a silent pass).
+    assert_eq!(before.id, after.id);
+    assert_eq!(
+        before
+            .project_id()
+            .expect("an upgraded row is a managed agent"),
+        after
+            .project_id()
+            .expect("an upgraded row is a managed agent")
     );
+    assert_eq!(before.provider.as_str(), after.provider.as_str());
+    assert_eq!(
+        before
+            .source_branch()
+            .expect("an upgraded row is a managed agent"),
+        after
+            .source_branch()
+            .expect("an upgraded row is a managed agent")
+    );
+    assert_eq!(
+        before
+            .branch_name()
+            .expect("an upgraded row is a managed agent"),
+        after
+            .branch_name()
+            .expect("an upgraded row is a managed agent")
+    );
+    assert_eq!(
+        before
+            .initial_branch()
+            .expect("an upgraded row is a managed agent"),
+        after
+            .initial_branch()
+            .expect("an upgraded row is a managed agent")
+    );
+    assert_eq!(
+        before
+            .managed_worktree()
+            .expect("an upgraded row is a managed agent"),
+        after
+            .managed_worktree()
+            .expect("an upgraded row is a managed agent")
+    );
+    assert_eq!(before.title, after.title);
+    assert_eq!(before.project_path(), after.project_path());
+    assert_eq!(before.started_providers, after.started_providers);
+    assert_eq!(before.desired_running, after.desired_running);
+    assert_eq!(before.auto_reopen_enabled, after.auto_reopen_enabled);
+    assert_eq!(before.status, after.status);
+    assert_eq!(before.created_at, after.created_at);
+    assert_eq!(before.updated_at, after.updated_at);
+    assert_eq!(before.last_focused_tab, after.last_focused_tab);
 }
 
 #[test]
@@ -652,7 +709,7 @@ fn old_state_survives_a_write_a_close_and_a_reopen() {
             .expect("upsert");
         store.set_last_seen_version("v0.7.0").expect("app state");
         store
-            .set_desired_running("sess-1", true)
+            .set_desired_running("sess-1", yaran_core::model::DesiredRunning::Running)
             .expect("desired running");
         store
             .set_last_focused_tab("sess-1", Some("tab-x"))
@@ -711,60 +768,7 @@ fn old_state_survives_a_write_a_close_and_a_reopen() {
         if before.id == "sess-2" || before.id == "sess-1" {
             continue; // deliberately written above
         }
-        // Field-by-field: `AgentSession` has no `PartialEq`, and naming the
-        // fields is the point anyway (a new field added without a thought about
-        // reopen stability shows up here as a compile error, not a silent pass).
-        assert_eq!(before.id, after.id);
-        assert_eq!(
-            before
-                .project_id()
-                .expect("an upgraded row is a managed agent"),
-            after
-                .project_id()
-                .expect("an upgraded row is a managed agent")
-        );
-        assert_eq!(before.provider.as_str(), after.provider.as_str());
-        assert_eq!(
-            before
-                .source_branch()
-                .expect("an upgraded row is a managed agent"),
-            after
-                .source_branch()
-                .expect("an upgraded row is a managed agent")
-        );
-        assert_eq!(
-            before
-                .branch_name()
-                .expect("an upgraded row is a managed agent"),
-            after
-                .branch_name()
-                .expect("an upgraded row is a managed agent")
-        );
-        assert_eq!(
-            before
-                .initial_branch()
-                .expect("an upgraded row is a managed agent"),
-            after
-                .initial_branch()
-                .expect("an upgraded row is a managed agent")
-        );
-        assert_eq!(
-            before
-                .managed_worktree()
-                .expect("an upgraded row is a managed agent"),
-            after
-                .managed_worktree()
-                .expect("an upgraded row is a managed agent")
-        );
-        assert_eq!(before.title, after.title);
-        assert_eq!(before.project_path(), after.project_path());
-        assert_eq!(before.started_providers, after.started_providers);
-        assert_eq!(before.desired_running, after.desired_running);
-        assert_eq!(before.auto_reopen_enabled, after.auto_reopen_enabled);
-        assert_eq!(before.status, after.status);
-        assert_eq!(before.created_at, after.created_at);
-        assert_eq!(before.updated_at, after.updated_at);
-        assert_eq!(before.last_focused_tab, after.last_focused_tab);
+        assert_reopened_unchanged(before, after);
     }
 
     assert_eq!(session(&sessions, "sess-2").status, SessionStatus::Active);
@@ -1032,7 +1036,7 @@ fn opening_a_database_this_build_created_is_a_no_op_the_second_time() {
 /// `src/storage/migrations/0005_shared_workspace.sql` (the table rebuild) plus
 /// `0006_provider_session_ids.sql`, not invented. The fork kept projects in
 /// `config.toml`, so there is no `projects` table.
-const FORK_SCHEMA_6: &str = r#"
+const FORK_SCHEMA_6: &str = r"
 create table agent_sessions (
     id text primary key,
     project_id text not null,
@@ -1070,7 +1074,7 @@ create table session_prs (
 create index idx_agent_sessions_sort_order
     on agent_sessions(sort_order, updated_at desc, id);
 pragma user_version = 6;
-"#;
+";
 
 /// A fork user's provider session ids are the whole point of the column: they
 /// must come through the upgrade readable and writable, and the ALTER that adds

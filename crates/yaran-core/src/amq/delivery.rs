@@ -11,7 +11,7 @@ use crate::session_settings::ContextMode;
 /// Windows at or beyond this bound mean "always deliver, never hold": the
 /// documented `u64::MAX` escape hatch, generalized to any implausibly long
 /// value (audit03 P1-19).
-pub const ALWAYS_DELIVER_QUIET_WINDOW: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
+pub const ALWAYS_DELIVER_QUIET_WINDOW: Duration = Duration::from_hours(87600);
 
 // The PTY byte encoding is shared with the watch engine: one implementation,
 // so a wake and a watch-rule nudge reach a provider byte-identically.
@@ -32,9 +32,13 @@ pub fn sanitise_handle(name: &str) -> String {
 /// One session as the receiver matcher sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct ReceiverCandidate<'a> {
+    /// The session's id.
     pub id: &'a str,
+    /// Its AMQ handle.
     pub handle: &'a str,
+    /// Its branch.
     pub branch: &'a str,
+    /// The directory it runs in.
     pub directory: &'a str,
 }
 
@@ -110,7 +114,10 @@ pub enum DeliveryPhase {
     TypeBody,
     /// The body is already in the prompt. Only Enter may follow; preflight
     /// holds must not run again and the body must never be retyped.
-    SubmitPending { typed_at: Option<Instant> },
+    SubmitPending {
+        /// When the body was typed, when known.
+        typed_at: Option<Instant>,
+    },
 }
 
 /// Post-delivery cooldown is backpressure between separate wakes. It must
@@ -128,9 +135,9 @@ pub fn should_hold_for_post_delivery_cooldown(
 /// Soft timeout warning: the first pending instant is established on the
 /// first deferral (busy, no PTY, no session alike, audit03 P1-18), and the
 /// warning fires once per receiver.
-pub fn timeout_warning_due(
-    first_pending_at: &mut HashMap<String, Instant>,
-    warned: &mut HashSet<String>,
+pub fn timeout_warning_due<S: std::hash::BuildHasher>(
+    first_pending_at: &mut HashMap<String, Instant, S>,
+    warned: &mut HashSet<String, S>,
     receiver: &str,
     now: Instant,
     timeout: Duration,
@@ -142,15 +149,22 @@ pub fn timeout_warning_due(
 /// Why the drainer held a message, for the rate-limited debug log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HoldReason<'a> {
+    /// No session matches the receiver.
     NoSession,
+    /// Someone is typing into the target session.
     UserTyping,
+    /// The target's terminal is gone.
     PtyGone,
+    /// The target shows this busy marker.
     BusyMarker(&'a str),
+    /// The last delivery was too recent.
     PostDeliveryCooldown,
+    /// yaran started too recently for agents to be ready.
     StartupGrace,
 }
 
 impl HoldReason<'_> {
+    /// The reason's token, for the debug log.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NoSession => "no_matching_session",
@@ -418,7 +432,7 @@ mod tests {
     #[test]
     fn quiet_window_holds_when_user_typed_recently() {
         let now = Instant::now();
-        let last = now - Duration::from_secs(5);
+        let last = now.checked_sub(Duration::from_secs(5)).unwrap();
         assert!(should_hold_for_quiet_window(
             Some(last),
             now,
@@ -429,7 +443,7 @@ mod tests {
     #[test]
     fn quiet_window_delivers_after_idle_long_enough() {
         let now = Instant::now();
-        let last = now - Duration::from_secs(120);
+        let last = now.checked_sub(Duration::from_secs(120)).unwrap();
         assert!(!should_hold_for_quiet_window(
             Some(last),
             now,
@@ -455,7 +469,7 @@ mod tests {
         assert!(should_hold_for_quiet_window(None, now, Duration::ZERO));
         assert!(should_hold_for_quiet_window(Some(now), now, Duration::ZERO));
         assert!(should_hold_for_quiet_window(
-            Some(now - Duration::from_secs(10_000)),
+            Some(now.checked_sub(Duration::from_secs(10_000)).unwrap()),
             now,
             Duration::ZERO
         ));
@@ -476,11 +490,13 @@ mod tests {
         let now = Instant::now();
         for q in [
             Duration::from_secs(u64::MAX / 2),
-            Duration::from_secs(100 * 365 * 24 * 60 * 60),
+            Duration::from_hours(876_000),
         ] {
             assert!(!should_hold_for_quiet_window(Some(now), now, q));
         }
-        let below = ALWAYS_DELIVER_QUIET_WINDOW - Duration::from_secs(1);
+        let below = ALWAYS_DELIVER_QUIET_WINDOW
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
         assert!(should_hold_for_quiet_window(Some(now), now, below));
     }
 
@@ -489,20 +505,24 @@ mod tests {
     fn quiet_window_boundary_releases_at_exact_edge() {
         let now = Instant::now();
         let q = Duration::from_secs(60);
-        assert!(!should_hold_for_quiet_window(Some(now - q), now, q));
+        assert!(!should_hold_for_quiet_window(
+            Some(now.checked_sub(q).unwrap()),
+            now,
+            q
+        ));
     }
 
     #[test]
     fn phase_delay_holds_when_typed_too_recently() {
         let now = Instant::now();
-        let typed_at = now - Duration::from_millis(10);
+        let typed_at = now.checked_sub(Duration::from_millis(10)).unwrap();
         assert!(now.duration_since(typed_at) < effective_enter_phase_delay(50));
     }
 
     #[test]
     fn phase_delay_releases_after_configured_delay() {
         let now = Instant::now();
-        let typed_at = now - Duration::from_millis(300);
+        let typed_at = now.checked_sub(Duration::from_millis(300)).unwrap();
         assert!(now.duration_since(typed_at) >= effective_enter_phase_delay(50));
     }
 
@@ -543,7 +563,7 @@ mod tests {
         let now = Instant::now();
         assert!(!should_hold_for_post_delivery_cooldown(
             Some(DeliveryPhase::TypeBody),
-            Some(now - Duration::from_secs(1)),
+            Some(now.checked_sub(Duration::from_secs(1)).unwrap()),
             now
         ));
         assert!(!should_hold_for_post_delivery_cooldown(

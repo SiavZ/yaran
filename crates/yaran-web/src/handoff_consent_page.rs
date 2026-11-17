@@ -13,6 +13,7 @@
 //!   colours, so no colour is hard-coded.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! handoff_consent_page.rs
 //! ├── yaran-core::cloud::protocol::rules
@@ -26,8 +27,10 @@
 //! ├── cloud_handoff_request
 //! ├── cloud_handoff_tests
 //! └── crate
+//! ```
 //! <module-headers:end>
 
+use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -79,7 +82,7 @@ fn style_hash() -> &'static str {
 
 /// The CSP of a page whose form may post to `form_action` besides itself.
 pub(crate) fn csp(form_action: Option<&str>) -> String {
-    let extra = form_action.map(|a| format!(" {a}")).unwrap_or_default();
+    let extra = form_action.map_or_default(|a| format!(" {a}"));
     format!(
         "default-src 'none'; style-src '{}'; form-action 'self'{extra}; frame-ancestors 'none'; base-uri 'none'",
         style_hash()
@@ -140,27 +143,27 @@ pub(crate) struct ConsentView<'a> {
     pub form_action: String,
 }
 
-pub(crate) fn consent_page(view: ConsentView<'_>) -> Response {
+pub(crate) fn consent_page(view: &ConsentView<'_>) -> Response {
     let platform = view
         .platform
         .as_deref()
-        .map(|p| format!("<dt>Platform</dt><dd>{}</dd>", chip(p)))
-        .unwrap_or_default();
+        .map_or_default(|p| format!("<dt>Platform</dt><dd>{}</dd>", chip(p)));
     let warning = if view.dev_build {
         "<p class=\"warn\">This request comes from a development build of the yaran app. Continue only if you built or installed that build yourself.</p>"
     } else {
         ""
     };
-    let hidden: String = view
+    let hidden = view
         .hidden
         .iter()
-        .map(|(name, value)| {
-            format!(
+        .fold(String::new(), |mut out, (name, value)| {
+            let _ = write!(
+                out,
                 "<input type=\"hidden\" name=\"{name}\" value=\"{}\">",
                 escape(value)
-            )
-        })
-        .collect();
+            );
+            out
+        });
     let body = format!(
         "<h1>Sign this device in to {host}?</h1><p>Continue only if you just asked the yaran app to connect to this machine.</p><dl><dt>Device</dt><dd>{device}</dd>{platform}<dt>Machine</dt><dd>{host}</dd><dt>Signed in as</dt><dd>{email}</dd></dl>{warning}<form method=\"post\" action=\"/__yaran/handoff\">{hidden}<div class=\"actions\"><button class=\"primary\" type=\"submit\" name=\"decision\" value=\"continue\">Continue</button><button type=\"submit\" name=\"decision\" value=\"cancel\">Cancel</button></div></form>",
         host = chip(view.host),

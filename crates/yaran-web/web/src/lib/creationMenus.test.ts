@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const openAddProject = vi.fn()
 const openAddProjectForInit = vi.fn()
+const openCloneProject = vi.fn()
 const openCreateAgentFromPr = vi.fn()
 const openNewAgentPicker = vi.fn()
 const createStandaloneTerminal = vi.fn()
@@ -9,6 +10,7 @@ const createStandaloneTerminal = vi.fn()
 vi.mock("@/lib/store", () => ({
   openAddProject: () => openAddProject(),
   openAddProjectForInit: () => openAddProjectForInit(),
+  openCloneProject: () => openCloneProject(),
   openCreateAgentFromPr: (projectId: string | null) =>
     openCreateAgentFromPr(projectId),
   openNewAgentPicker: (intent: string) => openNewAgentPicker(intent),
@@ -18,8 +20,8 @@ vi.mock("@/lib/store", () => ({
 import {
   addProjectMenuItems,
   newMenuItems,
+  newLauncherModel,
   splitCreationGroups,
-  NEW_AGENT_PLAIN_ID,
   type CreationMenuItem,
 } from "@/lib/creationMenus"
 
@@ -58,18 +60,6 @@ describe("newMenuItems", () => {
       "sep-new-terminals",
       "new-standalone-terminal",
     ])
-  })
-
-  it("exports the plain-agent id the launcher corner filters its ⋯ menu by", () => {
-    // The corner's filled verb IS that action, so the ⋯ menu drops exactly this
-    // id. Pinning the constant against the list keeps the filter from quietly
-    // matching nothing after a rename.
-    expect(NEW_AGENT_PLAIN_ID).toBe("new-agent-plain")
-    expect(
-      newMenuItems({ ghAvailable: true }).some(
-        (e) => e.id === NEW_AGENT_PLAIN_ID,
-      ),
-    ).toBe(true)
   })
 
   it("carries a trailing ellipsis iff the item opens a dialog", () => {
@@ -142,7 +132,7 @@ describe("splitCreationGroups", () => {
         { kind: "separator", id: "sep-a" },
         ...addProjectMenuItems(),
       ]).map((chunk) => chunk.length),
-    ).toEqual([0, 2])
+    ).toEqual([0, 3])
   })
 
   it("returns one chunk for a list with no separators at all", () => {
@@ -156,6 +146,7 @@ describe("addProjectMenuItems", () => {
   it("lists the two add-project variants in the sidebar's order", () => {
     expect(actions(addProjectMenuItems()).map((i) => i.title)).toEqual([
       "Add project…",
+      "Clone a repository…",
       "Initialize a repository…",
     ])
   })
@@ -173,5 +164,80 @@ describe("addProjectMenuItems", () => {
     expect(openAddProject).toHaveBeenCalledOnce()
     items.find((i) => i.id === "init-repository")!.run()
     expect(openAddProjectForInit).toHaveBeenCalledOnce()
+    items.find((i) => i.id === "clone-repository")!.run()
+    expect(openCloneProject).toHaveBeenCalledOnce()
+  })
+})
+
+describe("newLauncherModel", () => {
+  const layout = (ctx: Parameters<typeof newLauncherModel>[0]) =>
+    newLauncherModel(ctx).map((group) => [
+      group.id,
+      group.rows.map((row) => `${row.id}${row.disabled ? " (disabled)" : ""}`),
+    ])
+
+  it("leads with Projects and disables the project-needing rows on a confirmed zero", () => {
+    expect(
+      layout({ ghAvailable: true, projectCount: 0, agentCount: 0 }),
+    ).toEqual([
+      ["projects", ["add-project-picker", "clone-repository", "init-repository"]],
+      [
+        "agents",
+        [
+          "new-agent-plain (disabled)",
+          "new-agent-from-pr (disabled)",
+          "new-agent-from-worktree (disabled)",
+          "new-standalone-agent",
+        ],
+      ],
+      ["terminals", ["new-terminal-for-agent (disabled)", "new-standalone-terminal"]],
+    ])
+    expect(
+      newLauncherModel({ ghAvailable: true, projectCount: 0, agentCount: 0 })[0]!
+        .lead,
+    ).toBe("Add a project first, then start agents on it.")
+  })
+
+  it("reads an unloaded spine as nothing known, not as zero", () => {
+    const groups = newLauncherModel({
+      ghAvailable: true,
+      projectCount: null,
+      agentCount: null,
+    })
+    expect(groups.map((group) => group.id)).toEqual(["agents", "terminals", "projects"])
+    expect(groups.flatMap((group) => group.rows).some((row) => row.disabled)).toBe(false)
+    expect(groups.some((group) => group.lead !== null)).toBe(false)
+  })
+
+  it("disables the agent terminal alone when projects exist but no agent does", () => {
+    const rows = newLauncherModel({
+      ghAvailable: true,
+      projectCount: 2,
+      agentCount: 0,
+    }).flatMap((group) => group.rows)
+    expect(rows.filter((row) => row.disabled).map((row) => row.id)).toEqual([
+      "new-terminal-for-agent",
+    ])
+  })
+
+  it("hides the from-PR row when gh is unavailable", () => {
+    const ids = newLauncherModel({
+      ghAvailable: false,
+      projectCount: 1,
+      agentCount: 1,
+    }).flatMap((group) => group.rows.map((row) => row.id))
+    expect(ids).not.toContain("new-agent-from-pr")
+    expect(ids).toContain("new-agent-plain")
+  })
+
+  it("marks every row but the standalone terminal as opening a further step", () => {
+    const rows = newLauncherModel({
+      ghAvailable: true,
+      projectCount: 1,
+      agentCount: 1,
+    }).flatMap((group) => group.rows)
+    expect(rows.filter((row) => !row.opensStep).map((row) => row.id)).toEqual([
+      "new-standalone-terminal",
+    ])
   })
 })

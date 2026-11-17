@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import type { Spine } from "./workspaceApi"
 
 // Exercises the `loadWorkspace` in-flight guard: two rapid
@@ -25,19 +32,30 @@ function session(id: string, projectId: string): Spine["sessions"][number] {
 // Pending resolvers for each in-flight `/api/v1/workspace` fetch, in call order.
 let spineResolvers: ((body: Spine) => void)[] = []
 
+// The run clock the next resolved `/api/v1/workspace` fetch answers with.
+let workspaceClockHeader: string | null = null
+
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/workspace")) {
     // Park until the test resolves this specific call with a body.
     const body = await new Promise<Spine>((resolve) => {
       spineResolvers.push(resolve)
     })
+    const clock = workspaceClockHeader
     return {
       ok: true,
       status: 200,
       json: async () => body,
       text: async () => "",
-      headers: { get: () => null },
+      headers: { get: (name: string) => (name === "x-yaran-run-clock" ? clock : null) },
     } as unknown as Response
   }
   // /api/v1/bootstrap and anything else: empty body.
@@ -63,6 +81,7 @@ class FakeWebSocket {
 
 beforeEach(() => {
   spineResolvers = []
+  workspaceClockHeader = null
   vi.stubGlobal("location", { host: "localhost:0" })
   vi.stubGlobal("localStorage", {
     getItem: () => null,
@@ -76,7 +95,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -115,5 +139,34 @@ describe("loadWorkspace in-flight guard", () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(mod.getSnapshot().spine?.sessions.map((s) => s.id)).toEqual(["new"])
+  })
+})
+
+describe("the run clock reading", () => {
+  // A slow boot fetch that lands after a newer push is dropped as stale, and
+  // the older clock reading it carried must go with it, or every verdict's age
+  // would jump back by however long the fetch took.
+  it("moves only with a document that is applied", async () => {
+    const mod = await import("./store")
+    const clock = await import("./serverClock")
+    await waitForResolvers(1)
+
+    mod.eventsSocket.onEvent({
+      event: "workspace",
+      rev: 5,
+      clock: 900,
+      workspace: makeSpine({ rev: 5 }),
+    })
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().spine?.rev).toBe(5)
+    })
+
+    workspaceClockHeader = "100"
+    spineResolvers[0](makeSpine({ rev: 3 }))
+    // Let the stale reply resolve and be dropped.
+    await new Promise((r) => setTimeout(r, 20))
+
+    expect(mod.getSnapshot().spine?.rev).toBe(5)
+    expect(Math.floor(clock.runClockAgeSeconds(0) ?? 0)).toBe(900)
   })
 })

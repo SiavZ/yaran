@@ -9,6 +9,7 @@
 //! - The limit is passed per call, so a live config change applies to the next request.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: std
 //!
@@ -16,6 +17,7 @@
 //! rate_window.rs
 //! ├── cloud_ingress
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::Mutex;
@@ -38,7 +40,10 @@ impl RateWindow {
     /// Admits one request at `now`, or returns the whole seconds until the window
     /// rolls over (at least 1, the `Retry-After` value).
     pub(crate) fn try_admit(&self, now: u64, limit: u32) -> Result<(), u64> {
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = guard.get_or_insert((now, 0));
         if now >= state.0 + self.window_secs || now < state.0 {
             *state = (now, 0);

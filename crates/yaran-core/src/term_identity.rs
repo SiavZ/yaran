@@ -26,10 +26,11 @@
 use serde::{Deserialize, Serialize};
 
 /// How yaran resolves the terminal identity presented to an agent. Stored in config
-/// as a lowercase string (see [`TerminalIdentityMode::from_config_str`]).
+/// as a lowercase string, read through
+/// [`crate::config_effective::effective_terminal_identity`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum TerminalIdentityMode {
+pub(crate) enum TerminalIdentityMode {
     /// Mirror on the TUI, ghostty on the headless server. The default.
     #[default]
     Auto,
@@ -49,7 +50,7 @@ pub enum TerminalIdentityMode {
 impl TerminalIdentityMode {
     /// Parse a config string into a mode, returning `None` for an unrecognized
     /// value so the caller can warn and fall back.
-    pub fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" => Some(Self::Auto),
             "mirror" => Some(Self::Mirror),
@@ -61,18 +62,15 @@ impl TerminalIdentityMode {
         }
     }
 
-    /// Parse a config string, falling back to [`TerminalIdentityMode::Auto`] with a
-    /// logged warning on an unrecognized value (the theme/color-config convention:
-    /// a typo degrades gracefully rather than failing the whole config load).
-    pub fn from_config_str(s: &str) -> Self {
-        match Self::parse(s) {
-            Some(mode) => mode,
-            None => {
-                crate::logger::warn(&format!(
-                    "unknown capabilities.terminal_identity value {s:?}; falling back to \"auto\""
-                ));
-                Self::Auto
-            }
+    /// The config spelling.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Mirror => "mirror",
+            Self::Ghostty => "ghostty",
+            Self::Kitty => "kitty",
+            Self::Iterm2 => "iterm2",
+            Self::None => "none",
         }
     }
 }
@@ -93,7 +91,9 @@ pub enum SurfaceKind {
 /// value always wins).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerminalIdentity {
+    /// Variables set, as name and value, after the removals.
     pub set: Vec<(String, String)>,
+    /// Variables removed first; a trailing `*` marks a prefix family.
     pub remove: Vec<String>,
 }
 
@@ -108,21 +108,25 @@ impl TerminalIdentity {
 /// function of this struct (rather than reading `std::env` directly) is what makes
 /// the see-through matrix unit-testable.
 #[derive(Clone, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool records whether one inherited environment variable is set"
+)]
 pub struct HostEnvProbe {
     /// `TMUX` is set and non-empty: yaran itself is running inside tmux.
     pub tmux: bool,
     /// The inherited `TERM_PROGRAM` value, if any.
-    pub term_program: Option<String>,
+    pub(crate) term_program: Option<String>,
     /// The inherited `TERM_PROGRAM_VERSION` value, if any.
-    pub term_program_version: Option<String>,
+    pub(crate) term_program_version: Option<String>,
     /// `GHOSTTY_RESOURCES_DIR` is set: the outer terminal is ghostty.
-    pub ghostty_resources_dir: bool,
+    pub(crate) ghostty_resources_dir: bool,
     /// `KITTY_WINDOW_ID` is set: the outer terminal is kitty.
-    pub kitty_window_id: bool,
+    pub(crate) kitty_window_id: bool,
     /// The inherited `LC_TERMINAL` value, if any (`iTerm2` for iTerm).
-    pub lc_terminal: Option<String>,
+    pub(crate) lc_terminal: Option<String>,
     /// `ITERM_SESSION_ID` is set: the outer terminal is iTerm2.
-    pub iterm_session_id: bool,
+    pub(crate) iterm_session_id: bool,
 }
 
 impl HostEnvProbe {
@@ -158,17 +162,17 @@ impl HostEnvProbe {
 /// A pinned ghostty version string presented in forced ghostty mode. Agents key on
 /// `TERM_PROGRAM` rather than the version, so the exact value is cosmetic; it is
 /// pinned so the identity is stable and reviewable.
-pub const GHOSTTY_VERSION: &str = "1.1.3";
+pub(crate) const GHOSTTY_VERSION: &str = "1.1.3";
 /// A pinned iTerm2 version presented in forced iterm2 mode. Cosmetic, see
 /// [`GHOSTTY_VERSION`].
-pub const ITERM2_VERSION: &str = "3.5.0";
+pub(crate) const ITERM2_VERSION: &str = "3.5.0";
 
 /// Environment variables scrubbed before a FORCED identity is applied so the agent
 /// sees only the forced terminal and no leftover markers from yaran's real host. A
 /// trailing `*` marks a prefix family (every variable whose name starts with the
 /// prefix). The scrub is applied by the spawn path, which expands the prefixes
 /// against the real environment.
-pub const IDENTITY_SCRUB_VARS: &[&str] = &[
+pub(crate) const IDENTITY_SCRUB_VARS: &[&str] = &[
     "TERM_PROGRAM",
     "TERM_PROGRAM_VERSION",
     "TMUX",
@@ -188,7 +192,7 @@ pub const IDENTITY_SCRUB_VARS: &[&str] = &[
 
 /// Resolve the terminal identity to apply for a spawn. Pure: a function of the
 /// requested mode, the spawning surface, and the inherited-env probe.
-pub fn resolve_identity(
+pub(crate) fn resolve_identity(
     mode: TerminalIdentityMode,
     surface: SurfaceKind,
     host_env: &HostEnvProbe,
@@ -203,8 +207,7 @@ pub fn resolve_identity(
 
     match effective {
         // Resolved above; `Auto` cannot reach here.
-        TerminalIdentityMode::Auto => TerminalIdentity::empty(),
-        TerminalIdentityMode::None => TerminalIdentity::empty(),
+        TerminalIdentityMode::Auto | TerminalIdentityMode::None => TerminalIdentity::empty(),
         TerminalIdentityMode::Mirror => resolve_mirror(host_env),
         TerminalIdentityMode::Ghostty => forced_ghostty(host_env),
         TerminalIdentityMode::Kitty => forced_kitty(),
@@ -257,7 +260,10 @@ fn resolve_mirror(host_env: &HostEnvProbe) -> TerminalIdentity {
 }
 
 fn scrub_list() -> Vec<String> {
-    IDENTITY_SCRUB_VARS.iter().map(|s| s.to_string()).collect()
+    IDENTITY_SCRUB_VARS
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
 }
 
 fn forced_ghostty(host_env: &HostEnvProbe) -> TerminalIdentity {
@@ -454,7 +460,7 @@ mod tests {
         );
         assert_eq!(TerminalIdentityMode::parse("nope"), None);
         assert_eq!(
-            TerminalIdentityMode::from_config_str("nonsense"),
+            crate::config_effective::effective_terminal_identity("nonsense"),
             TerminalIdentityMode::Auto
         );
     }

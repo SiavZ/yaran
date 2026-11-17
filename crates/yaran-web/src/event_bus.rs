@@ -40,8 +40,11 @@ pub enum Event {
     /// `rev` carries the monotonic revision where the client needs ordering/dedup
     /// (e.g. `session.changes`).
     Resource {
+        /// The event's name, such as `session.changes`.
         event: String,
+        /// The one resource the event is about, or `None` for a collection.
         id: Option<String>,
+        /// The resource's revision, for an event a client orders or deduplicates.
         rev: Option<u64>,
         /// The claiming connection's `PtySizeOwners` id for a `pty.owner` handover,
         /// `None` for every other event. A viewer compares it against its own
@@ -77,12 +80,14 @@ pub fn session_id_from_changes_topic(topic: &str) -> Option<&str> {
 }
 
 /// The broadcast fan-out plus the global per-topic interest refcount.
+#[derive(Debug)]
 pub struct EventBus {
     tx: broadcast::Sender<Event>,
     interest: Mutex<HashMap<String, usize>>,
 }
 
 impl EventBus {
+    /// A bus with no subscriber and no interest counted.
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(EVENT_BUS_CAPACITY);
         Self {
@@ -105,7 +110,10 @@ impl EventBus {
     /// Increment the interest refcount for `topic` (a connection just subscribed
     /// to a topic it was not already holding).
     pub fn add_interest(&self, topic: &str) {
-        let mut map = self.interest.lock().unwrap();
+        let mut map = self
+            .interest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *map.entry(topic.to_string()).or_insert(0) += 1;
     }
 
@@ -113,7 +121,10 @@ impl EventBus {
     /// and underflow-logged: dropping interest in a topic that was never counted is
     /// a bookkeeping bug, so it is logged rather than panicking or wrapping.
     pub fn drop_interest(&self, topic: &str) {
-        let mut map = self.interest.lock().unwrap();
+        let mut map = self
+            .interest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.get_mut(topic) {
             Some(count) => {
                 *count = count.saturating_sub(1);
@@ -133,17 +144,23 @@ impl EventBus {
     /// Drives the changed-files poller: idle sessions (no subscriber) are never
     /// polled.
     pub fn interested_sessions(&self) -> Vec<String> {
-        let map = self.interest.lock().unwrap();
+        let map = self
+            .interest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.keys()
             .filter_map(|topic| session_id_from_changes_topic(topic))
-            .map(|id| id.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     }
 
     /// Whether any connection currently holds interest in `topic`. Used by the
     /// poller's grace-eviction to decide a session's cache can be dropped.
     pub fn has_interest(&self, topic: &str) -> bool {
-        self.interest.lock().unwrap().contains_key(topic)
+        self.interest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(topic)
     }
 }
 
@@ -182,6 +199,24 @@ mod tests {
     }
 
     #[test]
+    fn a_panic_while_holding_the_interest_lock_does_not_take_the_bus_down() {
+        let bus = EventBus::new();
+        let topic = changes_topic("s1");
+        bus.add_interest(&topic);
+        std::thread::scope(|scope| {
+            let poisoner = scope.spawn(|| {
+                let _held = bus.interest.lock();
+                panic!("a panic while the interest lock is held");
+            });
+            assert!(poisoner.join().is_err());
+        });
+        assert!(bus.interest.is_poisoned());
+        assert!(bus.has_interest(&topic));
+        bus.drop_interest(&topic);
+        assert_eq!(bus.interested_sessions(), Vec::<String>::new());
+    }
+
+    #[test]
     fn interest_refcount_is_exact_under_duplicates() {
         let bus = EventBus::new();
         let topic = changes_topic("s1");
@@ -193,7 +228,7 @@ mod tests {
         assert_eq!(bus.interested_sessions(), vec!["s1".to_string()]);
         // Second drop returns the refcount to zero; the topic is removed entirely.
         bus.drop_interest(&topic);
-        assert!(bus.interested_sessions().is_empty());
+        assert_eq!(bus.interested_sessions(), Vec::<String>::new());
         assert!(!bus.has_interest(&topic));
     }
 
@@ -202,7 +237,7 @@ mod tests {
         let bus = EventBus::new();
         // Dropping with no prior interest must not panic and must stay at zero.
         bus.drop_interest(&changes_topic("ghost"));
-        assert!(bus.interested_sessions().is_empty());
+        assert_eq!(bus.interested_sessions(), Vec::<String>::new());
     }
 
     #[tokio::test]

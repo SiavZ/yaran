@@ -4,13 +4,15 @@
 
 use std::path::PathBuf;
 
+use crate::git::FileTracking;
+
 use crate::engine::events::{
-    BeginDeleteSessionView, DeleteTerminalView, DispatchAgentLaunchView, DoDeleteSessionView,
-    EventReaction, FinishDeleteSessionView, ProjectPersistenceOutcome, ProjectPersistenceView,
-    StatusUpdate, WorktreeRemoval,
+    BeginDeleteSessionView, DeleteTerminalView, DispatchAgentLaunchView, EventReaction,
+    FinishDeleteSessionView, ProjectPersistenceOutcome, ProjectPersistenceView, StatusUpdate,
+    WorktreeRemoval,
 };
 use crate::engine::{CommandWorkerSpec, Engine, InFlightKey};
-use crate::ids::TabIdRef;
+use crate::ids::{SessionIdRef, TabId, TabIdRef};
 use crate::model::Project;
 use crate::text::count_of;
 use crate::worker::{
@@ -21,33 +23,31 @@ use crate::worker::{
 /// What the Engine should do. Variants carry their payload: the caller computes
 /// the context and supplies it, the Engine does the domain work and returns an
 /// `EventReaction` describing any view follow-up.
+#[derive(Debug)]
 pub enum Command {
-    /// Complete a deletion that's already past its git step. Used by both
-    /// the synchronous `do_delete_session` path (after `git::remove_worktree`)
-    /// and the async `WorktreeRemoveCompleted` callback.
+    /// Complete a deletion that's already past its git step: the async
+    /// `WorktreeRemoveCompleted` callback.
     FinishDeleteSession {
+        /// The agent being deleted.
         session_id: String,
+        /// What happened to its worktree, for the status the delete reports.
         removal: WorktreeRemoval,
+        /// Whether the finish reports a status; `false` when the caller keys
+        /// its own.
         update_status: bool,
-    },
-    /// Synchronous deletion: lookup → optional `git::remove_worktree` → full
-    /// finish cascade. Used by `delete_selected_project`'s cascade.
-    DoDeleteSession {
-        session_id: String,
-        delete_worktree: bool,
-        /// The delete dialog's "also delete the branch" answer, or `None` for a
-        /// caller with no dialog behind it, which keeps the provenance default.
-        /// See [`crate::model::BranchProvenance::resolve_branch_deletion`].
-        delete_branch: Option<bool>,
     },
     /// Modal entrypoint: branches between async git-removal worker and
     /// inline finish.
     BeginDeleteSession {
+        /// The agent to delete.
         session_id: String,
+        /// Whether its worktree goes too.
         delete_worktree: bool,
-        /// The delete dialog's "also delete the branch" answer. See
-        /// [`crate::model::BranchProvenance::resolve_branch_deletion`].
+        /// The older single "also delete the branch" answer. See
+        /// [`crate::branch_history::BranchDeleteRequest::from_legacy`].
         delete_branch: Option<bool>,
+        /// Both delete-dialog boxes' answers, when the caller sends them.
+        branches: Option<crate::branch_history::BranchAnswersWire>,
     },
     /// Persist a project mutation. `Add` is handled inline: the handler writes
     /// SQLite and config.toml in `apply` and returns
@@ -67,29 +67,61 @@ pub enum Command {
     /// `ProjectPersistenceOutcome`. `None` for callers that drive no
     /// handler-resolved status.
     PersistProject {
+        /// The change to save.
         action: Box<ProjectPersistenceAction>,
+        /// The op whose final the completion handler resolves, if any.
         status_op_id: Option<String>,
+    },
+
+    /// Clone `url` into `path` as a new project on the remote's default branch,
+    /// then start an agent named `agent_name` there (a random name when it is
+    /// blank; `random_name` is the New agent dialog's checkbox). Returns the clone's busy, or an error
+    /// status saying which check refused it; see [`crate::clone_project`].
+    /// With `pull_request` the agent is created from that pull request, the
+    /// address is built by the engine and `url` is ignored. With
+    /// `add_existing` too, `path` is a folder that already holds a checkout of
+    /// the repository, which becomes the project instead of a clone.
+    CloneProject {
+        /// The address to clone from.
+        url: String,
+        /// The folder to clone into, or to add with `add_existing`.
+        path: String,
+        /// The agent's name, or `None` for a random one.
+        agent_name: Option<String>,
+        /// Whether the New agent dialog asked for a random name.
+        random_name: bool,
+        /// The pull request the agent is created from, if any.
+        pull_request: Option<crate::pr_reference::PullRequestCloneTarget>,
+        /// Add the existing checkout at `path` instead of cloning.
+        add_existing: bool,
+        /// With `pull_request`: the agreement to a review copy given before
+        /// the clone or the add.
+        review_copy: crate::clone_project::UpfrontReviewCopy,
     },
 
     /// Remove a project and cascade-delete its agents' records and runtime,
     /// keeping their worktrees on disk. Tolerates a ghost project id that exists
     /// only through orphaned sessions: those are cleared and the project-record
-    /// delete is a no-op. The record and config removal run in the persistence
-    /// worker.
+    /// delete is a no-op. The record and config removal run synchronously on
+    /// the engine thread, before the status is returned.
     RemoveProject {
+        /// The project to remove.
         project_id: String,
+        /// Its display name, for the status.
         project_name: String,
     },
 
     /// Delete a project and cascade-delete its agents' records and runtime,
     /// removing their worktrees from disk. The destructive counterpart to
     /// `RemoveProject`, which keeps them. Each session goes through the shared
-    /// `do_delete_session` path with `delete_worktree == true`, so the kill,
+    /// `begin_delete_session` pipeline with `delete_worktree == true`, so the kill,
     /// worktree removal and record cleanup stay single-source. Guards the whole
     /// project up front against an in-flight worktree removal or a launching
     /// tab, so a partial delete cannot report success while stranding a session.
     DeleteProject {
+        /// The project to delete.
         project_id: String,
+        /// Its display name, for the status.
         project_name: String,
     },
 
@@ -101,8 +133,11 @@ pub enum Command {
     /// Boxed to keep the enum size within the clippy `large_enum_variant`
     /// threshold.
     DispatchCreateAgentRequest {
+        /// What to create.
         request: Box<CreateAgentRequest>,
+        /// The busy shown while the create runs.
         busy_message: crate::status_text::StatusText,
+        /// The caller's terminal size, as columns and rows.
         term_size: (u16, u16),
     },
 
@@ -112,82 +147,138 @@ pub enum Command {
     ///
     /// Boxed to keep the enum size within the clippy `large_enum_variant`
     /// threshold.
-    DispatchAgentLaunch { request: Box<AgentLaunchRequest> },
+    DispatchAgentLaunch {
+        /// The launch to run.
+        request: Box<AgentLaunchRequest>,
+    },
 
-    /// Stage a single file. Synchronous git call (microseconds for the
-    /// typical case). Returns `EventReaction::Nothing` on success; an `Err`
-    /// propagates to the App caller which surfaces it.
+    /// Stage a single file. A synchronous git call on the calling thread.
+    /// Returns `EventReaction::Nothing` on success; an `Err` propagates to the
+    /// App caller which surfaces it.
     StageFile {
+        /// The worktree the file is in.
         worktree_path: PathBuf,
+        /// The file, relative to the worktree.
         path: String,
     },
 
     /// Unstage a single file. Same shape as `StageFile`: synchronous git
     /// call, `EventReaction::Nothing` on success, `Err` on failure.
     UnstageFile {
+        /// The worktree the file is in.
         worktree_path: PathBuf,
+        /// The file, relative to the worktree.
         path: String,
     },
 
-    /// Discard a single unstaged file's changes. A synchronous git call, with
-    /// `is_untracked` selecting `git checkout -- <path>` or `rm`. Destructive:
-    /// it permanently throws away working-tree changes, or deletes an untracked
-    /// file outright. An `Err` propagates to the caller on failure.
+    /// Discard a single unstaged file's changes, on a worker, with a keyed
+    /// busy and a final; `is_untracked` selects `git checkout -- <path>` or
+    /// `rm`. Destructive: it permanently throws away working-tree changes, or
+    /// deletes an untracked file outright. A refusal the engine can give at
+    /// once (the folder being removed, something living at the path) is an
+    /// `Err`.
     DiscardFile {
+        /// The worktree the file is in.
         worktree_path: PathBuf,
+        /// The file, relative to the worktree.
         path: String,
+        /// Whether the file is untracked, so the discard deletes it.
         is_untracked: bool,
+        /// What the row the user confirmed was: the discard is refused when
+        /// the path is no longer that (a file a folder has replaced, a folder
+        /// that became a repository), rather than deleting something else.
+        confirmed: crate::git::ConfirmedEntry,
     },
 
-    /// Run `git commit -m <message>` synchronously. The caller pre-formats
-    /// `success_message` because it depends on view-side bindings the engine
-    /// cannot resolve.
-    CommitChanges {
+    /// [`Command::DiscardFile`] for a file, classified as tracked or untracked
+    /// against LIVE git status on the worker, right before the discard,
+    /// rather than by the caller: the surface's thread never runs git for it.
+    DiscardFileLive {
+        /// The worktree the file is in.
         worktree_path: PathBuf,
+        /// The file, relative to the worktree.
+        path: String,
+    },
+
+    /// Commit the staged changes with `message`, on a worker: a keyed busy
+    /// now, then the final. The worker first asks the shared preflight
+    /// against live git status, so an empty message or nothing staged is the
+    /// final's refusal ([`COMMIT_EMPTY_MESSAGE`], [`COMMIT_NOTHING_STAGED`])
+    /// and nothing is committed. The caller pre-formats `success_message`
+    /// because it depends on view-side bindings the engine cannot resolve.
+    CommitChanges {
+        /// The worktree to commit in.
+        worktree_path: PathBuf,
+        /// The commit message.
         message: String,
+        /// The line reported when the commit lands.
         success_message: String,
     },
 
     /// Spawn a `git push` worker. Returns `EventReaction::Status(Busy("Pushing
-    /// to remote\u{2026}"))` immediately; completion is reported via
-    /// `WorkerEvent::PushCompleted`.
-    Push { worktree_path: PathBuf },
+    /// to remote\u{2026}"))` immediately; the worker's keyed final replaces it
+    /// when the push ends.
+    Push {
+        /// The worktree whose branch is pushed.
+        worktree_path: PathBuf,
+    },
 
     /// Spawn a `git pull` worker for either a project's leading branch or the
     /// current session's branch. Returns the busy status when the in-flight
     /// guard accepts, or a warning when another pull is already running for the
     /// same repo path. Completion arrives as `WorkerEvent::PullCompleted`.
     Pull {
+        /// The repository to pull.
         repo_path: PathBuf,
+        /// What the pull is of.
         target: PullTarget,
+        /// The busy shown while the pull runs.
         busy_message: crate::status_text::StatusText,
+        /// The refusal while a pull of the same worktree runs. A SESSION pull's
+        /// only: a project pull shares the project folder's lock with "Check
+        /// out default branch" and "Change base branch", and its refusal is
+        /// [`crate::engine::project_folder_busy_message`], naming whichever of
+        /// the three is running.
         already_running_message: crate::status_text::StatusText,
     },
 
-    /// Open a filesystem path via the user's OS handler. Fire-and-forget
-    /// spawn; result posts back as `WorkerEvent::OpenPathCompleted` which the
-    /// existing reaction handler surfaces as a status message.
-    OpenPath { path: PathBuf, target: String },
+    /// Open a filesystem path via the user's OS handler, off the engine
+    /// thread. Returns a keyed busy; the worker's keyed final replaces it with
+    /// the outcome.
+    OpenPath {
+        /// The path to open.
+        path: PathBuf,
+        /// What the path is, for the status line ("session worktree", say).
+        target: String,
+    },
 
     /// Toggle a session's `auto_reopen_enabled` flag. The caller passes the new
     /// value and the branch name, captured before the mutation. The engine
     /// upserts in place, falling back to `session_store.set_auto_reopen_enabled`
     /// when the session was removed in flight.
     ToggleAgentAutoReopen {
+        /// The agent changed.
         session_id: String,
+        /// The agent's name as the caller showed it, for the status.
         branch_name: String,
+        /// Whether the agent now reopens at startup.
         new_enabled: bool,
     },
 
-    /// Remove a companion terminal from the engine (drops `PtyClient`, killing
-    /// the child). Returns a typed view carrying the terminal's label so the
-    /// App can format status + reconcile `active_terminal_id` (view field).
-    DeleteTerminal { terminal_id: String },
+    /// Remove a companion terminal from the engine: its child is sent SIGTERM
+    /// and moved to the terminating set, which force-kills it after the grace.
+    /// Returns a typed view carrying the terminal's label so the App can format
+    /// status + reconcile `active_terminal_id` (view field).
+    DeleteTerminal {
+        /// The terminal to close.
+        terminal_id: String,
+    },
 
     /// Persist the global `env` block to the user config file. The engine
     /// eager-saves through `Engine::config_writer` and reports the result
     /// synchronously, rolling the in-memory env back if the write fails.
     PersistGlobalEnv {
+        /// The new global environment.
         env: std::collections::BTreeMap<String, String>,
     },
 
@@ -200,51 +291,65 @@ pub enum Command {
     /// Write a canonical, fully-templated config to disk, overwriting the
     /// existing file, to restore a known-good config after a failed reload.
     /// Renders through `Engine::surface` and writes synchronously through
-    /// `config_write::write_config_secure`.
+    /// `config_write::replace_config_file`.
     RecoverConfig,
 
-    /// Persist a custom display order for the agent sessions within a single
-    /// project. `session_ids` must be exactly the full set of that project's
-    /// sessions, with no omissions, extras or duplicates, or the engine returns
-    /// an actionable error and touches nothing. On success it writes the order
-    /// to storage and reorders the matching rows of `self.sessions` in place,
-    /// leaving other projects' rows in their relative positions. Silent success:
-    /// reorders are high-frequency during a drag, so the refreshed view is the
-    /// feedback.
-    ReorderSessions {
-        project_id: String,
+    /// Persist a global custom order for every agent. `session_ids` must be
+    /// exactly the full set of all session ids, with no omissions, extras or
+    /// duplicates, or the engine returns an actionable error and touches
+    /// nothing. On success it writes one global
+    /// `sort_order` permutation and re-sorts `self.sessions` to match. Silent:
+    /// the refreshed view is the feedback.
+    ReorderAgents {
+        /// Every agent, in the new order.
         session_ids: Vec<String>,
     },
 
-    /// Persist a global custom order for every agent. `session_ids` must be
-    /// exactly the full set of all session ids. On success it writes one global
-    /// `sort_order` permutation and re-sorts `self.sessions` to match. Silent:
-    /// the refreshed view is the feedback.
-    ReorderAgents { session_ids: Vec<String> },
-
     /// Persist a custom display order for the workspace's projects.
     /// `project_ids` must be exactly the full set of known project ids, under
-    /// the same strict validation as [`Command::ReorderSessions`]. On success it
+    /// the same strict validation as [`Command::ReorderAgents`]. On success it
     /// writes the order to storage and reorders `self.projects` to match.
-    ReorderProjects { project_ids: Vec<String> },
+    ReorderProjects {
+        /// Every project, in the new order.
+        project_ids: Vec<String>,
+    },
 
     /// Persist a global runtime order for every companion terminal, whatever its
     /// owner. `terminal_ids` must be exactly the full set of current terminal
     /// ids; each terminal's runtime `sort_order` is stamped to match, with no
     /// storage write, because terminals are runtime-only. Silent success: the
     /// refreshed view is the feedback.
-    ReorderTerminals { terminal_ids: Vec<String> },
+    ReorderTerminals {
+        /// Every terminal, in the new order.
+        terminal_ids: Vec<String>,
+    },
 
-    /// Run a configured text macro against a live PTY target. `target_id` names
-    /// either an agent session (surface `Agent`) or a companion terminal
-    /// (surface `Terminal`), resolved by a providers-then-terminals lookup. An
-    /// unknown macro name and a surface mismatch both return an error Status;
-    /// otherwise the text is transformed by
-    /// `yaran_core::macros::macro_payload_bytes` and written to the target's PTY.
-    RunMacro { target_id: String, name: String },
+    /// Put a project or standalone terminal's row right after `after_agent` in
+    /// the agents list's manual order, or first when `None`. Refused for an
+    /// unknown terminal and for an agent's own terminal, which is not a list
+    /// row. Runtime only, like the terminal. Silent success: the list moving is
+    /// the feedback.
+    PlaceTerminalInList {
+        /// The terminal whose row moves.
+        terminal_id: String,
+        /// The agent its row sits right after, `None` for the top.
+        after_agent: Option<String>,
+    },
+
+    /// Persist a new left-to-right order for ONE agent's provider tabs, the slot
+    /// tab included. `tab_ids` must be exactly the agent's current tabs; every
+    /// tab's position is rewritten in one transaction. Which tab holds the slot
+    /// does not change, and nothing about starting or resuming reads the order.
+    /// Silent success: the moved pill is the feedback.
+    ReorderAgentTabs {
+        /// The agent whose strip reorders.
+        session_id: String,
+        /// Every tab of the agent, in the new order.
+        tab_ids: Vec<String>,
+    },
 
     /// Wholesale-replace the `[macros]` config and persist it. Adopts `macros`
-    /// into the running `config.macros` immediately, so the ViewModel refreshes
+    /// into the running `config.macros` immediately, so the `ViewModel` refreshes
     /// without a reload, then eager-saves through `Engine::config_writer` and
     /// reports the result synchronously. Keep and report: a failed write leaves
     /// the new macros active for the session.
@@ -253,44 +358,312 @@ pub enum Command {
     /// pre-edit snapshot, so a save clobbers any hand-edit to the `[macros]`
     /// block made on disk in between. Acceptable under the single-operator
     /// model; a multi-writer setup would need read-modify-merge.
-    UpdateMacros { macros: crate::config::MacrosConfig },
+    UpdateMacros {
+        /// The whole new macro list.
+        macros: crate::config::MacrosConfig,
+    },
+
+    /// A change to the macro list or the global environment, kept as asked so a
+    /// change a reload deferred runs against the config as it is when it runs.
+    ChangeConfigSet(ConfigSetChange),
 
     /// Point the changed-files watch at a session's worktree, or clear it with
     /// `None`. Keeps git off the engine actor thread: resolving the session,
     /// setting `watched_worktree` and `watched_session_id` and emptying the
     /// lists are synchronous, then a one-shot worker computes the staged and
     /// unstaged lists and its `ChangedFilesReady` populates the pane on a later
-    /// drain. Returns `EventReaction::Nothing`, because the refreshed ViewModel
+    /// drain. Returns `EventReaction::Nothing`, because the refreshed `ViewModel`
     /// broadcast is the feedback rather than a toast on every selection.
-    WatchChangedFiles { session_id: Option<String> },
+    WatchChangedFiles {
+        /// The agent whose worktree is watched, or `None` to stop watching.
+        session_id: Option<String>,
+    },
 
     /// Replace one agent's per-session settings (context mode, YOLO, AMQ
     /// verify override, watch-rule overrides, auto-clear, system prompt) and,
     /// optionally, its title. Persists BEFORE touching live memory and leaves
     /// memory untouched on a store failure (fork 773a6b04, audit03 P1-16).
     SetSessionSettings {
+        /// The agent the settings belong to.
         session_id: String,
+        /// The settings to store.
         settings: Box<crate::session_settings::SessionSettings>,
         /// `Some` renames the agent; `Some(None)` clears a custom title.
         title: Option<Option<String>>,
     },
 }
 
+/// The commit's refusal when its message is empty.
+pub const COMMIT_EMPTY_MESSAGE: &str = "Enter a commit message first.";
+
+/// The commit's refusal when nothing is staged.
+pub const COMMIT_NOTHING_STAGED: &str = "No staged changes to commit.";
+
+impl Engine {
+    /// One discard of a changes-pane row, on a worker. `untracked` is the
+    /// caller's classification, or `None` to classify the row against live
+    /// git status on the worker, right before acting.
+    fn discard(
+        &mut self,
+        worktree_path: PathBuf,
+        path: String,
+        untracked: Option<bool>,
+        confirmed: crate::git::ConfirmedEntry,
+    ) -> anyhow::Result<EventReaction> {
+        let _engine_thread = crate::engine::destructive_guard::engine_thread();
+        let hold = self.hold_for_git_change(&worktree_path, "discard the change")?;
+        let target = worktree_path.join(&path);
+        // Classified on the worker, so the message is decided there too.
+        let classify = {
+            let worktree_path = worktree_path.clone();
+            let path = path.clone();
+            move || -> Result<FileTracking, String> {
+                let untracked = match untracked {
+                    Some(untracked) => untracked,
+                    None => crate::git::discard_classify(&worktree_path, &path)
+                        .map_err(|err| format!("{err:#}"))?,
+                };
+                Ok(if untracked {
+                    FileTracking::Untracked
+                } else {
+                    FileTracking::Tracked
+                })
+            }
+        };
+        // A folder, a nested repository or an untracked link is removed
+        // whole, so the discard follows the one destructive protocol: claim
+        // it here (in memory, never waiting: a claim already held refuses it
+        // at once), ask the occupancy question under the claim, and clear it
+        // and delete on a worker. The engine thread never opens the session
+        // database, reads the process table, or runs git for it.
+        // A link at the path is removed whether it is untracked or stands
+        // where a tracked file was (the restore replaces it).
+        let destructive = !matches!(confirmed, crate::git::ConfirmedEntry::File)
+            || crate::engine::is_symlink(&target);
+        if !destructive {
+            // A file restored or deleted as a file: nothing to clear.
+            let op = crate::engine::status_op(crate::status_text![
+                "Discarding the changes to ",
+                q(path.clone()),
+                "\u{2026}"
+            ])
+            .on_success(|message: &crate::status_text::StatusText| {
+                crate::engine::Final::info(message.clone())
+            })
+            .on_failure(|error: &String| {
+                crate::engine::Final::error(format!("Discard failed: {error}"))
+            });
+            return Ok(self.spawn_changes_op(&worktree_path.clone(), op, move || {
+                let _hold = hold;
+                let tracking = classify()?;
+                crate::git::discard_confirmed(
+                    &worktree_path,
+                    &path,
+                    tracking,
+                    Some(confirmed),
+                    || {
+                        Err(crate::destructive::Refused(format!(
+                            "yaran did not delete {}: it was confirmed as a file",
+                            crate::home_path::shorten_home(&target)
+                        )))
+                    },
+                )
+                .map_err(|err| format!("{err:#}"))?;
+                Ok(discard_message(&path, tracking, confirmed)(0))
+            }));
+        }
+        let claim = self
+            .worktree_ops()
+            .claim_for_destructive_as(&target, std::time::Duration::ZERO, "a changes-pane delete")
+            .map_err(|reason| {
+                anyhow::Error::new(crate::destructive::Refused(format!(
+                    "yaran did not delete {}: {reason}.",
+                    crate::home_path::shorten_home(&target)
+                )))
+            })?;
+        let check = self.destructive_check(&target);
+        if let Some(refused) = check.refused_now("delete") {
+            return Err(anyhow::Error::new(refused));
+        }
+        let op = crate::engine::status_op(crate::status_text!["Deleting ", q(path), "\u{2026}"])
+            .on_success(|message: &crate::status_text::StatusText| {
+                crate::engine::Final::info(message.clone())
+            })
+            .on_failure(|error: &String| crate::engine::Final::error(error.clone()));
+        Ok(self.spawn_changes_op(&worktree_path.clone(), op, move || {
+            let _hold = hold;
+            let tracking = classify()?;
+            // The discard refuses anything that is no longer what was
+            // confirmed, so a success is the kind the user confirmed; the
+            // number of files is what actually went.
+            let went = crate::git::discard_confirmed(
+                &worktree_path,
+                &path,
+                tracking,
+                Some(confirmed),
+                || check.clear(&[&claim], "delete"),
+            )
+            .map_err(|err| format!("{err:#}"))?;
+            Ok(discard_message(&path, tracking, confirmed)(went))
+        }))
+    }
+}
+
+/// What a discard of `path` says once it is done, given how many files went.
+fn discard_message(
+    path: &str,
+    tracking: FileTracking,
+    confirmed: crate::git::ConfirmedEntry,
+) -> impl Fn(usize) -> crate::status_text::StatusText + Send + 'static {
+    let path = path.to_string();
+    move |went| match confirmed {
+        crate::git::ConfirmedEntry::Repository => crate::status_text![
+            "Deleted ",
+            q(format!("{path}/")),
+            ", a repository of its own, with its history."
+        ],
+        crate::git::ConfirmedEntry::Folder { .. } => crate::status_text![
+            "Deleted the untracked files in ",
+            q(format!("{path}/")),
+            format!(
+                " ({}); files the repository ignores and repositories of their own inside it \
+                 are kept.",
+                crate::model::count_words(went, "file", "files")
+            )
+        ],
+        crate::git::ConfirmedEntry::File if tracking == FileTracking::Untracked => {
+            crate::status_text!["Deleted untracked file ", q(path.clone()), "."]
+        }
+        crate::git::ConfirmedEntry::File => crate::status_text![
+            "Discarded unstaged changes to ",
+            q(path.clone()),
+            ". Staged changes, if any, are kept."
+        ],
+    }
+}
+
+/// What a client asked of the macro list or the global environment.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConfigSetChange {
+    /// Replace the whole list, refused with [`crate::wire::StaleSet::Macros`] when
+    /// it has moved since the [`crate::wire::macros_version`] in `read_at`.
+    ReplaceMacros {
+        /// The whole new list.
+        macros: crate::config::MacrosConfig,
+        /// The list version the client read, or `None` to replace whatever is
+        /// there.
+        read_at: Option<String>,
+    },
+    /// Add one macro, or replace it in place; every other macro stays as it is.
+    SetMacro {
+        /// The macro's name.
+        name: String,
+        /// What it types and where it is offered.
+        entry: crate::config::MacroEntry,
+    },
+    /// Remove one macro; an unknown name is an error.
+    RemoveMacro {
+        /// The macro to remove.
+        name: String,
+    },
+    /// Replace the whole table, with the same `read_at` rule.
+    ReplaceEnv {
+        /// The whole new table.
+        env: std::collections::BTreeMap<String, String>,
+        /// The table version the client read, or `None` to replace whatever is
+        /// there.
+        read_at: Option<String>,
+    },
+    /// Set one variable; every other stays as it is.
+    SetEnvVar {
+        /// The variable's name.
+        name: String,
+        /// Its value.
+        value: String,
+    },
+    /// Remove one variable; an unknown name is an error.
+    RemoveEnvVar {
+        /// The variable to remove.
+        name: String,
+    },
+}
+
+/// The whole set a [`ConfigSetChange`] resolves to, saved by the handler of the
+/// whole-set command it stands for.
+enum ConfigSetSave {
+    /// Saved as [`Command::UpdateMacros`] saves it.
+    Macros(crate::config::MacrosConfig),
+    /// Saved as [`Command::PersistGlobalEnv`] saves it.
+    Env(std::collections::BTreeMap<String, String>),
+}
+
 impl Engine {
     /// Single dispatch point for every engine-affecting operation, whether the
     /// `Command` came from a key event or off the wire. Returns an
     /// `EventReaction` the caller routes through its view-applier.
-    #[allow(deprecated)] // blessed sync-direct: Command::RecoverConfig quiesces the writer and writes directly
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command is refused, because an open change
+    /// holds what it would change or somebody else is attached to what it would
+    /// end, or when carrying it out fails; the error is the sentence the
+    /// surfaces show.
     pub fn apply(&mut self, command: Command) -> anyhow::Result<EventReaction> {
         // Count every command taken, deferred ones included: the counter's
         // reader only asks whether anything happened this iteration. Counted at
         // the top so an early return cannot skip it.
         self.command_applies = self.command_applies.wrapping_add(1);
+        // Refused while a change another surface follows holds what this one
+        // would change. Checked only: a command has no record to hold with.
+        self.check_command(&command)?;
+        // Refused while somebody else is attached to what it would end, and held
+        // against new attachments until the change ends.
+        let reservation = self.guard_command(&command)?;
+        let status_key = match &command {
+            Command::PersistProject {
+                status_op_id: Some(key),
+                ..
+            } => Some(key.clone()),
+            // A launch reports back under its tab, whatever surface started it.
+            Command::DispatchAgentLaunch { request } => Some(
+                crate::operations::launch_binding_key(request.tab_id.as_str()),
+            ),
+            _ => None,
+        };
+        let applied = self.apply_admitted(command);
+        if let Some(reservation) = reservation {
+            let key = status_key.or_else(|| {
+                applied
+                    .as_ref()
+                    .ok()
+                    .and_then(crate::wire::wire_status_from_reaction)
+                    .filter(|status| {
+                        crate::statusline::StatusTone::from_wire(&status.tone)
+                            == crate::statusline::StatusTone::Busy
+                    })
+                    .and_then(|status| status.key)
+            });
+            if let Some(key) = key {
+                reservation.until_final(&key);
+            }
+        }
+        applied
+    }
+
+    /// [`Self::apply`] once the command is admitted and guarded.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one short arm per Command variant, each handing the variant's fields to the code that carries it out"
+    )]
+    fn apply_admitted(&mut self, command: Command) -> anyhow::Result<EventReaction> {
         // While a config reload barrier is open, hold any config-mutating
         // command until the reload lands, so it re-applies against the fresh
         // config instead of racing it.
         if self.reloading && Self::is_config_mutating(&command) {
             self.deferred_commands.push(command);
+            self.deferred_policies.push(self.dispatch_policy.clone());
+            self.deferred_operations
+                .push(self.operation_in_dispatch.clone());
             return Ok(EventReaction::Nothing);
         }
         match command {
@@ -311,30 +684,23 @@ impl Engine {
                     },
                 )))
             }
-            Command::DoDeleteSession {
-                session_id,
-                delete_worktree,
-                delete_branch,
-            } => {
-                let Some(outcome) =
-                    self.do_delete_session(&session_id, delete_worktree, delete_branch)?
-                else {
-                    return Ok(EventReaction::Nothing);
-                };
-                Ok(EventReaction::DoDeleteSessionView(Box::new(
-                    DoDeleteSessionView {
-                        session_id,
-                        outcome,
-                    },
-                )))
-            }
             Command::BeginDeleteSession {
                 session_id,
                 delete_worktree,
                 delete_branch,
+                branches,
             } => {
-                let outcome =
-                    self.begin_delete_session(&session_id, delete_worktree, delete_branch);
+                let worktree = if delete_worktree {
+                    crate::engine::WorktreeOnDelete::Remove
+                } else {
+                    crate::engine::WorktreeOnDelete::Keep
+                };
+                let request = crate::branch_history::BranchAnswersWire::to_request(
+                    branches.as_ref(),
+                    delete_branch,
+                )
+                .map_err(|reason| anyhow::anyhow!("The agent was not deleted: {reason}."))?;
+                let outcome = self.begin_delete_session_with(&session_id, worktree, &request);
                 Ok(EventReaction::BeginDeleteSessionView(Box::new(
                     BeginDeleteSessionView {
                         session_id,
@@ -347,6 +713,34 @@ impl Engine {
                 status_op_id,
             } => self.apply_project_persistence(*action, status_op_id),
 
+            Command::CloneProject {
+                url,
+                path,
+                agent_name,
+                random_name,
+                pull_request,
+                add_existing,
+                review_copy,
+            } => {
+                let request = crate::clone_project::CloneRequest {
+                    url,
+                    path,
+                    agent_name,
+                    random_name,
+                    pull_request,
+                    add_existing,
+                    review_copy,
+                };
+                Ok(EventReaction::Status(
+                    match self
+                        .begin_clone_project(&request, super::clone::CloneAskedBy::OtherSurface)
+                    {
+                        Ok(busy) => busy,
+                        Err(refused) => StatusUpdate::error(refused),
+                    },
+                ))
+            }
+
             Command::RemoveProject {
                 project_id,
                 project_name,
@@ -355,322 +749,47 @@ impl Engine {
             Command::DeleteProject {
                 project_id,
                 project_name,
-            } => self.delete_project_with_worktrees(&project_id, &project_name),
+            } => Ok(self.delete_project_with_worktrees(&project_id, &project_name)),
 
             Command::DispatchCreateAgentRequest {
                 request,
                 busy_message,
                 term_size,
-            } => {
-                // Pre-check the in-flight guard before minting the op, so a
-                // rejected dispatch cannot leak an unresolved op into
-                // `pending_create_ops`. `spawn_command_worker` applies the same
-                // guard only after consuming the spec, by which point the op
-                // would already exist.
-                if self.is_in_flight(&InFlightKey::CreateAgent) {
-                    return Ok(EventReaction::Status(StatusUpdate::error(
-                        "An agent is already being created or forked.",
-                    )));
-                }
-                // `[limits]` (port-misc, fork P1-AA/#13): a hard cap refuses
-                // before any op is minted; the soft pane warning rides beside
-                // the create's own reaction and never stops it.
-                if let Some(reason) = self.refuse_agent_spawn_for_limits() {
-                    return Ok(EventReaction::Status(StatusUpdate::error(reason)));
-                }
-                let limits_warning = self.soft_warn_for_pane_count();
-                // Mint the shared create-agent `HandlerStatusOp`: its opaque id
-                // correlates the dispatch busy, every progress re-emit and the
-                // final the launch-ready and launch-failed handlers resolve from
-                // a `CreateLaunchOutcome`, so both surfaces word it identically.
-                let op = crate::engine::status_op(busy_message)
-                    .resolve_in_handler(|o: &crate::engine::CreateLaunchOutcome| {
-                        use crate::engine::{CreateLaunchOutcome, Final};
-                        match o {
-                            CreateLaunchOutcome::Committed {
-                                status_message,
-                                quiet_on,
-                            } => Final::info(status_message.clone()).quiet_on(*quiet_on),
-                            CreateLaunchOutcome::StartupFailed { branch_name, error } => {
-                                // Sticky: provisioning stopped part-way, so the
-                                // worktree is in an unknown state and the
-                                // message sends the user to the startup command
-                                // logs, an action outside the toast.
-                                Final::error(crate::status_text![
-                                    "Startup command failed for agent ",
-                                    q(branch_name),
-                                    format!(
-                                        ": {}. \
-                                     Open the startup command logs for details.",
-                                        error
-                                    )
-                                ])
-                                .sticky()
-                            }
-                            CreateLaunchOutcome::PersistFailed { error } => {
-                                // Sticky: the worktree exists but its session row
-                                // does not, so yaran forgets it on restart and the
-                                // user is left the directory to clean up.
-                                Final::error(format!("Failed to persist session: {error}")).sticky()
-                            }
-                            CreateLaunchOutcome::Failed { message } => {
-                                Final::error(message.clone())
-                            }
-                        }
-                    })
-                    // Stamp the originating connection so the busy, every progress
-                    // re-emit, and the eventual final reach only it (the followups
-                    // resolve in later ticks, after `current_origin` was reset).
-                    .with_scope(self.current_origin.clone());
-                let op_id = op.id().to_string();
-                // Surface this create's op id to a synchronous `apply_wire`
-                // caller, which reads `WireCommandOutcome.created_op_id` to
-                // correlate its own new session through `created_session_for_op`.
-                // Cleared at the top of every `apply_wire`, so it cannot leak
-                // into an unrelated command's outcome.
-                self.last_created_op_id = Some(op_id.clone());
-                let op_id_for_job = op_id.clone();
-                let op_id_panic = op_id.clone();
-                let pending = op.pending_status();
-                self.pending_create_ops.insert(op_id.clone(), op);
-                let paths = self.paths.clone();
-                let config = self.config.clone();
-                let identity = self.resolved_identity();
-                let reaction = self.spawn_command_worker(
-                    CommandWorkerSpec {
-                        label: "create-agent".into(),
-                        in_flight_key: Some(InFlightKey::CreateAgent),
-                        busy_status: Some(pending),
-                        already_running_status: Some(StatusUpdate::error(
-                            "An agent is already being created or forked.",
-                        )),
-                        panic_event: Some(Box::new(move |reason| WorkerEvent::CreateAgentFailed {
-                            status_op_id: op_id_panic,
-                            message: format!("Agent-creation worker panicked: {reason}").into(),
-                        })),
-                    },
-                    move |tx| {
-                        crate::agent_job::run_create_agent_job(
-                            *request,
-                            paths,
-                            config,
-                            tx,
-                            term_size,
-                            op_id_for_job,
-                            identity,
-                        );
-                    },
-                );
-                Ok(match limits_warning {
-                    Some(warning) => EventReaction::Multi(vec![
-                        EventReaction::Status(StatusUpdate::warning(warning)),
-                        reaction,
-                    ]),
-                    None => reaction,
-                })
-            }
+            } => Ok(self.apply_dispatch_create_agent(request, busy_message, term_size)),
 
             Command::DispatchAgentLaunch { request } => {
-                let branch_name = request.session.display_label();
-                let session_id = request.session.id.clone();
-                // The in-flight launch lock is keyed by tab id, one per tab, so
-                // two tabs of one session can launch concurrently. The View
-                // keeps `session_id` for UI correlation.
-                let tab_id = request.tab_id.clone();
-                // The View is a surface payload, so it carries the id as a plain
-                // string; the engine-side decisions above keep the typed form.
-                let tab_id_view = tab_id.as_str().to_string();
-                // Guard the shared launch chokepoint against a session whose
-                // worktree is mid-removal. Every launch path funnels through
-                // this command, so checking once here covers them all, the
-                // residual window included where a transient
-                // `finish_delete_session` DB failure leaves the record in
-                // `closing_sessions` past the synchronous delete.
-                if self.closing_sessions.contains(&session_id) {
-                    // Log the refusal so it shows up in yaran.log even when a
-                    // caller ignores the returned view's `launched` flag, as
-                    // yaran-web's `launch_agent` does.
-                    crate::logger::warn(&format!(
-                        "refused to launch tab \"{tab_id}\" for agent \"{branch_name}\": session \"{session_id}\" is being deleted"
-                    ));
-                    return Ok(EventReaction::DispatchAgentLaunchView(Box::new(
-                        DispatchAgentLaunchView {
-                            session_id,
-                            tab_id: tab_id_view,
-                            launched: false,
-                            status: Some(StatusUpdate::error(crate::status_text![
-                                "Agent ",
-                                q(branch_name),
-                                " is being deleted and cannot be launched."
-                            ])),
-                        },
-                    )));
-                }
-                // Pre-check in-flight so the View carries the exact "already
-                // launching" message regardless of the primitive's generic
-                // already-running fallback.
-                if self.is_in_flight(&InFlightKey::AgentLaunch(tab_id.clone())) {
-                    return Ok(EventReaction::DispatchAgentLaunchView(Box::new(
-                        DispatchAgentLaunchView {
-                            session_id,
-                            tab_id: tab_id_view,
-                            launched: false,
-                            status: Some(StatusUpdate::info(crate::status_text![
-                                "Agent ",
-                                q(branch_name),
-                                " is already launching."
-                            ])),
-                        },
-                    )));
-                }
-                // A live process already holds this tab, and launching over it
-                // would replace the entry in `providers`, whose displaced client
-                // SIGKILLs the child it names on drop. Every legitimate relaunch
-                // path tears the runtime down before it dispatches, so reaching
-                // here with a live provider means the launch is redundant.
-                //
-                // `PtyClient::is_live` is the right question because it excludes
-                // both a child at end of input and one already reaped: each is
-                // waiting to be pruned, and refusing for either would refuse the
-                // relaunch of a tab that just died.
-                if let Some(client) = self.providers.get(&tab_id)
-                    && client.is_live()
-                {
-                    let pid = client
-                        .child_process_id()
-                        .map(|pid| pid.to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    crate::logger::warn(&format!(
-                        "refused to launch tab \"{tab_id}\" for agent \"{branch_name}\": \
-                         process {pid} is already running in it"
-                    ));
-                    return Ok(EventReaction::DispatchAgentLaunchView(Box::new(
-                        DispatchAgentLaunchView {
-                            session_id,
-                            tab_id: tab_id_view,
-                            launched: false,
-                            status: Some(StatusUpdate::info(crate::status_text![
-                                "This tab of agent ",
-                                q(branch_name),
-                                " is already running. Stop it before starting it again."
-                            ])),
-                        },
-                    )));
-                }
-                // Clone for the panic event closure before the job closure
-                // consumes `request`, so panic recovery can take the same path
-                // as `process_agent_launch_failed`.
-                let panic_request = (*request).clone();
-                let reaction = self.spawn_command_worker(
-                    CommandWorkerSpec {
-                        label: format!("agent-launch:{tab_id}"),
-                        in_flight_key: Some(InFlightKey::AgentLaunch(tab_id.clone())),
-                        busy_status: None, // View variant carries the user-facing status
-                        already_running_status: None, // handled by the pre-check above
-                        panic_event: Some(Box::new(move |reason| {
-                            WorkerEvent::AgentLaunchFailed(Box::new(AgentLaunchFailedData {
-                                request: panic_request,
-                                message: format!("Agent-launch worker panicked: {reason}"),
-                            }))
-                        })),
-                    },
-                    move |tx| {
-                        crate::agent_job::run_agent_launch_job(*request, tx);
-                    },
-                );
-                // Wrap the primitive's return into the View variant so App
-                // callers keep a single pattern-match shape.
-                match reaction {
-                    EventReaction::Nothing => {
-                        // A launch is on its way, so the previous run's verdict
-                        // stops counting. Clearing it at the one chokepoint
-                        // every launch funnels through is what gets an explicit
-                        // start past the diagnosis card with no surface asking.
-                        // A refusal leaves the verdict standing: nothing ran.
-                        self.clear_tab_run_failure(&tab_id);
-                        Ok(EventReaction::DispatchAgentLaunchView(Box::new(
-                            DispatchAgentLaunchView {
-                                session_id,
-                                tab_id: tab_id_view.clone(),
-                                launched: true,
-                                status: None,
-                            },
-                        )))
-                    }
-                    EventReaction::Status(status) => Ok(EventReaction::DispatchAgentLaunchView(
-                        Box::new(DispatchAgentLaunchView {
-                            session_id,
-                            tab_id: tab_id_view,
-                            launched: false,
-                            status: Some(status),
-                        }),
-                    )),
-                    other => Ok(other),
-                }
+                Ok(self.apply_dispatch_agent_launch(request))
             }
 
             Command::StageFile {
                 worktree_path,
                 path,
-            } => {
-                crate::git::stage_file(&worktree_path, &path)?;
-                Ok(EventReaction::Nothing)
-            }
+            } => self.apply_stage_file(worktree_path, path),
 
             Command::UnstageFile {
                 worktree_path,
                 path,
-            } => {
-                crate::git::unstage_file(&worktree_path, &path)?;
-                Ok(EventReaction::Nothing)
-            }
+            } => self.apply_unstage_file(worktree_path, path),
+
+            Command::DiscardFileLive {
+                worktree_path,
+                path,
+            } => self.discard(worktree_path, path, None, crate::git::ConfirmedEntry::File),
 
             Command::DiscardFile {
                 worktree_path,
                 path,
                 is_untracked,
-            } => {
-                crate::git::discard_file(&worktree_path, &path, is_untracked)?;
-                let message = if is_untracked {
-                    crate::status_text!["Deleted untracked file ", q(path), "."]
-                } else {
-                    crate::status_text![
-                        "Discarded unstaged changes to ",
-                        q(path),
-                        ". Staged changes, if any, are kept."
-                    ]
-                };
-                Ok(EventReaction::Status(StatusUpdate::info(message)))
-            }
+                confirmed,
+            } => self.discard(worktree_path, path, Some(is_untracked), confirmed),
 
             Command::CommitChanges {
                 worktree_path,
                 message,
                 success_message,
-            } => match crate::git::commit(&worktree_path, &message) {
-                Ok(_) => Ok(EventReaction::Status(StatusUpdate::info(success_message))),
-                // Commit failures leave the index and typed message intact, so
-                // recovery stays inside the UI and does not require a sticky status.
-                Err(e) => Ok(EventReaction::Status(StatusUpdate::error(format!(
-                    "Commit failed: {e}"
-                )))),
-            },
+            } => Ok(self.apply_commit_changes(worktree_path, message, success_message)),
 
-            Command::Push { worktree_path } => {
-                let op = crate::engine::status_op("Pushing to remote\u{2026}")
-                    .on_success(|_: &()| {
-                        crate::engine::Final::info(
-                            "Pushed to remote successfully. Your changes are now available to collaborators.",
-                        )
-                    })
-                    .on_failure(|e: &String| {
-                        crate::engine::Final::error(format!("Push to remote failed: {e}"))
-                    });
-                let wt = worktree_path.clone();
-                Ok(self.spawn_status_op(op, move || {
-                    crate::git::push(&wt).map(|_| ()).map_err(|e| e.to_string())
-                }))
-            }
+            Command::Push { worktree_path } => Ok(self.apply_push(&worktree_path)),
 
             Command::Pull {
                 repo_path,
@@ -679,193 +798,68 @@ impl Engine {
                 already_running_message,
             } => Ok(self.dispatch_pull(repo_path, target, busy_message, already_running_message)),
 
-            Command::OpenPath { path, target } => {
-                let display = path.display().to_string();
-                let t_ok = target.clone();
-                let t_err = target.clone();
-                let op = crate::engine::status_op(crate::status_text![
-                    format!("Opening {}: ", target),
-                    n(display)
-                ])
-                .on_success(move |_: &()| crate::engine::Final::info(format!("Opened {t_ok}.")))
-                .on_failure(move |e: &String| {
-                    crate::engine::Final::error(format!("Could not open {t_err}: {e}"))
-                });
-                Ok(self.spawn_status_op(op, move || {
-                    crate::startup::open_path(&path).map_err(|err| format!("{err:#}"))
-                }))
-            }
+            Command::OpenPath { path, target } => Ok(self.apply_open_path(path, &target)),
 
             Command::ToggleAgentAutoReopen {
                 session_id,
                 branch_name,
                 new_enabled,
             } => {
-                if let Some(current) = self.sessions.iter_mut().find(|c| c.id == session_id) {
-                    // Persist first so a DB failure leaves in-memory state
-                    // untouched and the UI keeps showing the still-true value.
-                    let mut candidate = current.clone();
-                    candidate.auto_reopen_enabled = new_enabled;
-                    candidate.updated_at = chrono::Utc::now();
-                    self.session_store.upsert_session(&candidate)?;
-                    *current = candidate;
+                let reopen = if new_enabled {
+                    crate::model::AutoReopen::Enabled
                 } else {
-                    self.session_store
-                        .set_auto_reopen_enabled(&session_id, new_enabled)?;
-                }
-                Ok(EventReaction::Status(StatusUpdate::info(
-                    crate::status_text![
-                        format!(
-                            "Startup auto-reopen {} for agent ",
-                            if new_enabled { "enabled" } else { "disabled" }
-                        ),
-                        q(branch_name),
-                        "."
-                    ],
-                )))
+                    crate::model::AutoReopen::Disabled
+                };
+                self.apply_toggle_agent_auto_reopen(&session_id, &branch_name, reopen)
             }
 
             Command::SetSessionSettings {
                 session_id,
                 settings,
                 title,
-            } => self.set_session_settings(&session_id, *settings, title),
+            } => self.set_session_settings(
+                &session_id,
+                *settings,
+                title.map_or(super::amq::TitleEdit::Keep, super::amq::TitleEdit::Set),
+            ),
 
-            Command::DeleteTerminal { terminal_id } => {
-                // Graceful close: SIGTERM the terminal and move it to the
-                // terminating set so the reaper force-kills it after the grace,
-                // rather than dropping it here for an immediate SIGKILL. The
-                // terminal leaves the UI now and the child winds down behind it.
-                let label = self.begin_close_companion_terminal(&terminal_id);
-                Ok(EventReaction::DeleteTerminalView(Box::new(
-                    DeleteTerminalView { terminal_id, label },
-                )))
-            }
+            Command::DeleteTerminal { terminal_id } => Ok(self.apply_delete_terminal(terminal_id)),
 
-            Command::PersistGlobalEnv { env } => {
-                // Eager save through the queue, with rollback: swap the new env
-                // in, persist synchronously, and restore the previous env if the
-                // write fails so in-memory state never diverges from disk.
-                let previous = std::mem::replace(&mut self.config.env, env);
-                if let Err(e) = self.config_writer.save_eager(self.config.clone()) {
-                    self.config.env = previous;
-                    return Ok(EventReaction::Status(StatusUpdate::error(format!(
-                        "Couldn't save global environment variables: {e}"
-                    ))));
-                }
-                let msg = if self.config.env.is_empty() {
-                    "Global environment variables cleared.".to_string()
-                } else {
-                    saved_global_env_message(self.config.env.len())
-                };
-                Ok(EventReaction::Status(StatusUpdate::info(msg)))
-            }
+            Command::PersistGlobalEnv { env } => Ok(self.apply_persist_global_env(env)),
 
-            Command::ReloadConfig => {
-                // Reject a reentrant reload: a second one would drop the live
-                // `reload_guard`, resuming the writer mid-reload, and spawn a
-                // worker whose completion closes a barrier it never opened.
-                if self.reloading {
-                    return Ok(EventReaction::Status(StatusUpdate::info(
-                        "A config reload is already in progress.",
-                    )));
-                }
-                // Open the reload barrier: quiesce the writer so no queued save
-                // races the reload, mark `reloading` so config-mutating commands
-                // defer, and start the surface's reload worker. The barrier
-                // closes when `ConfigReloadReady` lands.
-                //
-                // An unacknowledged pause means no barrier: a still-running
-                // writer could clobber the reload's config write, so abort and
-                // let the caller retry.
-                let guard = self.config_writer.quiesce();
-                if !guard.is_acknowledged() {
-                    return Ok(EventReaction::Status(StatusUpdate::error(
-                        "Config writer is busy; please retry.",
-                    )));
-                }
-                self.reloading = true;
-                self.reload_guard = Some(guard);
-                self.surface
-                    .reload(self.paths.clone(), self.worker_tx.clone());
-                Ok(EventReaction::Nothing)
-            }
+            Command::ReloadConfig => Ok(self.apply_reload_config()),
 
-            Command::RecoverConfig => {
-                // Reject recovery while a reload barrier is open: the reload
-                // holds the writer quiesce, and a second quiesce would resume
-                // the writer mid-reload when its guard dropped.
-                if self.reloading {
-                    return Ok(EventReaction::Status(StatusUpdate::info(
-                        "A config reload is in progress; try recovering again in a moment.",
-                    )));
-                }
-                // Overwrite a corrupt on-disk config with a fresh render of the
-                // in-memory config. Quiesce the writer for the duration of the
-                // direct write so a queued save can't clobber the recovery.
-                let guard = self.config_writer.quiesce();
-                if !guard.is_acknowledged() {
-                    // The writer never confirmed the pause (timeout or dead). Performing
-                    // the direct write would race a still-running writer. Abort and let
-                    // the caller retry once the writer is responsive.
-                    return Ok(EventReaction::Status(StatusUpdate::error(
-                        "Config writer is busy; please retry.",
-                    )));
-                }
-                let body = self.surface.recover_render(&self.config);
-                match crate::config_write::write_config_secure(&self.paths.config_path, &body) {
-                    Ok(()) => Ok(EventReaction::Status(StatusUpdate::info(
-                        "Restored the last working configuration to config.toml.",
-                    ))),
-                    Err(e) => Ok(EventReaction::Status(StatusUpdate::error(format!(
-                        "Couldn't restore the last working configuration: {e:#}"
-                    )))),
-                }
-            }
+            Command::RecoverConfig => Ok(self.apply_recover_config()),
 
-            Command::ReorderSessions {
-                project_id,
-                session_ids,
-            } => {
-                self.reorder_sessions(&project_id, &session_ids)?;
-                Ok(EventReaction::Nothing)
-            }
+            Command::ReorderAgents { session_ids } => self
+                .reorder_agents(&session_ids)
+                .map(|()| EventReaction::Nothing),
 
-            Command::ReorderAgents { session_ids } => {
-                self.reorder_agents(&session_ids)?;
-                Ok(EventReaction::Nothing)
-            }
+            Command::ReorderProjects { project_ids } => self
+                .reorder_projects(&project_ids)
+                .map(|()| EventReaction::Nothing),
 
-            Command::ReorderProjects { project_ids } => {
-                self.reorder_projects(&project_ids)?;
-                Ok(EventReaction::Nothing)
-            }
+            Command::ReorderTerminals { terminal_ids } => self
+                .reorder_terminals(&terminal_ids)
+                .map(|()| EventReaction::Nothing),
 
-            Command::ReorderTerminals { terminal_ids } => {
-                self.reorder_terminals(&terminal_ids)?;
-                Ok(EventReaction::Nothing)
-            }
+            Command::PlaceTerminalInList {
+                terminal_id,
+                after_agent,
+            } => self
+                .checked_place_terminal_in_list(&terminal_id, after_agent)
+                .map(|()| EventReaction::Nothing),
 
-            Command::RunMacro { target_id, name } => self.run_macro(&target_id, &name),
+            Command::ReorderAgentTabs {
+                session_id,
+                tab_ids,
+            } => self
+                .reorder_agent_tabs(&session_id, &tab_ids)
+                .map(|()| EventReaction::Nothing),
 
-            Command::UpdateMacros { macros } => {
-                // Keep and report, never roll back: the new macros go live so
-                // the ViewModel reflects them, and a failed write is reported as
-                // a possibly stale file rather than reverting the user's change.
-                self.config.macros = macros;
-                let count = self.config.macros.entries.len();
-                if let Err(e) = self.config_writer.save_eager(self.config.clone()) {
-                    return Ok(EventReaction::Status(StatusUpdate::error(format!(
-                        "Macros updated this session, but saving to config failed: {e}"
-                    ))));
-                }
-                let msg = if count == 0 {
-                    "All macros removed. The macro list is now empty.".to_string()
-                } else {
-                    saved_macros_message(count)
-                };
-                Ok(EventReaction::Status(StatusUpdate::info(msg)))
-            }
+            Command::ChangeConfigSet(change) => self.apply_config_set_change(change),
+
+            Command::UpdateMacros { macros } => Ok(self.apply_update_macros(macros)),
 
             Command::WatchChangedFiles { session_id } => {
                 // Resolving and setting the watch runs no git, so it is cheap on
@@ -880,6 +874,865 @@ impl Engine {
         }
     }
 
+    /// [`Command::ToggleAgentAutoReopen`]: persist the agent's auto-reopen
+    /// choice first, so a failed write leaves memory showing the still-true
+    /// value, then mirror it in memory.
+    fn apply_toggle_agent_auto_reopen(
+        &mut self,
+        session_id: &str,
+        branch_name: &str,
+        reopen: crate::model::AutoReopen,
+    ) -> anyhow::Result<EventReaction> {
+        let enabled = reopen == crate::model::AutoReopen::Enabled;
+        if let Some(current) = self.sessions.iter_mut().find(|c| c.id == session_id) {
+            // Persist first so a DB failure leaves in-memory state
+            // untouched and the UI keeps showing the still-true value.
+            let mut candidate = current.clone();
+            candidate.auto_reopen_enabled = enabled;
+            candidate.updated_at = chrono::Utc::now();
+            self.session_store.upsert_session(&candidate)?;
+            *current = candidate;
+        } else {
+            self.session_store
+                .set_auto_reopen_enabled(session_id, reopen)?;
+        }
+        Ok(EventReaction::Status(StatusUpdate::info(
+            crate::status_text![
+                format!(
+                    "Startup auto-reopen {} for agent ",
+                    if enabled { "enabled" } else { "disabled" }
+                ),
+                q(branch_name),
+                "."
+            ],
+        )))
+    }
+
+    /// [`Command::StageFile`]: stage one file off the engine thread, holding
+    /// the worktree while git runs. A stage that left repositories out of the
+    /// index says so; one that staged just the file leaves its row moving to
+    /// the staged section to say it.
+    fn apply_stage_file(
+        &mut self,
+        worktree_path: PathBuf,
+        path: String,
+    ) -> anyhow::Result<EventReaction> {
+        let hold = self.hold_for_git_change(&worktree_path, "stage the file")?;
+        let staged = path.clone();
+        let op =
+            crate::engine::status_op(crate::status_text!["Staging ", q(path.clone()), "\u{2026}"])
+                .on_success(move |report: &crate::git::StageReport| {
+                    if report.left_anything_out() {
+                        crate::engine::Final::info(crate::status_text![
+                            "Staged ",
+                            q(staged.clone()),
+                            format!(
+                                " without the repositories inside it: left out {}, which staging \
+                         would record as links to repositories, not as files.",
+                                report.left_out_words()
+                            )
+                        ])
+                    } else {
+                        crate::engine::Final::clear()
+                    }
+                })
+                .on_failure(git_change_failed("stage", &path));
+        Ok(self.spawn_changes_op(&worktree_path.clone(), op, move || {
+            let _hold = hold;
+            crate::git::stage_with_report(&worktree_path, &[path]).map_err(|err| format!("{err:#}"))
+        }))
+    }
+
+    /// [`Command::UnstageFile`]: unstage one file off the engine thread,
+    /// holding the worktree while git runs.
+    fn apply_unstage_file(
+        &mut self,
+        worktree_path: PathBuf,
+        path: String,
+    ) -> anyhow::Result<EventReaction> {
+        let hold = self.hold_for_git_change(&worktree_path, "unstage the file")?;
+        let op = crate::engine::status_op(crate::status_text![
+            "Unstaging ",
+            q(path.clone()),
+            "\u{2026}"
+        ])
+        .on_success(|(): &()| crate::engine::Final::clear())
+        .on_failure(git_change_failed("unstage", &path));
+        Ok(self.spawn_changes_op(&worktree_path.clone(), op, move || {
+            let _hold = hold;
+            crate::git::unstage_file(&worktree_path, &path).map_err(|err| format!("{err:#}"))
+        }))
+    }
+
+    /// [`Command::DeleteTerminal`]: close a terminal gracefully. It is sent
+    /// SIGTERM and moved to the terminating set, so the reaper force-kills it
+    /// after the grace rather than it being dropped here for an immediate
+    /// SIGKILL; the terminal leaves the UI now and the child winds down behind
+    /// it.
+    fn apply_delete_terminal(&mut self, terminal_id: String) -> EventReaction {
+        let label = self.begin_close_companion_terminal(&terminal_id);
+        EventReaction::DeleteTerminalView(Box::new(DeleteTerminalView { terminal_id, label }))
+    }
+
+    /// Why a create may not start, before anything of it is minted: another
+    /// create is running, or its project is being deleted.
+    fn create_agent_refusal(&self, request: &CreateAgentRequest) -> Option<StatusUpdate> {
+        // Pre-check the in-flight guard before minting the op, so a
+        // rejected dispatch cannot leak an unresolved op into
+        // `pending_create_ops`. `spawn_command_worker` applies the same
+        // guard only after consuming the spec, by which point the op
+        // would already exist.
+        if self.is_in_flight(&InFlightKey::CreateAgent) {
+            return Some(StatusUpdate::error(
+                crate::operations::CREATE_IN_FLIGHT_REFUSAL,
+            ));
+        }
+        // A project being deleted takes no new agents: the deletion
+        // has already decided which agents it removes.
+        let project_id = request.project_id()?;
+        if !self.project_is_being_deleted(project_id) {
+            return None;
+        }
+        let name = self
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map_or_else(|| project_id.to_string(), |project| project.name.clone());
+        Some(StatusUpdate::error(crate::status_text![
+            "Project ",
+            q(name),
+            " is being deleted, so yaran did not create an agent in it."
+        ]))
+    }
+
+    /// A pull request create tells a branch an agent holds from one anything
+    /// else holds, so it is handed the project's agents as they are now.
+    fn fill_pull_request_agents(&self, request: &mut CreateAgentRequest) {
+        if let crate::worker::CreateAgentRequest::PullRequest {
+            project, agents, ..
+        } = request
+        {
+            *agents = self
+                .sessions
+                .iter()
+                .filter(|session| session.project_id() == Some(project.id.as_str()))
+                .filter_map(|session| {
+                    Some(crate::worker::AgentAtWorktree {
+                        name: session.display_label(),
+                        worktree_path: PathBuf::from(session.managed_worktree()?),
+                    })
+                })
+                .collect();
+        }
+    }
+
+    /// [`Command::DispatchCreateAgentRequest`]: mint the create op and start the
+    /// create worker, unless a create is already running.
+    fn apply_dispatch_create_agent(
+        &mut self,
+        mut request: Box<CreateAgentRequest>,
+        busy_message: crate::status_text::StatusText,
+        term_size: (u16, u16),
+    ) -> EventReaction {
+        if let Some(refusal) = self.create_agent_refusal(&request) {
+            return EventReaction::Status(refusal);
+        }
+        // `[limits]` (port-misc, fork P1-AA/#13): a hard cap refuses
+        // before any op is minted; the soft pane warning rides beside
+        // the create's own reaction and never stops it.
+        if let Some(reason) = self.refuse_agent_spawn_for_limits() {
+            return EventReaction::Status(StatusUpdate::error(reason));
+        }
+        let limits_warning = self.soft_warn_for_pane_count();
+        // An agent created on a folder that already exists (an
+        // existing worktree it adopts, or the user's own folder for a
+        // standalone agent) holds it from now until its launch lands,
+        // so a removal of that folder waits for it (or keeps it), and a
+        // folder already being removed is refused rather than adopted:
+        // yaran never removes a folder a standalone agent runs in. A
+        // create that makes a NEW worktree holds its path from inside
+        // the job, the moment the path is known and before
+        // `git worktree add` runs.
+        let existing_worktree = match request.as_ref() {
+            crate::worker::CreateAgentRequest::ExistingManagedWorktree {
+                worktree_path, ..
+            } => Some(worktree_path.clone()),
+            crate::worker::CreateAgentRequest::Standalone { folder, .. } => Some(folder.clone()),
+            _ => None,
+        };
+        // A pull request create tells a branch an agent holds from one
+        // anything else holds, so it needs the project's agents as they
+        // are now. Every pull request create passes through here.
+        self.fill_pull_request_agents(&mut request);
+        // Mint the shared create-agent `HandlerStatusOp`: its opaque id
+        // correlates the dispatch busy, every progress re-emit and the
+        // final the launch-ready and launch-failed handlers resolve from
+        // a `CreateLaunchOutcome`, so both surfaces word it identically.
+        // A clone's first agent: a create that fails says what the
+        // clone already did, which is on disk and in the workspace.
+        let cloned = match request.as_ref() {
+            crate::worker::CreateAgentRequest::NewProject { cloned, .. }
+            | crate::worker::CreateAgentRequest::PullRequest { cloned, .. } => cloned.clone(),
+            _ => None,
+        };
+        let op = crate::engine::status_op(busy_message)
+            .resolve_in_handler(move |o: &crate::engine::CreateLaunchOutcome| {
+                create_launch_final(o, cloned.as_ref())
+            })
+            // Stamp the originating connection so the busy, every progress
+            // re-emit, and the eventual final reach only it (the followups
+            // resolve in later ticks, after `current_origin` was reset).
+            .with_scope(self.current_origin.clone());
+        let op_id = op.id().to_string();
+        // Checked and held in one step, under the registry's lock: a
+        // folder being removed, deleted or moved refuses the create,
+        // out loud, and nothing of it has started yet.
+        if let Some(path) = &existing_worktree
+            && let Err(refused) = self.worktree_ops().hold_as(
+                crate::worktree_ops::HoldOwner::CreateOp(op_id.clone()),
+                path,
+                crate::worktree_ops::WorktreeOpKind::CreateAgent,
+            )
+        {
+            return EventReaction::Status(StatusUpdate::error(
+                refused.sentence("create an agent there"),
+            ));
+        }
+        // Surface this create's op id to a synchronous `apply_wire`
+        // caller, which reads `WireCommandOutcome.created_op_id` to
+        // correlate its own new session through `created_session_for_op`.
+        // Cleared at the top of every `apply_wire`, so it cannot leak
+        // into an unrelated command's outcome.
+        self.last_created_op_id = Some(op_id.clone());
+        let op_id_for_job = op_id.clone();
+        let op_id_panic = op_id.clone();
+        let pending = op.pending_status();
+        self.pending_create_ops.insert(op_id.clone(), op);
+        self.note_create_started(&op_id, request.project_id());
+        let paths = self.paths.clone();
+        let config = self.config.clone();
+        let identity = self.resolved_identity();
+        let registry = crate::agent_job::CreateJobRegistries {
+            processes: self.process_registry.clone(),
+            worktrees: self.worktree_ops().clone(),
+            moves: self.checkout_move_guard(),
+        };
+        let reaction = self.spawn_command_worker(
+            CommandWorkerSpec {
+                label: "create-agent".into(),
+                in_flight_key: Some(InFlightKey::CreateAgent),
+                busy_status: Some(pending),
+                already_running_status: Some(StatusUpdate::error(
+                    crate::operations::CREATE_IN_FLIGHT_REFUSAL,
+                )),
+                panic_event: Some(Box::new(move |reason| WorkerEvent::CreateAgentFailed {
+                    status_op_id: op_id_panic,
+                    attempted_name: None,
+                    message: format!("Agent-creation worker panicked: {reason}").into(),
+                })),
+            },
+            move |tx| {
+                crate::agent_job::run_create_agent_job(
+                    *request,
+                    &paths,
+                    &config,
+                    &tx,
+                    term_size,
+                    op_id_for_job,
+                    identity,
+                    registry,
+                );
+            },
+        );
+        // A worker that never started cleared the in-flight key; the
+        // create's own bookkeeping goes with it.
+        if self.is_in_flight(&InFlightKey::CreateAgent) {
+            self.operations.set_create_guard(&op_id);
+        } else {
+            self.note_create_finished(&op_id);
+        }
+        match limits_warning {
+            Some(warning) => EventReaction::Multi(vec![
+                EventReaction::Status(StatusUpdate::warning(warning)),
+                reaction,
+            ]),
+            None => reaction,
+        }
+    }
+
+    /// Why a tab's launch may not start, logged where yaran.log should show it:
+    /// the agent is being deleted, its folder is being removed, a working-copy
+    /// recreate is restarting the tab, or the tab is already launching or
+    /// running.
+    fn launch_refusal(&self, request: &AgentLaunchRequest) -> Option<StatusUpdate> {
+        let branch_name = request.session.display_label();
+        let session_id = request.session.id.as_str();
+        let tab_id = &request.tab_id;
+        // Guard the shared launch chokepoint against a session whose
+        // worktree is mid-removal. Every launch path funnels through
+        // this command, so checking once here covers them all, the
+        // residual window included where a transient
+        // `finish_delete_session` DB failure leaves the record in
+        // `closing_sessions` past the synchronous delete.
+        if self.closing_sessions.contains(session_id) {
+            // Log the refusal so it shows up in yaran.log even when a
+            // caller ignores the returned view's `launched` flag, as
+            // yaran-web's `launch_agent` does.
+            crate::logger::warn(&format!(
+                "refused to launch tab \"{tab_id}\" for agent \"{branch_name}\": session \"{session_id}\" is being deleted"
+            ));
+            return Some(StatusUpdate::error(crate::status_text![
+                "Agent ",
+                q(branch_name),
+                " is being deleted and cannot be launched."
+            ]));
+        }
+        // Nothing new may start in a folder a removal has claimed,
+        // whoever's it is: another agent sharing it, a standalone agent
+        // in it. The removal's last look relies on this.
+        if let Some(refused) = self
+            .worktree_ops()
+            .removal_refusal(request.session.directory())
+        {
+            let refusal = refused.sentence("start this agent there");
+            crate::logger::warn(&format!(
+                "refused to launch tab \"{tab_id}\" for agent \"{branch_name}\": its folder is being removed"
+            ));
+            return Some(StatusUpdate::error(refusal));
+        }
+        // A tab a working-copy recreate is about to start again is the
+        // restart's to start: its old process is still shutting down,
+        // and a launch now would race the restart for the conversation.
+        if let Some(refusal) = self.restart_launch_refusal(tab_id) {
+            crate::logger::info(&format!(
+                "refused to launch tab \"{tab_id}\" for agent \"{branch_name}\": a working-copy recreate is restarting it"
+            ));
+            return Some(StatusUpdate::info(refusal));
+        }
+        // Pre-check in-flight so the View carries the exact "already
+        // launching" message regardless of the primitive's generic
+        // already-running fallback.
+        if self.is_in_flight(&InFlightKey::AgentLaunch(tab_id.clone())) {
+            return Some(StatusUpdate::info(crate::status_text![
+                "Agent ",
+                q(branch_name),
+                " is already launching."
+            ]));
+        }
+        // A live process already holds this tab, and launching over it
+        // would replace the entry in `providers`, whose displaced client
+        // SIGKILLs the child it names on drop. Every legitimate relaunch
+        // path tears the runtime down before it dispatches, so reaching
+        // here with a live provider means the launch is redundant.
+        //
+        // `PtyClient::is_live` is the right question because it excludes
+        // both a child at end of input and one already reaped: each is
+        // waiting to be pruned, and refusing for either would refuse the
+        // relaunch of a tab that just died.
+        if let Some(client) = self.providers.get(tab_id)
+            && client.is_live()
+        {
+            let pid = client
+                .child_process_id()
+                .map_or_else(|| "unknown".to_string(), |pid| pid.to_string());
+            crate::logger::warn(&format!(
+                "refused to launch tab \"{tab_id}\" for agent \"{branch_name}\": \
+                 process {pid} is already running in it"
+            ));
+            return Some(StatusUpdate::info(crate::status_text![
+                "This tab of agent ",
+                q(branch_name),
+                " is already running. Stop it before starting it again."
+            ]));
+        }
+        None
+    }
+
+    /// [`Command::DispatchAgentLaunch`]: start one tab's launch worker, refusing
+    /// an agent that is being deleted.
+    fn apply_dispatch_agent_launch(&mut self, request: Box<AgentLaunchRequest>) -> EventReaction {
+        let session_id = request.session.id.clone();
+        // The in-flight launch lock is keyed by tab id, one per tab, so
+        // two tabs of one session can launch concurrently. The View
+        // keeps `session_id` for UI correlation.
+        let tab_id = request.tab_id.clone();
+        // The View is a surface payload, so it carries the id as a plain
+        // string; the engine-side decisions above keep the typed form.
+        let tab_id_view = tab_id.as_str().to_string();
+        if let Some(status) = self.launch_refusal(&request) {
+            return EventReaction::DispatchAgentLaunchView(Box::new(DispatchAgentLaunchView {
+                session_id,
+                tab_id: tab_id_view,
+                launched: false,
+                status: Some(status),
+            }));
+        }
+        // The same provider of the same agent still shutting down (a
+        // tab closed or detached a moment ago, a restart): the new CLI
+        // waits for it rather than sharing the worktree and the
+        // conversation with it. Read from what each terminating entry
+        // recorded when it started, never from the tab table.
+        let predecessors = self.terminating_predecessors(&session_id, &request.provider);
+        // An environment that cannot be resolved fails the launch the way a
+        // spawn that cannot start does, so the tab keeps its card with the
+        // reason rather than starting with no variables.
+        let env_refusal = self.launch_env_refusal(&request.session);
+        // Clone for the panic event closure before the job closure
+        // consumes `request`, so panic recovery can take the same path
+        // as `process_agent_launch_failed`.
+        let panic_request = (*request).clone();
+        let gate = self.spawn_gate();
+        let reaction = self.spawn_command_worker(
+            CommandWorkerSpec {
+                label: format!("agent-launch:{tab_id}"),
+                in_flight_key: Some(InFlightKey::AgentLaunch(tab_id.clone())),
+                busy_status: None, // View variant carries the user-facing status
+                already_running_status: None, // handled by the pre-check above
+                panic_event: Some(Box::new(move |reason| {
+                    WorkerEvent::AgentLaunchFailed(Box::new(AgentLaunchFailedData {
+                        request: panic_request,
+                        message: format!("Agent-launch worker panicked: {reason}"),
+                    }))
+                })),
+            },
+            move |tx| {
+                if let Some(message) = env_refusal {
+                    let _ = tx.send(WorkerEvent::AgentLaunchFailed(Box::new(
+                        AgentLaunchFailedData {
+                            request: *request,
+                            message,
+                        },
+                    )));
+                    return;
+                }
+                if let Err(message) = wait_for_predecessors(&predecessors, &request, &tx) {
+                    let _ = tx.send(WorkerEvent::AgentLaunchFailed(Box::new(
+                        AgentLaunchFailedData {
+                            request: *request,
+                            message,
+                        },
+                    )));
+                    return;
+                }
+                crate::agent_job::run_agent_launch_job(*request, &tx, &gate);
+            },
+        );
+        // Wrap the primitive's return into the View variant so App
+        // callers keep a single pattern-match shape.
+        match reaction {
+            EventReaction::Nothing => {
+                // A launch is on its way, so the previous run's verdict
+                // stops counting. Clearing it at the one chokepoint
+                // every launch funnels through is what gets an explicit
+                // start past the diagnosis card with no surface asking.
+                // A refusal leaves the verdict standing: nothing ran.
+                self.clear_tab_run_failure(&tab_id);
+                EventReaction::DispatchAgentLaunchView(Box::new(DispatchAgentLaunchView {
+                    session_id,
+                    tab_id: tab_id_view.clone(),
+                    launched: true,
+                    status: None,
+                }))
+            }
+            EventReaction::Status(status) => {
+                EventReaction::DispatchAgentLaunchView(Box::new(DispatchAgentLaunchView {
+                    session_id,
+                    tab_id: tab_id_view,
+                    launched: false,
+                    status: Some(status),
+                }))
+            }
+            other => other,
+        }
+    }
+
+    /// [`Command::CommitChanges`]: commit the staged changes off the engine
+    /// thread, holding the worktree for the commit's duration.
+    fn apply_commit_changes(
+        &mut self,
+        worktree_path: PathBuf,
+        message: String,
+        success_message: String,
+    ) -> EventReaction {
+        // Held for the commit's own duration, so a removal of this
+        // worktree that is already waiting sees it, and refused once a
+        // removal has begun.
+        let hold = match self
+            .worktree_ops()
+            .hold(&worktree_path, crate::worktree_ops::WorktreeOpKind::Commit)
+        {
+            Ok(hold) => hold,
+            Err(refused) => {
+                return EventReaction::Status(StatusUpdate::error(
+                    refused.sentence("commit in it"),
+                ));
+            }
+        };
+        let op = crate::engine::status_op("Committing the staged changes\u{2026}")
+            .on_success(move |(): &()| crate::engine::Final::info(success_message.clone()))
+            // Commit failures leave the index and typed message intact, so
+            // recovery stays inside the UI and does not require a sticky
+            // status.
+            .on_failure(|error: &String| crate::engine::Final::error(error.clone()));
+        self.spawn_changes_op(&worktree_path.clone(), op, move || {
+            let _hold = hold;
+            match crate::git::commit_preflight(&worktree_path, &message) {
+                crate::git::CommitPreflight::EmptyMessage => {
+                    return Err(COMMIT_EMPTY_MESSAGE.to_string());
+                }
+                crate::git::CommitPreflight::NothingStaged => {
+                    return Err(COMMIT_NOTHING_STAGED.to_string());
+                }
+                crate::git::CommitPreflight::Ready => {}
+            }
+            crate::git::commit(&worktree_path, &message)
+                .map(|_| ())
+                .map_err(|e| format!("Commit failed: {e}"))
+        })
+    }
+
+    /// [`Command::Push`]: push the worktree's branch off the engine thread.
+    fn apply_push(&mut self, worktree_path: &std::path::Path) -> EventReaction {
+        let op = crate::engine::status_op("Pushing to remote\u{2026}")
+            .on_success(|(): &()| {
+                crate::engine::Final::info(
+                    "Pushed to remote successfully. Your changes are now available to collaborators.",
+                )
+            })
+            .on_failure(|e: &String| {
+                crate::engine::Final::error(format!("Push to remote failed: {e}"))
+            });
+        // The push holds its worktree until git is done with it, so a
+        // removal that begins meanwhile waits for it, and a worktree
+        // already being removed takes no push.
+        let hold = match self
+            .worktree_ops()
+            .hold(worktree_path, crate::worktree_ops::WorktreeOpKind::Push)
+        {
+            Ok(hold) => hold,
+            Err(refused) => {
+                return EventReaction::Status(StatusUpdate::error(
+                    refused.sentence("push from it"),
+                ));
+            }
+        };
+        let wt = worktree_path.to_path_buf();
+        let timeout = self.config.git.network_timeout();
+        self.spawn_status_op(op, move || {
+            let _hold = hold;
+            crate::git::push(&wt, timeout)
+                .map(|_| ())
+                .map_err(|e| format!("{e:#}"))
+        })
+    }
+
+    /// [`Command::OpenPath`]: open a path with the system opener off the engine
+    /// thread.
+    fn apply_open_path(&mut self, path: PathBuf, target: &str) -> EventReaction {
+        let display = path.display().to_string();
+        let t_ok = target.to_string();
+        let t_err = target.to_string();
+        let op = crate::engine::status_op(crate::status_text![
+            format!("Opening {}: ", target),
+            n(display)
+        ])
+        .on_success(move |(): &()| crate::engine::Final::info(format!("Opened {t_ok}.")))
+        .on_failure(move |e: &String| {
+            crate::engine::Final::error(format!("Could not open {t_err}: {e}"))
+        });
+        self.spawn_status_op(op, move || {
+            crate::startup::open_path(&path).map_err(|err| format!("{err:#}"))
+        })
+    }
+
+    /// [`Command::PersistGlobalEnv`]: save the global environment, restoring the
+    /// previous one when the write fails.
+    fn apply_persist_global_env(
+        &mut self,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> EventReaction {
+        // Eager save through the queue, with rollback: swap the new env
+        // in, persist synchronously, and restore the previous env if the
+        // write fails so in-memory state never diverges from disk.
+        let previous = std::mem::replace(&mut self.config.env, env);
+        if let Err(e) = self.config_writer.save_eager(self.config.clone()) {
+            self.config.env = previous;
+            return EventReaction::Status(StatusUpdate::error(format!(
+                "Couldn't save global environment variables: {e}"
+            )));
+        }
+        let msg = if self.config.env.is_empty() {
+            "Global environment variables cleared.".to_string()
+        } else {
+            saved_global_env_message(self.config.env.len())
+        };
+        EventReaction::Status(StatusUpdate::info(msg))
+    }
+
+    /// [`Command::ReloadConfig`]: start a config reload, or queue one behind the
+    /// reload already running.
+    fn apply_reload_config(&mut self) -> EventReaction {
+        // Reject a reentrant reload: a second one would drop the live
+        // `reload_guard`, resuming the writer mid-reload, and spawn a
+        // worker whose completion closes a barrier it never opened.
+        // A reload asked for DURING one (a second `yaran config set`'s
+        // SIGUSR1, a second press) may be about a file that changed
+        // after the running reload read it, so it is never dropped:
+        // it joins the deferred commands and runs as soon as the
+        // current reload closes its barrier. Any number of them
+        // collapse into one follow-up, which reads the latest file.
+        self.reload_origin.reload_asked(if self.reloading {
+            crate::engine::reload_origin::ReloadSlot::AfterTheRunningOne
+        } else {
+            crate::engine::reload_origin::ReloadSlot::Now
+        });
+        if self.reloading {
+            if !self
+                .deferred_commands
+                .iter()
+                .any(|c| matches!(c, Command::ReloadConfig))
+            {
+                self.deferred_commands.push(Command::ReloadConfig);
+                self.deferred_operations.push(None);
+                self.deferred_policies.push(None);
+            }
+            // A client waiting on this one follows the reload that
+            // reads the file after the one running.
+            if let Some(id) = &self.operation_in_dispatch {
+                self.operations
+                    .await_reload(id, crate::engine::ReloadSlot::AfterTheRunningOne);
+            }
+            return EventReaction::Status(StatusUpdate::info(
+                "A config reload is already running; another runs right after it, so \
+                 the latest config.toml is the one that applies.",
+            ));
+        }
+        // Open the reload barrier: quiesce the writer so no queued save
+        // races the reload, mark `reloading` so config-mutating commands
+        // defer, and start the surface's reload worker. The barrier
+        // closes when `ConfigReloadReady` lands.
+        //
+        // An unacknowledged pause means no barrier: a still-running
+        // writer could clobber the reload's config write, so abort and
+        // let the caller retry.
+        let guard = self.config_writer.quiesce();
+        if !guard.is_acknowledged() {
+            // The reload that was to start never will, so the clients
+            // waiting on it are told so.
+            self.operations.fail_reload(
+                "Config writer is busy; please retry.",
+                std::time::Instant::now(),
+            );
+            return EventReaction::Status(StatusUpdate::error(
+                "Config writer is busy; please retry.",
+            ));
+        }
+        self.reloading = true;
+        self.reload_guard = Some(guard);
+        self.reloaded_projects = Some(crate::engine::ReloadProjects {
+            at_start: self.projects.clone(),
+            built: None,
+        });
+        if let Some(id) = &self.operation_in_dispatch {
+            self.operations
+                .await_reload(id, crate::engine::ReloadSlot::Now);
+        }
+        self.surface
+            .reload(self.paths.clone(), self.worker_tx.clone());
+        EventReaction::Nothing
+    }
+
+    /// [`Command::RecoverConfig`]: overwrite a corrupt config file with the
+    /// running config, keeping the file's own `[server.auth]` when it reads.
+    fn apply_recover_config(&mut self) -> EventReaction {
+        // Reject recovery while a reload barrier is open: the reload
+        // holds the writer quiesce, and a second quiesce would resume
+        // the writer mid-reload when its guard dropped.
+        if self.reloading {
+            return EventReaction::Status(StatusUpdate::info(
+                "A config reload is in progress; try recovering again in a moment.",
+            ));
+        }
+        // Overwrite a corrupt on-disk config with a fresh render of the
+        // in-memory config. Quiesce the writer for the duration of the
+        // direct write so a queued save can't clobber the recovery.
+        let guard = self.config_writer.quiesce();
+        if !guard.is_acknowledged() {
+            // The writer never confirmed the pause (timeout or dead). Performing
+            // the direct write would race a still-running writer. Abort and let
+            // the caller retry once the writer is responsive.
+            return EventReaction::Status(StatusUpdate::error(
+                "Config writer is busy; please retry.",
+            ));
+        }
+        // The running config may be older than the file's [server.auth]
+        // (a `yaran config set`, a ban since yaran started), so the file's
+        // own section is kept whenever it reads. Only when it cannot be
+        // read is the running one written back, and the status says so.
+        // Read inside the config write lock, so a `yaran config set` that
+        // lands meanwhile is part of what is kept.
+        let running = self.config.clone();
+        let surface = &self.surface;
+        let outcome =
+            crate::config_write::replace_config_file(&self.paths.config_path, |current| {
+                let mut recovered = running.clone();
+                // A missing file holds no newer password than the
+                // running one: nothing to explain.
+                let auth_note = match current.map(crate::config::auth_section_of) {
+                    None => None,
+                    // The file has no password but the running yaran has
+                    // one: recovering must not quietly turn the login
+                    // off, so the running password stays, beside the
+                    // file's other auth settings, and the status says so.
+                    Some(Ok(mut auth))
+                        if !auth.has_password() && running.server.auth.has_password() =>
+                    {
+                        auth.password_hash
+                            .clone_from(&running.server.auth.password_hash);
+                        recovered.server.auth = auth;
+                        Some(Some(recover_kept_password_note()))
+                    }
+                    Some(Ok(auth)) => {
+                        recovered.server.auth = auth;
+                        Some(None)
+                    }
+                    Some(Err(problem)) => Some(Some(recover_unreadable_auth_note(
+                        &recovered.server.auth,
+                        problem.reason(),
+                    ))),
+                };
+                Ok((surface.recover_render(&recovered), auth_note))
+            });
+        match outcome {
+            Ok(auth_note) => EventReaction::Status(match auth_note {
+                None => {
+                    StatusUpdate::info("Restored the last working configuration to config.toml.")
+                }
+                Some(None) => StatusUpdate::info(
+                    "Restored the last working configuration to config.toml. Its \
+                     [server.auth] was kept as the file had it.",
+                ),
+                Some(Some(note)) => StatusUpdate::warning(crate::status_text![
+                    "Restored the last working configuration to config.toml. ",
+                    note
+                ]),
+            }),
+            Err(e) => EventReaction::Status(StatusUpdate::error(format!(
+                "Couldn't restore the last working configuration: {e:#}"
+            ))),
+        }
+    }
+
+    /// [`Command::UpdateMacros`]: put the new macros live and save them, keeping
+    /// them even when the write fails.
+    fn apply_update_macros(&mut self, macros: crate::config::MacrosConfig) -> EventReaction {
+        // Keep and report, never roll back: the new macros go live so
+        // the ViewModel reflects them, and a failed write is reported as
+        // a possibly stale file rather than reverting the user's change.
+        self.config.macros = macros;
+        let count = self.config.macros.entries.len();
+        if let Err(e) = self.config_writer.save_eager(self.config.clone()) {
+            return EventReaction::Status(StatusUpdate::error(format!(
+                "Macros updated this session, but saving to config failed: {e}"
+            )));
+        }
+        let msg = if count == 0 {
+            "All macros removed. The macro list is now empty.".to_string()
+        } else {
+            saved_macros_message(count)
+        };
+        EventReaction::Status(StatusUpdate::info(msg))
+    }
+
+    /// Resolve a [`ConfigSetChange`] against the config as it is now and save the
+    /// result through the whole-set command, answering about the one entry.
+    fn apply_config_set_change(
+        &mut self,
+        change: ConfigSetChange,
+    ) -> anyhow::Result<EventReaction> {
+        use crate::wire::{StaleSet, global_env_version, macros_version};
+        let (save, done) = match change {
+            ConfigSetChange::ReplaceMacros { macros, read_at } => {
+                if read_at.is_some_and(|read| read != macros_version(&self.config.macros)) {
+                    return Err(StaleSet::Macros.into());
+                }
+                (ConfigSetSave::Macros(macros), None)
+            }
+            ConfigSetChange::ReplaceEnv { env, read_at } => {
+                if read_at.is_some_and(|read| read != global_env_version(&self.config.env)) {
+                    return Err(StaleSet::GlobalEnv.into());
+                }
+                (ConfigSetSave::Env(env), None)
+            }
+            ConfigSetChange::SetMacro { name, entry } => {
+                let mut macros = self.config.macros.clone();
+                match macros.entries.get_mut(&name) {
+                    Some(existing) => *existing = entry,
+                    None => {
+                        macros.entries.insert(name.clone(), entry);
+                    }
+                }
+                (
+                    ConfigSetSave::Macros(macros),
+                    Some(crate::status_text!["Saved macro ", q(name), "."]),
+                )
+            }
+            ConfigSetChange::RemoveMacro { name } => {
+                let mut macros = self.config.macros.clone();
+                if macros.entries.shift_remove(&name).is_none() {
+                    anyhow::bail!("unknown macro \"{name}\"");
+                }
+                (
+                    ConfigSetSave::Macros(macros),
+                    Some(crate::status_text!["Removed macro ", q(name), "."]),
+                )
+            }
+            ConfigSetChange::SetEnvVar { name, value } => {
+                let mut env = self.config.env.clone();
+                env.insert(name.clone(), value);
+                (
+                    ConfigSetSave::Env(env),
+                    Some(crate::status_text![
+                        "Saved global environment variable ",
+                        q(name),
+                        ". New agents and terminals receive it unless a project overrides it."
+                    ]),
+                )
+            }
+            ConfigSetChange::RemoveEnvVar { name } => {
+                let mut env = self.config.env.clone();
+                if env.remove(&name).is_none() {
+                    anyhow::bail!("{}", crate::config_resources::unknown_env_var(&name));
+                }
+                // A name that is no variable name may be a token pasted
+                // where a name goes, so the status does not repeat it.
+                let done = if crate::config::is_valid_env_name(&name) {
+                    crate::status_text!["Removed global environment variable ", q(name), "."]
+                } else {
+                    crate::status_text![
+                        "Removed a global environment variable whose name is not a variable \
+                         name, so it is not shown."
+                    ]
+                };
+                (ConfigSetSave::Env(env), Some(done))
+            }
+        };
+        // The whole-set save's own handler, called directly: the change was
+        // admitted once already, as itself.
+        let reaction = match save {
+            ConfigSetSave::Macros(macros) => self.apply_update_macros(macros),
+            ConfigSetSave::Env(env) => self.apply_persist_global_env(env),
+        };
+        Ok(match (done, reaction) {
+            (Some(done), EventReaction::Status(status))
+                if status.tone == crate::statusline::StatusTone::Info =>
+            {
+                EventReaction::Status(StatusUpdate::info(done))
+            }
+            (_, reaction) => reaction,
+        })
+    }
+
     fn dispatch_pull(
         &mut self,
         repo_path: PathBuf,
@@ -887,7 +1740,43 @@ impl Engine {
         busy_message: crate::status_text::StatusText,
         already_running_message: crate::status_text::StatusText,
     ) -> EventReaction {
+        // The pull's check of what git would remove runs on its worker.
+        let _engine_thread = crate::engine::destructive_guard::engine_thread();
         let repo_key = repo_path.to_string_lossy().into_owned();
+        // A project pull switches the folder to its base first, so it shares
+        // the folder's lock with the other two operations that switch it, and
+        // a refusal names whichever is running (`already_running_message` is a
+        // session pull's). A session pull keeps its own per-worktree key.
+        let in_flight_key = match &target {
+            PullTarget::Project { project_name, .. } => {
+                if let Some(running) = self.project_folder_action(&repo_key) {
+                    return EventReaction::Status(StatusUpdate::warning(
+                        crate::engine::project_folder_busy_message(project_name, running),
+                    ));
+                }
+                // Taken (and released on a failed spawn) by the worker
+                // primitive, which is why this is not `begin_project_folder_action`.
+                InFlightKey::ProjectFolder {
+                    path: repo_key.clone(),
+                    action: crate::engine::ProjectFolderAction::Pull,
+                }
+            }
+            PullTarget::Session => InFlightKey::Pull(repo_key.clone()),
+        };
+        // A session pull holds its worktree until its completion lands, so a
+        // removal that begins meanwhile waits for it; a worktree already being
+        // removed takes no pull. A pull already running is left to the worker
+        // primitive's own "already running" answer.
+        if matches!(target, PullTarget::Session)
+            && !self.is_in_flight(&in_flight_key)
+            && let Err(refused) = self.hold_path_for_in_flight(
+                &in_flight_key,
+                &repo_path,
+                crate::worktree_ops::WorktreeOpKind::Pull,
+            )
+        {
+            return EventReaction::Status(StatusUpdate::warning(refused.sentence("pull into it")));
+        }
         let repo_key_for_panic = repo_key.clone();
         let target_for_panic = target.clone();
         let op = match &target {
@@ -908,10 +1797,12 @@ impl Engine {
         let panic_key = op.key().to_string();
         let origin = self.current_origin.clone();
         let origin_for_panic = origin.clone();
+        let guard = self.checkout_move_guard();
+        let timeout = self.config.git.network_timeout();
         self.spawn_command_worker(
             CommandWorkerSpec {
                 label: format!("pull:{repo_key}"),
-                in_flight_key: Some(InFlightKey::Pull(repo_key.clone())),
+                in_flight_key: Some(in_flight_key),
                 busy_status: Some(pending),
                 already_running_status: Some(StatusUpdate::warning(already_running_message)),
                 panic_event: Some(Box::new(move |reason| WorkerEvent::PullCompleted {
@@ -928,13 +1819,16 @@ impl Engine {
             move |tx| {
                 let result = match &target {
                     PullTarget::Project { leading_branch, .. } => {
-                        run_project_refresh(&repo_path, leading_branch.clone())
+                        run_project_refresh(&repo_path, leading_branch.clone(), &guard, timeout)
                     }
-                    PullTarget::Session => crate::git::pull_current_branch(&repo_path)
-                        .map(|_| PullOutcome::Pulled {
-                            current_branch: None,
-                        })
-                        .map_err(|error| error.to_string()),
+                    PullTarget::Session => {
+                        crate::git::pull_current_branch(&repo_path, &guard, timeout)
+                            .map(|()| PullOutcome::Pulled {
+                                current_branch: None,
+                                default_warning: None,
+                            })
+                            .map_err(|error| format!("{error:#}"))
+                    }
                 };
                 let status = op.resolve(&result).with_scope(origin.clone());
                 let _ = tx.send(WorkerEvent::PullCompleted {
@@ -961,13 +1855,54 @@ impl Engine {
                 ],
             )));
         }
+        // Removing the project removes its agents' records, so an agent still
+        // coming up in it would come up with no record behind it.
+        if self.project_has_launching_tab(project_id) {
+            return Ok(EventReaction::Status(StatusUpdate::error(
+                crate::status_text![
+                    "Cannot remove project ",
+                    q(project_name),
+                    " while an agent tab is still launching. Wait a moment, then try again."
+                ],
+            )));
+        }
+        if self.project_has_create_in_flight(project_id) {
+            return Ok(EventReaction::Status(StatusUpdate::error(
+                crate::status_text![
+                    "Cannot remove project ",
+                    q(project_name),
+                    " while an agent is being created in it. \
+                 Wait for the create to finish, then try again."
+                ],
+            )));
+        }
         let was_real = self.projects.iter().any(|project| project.id == project_id);
         let removed = self.session_store.remove_project_records(project_id)?;
+        // What became of each worktree, decided here: kept on disk.
+        let kept: Vec<crate::operations::OperationPart> = self
+            .sessions
+            .iter()
+            .filter(|session| removed.contains(&session.id))
+            .filter_map(|session| session.workspace.as_managed())
+            .map(|managed| crate::operations::OperationPart {
+                part: crate::operations::PartKind::Worktree,
+                subject: managed.worktree_path.clone(),
+                outcome: crate::operations::PartOutcome::Kept,
+                reason: None,
+            })
+            .collect();
+        self.note_operation(
+            None,
+            &crate::operations::OperationNotes {
+                parts: kept,
+                ..Default::default()
+            },
+        );
         for session_id in &removed {
             self.finish_delete_session_memory(session_id);
         }
         self.remove_project_from_runtime(project_id);
-        let detail = removed_agents_detail(removed.len());
+        let detail = crate::engine::removal::removed_agents_detail(removed.len());
         if was_real && let Err(error) = self.persist_projects_to_config() {
             return Ok(EventReaction::Status(StatusUpdate::error(
                 crate::status_text![
@@ -990,80 +1925,13 @@ impl Engine {
         )))
     }
 
-    fn delete_project_with_worktrees(
-        &mut self,
-        project_id: &str,
-        project_name: &str,
-    ) -> anyhow::Result<EventReaction> {
-        if self.project_has_pending_deletion(project_id) {
-            return Ok(EventReaction::Status(StatusUpdate::error(
-                crate::status_text![
-                    "Cannot delete project ",
-                    q(project_name),
-                    " while agent worktree removals are in \
-                 progress. Wait for them to finish, then try again."
-                ],
-            )));
-        }
-        if self.project_has_launching_tab(project_id) {
-            return Ok(EventReaction::Status(StatusUpdate::error(
-                crate::status_text![
-                    "Cannot delete project ",
-                    q(project_name),
-                    " while an agent tab is still launching. \
-                 Wait a moment, then try again."
-                ],
-            )));
-        }
-        let was_real = self.projects.iter().any(|project| project.id == project_id);
-        let session_ids: Vec<String> = self
-            .sessions
-            .iter()
-            .filter(|session| session.project_id() == Some(project_id))
-            .map(|session| session.id.clone())
-            .collect();
-        let mut removed = 0usize;
-        for session_id in &session_ids {
-            // `None` for the branch: the project-removal dialog asks about the
-            // project rather than each agent's branch, so nobody answered that
-            // question and the provenance default stands. That is what keeps a
-            // project removal from taking a user's `develop` with it.
-            if self.do_delete_session(session_id, true, None)?.is_some() {
-                removed += 1;
-            }
-        }
-        self.session_store.remove_project_records(project_id)?;
-        self.remove_project_from_runtime(project_id);
-        let detail = removed_agents_detail(removed);
-        if was_real && let Err(error) = self.persist_projects_to_config() {
-            return Ok(EventReaction::Status(StatusUpdate::error(
-                crate::status_text![
-                    "Deleted ",
-                    q(project_name),
-                    format!(
-                        "{} from yaran, but updating config.toml failed: \
-                 {}. The project may reappear on restart. Check the file is writable.",
-                        detail, error
-                    )
-                ],
-            )));
-        }
-        Ok(EventReaction::Status(StatusUpdate::info(
-            crate::status_text![
-                "Deleted project ",
-                q(project_name),
-                format!("{}. Worktrees were removed.", detail)
-            ],
-        )))
-    }
-
     fn project_has_pending_deletion(&self, project_id: &str) -> bool {
         self.sessions.iter().any(|session| {
             session.project_id() == Some(project_id) && self.pending_deletions.contains(&session.id)
         })
     }
 
-    fn project_has_launching_tab(&self, project_id: &str) -> bool {
+    pub(crate) fn project_has_launching_tab(&self, project_id: &str) -> bool {
         self.sessions.iter().any(|session| {
             session.project_id() == Some(project_id)
                 && self
@@ -1073,7 +1941,7 @@ impl Engine {
         })
     }
 
-    fn remove_project_from_runtime(&mut self, project_id: &str) {
+    pub(crate) fn remove_project_from_runtime(&mut self, project_id: &str) {
         self.begin_close_project_terminals(project_id);
         self.projects.retain(|project| project.id != project_id);
     }
@@ -1103,7 +1971,10 @@ impl Engine {
         if let Some((project_id, project_name)) = self
             .projects
             .iter()
-            .find(|existing| existing.path == project.path)
+            .find(|existing| {
+                crate::project_browser::known_path_key(&existing.path)
+                    == crate::project_browser::known_path_key(&project.path)
+            })
             .map(|existing| (existing.id.clone(), existing.name.clone()))
         {
             let message = crate::status_text![
@@ -1114,6 +1985,20 @@ impl Engine {
             return Ok(project_added_reaction(project, project_id, message));
         }
 
+        // Held while the project is written: a removal of a folder around
+        // the repository waits for the add and then sees the project, and an
+        // add into a folder already being removed is refused.
+        let _hold = match self.worktree_ops().hold(
+            std::path::Path::new(&project.path),
+            crate::worktree_ops::WorktreeOpKind::AddProject,
+        ) {
+            Ok(hold) => hold,
+            Err(refused) => {
+                return Ok(EventReaction::Status(StatusUpdate::error(
+                    refused.sentence("add a project there"),
+                )));
+            }
+        };
         self.session_store
             .upsert_project(&crate::config::ProjectConfig {
                 id: project.id.clone(),
@@ -1135,7 +2020,7 @@ impl Engine {
         match self.persist_projects_to_config() {
             Ok(()) => Ok(project_added_reaction(project, project_id, status_message)),
             Err(error) => {
-                Ok(self.rollback_project_add(&project_id, previous_config_projects, error))
+                Ok(self.rollback_project_add(&project_id, previous_config_projects, &error))
             }
         }
     }
@@ -1144,7 +2029,7 @@ impl Engine {
         &mut self,
         project_id: &str,
         previous_config_projects: Vec<crate::config::ProjectConfig>,
-        config_error: anyhow::Error,
+        config_error: &anyhow::Error,
     ) -> EventReaction {
         self.projects.retain(|project| project.id != project_id);
         self.config.projects = previous_config_projects;
@@ -1163,108 +2048,10 @@ impl Engine {
         )))
     }
 
-    /// Run a configured text macro against a live PTY target: resolve the macro
-    /// by name, gate it by the target's surface, translate newlines through the
-    /// shared core transform and write to the PTY. See [`Command::RunMacro`].
-    fn run_macro(&mut self, target_id: &str, name: &str) -> anyhow::Result<EventReaction> {
-        // `target_id` is a PTY id of unknown kind: a macro target may be an
-        // agent tab or a companion terminal, and this probe decides which. It
-        // is named as a tab id only for the tab-keyed lookup.
-        let surface = if self.providers.contains_key(TabIdRef::new(target_id)) {
-            crate::model::SessionSurface::Agent
-        } else if self.companion_terminals.contains_key(target_id) {
-            crate::model::SessionSurface::Terminal
-        } else {
-            return Ok(EventReaction::Status(StatusUpdate::error(
-                crate::status_text![
-                    "No live agent or terminal for target ",
-                    q(target_id),
-                    ". Reconnect it and try again."
-                ],
-            )));
-        };
-
-        // Resolve the macro entry by name. Unknown → error naming it.
-        let Some(entry) = self.config.macros.entries.get(name) else {
-            return Ok(EventReaction::Status(StatusUpdate::error(
-                crate::status_text!["Macro ", q(name), " does not exist."],
-            )));
-        };
-
-        // Surface gate: refuse a macro whose surface doesn't match the target.
-        // The TUI bar simply omits mismatches; the wire returns an explicit error.
-        if !crate::macros::macro_matches_surface(entry.surface, surface) {
-            let target_kind = match surface {
-                crate::model::SessionSurface::Agent => "agent",
-                crate::model::SessionSurface::Terminal => "terminal",
-            };
-            return Ok(EventReaction::Status(StatusUpdate::error(
-                crate::status_text![
-                    "Macro ",
-                    q(name),
-                    format!(
-                        " is not available on {} targets ({}).",
-                        target_kind,
-                        entry.surface.label()
-                    )
-                ],
-            )));
-        }
-
-        let payload = crate::macros::macro_payload_bytes(&entry.text);
-        // Unified PTY lookup: providers first, then companion terminals, the
-        // same order the web actor's `pty_for` uses.
-        let client = self
-            .providers
-            .get(TabIdRef::new(target_id))
-            .or_else(|| self.companion_terminals.get(target_id).map(|t| &t.client));
-        if let Some(client) = client {
-            client.write_bytes(&payload)?;
-        }
-        Ok(EventReaction::Status(StatusUpdate::info(
-            crate::status_text!["Sent macro ", q(name), "."],
-        )))
-    }
-
-    /// Validate and apply a new per-project session order. See
-    /// [`Command::ReorderSessions`] for the strict-set contract. The store is
-    /// written first, then `self.sessions` is re-sorted so the project's rows
-    /// follow `session_ids` and every other project's keep their order.
-    fn reorder_sessions(&mut self, project_id: &str, session_ids: &[String]) -> anyhow::Result<()> {
-        let current: Vec<String> = self
-            .sessions
-            .iter()
-            .filter(|s| s.project_id() == Some(project_id))
-            .map(|s| s.id.clone())
-            .collect();
-        validate_reorder(&current, session_ids, "agent")?;
-
-        self.session_store
-            .reorder_sessions(project_id, session_ids)?;
-
-        // Stably re-sort the whole Vec: rows inside this project sort by their
-        // new position, rows outside by their existing index. Stability plus
-        // out-of-project keys that preserve the original index is what leaves
-        // cross-project relative order untouched.
-        let new_pos: std::collections::HashMap<&str, usize> = session_ids
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (id.as_str(), i))
-            .collect();
-        reorder_in_place(&mut self.sessions, |s| {
-            if s.project_id() == Some(project_id) {
-                new_pos.get(s.id.as_str()).copied()
-            } else {
-                None
-            }
-        });
-        Ok(())
-    }
-
-    /// Validate and apply a new global agent order. Unlike [`reorder_sessions`],
-    /// which is project-scoped, `session_ids` must be the complete set of all
-    /// sessions and the whole Vec is re-sorted to match, because a dragged agent
-    /// can land anywhere. The store is written first, then the in-memory Vec.
+    /// Validate and apply a new global agent order. `session_ids` must be the
+    /// complete set of all sessions and the whole Vec is re-sorted to match,
+    /// because agents are one list and a dragged agent can land anywhere. The
+    /// store is written first, then the in-memory Vec.
     fn reorder_agents(&mut self, session_ids: &[String]) -> anyhow::Result<()> {
         let current: Vec<String> = self.sessions.iter().map(|s| s.id.clone()).collect();
         validate_reorder(&current, session_ids, "agent")?;
@@ -1293,7 +2080,71 @@ impl Engine {
 
         for (index, id) in terminal_ids.iter().enumerate() {
             if let Some(terminal) = self.companion_terminals.get_mut(id) {
-                terminal.sort_order = index as u64;
+                terminal.sort_order =
+                    u64::try_from(index).expect("a terminal list index fits in u64");
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Command::PlaceTerminalInList`]: refuse what is not a list row, then
+    /// place it.
+    fn checked_place_terminal_in_list(
+        &mut self,
+        terminal_id: &str,
+        after_agent: Option<String>,
+    ) -> anyhow::Result<()> {
+        let Some(terminal) = self.companion_terminals.get(terminal_id) else {
+            anyhow::bail!(
+                "Terminal {terminal_id} is no longer running, so it has no place in the list to move."
+            );
+        };
+        match terminal.owner.as_ref() {
+            crate::model::TerminalOwnerRef::Session(_) => anyhow::bail!(
+                "{} belongs to an agent and sits with that agent, not in the list, so it cannot be moved there.",
+                terminal.label
+            ),
+            crate::model::TerminalOwnerRef::Project(_)
+            | crate::model::TerminalOwnerRef::Standalone => {}
+        }
+        self.place_terminal_in_list(terminal_id, after_agent);
+        Ok(())
+    }
+
+    /// Validate and apply a new tab order for one agent. See
+    /// [`Command::ReorderAgentTabs`]. Persist first: memory moves only once the
+    /// one transaction has landed.
+    fn reorder_agent_tabs(&mut self, session_id: &str, tab_ids: &[String]) -> anyhow::Result<()> {
+        if !self.sessions.iter().any(|s| s.id == session_id) {
+            anyhow::bail!("unknown agent {session_id}: its tabs cannot be reordered");
+        }
+        let current: Vec<String> = self
+            .ordered_tab_ids_for_session(SessionIdRef::new(session_id))
+            .into_iter()
+            .map(TabId::into_string)
+            .collect();
+        if let Err(detail) = validate_reorder(&current, tab_ids, "tab") {
+            // The strip moved under the one that asked: a tab arrived or closed
+            // on another screen. The reason is for the log; the sentence is for
+            // the person.
+            crate::logger::warn(&format!(
+                "refused a tab reorder for agent {session_id}: {detail}"
+            ));
+            anyhow::bail!("The agent's tabs changed while you were moving one; try again.");
+        }
+        if current == tab_ids {
+            return Ok(());
+        }
+
+        self.session_store.set_tab_positions(session_id, tab_ids)?;
+
+        for (index, id) in tab_ids.iter().enumerate() {
+            let position = i64::try_from(index).expect("a tab index fits in i64");
+            if let Some(tab) = self.agent_tabs.get_mut(TabIdRef::new(id)) {
+                tab.sort_order = position;
+            } else {
+                self.slot_tab_positions
+                    .insert(session_id.to_string(), position);
             }
         }
         Ok(())
@@ -1319,6 +2170,10 @@ impl Engine {
     /// sort action's chosen order survives a reload and matches every surface by
     /// construction. Does not re-sort the Vec, which is already in the desired
     /// order; it only writes each project's ordered id list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session database cannot store the order.
     pub fn persist_session_order(&self) -> anyhow::Result<()> {
         // Agents are one global list, so the in-memory Vec order is persisted
         // as a single global `sort_order` permutation rather than per project.
@@ -1360,14 +2215,6 @@ fn saved_global_env_message(count: usize) -> String {
 /// The status line confirming a macro save, counting the macros written.
 fn saved_macros_message(count: usize) -> String {
     format!("Saved {}.", count_of(count, "macro"))
-}
-
-fn removed_agents_detail(removed: usize) -> String {
-    match removed {
-        0 => String::new(),
-        1 => " and its agent".to_string(),
-        count => format!(" and its {count} agents"),
-    }
 }
 
 /// Strict reorder validation: `requested` must be a permutation of `current`
@@ -1417,6 +2264,22 @@ fn reorder_in_place<T>(items: &mut Vec<T>, position: impl Fn(&T) -> Option<usize
         .collect();
 }
 
+/// The failure final of a stage or unstage of `path`: what could not be done
+/// and git's own reason.
+fn git_change_failed(
+    verb: &'static str,
+    path: &str,
+) -> impl Fn(&String) -> crate::engine::Final + Send + 'static {
+    let path = path.to_string();
+    move |error: &String| {
+        crate::engine::Final::error(crate::status_text![
+            format!("Could not {verb} "),
+            q(path.clone()),
+            format!(": {}.", error.trim().trim_end_matches('.'))
+        ])
+    }
+}
+
 /// The tri-state status op for a `PullTarget::Project` refresh. A failure is a
 /// warning rather than an error: the refresh is best-effort and the project
 /// keeps working from local branch state.
@@ -1461,6 +2324,8 @@ fn project_refresh_status_op(
 fn run_project_refresh(
     repo_path: &std::path::Path,
     leading_branch: Option<String>,
+    guard: &crate::checkout_move::CheckoutMoveGuard,
+    timeout: Option<std::time::Duration>,
 ) -> Result<crate::worker::PullOutcome, String> {
     use crate::worker::PullOutcome;
     let leading_branch = match leading_branch {
@@ -1469,25 +2334,274 @@ fn run_project_refresh(
             .map(|opt_branch| {
                 crate::project_browser::leading_branch_for_project(repo_path, opt_branch.as_deref())
             })
-            .map_err(|e| e.to_string())?,
+            .map_err(|e| format!("{e:#}"))?,
     };
-    crate::git::switch_branch_if_needed(repo_path, &leading_branch).map_err(|e| e.to_string())?;
-    if !crate::git::has_origin_remote(repo_path).map_err(|e| e.to_string())? {
+    crate::git::switch_branch_if_needed(repo_path, &leading_branch, guard)
+        .map_err(|e| format!("{e:#}"))?;
+    if !crate::git::has_origin_remote(repo_path).map_err(|e| format!("{e:#}"))? {
         // Nothing to pull, and that is fine; still re-read the current branch
         // so the sidebar stays fresh.
+        let current_branch = crate::git::current_branch(repo_path).ok();
         return Ok(PullOutcome::NoOrigin {
-            current_branch: crate::git::current_branch(repo_path).ok(),
+            default_warning: default_warning_for(repo_path, current_branch.as_deref()),
+            current_branch,
         });
     }
-    crate::git::pull_branch(repo_path, &leading_branch).map_err(|e| e.to_string())?;
+    crate::git::pull_branch(repo_path, &leading_branch, guard, timeout)
+        .map_err(|e| format!("{e:#}"))?;
+    let current_branch = crate::git::current_branch(repo_path).ok();
     Ok(PullOutcome::Pulled {
-        current_branch: crate::git::current_branch(repo_path).ok(),
+        default_warning: default_warning_for(repo_path, current_branch.as_deref()),
+        current_branch,
     })
+}
+
+/// How `branch` compares with the repository's default, for a refresh
+/// worker to carry to its completion.
+fn default_warning_for(
+    repo_path: &std::path::Path,
+    branch: Option<&str>,
+) -> Option<crate::worker::BranchWarningKind> {
+    branch.and_then(|branch| crate::git::branch_warning_kind(repo_path, branch))
+}
+
+/// A terminating PTY a launch has to outlive: the gone signal and the moment
+/// the reaper force-kills it.
+pub(crate) struct LaunchPredecessor {
+    gone: super::PtyGone,
+    deadline: std::time::Instant,
+}
+
+impl Engine {
+    /// The terminating PTYs of `session_id` that run `provider`, which a new
+    /// launch of that provider must wait for.
+    pub(crate) fn terminating_predecessors(
+        &self,
+        session_id: &str,
+        provider: &crate::model::ProviderKind,
+    ) -> Vec<LaunchPredecessor> {
+        self.terminating_ptys
+            .iter()
+            .filter(|entry| entry.kind == super::PrunedPtyKind::Agent)
+            .filter(|entry| {
+                entry.owner.as_ref().is_some_and(|owner| {
+                    owner.session_id == session_id && owner.provider.as_ref() == Some(provider)
+                })
+            })
+            .map(|entry| LaunchPredecessor {
+                gone: entry.gone.signal(),
+                deadline: entry.deadline,
+            })
+            .collect()
+    }
+}
+
+/// Hold a launch until every previous run of its provider in the same agent
+/// has gone, saying so while it waits.
+///
+/// Bounded: each predecessor is force-killed at its own deadline (the close
+/// grace) by the reaper, and the wait allows that kill
+/// [`crate::process_sessions::KILL_SETTLE`] more to land. A predecessor still
+/// there after that refuses this launch, because two CLIs of one provider in
+/// one worktree is the thing being prevented.
+fn wait_for_predecessors(
+    predecessors: &[LaunchPredecessor],
+    request: &crate::worker::AgentLaunchRequest,
+    tx: &std::sync::mpsc::Sender<WorkerEvent>,
+) -> Result<(), String> {
+    if predecessors.is_empty() {
+        return Ok(());
+    }
+    let provider = request.provider.as_str();
+    let label = request.session.display_label();
+    let _ = tx.send(WorkerEvent::PollerStatus(StatusUpdate::info(
+        crate::status_text![
+            "Waiting for the previous ",
+            q(provider),
+            " of agent ",
+            q(label.clone()),
+            " to finish before starting it again\u{2026}"
+        ],
+    )));
+    for predecessor in predecessors {
+        let bound = predecessor
+            .deadline
+            .saturating_duration_since(std::time::Instant::now())
+            + crate::process_sessions::KILL_SETTLE;
+        if !predecessor.gone.wait(bound) {
+            return Err(format!(
+                "the previous {provider} of agent \"{label}\" was still shutting down after \
+                 yaran force-closed it, so this one was not started rather than run two of them \
+                 in one worktree. Try again in a moment."
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The final a create-agent op ends on, worded once for both surfaces.
+/// `cloned` is set for a clone's first agent, so a create that fails also says
+/// what the clone already did, which is on disk and in the workspace.
+pub(super) fn create_launch_final(
+    outcome: &crate::engine::CreateLaunchOutcome,
+    cloned: Option<&crate::clone_project::ClonedFor>,
+) -> crate::engine::Final {
+    use crate::engine::{CreateLaunchOutcome, Final};
+    // `attempted` is the name the create had settled on when it failed, which
+    // a review copy of a pull request makes different from the name asked for.
+    let after_clone =
+        |message: crate::status_text::StatusText, attempted: Option<&str>| match cloned {
+            Some(cloned) => cloned.agent_missing_named(attempted, message),
+            None => message,
+        };
+    match outcome {
+        CreateLaunchOutcome::Committed {
+            status_message,
+            quiet_on,
+            warns,
+        } => if *warns {
+            Final::warning(status_message.clone())
+        } else {
+            Final::info(status_message.clone())
+        }
+        .quiet_on(*quiet_on),
+        CreateLaunchOutcome::StartupFailed {
+            branch_name,
+            error,
+            notes,
+        } => {
+            // Sticky: provisioning stopped part-way, so the
+            // worktree is in an unknown state and the
+            // message sends the user to the startup command
+            // logs, an action outside the toast. The
+            // failure leads; what the create's notes said
+            // is still true and follows it.
+            let failure = if let Some(cloned) = cloned {
+                cloned.startup_failed(branch_name, error)
+            } else {
+                crate::status_text![
+                    "Startup command failed for agent ",
+                    q(branch_name),
+                    format!(
+                        ": {}. \
+             Open the startup command logs for details.",
+                        error
+                    )
+                ]
+            };
+            Final::error(match notes {
+                Some(notes) => {
+                    crate::status_text![failure, " ", notes.clone()]
+                }
+                None => failure,
+            })
+            .sticky()
+        }
+        CreateLaunchOutcome::PersistFailed {
+            error,
+            attempted_name,
+            removing_folder,
+            removing_branch,
+        } => {
+            // Sticky: the agent the user asked for is gone, and only this
+            // message says why.
+            let failed = format!(
+                "Could not save the new agent: {error}. yaran stopped it, since it would be \
+                 forgotten on restart"
+            );
+            let message = match (removing_folder, removing_branch) {
+                (Some(folder), Some(branch)) => crate::status_text![
+                    format!("{failed}, and is removing the working copy it made at "),
+                    n(folder),
+                    " and the branch ",
+                    q(branch),
+                    " it minted."
+                ],
+                (Some(folder), None) => crate::status_text![
+                    format!("{failed}, and is removing the working copy it made at "),
+                    n(folder),
+                    "."
+                ],
+                (None, _) => format!("{failed}.").into(),
+            };
+            Final::error(after_clone(message, attempted_name.as_deref())).sticky()
+        }
+        CreateLaunchOutcome::Failed {
+            message,
+            attempted_name,
+        } => Final::error(after_clone(message.clone(), attempted_name.as_deref())),
+    }
+}
+
+/// What Recover config adds when the file's `[server.auth]` had no password
+/// but the running yaran has one: the running password stayed.
+fn recover_kept_password_note() -> crate::status_text::StatusText {
+    crate::status_text![
+        "The file's [server.auth] had no password but the running yaran has one, so the running \
+         password was kept. To remove it, run ",
+        q("yaran config set server.auth.password_hash \"\""),
+        "."
+    ]
+}
+
+/// What Recover config adds when the file's `[server.auth]` could not be read,
+/// so the running settings were written back.
+fn recover_unreadable_auth_note(
+    running: &crate::config_auth::ServerAuthConfig,
+    reason: &str,
+) -> crate::status_text::StatusText {
+    let password = if running.has_password() {
+        "a password is set"
+    } else {
+        "no password is set"
+    };
+    crate::status_text![
+        format!(
+            "The file's [server.auth] could not be read, so the running yaran's web password \
+             settings were written back ({password}); check them with "
+        ),
+        q("yaran config get server.auth"),
+        format!(". What could not be read: {reason}")
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The commands a Recover config note names reach the web as chips and the
+    /// status line in quotes, never between backticks.
+    #[test]
+    fn the_recover_notes_name_their_commands_as_chips() {
+        for (note, command) in [
+            (
+                recover_kept_password_note(),
+                "yaran config set server.auth.password_hash \"\"",
+            ),
+            (
+                recover_unreadable_auth_note(
+                    &crate::config_auth::ServerAuthConfig {
+                        password_hash: "set".to_string(),
+                        ..crate::config_auth::ServerAuthConfig::default()
+                    },
+                    "not TOML",
+                ),
+                "yaran config get server.auth",
+            ),
+        ] {
+            assert!(!note.contains('`'), "{note}");
+            assert!(note.contains(&format!("\"{command}\"")), "{note}");
+            assert!(
+                note.segments().expect("built from parts").contains(
+                    &crate::prose::ProseSegment::Name {
+                        name: command.to_string(),
+                        quoted: true,
+                    }
+                ),
+                "{note:?}"
+            );
+        }
+    }
     use crate::engine::test_support::{sample_project, sample_session, test_engine};
     use crate::ids::TabId;
     use crate::statusline::StatusTone;
@@ -1515,22 +2629,12 @@ mod tests {
             .with_live_keys(engine.live_status_keys.clone());
         let t0 = std::time::Instant::now();
 
-        // Push goes through `spawn_status_op`; its busy rides the reaction.
-        let reaction = engine
-            .apply(Command::Push {
-                worktree_path: tmp.path().to_path_buf(),
-            })
-            .expect("apply succeeds");
-        let push_busy = match reaction {
-            EventReaction::Status(s) => s,
-            _ => panic!("expected a pending busy from the push dispatch"),
-        };
-        let push_key = push_busy.key.clone().expect("the push busy is keyed");
-        assert_eq!(push_busy.tone, StatusTone::Busy);
-        show(&mut status, &push_busy);
-
         // Pull goes through `spawn_command_worker`; its busy rides the worker
-        // channel, posted ahead of anything the worker can send.
+        // channel, posted ahead of anything that worker can send. It is
+        // dispatched first, while the channel is still empty: the push worker
+        // fails within milliseconds on this non-repository directory and posts
+        // its completion onto the same channel, so with push first that
+        // completion can land ahead of the pull's busy.
         engine
             .apply(Command::Pull {
                 repo_path: tmp.path().to_path_buf(),
@@ -1539,12 +2643,24 @@ mod tests {
                 already_running_message: "A pull is already running.".to_string().into(),
             })
             .expect("apply succeeds");
-        let pull_busy = match engine.worker_rx.try_recv() {
-            Ok(WorkerEvent::CommandWorkerStarted(s)) => s,
-            _ => panic!("expected the pull busy ahead of anything the worker sends"),
+        let Ok(WorkerEvent::CommandWorkerStarted(pull_busy)) = engine.worker_rx.try_recv() else {
+            panic!("expected the pull busy ahead of anything the worker sends")
         };
         let pull_key = pull_busy.key.clone().expect("the pull busy is keyed");
         show(&mut status, &pull_busy);
+
+        // Push goes through `spawn_status_op`; its busy rides the reaction.
+        let reaction = engine
+            .apply(Command::Push {
+                worktree_path: tmp.path().to_path_buf(),
+            })
+            .expect("apply succeeds");
+        let EventReaction::Status(push_busy) = reaction else {
+            panic!("expected a pending busy from the push dispatch")
+        };
+        let push_key = push_busy.key.clone().expect("the push busy is keyed");
+        assert_eq!(push_busy.tone, StatusTone::Busy);
+        show(&mut status, &push_busy);
 
         assert!(engine.status_op_is_live(&push_key));
         assert!(engine.status_op_is_live(&pull_key));
@@ -1619,15 +2735,6 @@ mod tests {
             engine.pending_create_ops.is_empty(),
             "and the op it would have resolved is dropped with it"
         );
-    }
-
-    fn session_ids_for(engine: &Engine, project_id: &str) -> Vec<String> {
-        engine
-            .sessions
-            .iter()
-            .filter(|s| s.project_id() == Some(project_id))
-            .map(|s| s.id.clone())
-            .collect()
     }
 
     /// The counter behind "did this surface change anything on this iteration?".
@@ -1773,13 +2880,114 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_project_is_refused_while_one_of_its_agents_launches_or_is_being_created() {
+        let (mut engine, _tmp) = test_engine();
+        engine.projects.push(sample_project("p1", "/tmp/p1"));
+        let session = sample_session("s1", "p1", "feat");
+        engine.session_store.upsert_session(&session).unwrap();
+        engine.sessions.push(session);
+        let try_remove = |engine: &mut Engine| {
+            engine.apply(Command::RemoveProject {
+                project_id: "p1".to_string(),
+                project_name: "p1".to_string(),
+            })
+        };
+        let remove = |engine: &mut Engine| try_remove(engine).expect("the command answers");
+        let still_there = |engine: &Engine| {
+            engine.projects.iter().any(|p| p.id == "p1")
+                && engine.sessions.iter().any(|s| s.id == "s1")
+        };
+
+        engine.mark_in_flight(InFlightKey::AgentLaunch(TabId::new("s1-slot")));
+        let reaction = remove(&mut engine);
+        let EventReaction::Status(status) = reaction else {
+            panic!("a refusal status")
+        };
+        assert_eq!(status.tone, StatusTone::Error);
+        assert!(status.message.contains("launching"), "{}", status.message);
+        assert!(still_there(&engine));
+        engine.clear_in_flight(&InFlightKey::AgentLaunch(TabId::new("s1-slot")));
+
+        engine.note_create_started("op-c", Some("p1"));
+        let reaction = remove(&mut engine);
+        let EventReaction::Status(status) = reaction else {
+            panic!("a refusal status")
+        };
+        assert_eq!(status.tone, StatusTone::Error);
+        assert!(
+            status.message.contains("being created"),
+            "{}",
+            status.message
+        );
+        assert!(still_there(&engine));
+
+        // With a followed create behind it, the refusal names that operation.
+        let policy = crate::operations::OperationPolicy {
+            unknown_after: std::time::Duration::from_secs(60),
+            retention: std::time::Duration::from_secs(60),
+        };
+        engine.operations.open(
+            "op-c",
+            crate::operations::OperationKind::AgentCreate,
+            policy,
+            std::time::Instant::now(),
+        );
+        engine
+            .operations
+            .admit(
+                Some("op-c"),
+                &[],
+                &[crate::operations::Hold::shared(InFlightKey::Project(
+                    "p1".to_string(),
+                ))],
+            )
+            .unwrap();
+        let Err(refused) = try_remove(&mut engine) else {
+            panic!("refused")
+        };
+        assert!(refused.to_string().contains("op-c"), "{refused}");
+        engine.note_create_finished("op-c");
+        engine.operations.finish(
+            "op-c",
+            StatusTone::Info,
+            "",
+            None,
+            std::time::Instant::now(),
+        );
+
+        // And a followed start of the launching tab.
+        engine.mark_in_flight(InFlightKey::AgentLaunch(TabId::new("s1-slot")));
+        engine.operations.open(
+            "op-start",
+            crate::operations::OperationKind::AgentStart,
+            policy,
+            std::time::Instant::now(),
+        );
+        engine
+            .operations
+            .admit(
+                Some("op-start"),
+                &[],
+                &[crate::operations::Hold::exclusive(InFlightKey::Agent(
+                    "s1".to_string(),
+                ))],
+            )
+            .unwrap();
+        let Err(refused) = try_remove(&mut engine) else {
+            panic!("refused")
+        };
+        assert!(refused.to_string().contains("op-start"), "{refused}");
+        assert!(still_there(&engine));
+    }
+
+    #[test]
     fn delete_project_removes_its_sessions_worktrees_and_project() {
         // The worktree-deleting project delete (distinct from RemoveProject, which
-        // keeps worktrees) cascades every session through the shared
-        // `do_delete_session` path, then drops the project row + memory. We use a
-        // non-existent worktree path so `git::remove_worktree` takes its
-        // already-gone Ok branch without needing a real git checkout (the worktree
-        // removal itself is covered by do_delete_session's own tests).
+        // keeps worktrees) drops the project row and memory at once and sends each
+        // session through the deferred, worker-run removal a single delete takes.
+        // A non-existent worktree path makes the removal take its already-gone
+        // branch without a real git checkout (the removal itself is covered in
+        // `engine::removal`).
         let (mut engine, tmp) = test_engine();
         let proj = tmp.path().join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -1801,18 +3009,13 @@ mod tests {
                 project_name: "p1".to_string(),
             })
             .expect("delete project");
-
-        match reaction {
-            EventReaction::Status(status) => {
-                assert_eq!(status.tone, StatusTone::Info, "expected a success status");
-                assert!(
-                    status.message.contains("its agent"),
-                    "message should mention the removed agent: {}",
-                    status.message
-                );
-            }
-            _ => panic!("expected a Status reaction"),
-        }
+        let EventReaction::Multi(started) = reaction else {
+            panic!("expected the cascade's busy");
+        };
+        let Some(EventReaction::Status(busy)) = started.first() else {
+            panic!("the busy leads");
+        };
+        assert_eq!(busy.tone, StatusTone::Busy);
         assert!(
             engine.projects.iter().all(|p| p.id != "p1"),
             "project must be gone from memory"
@@ -1821,10 +3024,27 @@ mod tests {
             engine.sessions.iter().all(|s| s.id != "s1"),
             "session must be gone from memory"
         );
+
+        let event = engine
+            .worker_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the removal reports");
+        let EventReaction::Status(status) = engine.process_worker_event(event) else {
+            panic!("expected the cascade's final");
+        };
+        assert_eq!(status.key, busy.key, "the final replaces the busy");
+        assert_eq!(status.tone, StatusTone::Info, "expected a success status");
+        assert!(
+            status.message.contains("its agent"),
+            "message should mention the removed agent: {}",
+            status.message
+        );
     }
 
     #[test]
-    fn delete_project_refuses_while_a_session_delete_is_pending() {
+    fn delete_project_goes_ahead_past_an_agent_delete_already_in_progress() {
+        // That agent's own removal is already running and reports on its own;
+        // the project delete neither refuses nor runs it a second time.
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/tmp/p1"));
         let session = sample_session("s1", "p1", "feat/x");
@@ -1837,18 +3057,23 @@ mod tests {
                 project_name: "p1".to_string(),
             })
             .expect("apply returns Ok");
-
-        match reaction {
-            EventReaction::Status(status) => {
-                assert_eq!(status.tone, StatusTone::Error);
-            }
-            _ => panic!("expected an error Status"),
-        }
+        let tones: Vec<StatusTone> = match &reaction {
+            EventReaction::Multi(all) => all
+                .iter()
+                .filter_map(|r| match r {
+                    EventReaction::Status(status) => Some(status.tone),
+                    _ => None,
+                })
+                .collect(),
+            _ => panic!("expected the cascade's statuses"),
+        };
+        assert_eq!(tones, vec![StatusTone::Busy, StatusTone::Info]);
+        assert!(engine.projects.iter().all(|p| p.id != "p1"));
+        assert!(engine.sessions.iter().all(|s| s.id != "s1"));
         assert!(
-            engine.projects.iter().any(|p| p.id == "p1"),
-            "the project must be untouched when the pending guard fires"
+            engine.pending_deletions.contains("s1"),
+            "the running removal is left to finish"
         );
-        assert!(engine.sessions.iter().any(|s| s.id == "s1"));
     }
 
     #[test]
@@ -1893,7 +3118,7 @@ mod tests {
 
         let request = engine.build_agent_launch_request(
             session,
-            false,
+            crate::model::ConversationStart::Fresh,
             (24, 80),
             crate::worker::AgentLaunchKind::Reconnect {
                 status_message: crate::status_text::StatusText::default(),
@@ -1921,6 +3146,56 @@ mod tests {
         assert!(!engine.is_in_flight(&InFlightKey::AgentLaunch(TabId::new("s1"))));
     }
 
+    /// A launch whose environment cannot be resolved fails the way a launch
+    /// that cannot spawn does: nothing runs, and the tab keeps a recorded
+    /// failure with the refusal as its reason.
+    #[test]
+    fn dispatch_agent_launch_fails_on_an_environment_it_cannot_resolve() {
+        let (mut engine, _tmp) = test_engine();
+        let mut project = sample_project("p1", "/tmp/p1");
+        project.env.insert("BROKEN".to_string(), "x$".to_string());
+        engine.projects.push(project);
+        let session = sample_session("s1", "p1", "feat/x");
+        engine.sessions.push(session.clone());
+
+        let request = engine.build_agent_launch_request(
+            session.clone(),
+            crate::model::ConversationStart::Fresh,
+            (24, 80),
+            crate::worker::AgentLaunchKind::Reconnect {
+                status_message: crate::status_text::StatusText::default(),
+            },
+        );
+        engine
+            .apply(Command::DispatchAgentLaunch {
+                request: Box::new(request),
+            })
+            .expect("apply");
+        let event = engine
+            .worker_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the launch answers");
+        let reaction = engine.process_worker_event(event);
+
+        let message = match reaction {
+            EventReaction::AgentLaunchFailedView(outcome) => match *outcome {
+                crate::engine::AgentLaunchFailedOutcome::Reconnect { message, .. } => message,
+                other => panic!("expected a reconnect failure, got {other:?}"),
+            },
+            other => panic!("expected a failed launch, got {other:?}"),
+        };
+        assert!(
+            message.starts_with(
+                "yaran did not start agent \"s1-title\": environment variable BROKEN could not be \
+                 resolved, because its value has invalid expansion syntax. Fix or remove it in \
+                 the environment variables of project \"p1-name\", then try again."
+            ),
+            "{message}"
+        );
+        assert!(engine.tab_last_run_failed(session.slot_tab_id().as_str()));
+        assert!(engine.providers.is_empty(), "nothing was started");
+    }
+
     /// A launch over a tab that already has a LIVE process is refused before
     /// anything is spawned. Letting it through would replace the entry in
     /// `providers`, and the displaced client's drop SIGKILLs the child it names,
@@ -1943,7 +3218,7 @@ mod tests {
 
         let request = engine.build_agent_launch_request(
             session.clone(),
-            false,
+            crate::model::ConversationStart::Fresh,
             (24, 80),
             crate::worker::AgentLaunchKind::Reconnect {
                 status_message: crate::status_text::StatusText::default(),
@@ -1994,7 +3269,7 @@ mod tests {
 
         let request = engine.build_agent_launch_request(
             session.clone(),
-            false,
+            crate::model::ConversationStart::Fresh,
             (24, 80),
             crate::worker::AgentLaunchKind::Reconnect {
                 status_message: crate::status_text::StatusText::default(),
@@ -2024,7 +3299,7 @@ mod tests {
         );
         let request = engine.build_agent_launch_request(
             session.clone(),
-            false,
+            crate::model::ConversationStart::Fresh,
             (24, 80),
             crate::worker::AgentLaunchKind::Reconnect {
                 status_message: crate::status_text::StatusText::default(),
@@ -2039,60 +3314,6 @@ mod tests {
             engine.tab_last_run_failed(session.slot_tab_id().as_str()),
             "a refused dispatch launched nothing, so it clears nothing"
         );
-    }
-
-    #[test]
-    fn reorder_sessions_happy_path_reorders_vec_and_persists() {
-        let (mut engine, _tmp) = test_engine();
-        for id in ["a", "b", "c"] {
-            let session = sample_session(id, "p1", id);
-            engine.session_store.upsert_session(&session).unwrap();
-            engine.sessions.push(session);
-        }
-
-        let reaction = engine
-            .apply(Command::ReorderSessions {
-                project_id: "p1".to_string(),
-                session_ids: vec!["c".into(), "a".into(), "b".into()],
-            })
-            .expect("apply");
-        assert!(matches!(reaction, EventReaction::Nothing));
-
-        // In-memory Vec follows the new order.
-        assert_eq!(session_ids_for(&engine, "p1"), vec!["c", "a", "b"]);
-        // Persisted: reload from the store reflects the same order.
-        let reloaded: Vec<String> = engine
-            .session_store
-            .load_sessions()
-            .unwrap()
-            .into_iter()
-            .filter(|s| s.project_id().expect("managed test session") == "p1")
-            .map(|s| s.id)
-            .collect();
-        assert_eq!(reloaded, vec!["c", "a", "b"]);
-    }
-
-    #[test]
-    fn reorder_sessions_keeps_other_projects_relative_order() {
-        let (mut engine, _tmp) = test_engine();
-        // Interleave two projects in the Vec: p1-a, p2-x, p1-b, p2-y.
-        for (id, proj) in [("a", "p1"), ("x", "p2"), ("b", "p1"), ("y", "p2")] {
-            let session = sample_session(id, proj, id);
-            engine.session_store.upsert_session(&session).unwrap();
-            engine.sessions.push(session);
-        }
-
-        engine
-            .apply(Command::ReorderSessions {
-                project_id: "p1".to_string(),
-                session_ids: vec!["b".into(), "a".into()],
-            })
-            .expect("apply");
-
-        // p1 reordered to b, a.
-        assert_eq!(session_ids_for(&engine, "p1"), vec!["b", "a"]);
-        // p2's relative order (x before y) is untouched.
-        assert_eq!(session_ids_for(&engine, "p2"), vec!["x", "y"]);
     }
 
     #[test]
@@ -2151,31 +3372,11 @@ mod tests {
     }
 
     #[test]
-    fn reorder_sessions_rejects_missing_id() {
-        let (mut engine, _tmp) = test_engine();
-        for id in ["a", "b"] {
-            engine.sessions.push(sample_session(id, "p1", id));
-        }
-        let err = engine
-            .apply(Command::ReorderSessions {
-                project_id: "p1".to_string(),
-                session_ids: vec!["a".into()], // missing "b"
-            })
-            .map(|_| ())
-            .expect_err("missing id must error");
-        assert!(
-            err.to_string().contains("exactly the current"),
-            "err: {err}"
-        );
-    }
-
-    #[test]
-    fn reorder_sessions_rejects_extra_id() {
+    fn reorder_agents_rejects_extra_id() {
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(sample_session("a", "p1", "a"));
         let err = engine
-            .apply(Command::ReorderSessions {
-                project_id: "p1".to_string(),
+            .apply(Command::ReorderAgents {
                 session_ids: vec!["a".into(), "ghost".into()],
             })
             .map(|_| ())
@@ -2187,38 +3388,18 @@ mod tests {
     }
 
     #[test]
-    fn reorder_sessions_rejects_duplicate_id() {
+    fn reorder_agents_rejects_duplicate_id() {
         let (mut engine, _tmp) = test_engine();
         for id in ["a", "b"] {
             engine.sessions.push(sample_session(id, "p1", id));
         }
         let err = engine
-            .apply(Command::ReorderSessions {
-                project_id: "p1".to_string(),
+            .apply(Command::ReorderAgents {
                 session_ids: vec!["a".into(), "a".into()],
             })
             .map(|_| ())
             .expect_err("duplicate id must error");
         assert!(err.to_string().contains("duplicate"), "err: {err}");
-    }
-
-    #[test]
-    fn reorder_sessions_rejects_foreign_id() {
-        let (mut engine, _tmp) = test_engine();
-        engine.sessions.push(sample_session("a", "p1", "a"));
-        engine.sessions.push(sample_session("b", "p2", "b"));
-        // "b" belongs to p2, not p1; reordering p1 with it is rejected.
-        let err = engine
-            .apply(Command::ReorderSessions {
-                project_id: "p1".to_string(),
-                session_ids: vec!["a".into(), "b".into()],
-            })
-            .map(|_| ())
-            .expect_err("foreign id must error");
-        assert!(
-            err.to_string().contains("exactly the current"),
-            "err: {err}"
-        );
     }
 
     #[test]
@@ -2238,7 +3419,7 @@ mod tests {
                     leading_branch: Some("main".to_string()),
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::default(),
                     workspace_mode: None,
                 })
                 .unwrap();
@@ -2349,8 +3530,10 @@ mod tests {
                 worktree_path: repo.path().to_path_buf(),
                 path: "a.txt".to_string(),
                 is_untracked: false,
+                confirmed: crate::git::ConfirmedEntry::File,
             })
             .expect("apply");
+        let reaction = finish_discard(&mut engine, reaction);
 
         match reaction {
             EventReaction::Status(update) => {
@@ -2368,6 +3551,358 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "original\n");
     }
 
+    /// A file row that a repository has since replaced is refused through
+    /// the command and nothing is deleted: the confirmation named a file.
+    #[test]
+    fn discarding_a_repository_through_the_command_is_refused() {
+        let repo = discard_test_repo();
+        let nested = repo.path().join("clone");
+        std::fs::create_dir_all(&nested).expect("folder");
+        let status = crate::test_git::fixture_git()
+            .args(["init", "-q"])
+            .current_dir(&nested)
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        std::fs::write(nested.join("own.txt"), "own\n").expect("write");
+        let (mut engine, _tmp) = test_engine();
+
+        let reaction = engine
+            .apply(Command::DiscardFile {
+                worktree_path: repo.path().to_path_buf(),
+                path: "clone".to_string(),
+                is_untracked: true,
+                confirmed: crate::git::ConfirmedEntry::File,
+            })
+            .expect("a keyed busy");
+
+        let refused = finish_discard(&mut engine, reaction);
+        assert!(
+            matches!(refused, EventReaction::Status(ref s) if s.tone == StatusTone::Error),
+            "refused"
+        );
+        assert!(nested.join(".git").exists() && nested.join("own.txt").exists());
+    }
+
+    /// A destructive discard answers with a busy status and finishes on a
+    /// worker: drive it to its final.
+    fn finish_discard(engine: &mut Engine, reaction: EventReaction) -> EventReaction {
+        let EventReaction::Status(busy) = &reaction else {
+            return reaction;
+        };
+        if busy.tone != crate::statusline::StatusTone::Busy {
+            return reaction;
+        }
+        loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the delete reports");
+            let done = matches!(event, crate::worker::WorkerEvent::StatusOpCompleted { .. });
+            let processed = engine.process_worker_event(event);
+            if done {
+                return processed;
+            }
+        }
+    }
+
+    fn staged_names(repo: &std::path::Path) -> String {
+        let out = crate::git::test_support::git_command()
+            .args(["diff", "--cached", "--name-only"])
+            .current_dir(repo)
+            .output()
+            .expect("git diff");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A stage answers with its busy at once and stages on a worker; staging
+    /// just the file ends on a cleared spinner, since the row moving says it.
+    #[test]
+    fn staging_a_file_runs_on_a_worker() {
+        let repo = discard_test_repo();
+        std::fs::write(repo.path().join("new.txt"), "x\n").expect("write");
+        let (mut engine, _tmp) = test_engine();
+
+        let reaction = engine
+            .apply(Command::StageFile {
+                worktree_path: repo.path().to_path_buf(),
+                path: "new.txt".to_string(),
+            })
+            .expect("dispatched");
+        assert!(
+            matches!(&reaction, EventReaction::Status(s) if s.tone == StatusTone::Busy),
+            "the stage answers with a busy, not a finished stage"
+        );
+
+        let done = finish_discard(&mut engine, reaction);
+        assert!(matches!(done, EventReaction::ClearStatus(_)), "cleared");
+        assert!(staged_names(repo.path()).contains("new.txt"));
+    }
+
+    /// A stage and then an unstage of the same file run in the order they
+    /// were asked for, after a change to the worktree that was still running:
+    /// neither touches git while it runs, and the unstage lands last.
+    #[test]
+    fn changes_to_one_worktree_run_in_the_order_asked() {
+        let repo = discard_test_repo();
+        std::fs::write(repo.path().join("new.txt"), "x\n").expect("write");
+        let (mut engine, _tmp) = test_engine();
+        let running = crate::changes_lane::ticket(repo.path()).wait();
+
+        let stage = engine
+            .apply(Command::StageFile {
+                worktree_path: repo.path().to_path_buf(),
+                path: "new.txt".to_string(),
+            })
+            .expect("stage");
+        let unstage = engine
+            .apply(Command::UnstageFile {
+                worktree_path: repo.path().to_path_buf(),
+                path: "new.txt".to_string(),
+            })
+            .expect("unstage");
+        let key = |reaction: &EventReaction| match reaction {
+            EventReaction::Status(update) => update.key.clone().expect("keyed"),
+            _ => panic!("expected a busy"),
+        };
+        let (stage_key, unstage_key) = (key(&stage), key(&unstage));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !matches!(
+                engine.worker_rx.try_recv(),
+                Ok(crate::worker::WorkerEvent::StatusOpCompleted { .. })
+            ),
+            "a change ran while an earlier one held the worktree"
+        );
+
+        drop(running);
+        let mut finished = Vec::new();
+        while finished.len() < 2 {
+            if let crate::worker::WorkerEvent::StatusOpCompleted { resolved } = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the changes report")
+            {
+                finished.push(resolved.key);
+            }
+        }
+        assert_eq!(finished, [stage_key, unstage_key]);
+        assert!(!staged_names(repo.path()).contains("new.txt"));
+    }
+
+    /// A folder staged through the command keeps the repository inside it out
+    /// of the index, and the final says so rather than dropping the report.
+    #[test]
+    fn staging_a_folder_says_what_it_left_out() {
+        let repo = discard_test_repo();
+        let vendor = repo.path().join("vendor");
+        std::fs::create_dir_all(vendor.join("lib")).expect("folder");
+        std::fs::write(vendor.join("x.js"), "x\n").expect("write");
+        let status = crate::test_git::fixture_git()
+            .args(["init", "-q"])
+            .current_dir(vendor.join("lib"))
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        std::fs::write(vendor.join("lib").join("own.txt"), "own\n").expect("write");
+        let (mut engine, _tmp) = test_engine();
+
+        let reaction = engine
+            .apply(Command::StageFile {
+                worktree_path: repo.path().to_path_buf(),
+                path: "vendor".to_string(),
+            })
+            .expect("dispatched");
+
+        match finish_discard(&mut engine, reaction) {
+            EventReaction::Status(update) => {
+                assert_eq!(update.tone, StatusTone::Info);
+                assert!(
+                    update.message.contains("left out 1 nested repository"),
+                    "{}",
+                    update.message
+                );
+            }
+            _ => panic!("expected an info final"),
+        }
+        assert!(staged_names(repo.path()).contains("vendor/x.js"));
+    }
+
+    /// An unstage git refuses ends on an error final naming the file.
+    #[test]
+    fn a_failed_unstage_ends_on_an_error_naming_the_file() {
+        let (mut engine, tmp) = test_engine();
+        let missing = tmp.path().join("no-repository-here");
+        std::fs::create_dir_all(&missing).expect("folder");
+
+        let reaction = engine
+            .apply(Command::UnstageFile {
+                worktree_path: missing,
+                path: "a.txt".to_string(),
+            })
+            .expect("dispatched");
+
+        match finish_discard(&mut engine, reaction) {
+            EventReaction::Status(update) => {
+                assert_eq!(update.tone, StatusTone::Error);
+                assert!(
+                    update.message.starts_with("Could not unstage \"a.txt\": "),
+                    "{}",
+                    update.message
+                );
+            }
+            _ => panic!("expected an error final"),
+        }
+    }
+
+    /// A folded folder is discarded whole, and the message says it was a
+    /// folder: "deleted untracked file" about thirty thousand files is a lie
+    /// about how much just went.
+    #[test]
+    fn discarding_an_untracked_folder_says_it_deleted_a_folder() {
+        let repo = discard_test_repo();
+        let folder = repo.path().join("node_modules/pkg");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join("index.js"), "x\n").expect("write");
+        let (mut engine, _tmp) = test_engine();
+
+        let reaction = engine
+            .apply(Command::DiscardFile {
+                worktree_path: repo.path().to_path_buf(),
+                path: "node_modules".to_string(),
+                is_untracked: true,
+                // Confirmed at three; one is there now, and one is what went.
+                confirmed: crate::git::ConfirmedEntry::Folder { files: 3 },
+            })
+            .expect("apply");
+        let reaction = finish_discard(&mut engine, reaction);
+
+        match reaction {
+            EventReaction::Status(update) => assert!(
+                update.message.contains(
+                    "Deleted the untracked files in \"node_modules/\" (1 file); files the repository ignores and repositories of their own inside it are kept."
+                ),
+                "{}",
+                update.message
+            ),
+            _ => panic!("expected Info status reaction"),
+        }
+        assert!(!repo.path().join("node_modules").exists());
+    }
+
+    /// An empty `.git` directory does not make a folder a repository to git,
+    /// so the message must not claim a history went with it.
+    #[test]
+    fn a_folder_that_only_looks_like_a_repository_is_reported_as_a_folder() {
+        let repo = discard_test_repo();
+        let folder = repo.path().join("lookalike");
+        std::fs::create_dir_all(folder.join(".git")).expect("empty .git");
+        std::fs::write(folder.join("a.js"), "a\n").expect("write");
+        let (mut engine, _tmp) = test_engine();
+
+        let reaction = engine
+            .apply(Command::DiscardFile {
+                worktree_path: repo.path().to_path_buf(),
+                path: "lookalike".to_string(),
+                is_untracked: true,
+                confirmed: crate::git::ConfirmedEntry::Folder { files: 1 },
+            })
+            .expect("apply");
+        let reaction = finish_discard(&mut engine, reaction);
+
+        match reaction {
+            EventReaction::Status(update) => {
+                assert!(
+                    update.message.contains("Deleted the untracked files in"),
+                    "{}",
+                    update.message
+                );
+                assert!(!update.message.contains("history"), "{}", update.message);
+            }
+            _ => panic!("expected Info status reaction"),
+        }
+    }
+
+    /// A commit runs on a worker: a keyed busy at once, the preflight and
+    /// `git commit` off the engine thread, and the final.
+    #[test]
+    fn a_commit_runs_on_a_worker_and_refuses_nothing_staged_in_its_final() {
+        let repo = discard_test_repo();
+        let (mut engine, _tmp) = test_engine();
+        let commit = |engine: &mut Engine| {
+            let reaction = engine
+                .apply(Command::CommitChanges {
+                    worktree_path: repo.path().to_path_buf(),
+                    message: "a real message".to_string(),
+                    success_message: "Committed.".to_string(),
+                })
+                .expect("apply");
+            assert!(
+                matches!(&reaction, EventReaction::Status(s) if s.tone == StatusTone::Busy
+                    && s.key.is_some()),
+                "a keyed busy"
+            );
+            match finish_discard(engine, reaction) {
+                EventReaction::Status(update) => update,
+                _ => panic!("expected the commit's final"),
+            }
+        };
+
+        let refused = commit(&mut engine);
+        assert_eq!(refused.tone, StatusTone::Error);
+        assert_eq!(refused.message, COMMIT_NOTHING_STAGED);
+
+        std::fs::write(repo.path().join("b.txt"), "b\n").expect("write");
+        let added = crate::git::test_support::git_command()
+            .args(["add", "b.txt"])
+            .current_dir(repo.path())
+            .status()
+            .expect("git add");
+        assert!(added.success());
+        let landed = commit(&mut engine);
+        assert_eq!(landed.tone, StatusTone::Info, "{}", landed.message);
+        assert_eq!(landed.message, "Committed.");
+    }
+
+    /// A file's discard, classified live, runs entirely on a worker: the
+    /// engine answers at once with a keyed busy, the final follows, and then
+    /// the surfaces are told to read the changed files again.
+    #[test]
+    fn a_live_file_discard_runs_on_a_worker_then_reloads_the_changes() {
+        let repo = discard_test_repo();
+        let file = repo.path().join("a.txt");
+        std::fs::write(&file, "edited\n").expect("edit");
+        let (mut engine, _tmp) = test_engine();
+
+        let reaction = engine
+            .apply(Command::DiscardFileLive {
+                worktree_path: repo.path().to_path_buf(),
+                path: "a.txt".to_string(),
+            })
+            .expect("apply");
+        let EventReaction::Status(busy) = &reaction else {
+            panic!("expected a busy status");
+        };
+        assert_eq!(busy.tone, StatusTone::Busy);
+        assert!(busy.key.is_some(), "keyed, so its final replaces it");
+
+        let finished = finish_discard(&mut engine, reaction);
+        assert!(
+            matches!(&finished, EventReaction::Status(s) if s.tone == StatusTone::Info
+                && s.message.contains("Discarded unstaged changes to \"a.txt\"")),
+            "the discard's final"
+        );
+        let next = engine
+            .worker_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the reload follows");
+        assert!(matches!(
+            engine.process_worker_event(next),
+            EventReaction::ReloadChangedFiles
+        ));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "original\n");
+    }
+
     #[test]
     fn discard_file_deletes_untracked_file() {
         let repo = discard_test_repo();
@@ -2380,8 +3915,10 @@ mod tests {
                 worktree_path: repo.path().to_path_buf(),
                 path: "new.txt".to_string(),
                 is_untracked: true,
+                confirmed: crate::git::ConfirmedEntry::File,
             })
             .expect("apply");
+        let reaction = finish_discard(&mut engine, reaction);
 
         match reaction {
             EventReaction::Status(update) => {
@@ -2397,14 +3934,12 @@ mod tests {
         assert!(!untracked.exists(), "untracked file should be deleted");
     }
 
-    // ── Command::RunMacro ───────────────────────────────────────────────────
+    // ── Command::ReorderTerminals ───────────────────────────────────────────
 
     use crate::config::{MacroEntry, MacroSurface};
     use crate::pty::PtyClient;
 
-    /// Spawn a `cat -v` PTY in raw mode (control bytes render as caret notation:
-    /// ESC → `^[`, CR → `^M`), the same fixture the TUI macro-bar PTY test uses,
-    /// so a RunMacro write can be observed in the terminal snapshot.
+    /// Spawn a `cat -v` PTY in raw mode, a live client for a terminal entry.
     fn spawn_cat_v_pty() -> PtyClient {
         let client = PtyClient::spawn(
             "sh",
@@ -2417,41 +3952,6 @@ mod tests {
         .expect("spawn pty");
         std::thread::sleep(std::time::Duration::from_millis(250));
         client
-    }
-
-    fn rendered_snapshot(client: &PtyClient) -> String {
-        client
-            .snapshot()
-            .cells
-            .iter()
-            .map(|cell| cell.symbol.as_str())
-            .collect()
-    }
-
-    /// Poll a PTY render until every `needle` shows up, for at most 10s, and
-    /// return the last render. A fixed sleep here raced the PTY echo whenever
-    /// the machine was busy and failed spuriously; the caller's assertions are
-    /// unchanged, so a genuine miss still fails, just after the deadline.
-    fn wait_for_render(render: impl Fn() -> String, needles: &[&str]) -> String {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let rendered = render();
-            if needles.iter().all(|n| rendered.contains(n)) || std::time::Instant::now() >= deadline
-            {
-                return rendered;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-
-    fn insert_macro(engine: &mut Engine, name: &str, text: &str, surface: MacroSurface) {
-        engine.config.macros.entries.insert(
-            name.to_string(),
-            MacroEntry {
-                text: text.to_string(),
-                surface,
-            },
-        );
     }
 
     /// Register a companion terminal directly in the map for reorder tests, with a
@@ -2468,6 +3968,7 @@ mod tests {
                 client: spawn_cat_v_pty(),
                 sort_order,
                 created_at: chrono::Utc::now(),
+                list_after: None,
             },
         );
     }
@@ -2515,159 +4016,49 @@ mod tests {
     }
 
     #[test]
-    fn run_macro_writes_to_agent_provider_pty() {
+    fn place_terminal_in_list_anchors_a_list_row_and_refuses_the_rest() {
         let (mut engine, _tmp) = test_engine();
+        insert_terminal(&mut engine, "term-own", 0);
+        insert_terminal(&mut engine, "term-project", 1);
         engine
-            .providers
-            .insert(TabId::new("sess-1"), spawn_cat_v_pty());
-        insert_macro(&mut engine, "greet", "first\nsecond", MacroSurface::Agent);
+            .companion_terminals
+            .get_mut("term-project")
+            .expect("inserted")
+            .owner = crate::model::TerminalOwner::Project("p1".to_string());
 
-        let reaction = engine
-            .apply(Command::RunMacro {
-                target_id: "sess-1".to_string(),
-                name: "greet".to_string(),
-            })
-            .expect("apply");
-        match reaction {
-            EventReaction::Status(update) => {
-                assert_eq!(update.tone, StatusTone::Info);
-                assert_eq!(update.message, "Sent macro \"greet\".");
-            }
-            _ => panic!("expected Info status reaction"),
-        }
-
-        let rendered = wait_for_render(
-            || rendered_snapshot(engine.providers.get(TabIdRef::new("sess-1")).unwrap()),
-            &["first", "second", "^[", "^M"],
-        );
-        assert!(
-            rendered.contains("first") && rendered.contains("second"),
-            "both halves should be visible; got: {rendered:?}"
-        );
-        // Newline translated to ESC+CR (Alt+Enter) by the shared core transform.
-        assert!(
-            rendered.contains("^[") && rendered.contains("^M"),
-            "newline should become ESC+CR; got: {rendered:?}"
-        );
-    }
-
-    #[test]
-    fn run_macro_writes_to_companion_terminal_pty() {
-        use crate::model::CompanionTerminal;
-        let (mut engine, _tmp) = test_engine();
-        engine.companion_terminals.insert(
-            "term-1".to_string(),
-            CompanionTerminal {
-                owner: crate::model::TerminalOwner::Session("sess-1".to_string()),
-                label: "term".to_string(),
-                foreground_cmd: None,
-                client: spawn_cat_v_pty(),
-                sort_order: 1,
-                created_at: chrono::Utc::now(),
-            },
-        );
-        insert_macro(&mut engine, "ls", "ls -la", MacroSurface::Terminal);
-
-        let reaction = engine
-            .apply(Command::RunMacro {
-                target_id: "term-1".to_string(),
-                name: "ls".to_string(),
-            })
-            .expect("apply");
-        match reaction {
-            EventReaction::Status(update) => {
-                assert_eq!(update.tone, StatusTone::Info);
-                assert_eq!(update.message, "Sent macro \"ls\".");
-            }
-            _ => panic!("expected Info status reaction"),
-        }
-
-        let rendered = wait_for_render(
-            || rendered_snapshot(&engine.companion_terminals.get("term-1").unwrap().client),
-            &["ls -la"],
-        );
-        assert!(
-            rendered.contains("ls -la"),
-            "macro text should reach the terminal PTY; got: {rendered:?}"
-        );
-    }
-
-    #[test]
-    fn run_macro_unknown_name_errors() {
-        let (mut engine, _tmp) = test_engine();
         engine
-            .providers
-            .insert(TabId::new("sess-1"), spawn_cat_v_pty());
-
-        let reaction = engine
-            .apply(Command::RunMacro {
-                target_id: "sess-1".to_string(),
-                name: "nope".to_string(),
+            .apply(Command::PlaceTerminalInList {
+                terminal_id: "term-project".into(),
+                after_agent: Some("s1".into()),
             })
-            .expect("apply");
-        match reaction {
-            EventReaction::Status(update) => {
-                assert_eq!(update.tone, StatusTone::Error);
-                assert!(
-                    update.message.contains("Macro \"nope\" does not exist"),
-                    "got: {}",
-                    update.message
-                );
-            }
-            _ => panic!("expected Error status reaction"),
-        }
-    }
+            .expect("a project terminal is a list row");
+        assert_eq!(
+            engine.companion_terminals["term-project"]
+                .list_after
+                .as_deref(),
+            Some("s1")
+        );
 
-    #[test]
-    fn run_macro_wrong_surface_errors() {
-        let (mut engine, _tmp) = test_engine();
-        // Agent target, but the macro is terminal-only.
-        engine
-            .providers
-            .insert(TabId::new("sess-1"), spawn_cat_v_pty());
-        insert_macro(&mut engine, "ls", "ls -la", MacroSurface::Terminal);
-
-        let reaction = engine
-            .apply(Command::RunMacro {
-                target_id: "sess-1".to_string(),
-                name: "ls".to_string(),
+        let err = engine
+            .apply(Command::PlaceTerminalInList {
+                terminal_id: "term-own".into(),
+                after_agent: None,
             })
-            .expect("apply");
-        match reaction {
-            EventReaction::Status(update) => {
-                assert_eq!(update.tone, StatusTone::Error);
-                assert!(
-                    update.message.contains("not available on agent targets"),
-                    "got: {}",
-                    update.message
-                );
-            }
-            _ => panic!("expected Error status reaction"),
-        }
-    }
+            .map(|_| ())
+            .expect_err("an agent's own terminal is not a list row");
+        assert!(
+            err.to_string().contains("belongs to an agent"),
+            "err: {err}"
+        );
 
-    #[test]
-    fn run_macro_unknown_target_errors() {
-        let (mut engine, _tmp) = test_engine();
-        insert_macro(&mut engine, "greet", "hi", MacroSurface::Both);
-
-        let reaction = engine
-            .apply(Command::RunMacro {
-                target_id: "ghost".to_string(),
-                name: "greet".to_string(),
+        let err = engine
+            .apply(Command::PlaceTerminalInList {
+                terminal_id: "term-gone".into(),
+                after_agent: None,
             })
-            .expect("apply");
-        match reaction {
-            EventReaction::Status(update) => {
-                assert_eq!(update.tone, StatusTone::Error);
-                assert!(
-                    update.message.contains("No live agent or terminal"),
-                    "got: {}",
-                    update.message
-                );
-            }
-            _ => panic!("expected Error status reaction"),
-        }
+            .map(|_| ())
+            .expect_err("an unknown terminal is refused");
+        assert!(err.to_string().contains("no longer running"), "err: {err}");
     }
 
     // ── Command::UpdateMacros ───────────────────────────────────────────────
@@ -2722,9 +4113,8 @@ mod tests {
         let original = "[defaults]\nprovider = \"claude\"\n\n[env]\nSEED = \"keep-me\"\n";
         std::fs::write(&engine.paths.config_path, original).expect("seed config");
 
-        engine.config_writer = crate::config_queue::ConfigWriteQueue::with_dead_writer(
-            engine.paths.config_path.clone(),
-        );
+        engine.config_writer =
+            crate::config_queue::ConfigWriteQueue::with_dead_writer(&engine.paths.config_path);
         let mut macros = crate::config::MacrosConfig::default();
         macros.entries.insert(
             "greet".to_string(),
@@ -2816,6 +4206,7 @@ mod tests {
             binary: false,
             diff_excluded: false,
             renamed_from: None,
+            kind: crate::model::ChangedFileKind::File,
         }
     }
 
@@ -2910,7 +4301,9 @@ mod tests {
         // The one-shot worker posts ChangedFilesReady tagged with the worktree.
         let event = crate::engine::test_support::recv_changed_files_ready(&mut engine);
         match event {
-            WorkerEvent::ChangedFilesReady { outcome, worktree } => {
+            WorkerEvent::ChangedFilesReady {
+                outcome, worktree, ..
+            } => {
                 let (staged, unstaged) = outcome.expect("git read the worktree");
                 assert_eq!(worktree.as_path(), repo.path());
                 assert!(staged.iter().any(|f| f.path == "staged.txt"), "{staged:?}");
@@ -3044,13 +4437,18 @@ mod tests {
         // The dirt that used to abort the refresh.
         std::fs::write(repo.path().join("tracked.txt"), "dirty\n").unwrap();
 
-        let outcome = run_project_refresh(repo.path(), Some("main".to_string()))
-            .expect("a dirty checkout must not block the refresh");
+        let outcome = run_project_refresh(
+            repo.path(),
+            Some("main".to_string()),
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+            Some(std::time::Duration::from_secs(60)),
+        )
+        .expect("a dirty checkout must not block the refresh");
         match outcome {
-            PullOutcome::Pulled { current_branch } => {
+            PullOutcome::Pulled { current_branch, .. } => {
                 assert_eq!(current_branch.as_deref(), Some("main"));
             }
-            other => panic!("expected Pulled, got {other:?}"),
+            other @ PullOutcome::NoOrigin { .. } => panic!("expected Pulled, got {other:?}"),
         }
     }
 
@@ -3060,13 +4458,18 @@ mod tests {
     fn project_refresh_without_origin_is_nothing_to_pull_info() {
         let repo = refresh_test_repo();
 
-        let outcome = run_project_refresh(repo.path(), Some("main".to_string()))
-            .expect("no origin must not be an error");
+        let outcome = run_project_refresh(
+            repo.path(),
+            Some("main".to_string()),
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+            Some(std::time::Duration::from_secs(60)),
+        )
+        .expect("no origin must not be an error");
         match &outcome {
-            PullOutcome::NoOrigin { current_branch } => {
+            PullOutcome::NoOrigin { current_branch, .. } => {
                 assert_eq!(current_branch.as_deref(), Some("main"));
             }
-            other => panic!("expected NoOrigin, got {other:?}"),
+            other @ PullOutcome::Pulled { .. } => panic!("expected NoOrigin, got {other:?}"),
         }
 
         // The op maps the no-origin outcome to an INFO final.
@@ -3077,7 +4480,9 @@ mod tests {
                 assert_eq!(tone, StatusTone::Info);
                 assert!(text.contains("no origin remote"), "got: {text}");
             }
-            other => panic!("expected a message final, got {other:?}"),
+            other @ crate::engine::Final::Clear => {
+                panic!("expected a message final, got {other:?}")
+            }
         }
     }
 
@@ -3092,7 +4497,12 @@ mod tests {
             &["remote", "add", "origin", "/nonexistent/yaran-test-origin"],
         );
 
-        let result = run_project_refresh(repo.path(), Some("main".to_string()));
+        let result = run_project_refresh(
+            repo.path(),
+            Some("main".to_string()),
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+            Some(std::time::Duration::from_secs(60)),
+        );
         assert!(result.is_err(), "the pull must fail");
 
         let op = project_refresh_status_op("Refreshing...".to_string().into(), "demo");
@@ -3105,7 +4515,9 @@ mod tests {
                     "got: {text}"
                 );
             }
-            other => panic!("expected a message final, got {other:?}"),
+            other @ crate::engine::Final::Clear => {
+                panic!("expected a message final, got {other:?}")
+            }
         }
     }
 

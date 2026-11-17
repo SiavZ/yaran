@@ -50,6 +50,51 @@
        muted grey (`#8c8c8c`). Constant across light/dark since the web app
        is dark-only. */
     --yaran-diff-excluded: #8c8c8c;
+    /* Search-match highlight, Tailwind's yellow-400 at 38% under yellow-50
+       text. Constant across light/dark since the web app is dark-only. */
+    --yaran-search-match: rgba(250, 204, 21, 0.38);
+    --yaran-search-match-foreground: #fefce8;
+    /* Warning tone, the amber the dialogs and banners have always shown
+       (Tailwind's amber-500), which reads clearly on the dark background.
+       Constant across light/dark since the web app is dark-only. */
+    --yaran-warning: oklch(0.769 0.188 70.08);
+    /* The amber state colors (see the theme block above), Tailwind's amber-500
+       as they have always been drawn, matching the TUI's detached yellow.
+       Constant across light/dark since the web app is dark-only. */
+    --yaran-detached: oklch(0.769 0.188 70.08);
+    --yaran-connecting: oklch(0.769 0.188 70.08);
+    --yaran-git-modified: oklch(0.769 0.188 70.08);
+    /* The green and red state colors (see the theme block above), the
+       Tailwind shades they have always been drawn in: green-500 for working,
+       active, added, success and an open pull request; red-500 for deleted
+       and error; red-400 for a closed pull request; green-400 and red-300 for
+       the pull request icon's hover; green-600 and red-600 for the pull
+       request tints; purple-400 for a merged pull request, with purple-300
+       for its hover and purple-600 for its tints. Constant across light/dark
+       since the web app is dark-only. */
+    --yaran-working: oklch(72.3% 0.219 149.579);
+    --yaran-active: oklch(72.3% 0.219 149.579);
+    --yaran-added: oklch(72.3% 0.219 149.579);
+    --yaran-deleted: oklch(63.7% 0.237 25.331);
+    --yaran-success: oklch(72.3% 0.219 149.579);
+    /* Tailwind's sky-400, the info tone (a toast's icon and its countdown bar). */
+    --yaran-info: oklch(74.6% 0.16 232.661);
+    --yaran-error: oklch(63.7% 0.237 25.331);
+    --yaran-pr-open: oklch(72.3% 0.219 149.579);
+    --yaran-pr-open-hover: oklch(79.2% 0.209 151.711);
+    --yaran-pr-open-tint: oklch(62.7% 0.194 149.214);
+    /* GitHub's draft gray: its fg-muted for text on a dark surface and its
+       neutral emphasis for tinted surfaces, with its lighter gray as the
+       hover. */
+    --yaran-pr-draft: #8b949e;
+    --yaran-pr-draft-hover: #b1bac4;
+    --yaran-pr-draft-tint: #6e7781;
+    --yaran-pr-merged: oklch(71.4% 0.203 305.504);
+    --yaran-pr-merged-hover: oklch(82.7% 0.119 306.383);
+    --yaran-pr-merged-tint: oklch(55.8% 0.288 302.321);
+    --yaran-pr-closed: oklch(70.4% 0.191 22.216);
+    --yaran-pr-closed-hover: oklch(80.8% 0.114 19.571);
+    --yaran-pr-closed-tint: oklch(57.7% 0.245 27.325);
     /* The phone action flap's OPAQUE body color: the tab strip's translucent
        `bg-muted/30` composited over the app background, written out as one
        opaque value. The flap grows out of the strip, so the two have to be the
@@ -96,6 +141,35 @@
     --yaran-standalone: oklch(0.657 0.032 224);
     /* Diff-excluded marker color (see :root above). */
     --yaran-diff-excluded: #8c8c8c;
+    /* Search-match highlight (see :root above). */
+    --yaran-search-match: rgba(250, 204, 21, 0.38);
+    --yaran-search-match-foreground: #fefce8;
+    /* Warning tone (see :root above). */
+    --yaran-warning: oklch(0.769 0.188 70.08);
+    /* The amber state colors (see :root above). */
+    --yaran-detached: oklch(0.769 0.188 70.08);
+    --yaran-connecting: oklch(0.769 0.188 70.08);
+    --yaran-git-modified: oklch(0.769 0.188 70.08);
+    /* The green and red state colors (see :root above). */
+    --yaran-working: oklch(72.3% 0.219 149.579);
+    --yaran-active: oklch(72.3% 0.219 149.579);
+    --yaran-added: oklch(72.3% 0.219 149.579);
+    --yaran-deleted: oklch(63.7% 0.237 25.331);
+    --yaran-success: oklch(72.3% 0.219 149.579);
+    --yaran-info: oklch(74.6% 0.16 232.661);
+    --yaran-error: oklch(63.7% 0.237 25.331);
+    --yaran-pr-open: oklch(72.3% 0.219 149.579);
+    --yaran-pr-open-hover: oklch(79.2% 0.209 151.711);
+    --yaran-pr-open-tint: oklch(62.7% 0.194 149.214);
+    --yaran-pr-draft: #8b949e;
+    --yaran-pr-draft-hover: #b1bac4;
+    --yaran-pr-draft-tint: #6e7781;
+    --yaran-pr-merged: oklch(71.4% 0.203 305.504);
+    --yaran-pr-merged-hover: oklch(82.7% 0.119 306.383);
+    --yaran-pr-merged-tint: oklch(55.8% 0.288 302.321);
+    --yaran-pr-closed: oklch(70.4% 0.191 22.216);
+    --yaran-pr-closed-hover: oklch(80.8% 0.114 19.571);
+    --yaran-pr-closed-tint: oklch(57.7% 0.245 27.325);
     /* The phone action flap's opaque body color (see :root above). */
     --yaran-flap-bg: color-mix(in srgb, var(--muted) 30%, var(--background));
 }

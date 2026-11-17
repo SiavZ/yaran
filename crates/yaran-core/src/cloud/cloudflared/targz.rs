@@ -9,6 +9,7 @@
 //! - Pure over a `Read`/`Write` pair; no filesystem access of its own.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: flate2, std
 //!
@@ -17,15 +18,19 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::acquire
 //! └── cloud::cloudflared::acquire::tests
+//! ```
 //! <module-headers:end>
 
 use std::io::{Read, Write};
 
 const BLOCK: usize = 512;
+/// [`BLOCK`] as a byte count of the stream.
+const BLOCK_U64: u64 = 512;
 
 /// Why an archive was refused.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TarError {
+    /// Reading or writing failed, with the reason.
     Io(String),
     /// Something other than one regular `cloudflared` file.
     UnexpectedEntry(String),
@@ -46,11 +51,20 @@ impl std::fmt::Display for TarError {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "it is the map_err adapter, which hands the error over by value"
+)]
 fn io(err: std::io::Error) -> TarError {
     TarError::Io(err.to_string())
 }
 
 /// Decompress `gz`, copy its one `cloudflared` member into `out`, and answer its length.
+///
+/// # Errors
+///
+/// Fails when the archive cannot be read, holds anything but one regular
+/// `cloudflared` file, or that file is larger than `cap`.
 pub fn extract_cloudflared(gz: impl Read, out: &mut impl Write, cap: u64) -> Result<u64, TarError> {
     let mut tar = flate2::read::GzDecoder::new(gz);
     let mut header = [0u8; BLOCK];
@@ -61,7 +75,8 @@ pub fn extract_cloudflared(gz: impl Read, out: &mut impl Write, cap: u64) -> Res
         }
         let size =
             octal(&header[124..136]).ok_or_else(|| TarError::UnexpectedEntry("header".into()))?;
-        let padded = size.div_ceil(BLOCK as u64) * BLOCK as u64;
+        let block = BLOCK_U64;
+        let padded = size.div_ceil(block) * block;
         match header[156] {
             b'x' | b'g' => {
                 skip(&mut tar, padded)?;
@@ -71,7 +86,7 @@ pub fn extract_cloudflared(gz: impl Read, out: &mut impl Write, cap: u64) -> Res
             other => {
                 return Err(TarError::UnexpectedEntry(format!(
                     "entry of type {:?}",
-                    other as char
+                    char::from(other)
                 )));
             }
         }
@@ -197,7 +212,7 @@ mod tests {
     fn refuses_every_other_shape() {
         type Member<'a> = (&'a str, u8, &'a [u8]);
         type Case<'a> = (&'a [Member<'a>], fn(&TarError) -> bool);
-        let cases: [Case; 5] = [
+        let cases: [Case<'_>; 5] = [
             (
                 &[("cloudflared", b'0', b"a"), ("cloudflared", b'0', b"b")],
                 |e| matches!(e, TarError::UnexpectedEntry(_)),

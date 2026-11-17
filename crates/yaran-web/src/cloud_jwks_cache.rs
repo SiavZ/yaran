@@ -12,6 +12,7 @@
 //! - `JwksSource` is the network seam: ureq in production, fixtures in tests.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_jwks_cache.rs
 //! └── yaran-core::cloud::access_jwks
@@ -19,9 +20,11 @@
 //!
 //! Used by:
 //! cloud_jwks_cache.rs
+//! ├── cloud_auth_bridge_tests
 //! ├── cloud_ingress
 //! ├── cloud_test_support
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;
@@ -35,15 +38,15 @@ pub(crate) const REFRESH_FLOOR: Duration = Duration::from_secs(300);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A fetch result: the keys and the response's `max-age`, or a sanitized error.
-pub type Fetched = Result<(Jwks, Option<Duration>), String>;
+pub(crate) type Fetched = Result<(Jwks, Option<Duration>), String>;
 
 /// Where keys come from. BLOCKING: the cache calls it on a blocking task.
-pub trait JwksSource: Send + Sync + 'static {
+pub(crate) trait JwksSource: Send + Sync + 'static {
     fn fetch(&self, team: &TeamDomain) -> Fetched;
 }
 
 /// The production source: one ureq GET of the team's certs endpoint.
-pub struct UreqJwksSource;
+pub(crate) struct UreqJwksSource;
 
 impl JwksSource for UreqJwksSource {
     fn fetch(&self, team: &TeamDomain) -> Fetched {
@@ -88,9 +91,9 @@ impl JwksCache {
         policy: CachePolicy,
     ) -> Result<Arc<Jwks>, String> {
         let mut state = self.state.lock().await;
-        self.reset_for(&mut state, team);
-        let stale = state.fresh_until.is_none_or(|t| Instant::now() >= t);
-        if stale {
+        Self::reset_for(&mut state, team);
+        let expired = state.fresh_until.is_none_or(|t| Instant::now() >= t);
+        if expired {
             self.fetch_unless_cooling(&mut state, team, policy).await;
         }
         Self::answer(&state)
@@ -104,12 +107,12 @@ impl JwksCache {
         policy: CachePolicy,
     ) -> Result<Arc<Jwks>, String> {
         let mut state = self.state.lock().await;
-        self.reset_for(&mut state, team);
+        Self::reset_for(&mut state, team);
         self.fetch_unless_cooling(&mut state, team, policy).await;
         Self::answer(&state)
     }
 
-    fn reset_for(&self, state: &mut CacheState, team: &TeamDomain) {
+    fn reset_for(state: &mut CacheState, team: &TeamDomain) {
         if state.team.as_ref() != Some(team) {
             *state = CacheState {
                 team: Some(team.clone()),
@@ -223,7 +226,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn fifty_concurrent_misses_cause_one_fetch() {
         let source = FakeSource::new(vec![Ok((fixture_jwks("jwks.json"), None))]);
-        let cache = Arc::new(JwksCache::new(source.clone()));
+        let cache = Arc::new(JwksCache::new(Arc::<FakeSource>::clone(&source)));
         let calls = (0..50).map(|_| {
             let cache = Arc::clone(&cache);
             tokio::spawn(async move { cache.keys(&team(), POLICY).await.is_ok() })
@@ -237,7 +240,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn unknown_kid_refetches_stop_at_the_cooldown() {
         let source = FakeSource::new(vec![Ok((fixture_jwks("jwks.json"), None))]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         for _ in 0..5 {
             cache
@@ -258,7 +261,7 @@ pub(crate) mod tests {
     async fn refresh_honours_max_age_the_ceiling_and_the_floor() {
         let max_age = |s| Ok((fixture_jwks("jwks.json"), Some(Duration::from_secs(s))));
         let source = FakeSource::new(vec![max_age(60), max_age(99_999)]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         tokio::time::advance(Duration::from_secs(299)).await;
         cache.keys(&team(), POLICY).await.unwrap();
@@ -284,7 +287,7 @@ pub(crate) mod tests {
             Ok((fixture_jwks("jwks.json"), None)),
             Err("offline".into()),
         ]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         tokio::time::advance(Duration::from_secs(14_400)).await;
         let keys = cache.keys(&team(), POLICY).await.unwrap();
@@ -295,7 +298,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_empty_cache_with_a_failed_fetch_is_unavailable_and_cools_down() {
         let source = FakeSource::new(vec![Err("dns failure".into())]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         assert_eq!(
             cache.keys(&team(), POLICY).await.unwrap_err(),
             "dns failure"
@@ -310,7 +313,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_different_team_starts_from_empty() {
         let source = FakeSource::new(vec![Ok((fixture_jwks("jwks.json"), None))]);
-        let cache = JwksCache::new(source.clone());
+        let cache = JwksCache::new(Arc::<FakeSource>::clone(&source));
         cache.keys(&team(), POLICY).await.unwrap();
         let other = TeamDomain::parse("other.cloudflareaccess.com").unwrap();
         cache.keys(&other, POLICY).await.unwrap();

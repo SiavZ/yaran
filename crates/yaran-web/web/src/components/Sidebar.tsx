@@ -1,21 +1,15 @@
-import { Bot, EllipsisVertical, Plus } from "lucide-react"
+import { Bot, Plus, SquareTerminal } from "lucide-react"
 import type * as React from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { agentRowVisual } from "@/lib/agentRow"
 
-import { CreationOverflowMenuItems } from "@/components/CreationOverflowMenuItems"
 import { LauncherCorner } from "@/components/LauncherCorner"
 import { AgentVitalsTooltip } from "@/components/AgentVitalsTooltip"
 import { ConnDot } from "@/components/ConnDot"
 import { FlatAgentList } from "@/components/FlatAgentList"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { Button } from "@yaran/ui-kit/button"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "@yaran/ui-kit/dropdown-menu"
 import {
   Sidebar,
   SidebarContent,
@@ -32,6 +26,9 @@ import { useSidebar } from "@/components/ui/sidebar"
 import { changesCountFor } from "@/lib/agentVitals"
 import { resolveInstanceTitle } from "@/lib/instanceTitle"
 import { partitionProjects } from "@/lib/projects"
+import { orderFlatRows, overlaidListInputs } from "@/lib/flatList"
+import { assembleFlatTerminals, type FlatTerminal } from "@/lib/flatTerminals"
+import { terminalForeground, terminalTitle } from "@/lib/terminals"
 import { workspaceProjectId } from "@/lib/agentWorkspace"
 import {
   DIVIDER_CHROME,
@@ -49,30 +46,48 @@ import {
   sidebarWidthToPx,
 } from "@/lib/sidebarResize"
 import {
-  openNewAgentPicker,
+  openNewLauncher,
   selectSession,
   selectTerminal,
+  agentSortValue,
   setSidebarWidth,
   SIDEBAR_INITIAL_WIDTH,
   useYaran,
 } from "@/lib/store"
 import type { ChangesSlice, SelectedTarget } from "@/lib/store"
 import { cn } from "@yaran/ui-kit/cn"
+import { useSidebarFloat } from "@/hooks/use-sidebar-float"
+import { WorkingGlyph } from "@/components/WorkingGlyph"
 import type { SessionView } from "@/lib/types"
 import { sessionLabel } from "@/lib/agentWorkspace"
+import {
+  agentRowKey,
+  selectedRowKey,
+  terminalRowKey,
+  useRevealSelectedRow,
+} from "@/hooks/use-reveal-selected-row"
 
-// The icon rail replaces the flat agent list at `collapsible="icon"` width: every
-// agent, flattened in project-then-agent order, with the same cues and selection.
+// The icon rail replaces the flat agent list at `collapsible="icon"` width: the
+// list's main rows, agents and project and standalone terminals, in the list's
+// order under the active sort, with the same cues and selection. The Inactive
+// tail stays off the rail, so a selected inactive agent has no icon here.
+//
+// A mouse resting on an icon floats the whole sidebar over the page instead of a
+// card, so the icons' cards open for keyboard focus alone.
+type RailIconHover = ReturnType<typeof useSidebarFloat>["iconHover"]
+
 function CollapsedAgentIcon({
   session,
   projectName,
   changesCount,
   selected,
+  hover,
 }: {
   session: SessionView
   projectName: string
   changesCount: number | null
   selected: boolean
+  hover: RailIconHover
 }) {
   const label = sessionLabel(session)
   const { working, dimmed, attention, typing } = agentRowVisual(
@@ -82,7 +97,7 @@ function CollapsedAgentIcon({
     session.typing,
   )
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem data-sidebar-row={agentRowKey(session.id)}>
       <SimpleTooltip
         content={
           <AgentVitalsTooltip
@@ -92,8 +107,10 @@ function CollapsedAgentIcon({
           />
         }
         side="right"
+        openOnHover={false}
       >
         <SidebarMenuButton
+          {...hover}
           isActive={selected}
           aria-label={projectName ? `${label} (${projectName})` : label}
           onClick={() => selectSession(session.id)}
@@ -103,22 +120,25 @@ function CollapsedAgentIcon({
             aria-label={
               attention ? "Needs attention" : typing ? "Typing" : undefined
             }
-            className={cn(
-              "inline-flex shrink-0",
-              attention
-                ? "text-cyan-100 motion-safe:animate-attention-pulse motion-reduce:animate-none"
-                : // Typing tints the rail icon violet (no pulse) so the icon-only
-                  // rail still distinguishes typing from working.
-                  typing
-                  ? "text-yaran-typing"
-                  : "text-sidebar-accent-foreground",
-            )}
+            className="inline-flex shrink-0"
           >
-            <Bot
-              className={cn(
-                "size-4.5! shrink-0 motion-safe:transition-opacity motion-safe:duration-300",
-                working && "motion-safe:animate-working-pulse",
-              )}
+            {/* The same glyph cue as the sidebar list's row: every stop, a
+                higher state taking over included, finishes the bounce at rest
+                while the pulse yields at once, and the new look eases in once
+                the glyph has landed. */}
+            <WorkingGlyph
+              icon={Bot}
+              working={working}
+              look={
+                attention
+                  ? "text-cyan-100 motion-safe:animate-attention-pulse motion-reduce:animate-none"
+                  : // Typing tints the rail icon violet (no pulse) so the
+                    // icon-only rail still distinguishes typing from working.
+                    typing
+                    ? "text-yaran-typing"
+                    : "text-sidebar-accent-foreground"
+              }
+              className="size-4.5!"
             />
           </span>
         </SidebarMenuButton>
@@ -127,58 +147,120 @@ function CollapsedAgentIcon({
   )
 }
 
+function CollapsedTerminalIcon({
+  entry,
+  selected,
+  hover,
+}: {
+  entry: FlatTerminal
+  selected: boolean
+  hover: RailIconHover
+}) {
+  const { terminal, owner, ownerLabel, siblings } = entry
+  // The expanded row's title: a plain "Terminal" while the shell is idle, the
+  // foreground app once one runs.
+  const title =
+    terminalForeground(terminal) === null
+      ? "Terminal"
+      : terminalTitle(terminal, siblings)
+  // The row's cue ladder: typing outranks working, and the glyph hands over.
+  const working = terminal.working && !terminal.typing
+  return (
+    <SidebarMenuItem data-sidebar-row={terminalRowKey(terminal.id)}>
+      <SimpleTooltip
+        content={
+          <div className="flex flex-col gap-0.5">
+            <span className="font-medium">{title}</span>
+            <span>{ownerLabel}</span>
+          </div>
+        }
+        side="right"
+        openOnHover={false}
+      >
+        <SidebarMenuButton
+          {...hover}
+          isActive={selected}
+          aria-label={`${title} (${ownerLabel})`}
+          onClick={() => selectTerminal(terminal.id, owner)}
+          className="touch-manipulation"
+        >
+          <span
+            aria-label={terminal.typing ? "Typing" : undefined}
+            className="inline-flex shrink-0"
+          >
+            <WorkingGlyph
+              icon={SquareTerminal}
+              working={working}
+              look={
+                terminal.typing ? "text-yaran-typing" : "text-sidebar-accent-foreground"
+              }
+              className="size-4.5!"
+            />
+          </span>
+        </SidebarMenuButton>
+      </SimpleTooltip>
+    </SidebarMenuItem>
+  )
+}
+
+// One icon of the rail: an agent with its tooltip's project line, or a
+// terminal decorated for its row.
+type RailEntry =
+  | { kind: "agent"; session: SessionView; projectLabel: string }
+  | { kind: "terminal"; entry: FlatTerminal }
+
 function CollapsedAgentRail({
-  projectIds,
-  grouped,
-  standalone,
-  projectName,
+  entries,
   changes,
   selectedTarget,
+  iconHover,
 }: {
-  projectIds: string[]
-  grouped: Map<string, SessionView[]>
-  /** The agents that belong to no project, in list order: grouping by project
-   * loses them, and the rail is the only way to reach an agent at icon width. */
-  standalone: SessionView[]
-  projectName: (id: string) => string
+  /** The list's main rows, in its order. */
+  entries: RailEntry[]
   changes: ChangesSlice
   selectedTarget: SelectedTarget | null
+  iconHover: RailIconHover
 }) {
-  const entries = [
-    ...projectIds.flatMap((projectId) =>
-      (grouped.get(projectId) ?? []).map((session) => ({
-        session,
-        // The tooltip's project line, empty for an agent with no project; the
-        // tooltip drops the separator with it and names the folder instead.
-        projectLabel: projectName(projectId),
-      })),
-    ),
-    ...standalone.map((session) => ({ session, projectLabel: "" })),
-  ]
+  // The rail scrolls on its own, so it reveals a newly selected agent too.
+  const railRef = useRevealSelectedRow(selectedRowKey(selectedTarget))
 
   if (entries.length === 0) return null
 
   return (
     <SidebarGroup
       data-testid="collapsed-agent-rail"
+      ref={railRef}
       // The rail gets its own bounded scrollable region, or SidebarContent's
       // icon-mode `overflow-hidden` clips a long agent list below the fold.
       className="hidden min-h-0 flex-1 overflow-y-auto no-scrollbar group-data-[collapsible=icon]:flex"
     >
       <SidebarGroupContent>
         <SidebarMenu>
-          {entries.map(({ session, projectLabel }) => (
-            <CollapsedAgentIcon
-              key={session.id}
-              session={session}
-              projectName={projectLabel}
-              changesCount={changesCountFor(changes, session.id)}
-              selected={
-                selectedTarget?.kind === "agent" &&
-                selectedTarget.sessionId === session.id
-              }
-            />
-          ))}
+          {entries.map((row) =>
+            row.kind === "agent" ? (
+              <CollapsedAgentIcon
+                key={agentRowKey(row.session.id)}
+                session={row.session}
+                projectName={row.projectLabel}
+                changesCount={changesCountFor(changes, row.session.id)}
+                hover={iconHover}
+                selected={
+                  selectedTarget?.kind === "agent" &&
+                  selectedTarget.sessionId === row.session.id
+                }
+              />
+            ) : (
+              <CollapsedTerminalIcon
+                key={terminalRowKey(row.entry.terminal.id)}
+                entry={row.entry}
+                hover={iconHover}
+                selected={
+                  selectedTarget?.kind === "terminal" &&
+                  selectedTarget.terminalId === row.entry.terminal.id
+                }
+              />
+            ),
+          )}
         </SidebarMenu>
       </SidebarGroupContent>
     </SidebarGroup>
@@ -413,26 +495,71 @@ function SidebarDragEdge({
 }
 
 export function AppSidebar() {
-  const { spine, bootstrap, selectedTarget, changes } = useYaran()
+  const yaran = useYaran()
+  const { spine, bootstrap, selectedTarget, changes } = yaran
   const sessions = spine?.sessions ?? []
   const projects = spine?.projects ?? []
-  const { grouped, withAgents, projectName } = partitionProjects(
-    spine?.sidebar,
-    projects,
+  const { projectName } = partitionProjects(spine?.sidebar, projects, sessions)
+  // The expanded list's main rows in its order, drags in flight included; the
+  // search box filters only that list, so the rail never inherits a half-typed
+  // query.
+  const listInputs = overlaidListInputs({
     sessions,
+    terminals: spine?.terminals ?? [],
+    pendingAgentOrder: yaran.pendingAgentOrder,
+    pendingTerminalOrder: yaran.pendingTerminalOrder,
+    pendingTerminalPlacement: yaran.pendingTerminalPlacement,
+  })
+  const decorated = new Map(
+    assembleFlatTerminals(
+      listInputs.terminals,
+      listInputs.sessions,
+      projects,
+      projectName,
+    ).map((entry) => [entry.terminal.id, entry]),
   )
-  // The agents `partitionProjects` groups under no project, kept in list order.
-  const standaloneSessions = sessions.filter(
-    (session) => workspaceProjectId(session.workspace) === null,
-  )
+  const railEntries: RailEntry[] = orderFlatRows(
+    listInputs.sessions,
+    listInputs.terminals,
+    agentSortValue(yaran),
+  ).main.map((row): RailEntry => {
+    if (row.kind === "terminal") {
+      return { kind: "terminal", entry: decorated.get(row.terminal.id)! }
+    }
+    // The tooltip's project line, empty for an agent with no project; the
+    // tooltip drops the separator with it and names the folder instead.
+    const projectId = workspaceProjectId(row.session.workspace)
+    return {
+      kind: "agent",
+      session: row.session,
+      projectLabel: projectId === null ? "" : projectName(projectId),
+    }
+  })
 
   const instanceTitle = resolveInstanceTitle(bootstrap?.title)
+
+  // The rail's floating sidebar is this same sidebar, widened over the page by
+  // the primitive while the collapsed state and the layout stay put, so every
+  // section is the expanded one and nothing is rendered twice.
+  const { state, isMobile } = useSidebar()
+  const { open: floatOpen, attachPanel, iconHover, close: closeFloat } =
+    useSidebarFloat(state === "collapsed" && !isMobile)
+  const onSelectSession = (sessionId: string | null) => {
+    selectSession(sessionId)
+    closeFloat()
+  }
+  const onSelectTerminal: typeof selectTerminal = (terminalId, owner) => {
+    selectTerminal(terminalId, owner)
+    closeFloat()
+  }
 
   return (
     // The drag edge paints this sidebar's right border, so the container must not
     // draw a second one; the same variant lets tailwind-merge drop the primitive's.
     <Sidebar
+      ref={attachPanel}
       collapsible="icon"
+      floatOpen={floatOpen}
       className="group-data-[side=left]:border-r-0"
     >
       <SidebarHeader>
@@ -485,70 +612,33 @@ export function AppSidebar() {
         {/* The flat agent list: hidden at icon width, where the rail takes over. */}
         <div className="flex min-h-0 flex-1 flex-col group-data-[collapsible=icon]:hidden">
           <FlatAgentList
-            handlers={{
-              onSelectSession: selectSession,
-              onSelectTerminal: selectTerminal,
-            }}
+            handlers={{ onSelectSession, onSelectTerminal }}
           />
         </div>
 
         {/* Icon rail: only visible at icon width, flattened to agents. */}
         <CollapsedAgentRail
-          projectIds={withAgents}
-          grouped={grouped}
-          standalone={standaloneSessions}
-          projectName={projectName}
+          entries={railEntries}
           changes={changes}
           selectedTarget={selectedTarget}
+          iconHover={iconHover}
         />
       </SidebarContent>
 
-      {/* No @container context: the corner is ONE verb whose label truncates
-          plus a fixed-width ⋯ trigger, so nothing stacks and nothing can
-          overflow into the center pane at any width the resize handle
-          allows. If the corner ever grows a third control, the scaffolding
-          (`@container` here, `@[18rem]:` on the row) is what to bring back. */}
       <SidebarFooter>
         <div className="flex flex-col items-stretch gap-2 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:justify-center">
           {/* The launcher corner: the shared component, never a copy. */}
           <LauncherCorner className="group-data-[collapsible=icon]:hidden" />
-          {/* Collapsed rail: the same two controls as bare icons, stacked. The
-              verb does NOT flip here (a rail is too narrow to say what it would
-              flip to); everything else, Add project included, is one tap away
-              in the ⋯, which renders the very same grouped menu as the corner
-              above. */}
-          <div className="hidden flex-col items-center gap-2 group-data-[collapsible=icon]:flex">
-            <Button
-              size="sm"
-              aria-label="New agent"
-              onClick={() => openNewAgentPicker("new")}
-              className="size-8 flex-none p-0"
-            >
-              <Plus />
-            </Button>
-            <DropdownMenu>
-              {/* Outline like the corner's ⋯ (one primary per cluster; a
-                  menu-revealer stays quieter, and outline carries the
-                  data-popup-open open tint). */}
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-label="More ways to create"
-                    className="size-8 flex-none p-0"
-                  >
-                    <EllipsisVertical />
-                  </Button>
-                }
-              />
-              {/* Anchored to the rail's own edge: the rail hugs the left of the
-                  window, where an end-aligned popup has nowhere to go. */}
-              <DropdownMenuContent align="start" side="top">
-                <CreationOverflowMenuItems />
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+          {/* Collapsed rail: the same button as a bare +, too narrow for the
+              words, opening the same New dialog. */}
+          <Button
+            size="sm"
+            aria-label="New…"
+            onClick={openNewLauncher}
+            className="hidden size-8 flex-none p-0 group-data-[collapsible=icon]:flex"
+          >
+            <Plus />
+          </Button>
         </div>
       </SidebarFooter>
       <SidebarResizeHandle />

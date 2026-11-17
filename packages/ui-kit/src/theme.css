@@ -57,6 +57,57 @@
        hue (`#8c8c8c`). Quiet on purpose: nothing is wrong with the file,
        git just will not count its lines. Its value lives in tokens.css. */
     --color-yaran-diff-excluded: var(--yaran-diff-excluded);
+    /* The search-match highlight: the text a search matched, on every web
+       search (the agents list, Settings, projects, files, branches, changed
+       files, macros), drawn only by the shared `MatchHighlight`. A yellow
+       tint with a pale yellow text, so it reads as "found" and never as a
+       state color. Its values live in :root/.dark below. */
+    --color-yaran-search-match: var(--yaran-search-match);
+    --color-yaran-search-match-foreground: var(--yaran-search-match-foreground);
+    /* The warning tone: something the user should know before acting (a pull
+       request left on an old branch name, uncommitted changes, a file changed
+       on disk), and the warning toast's icon. Paired with an icon wherever it
+       is used, so color is never the only signal. Its value lives in
+       :root/.dark below. */
+    --color-yaran-warning: var(--yaran-warning);
+    /* The amber STATE colors, each its own token because each is a state and
+       not a warning: a detached agent (the state word, the badge and the status
+       dot), the connection indicator while a socket is being made or remade,
+       and the git marker for a modified or type-changed file. They share the
+       warning's amber today; a theme may part them. Their values live in
+       :root/.dark below. */
+    --color-yaran-detached: var(--yaran-detached);
+    --color-yaran-connecting: var(--yaran-connecting);
+    --color-yaran-git-modified: var(--yaran-git-modified);
+    /* The green and red STATE colors, each a token for the same reason:
+       working, the state word of a busy agent ("Working") or terminal
+       ("Running"); active, a live agent session's status dot, badge and the
+       vitals tooltip's status line; added and deleted, the changed-files line
+       counts and file markers (an untracked file counts as added); success,
+       the success toast's icon and a connected socket's dot; error, the dot of
+       a connection that gave up; and a pull request's open, merged and closed
+       states, each with the brighter text its icon takes on hover and the
+       deeper shade its banner and hover chip are tinted from. Their values live in
+       :root/.dark below. */
+    --color-yaran-working: var(--yaran-working);
+    --color-yaran-active: var(--yaran-active);
+    --color-yaran-added: var(--yaran-added);
+    --color-yaran-deleted: var(--yaran-deleted);
+    --color-yaran-success: var(--yaran-success);
+    --color-yaran-info: var(--yaran-info);
+    --color-yaran-error: var(--yaran-error);
+    --color-yaran-pr-open: var(--yaran-pr-open);
+    --color-yaran-pr-open-hover: var(--yaran-pr-open-hover);
+    --color-yaran-pr-open-tint: var(--yaran-pr-open-tint);
+    --color-yaran-pr-draft: var(--yaran-pr-draft);
+    --color-yaran-pr-draft-hover: var(--yaran-pr-draft-hover);
+    --color-yaran-pr-draft-tint: var(--yaran-pr-draft-tint);
+    --color-yaran-pr-merged: var(--yaran-pr-merged);
+    --color-yaran-pr-merged-hover: var(--yaran-pr-merged-hover);
+    --color-yaran-pr-merged-tint: var(--yaran-pr-merged-tint);
+    --color-yaran-pr-closed: var(--yaran-pr-closed);
+    --color-yaran-pr-closed-hover: var(--yaran-pr-closed-hover);
+    --color-yaran-pr-closed-tint: var(--yaran-pr-closed-tint);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);

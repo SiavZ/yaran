@@ -6,36 +6,62 @@
 //! in `mod.rs`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/test_support.rs
 //! ├── app
+//! ├── app::background_server
+//! ├── app::cloud_commands
+//! ├── app::debug_input
+//! ├── app::diff_comments
 //! ├── app::human_board
+//! ├── app::presize
+//! ├── app::ui_jobs
 //! ├── clipboard
 //! ├── config
 //! ├── crate
 //! ├── diff
+//! ├── host_keys
 //! ├── keybindings
 //! ├── raw_input
 //! ├── theme
+//! ├── yaran-core::attachments
+//! ├── yaran-core::auto_resume
+//! ├── yaran-core::changes_status
+//! ├── yaran-core::clone_project
 //! ├── yaran-core::config
 //! ├── yaran-core::config_queue
 //! ├── yaran-core::engine
+//! ├── yaran-core::engine::amq
+//! ├── yaran-core::engine::limits
 //! ├── yaran-core::ids
 //! ├── yaran-core::model
+//! ├── yaran-core::operations
+//! ├── yaran-core::process_sessions
+//! ├── yaran-core::pty
 //! ├── yaran-core::term_identity
 //! ├── yaran-core::test_git
-//! └── yaran-core::test_provider
+//! ├── yaran-core::test_provider
+//! └── yaran-core::watch::runtime
 //! External: chrono, std, tempfile
 //!
 //! Used by:
 //! app/test_support.rs
 //! ├── app
+//! ├── app::attachment_presence
 //! ├── app::background_server
+//! ├── app::changes_tree
 //! ├── app::cloud_crumb
 //! ├── app::cloud_mode
 //! ├── app::cloud_tests
+//! ├── app::confirm_dialog
+//! ├── app::debug_input
+//! ├── app::diff_comments::tests
+//! ├── app::dock
+//! ├── app::ellipsis_rows
 //! ├── app::first_load
 //! ├── app::grouped_sidebar_tests
+//! ├── app::hint_lines
 //! ├── app::human_board::tests
 //! ├── app::input
 //! ├── app::input::host_click_regression_tests
@@ -43,51 +69,81 @@
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
+//! ├── app::no_branch_notice
 //! ├── app::orphan_worktrees
 //! ├── app::overlay_dismiss
+//! ├── app::picker_lists
 //! ├── app::presize
+//! ├── app::project_actions
 //! ├── app::pty_ownership
+//! ├── app::pull_requests
 //! ├── app::redraw
 //! ├── app::render
 //! ├── app::session_settings
 //! ├── app::sessions
 //! ├── app::shared_workspace_tests
+//! ├── app::tab_reorder
 //! ├── app::ui_audit_tests
+//! ├── app::ui_jobs
 //! ├── app::workers
 //! └── app::worktree_manager
+//! ```
 //! <module-headers:end>
 
+use crate::app::ChangesTreeState;
+use crate::app::background_server::ReloadListenerChanges;
 use crate::app::{
     App, CenterMode, ChangeAgentProviderMode, ChangeAgentProviderOption, ChangeAgentProviderPrompt,
     ChangeDefaultProviderOption, ChangeDefaultProviderPrompt, ChangeProjectDefaultProviderOption,
-    ChangeProjectDefaultProviderPrompt, FocusPane, FullscreenOverlay, InputTarget,
-    MouseLayoutState, OverlayMouseLayoutState, PromptState, RedrawGate, RightSection, TextInput,
+    ChangeProjectDefaultProviderPrompt, FocusPane, FullscreenOverlay, InactiveTailState,
+    InputTarget, LeftRowsState, MouseLayoutState, OneShotNotes, OverlayMouseLayoutState, PaneFlags,
+    PromptState, RawPaste, RedrawGate, RightSection, ServingFlags, TextInput, ViewPrefs,
+    WelcomeLogo,
 };
 use crate::clipboard::Clipboard;
 use crate::config::{ProjectConfig, YaranPaths};
 use crate::keybindings::{BINDING_DEFS, RuntimeBindings};
 use crate::model::{AgentSession, Project, ProjectBranchStatus, ProviderKind, SessionStatus};
 use crate::statusline::KeyedStatusController;
+use crate::statusline::LiveStatusKeys;
+use crate::statusline::StatusScope;
 use crate::storage::SessionStore;
 use crate::theme::Theme;
 use chrono::Utc;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, mpsc};
 use tempfile::tempdir;
+use yaran_core::attachments::Attachments;
+use yaran_core::changes_status::ChangedFilesFailures;
+use yaran_core::clone_project::Clones;
+use yaran_core::engine::BranchSyncWait;
+use yaran_core::engine::GhProbeState;
+use yaran_core::engine::PrSyncControl;
+use yaran_core::engine::ReloadOrigin;
+use yaran_core::engine::RemovalCoordination;
+use yaran_core::operations::Operations;
+use yaran_core::process_sessions::AgentProcessRegistry;
+
+/// Whether a worktree a test builds has uncommitted changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorktreeState {
+    /// It has uncommitted changes.
+    Dirty,
+    /// It has none.
+    Clean,
+}
 
 pub(crate) fn default_bindings() -> RuntimeBindings {
-    RuntimeBindings::new(
-        |action| {
-            BINDING_DEFS
-                .iter()
-                .find(|d| d.action == action)
-                .map(|d| d.default_keys.to_vec())
-                .unwrap_or_default()
-        },
-        true,
-    )
+    RuntimeBindings::new(|action| {
+        BINDING_DEFS
+            .iter()
+            .find(|d| d.action == action)
+            .map_or_default(|d| d.default_keys.to_vec())
+    })
 }
 
 pub(crate) fn run_git(cwd: &std::path::Path, args: &[&str]) {
@@ -117,6 +173,10 @@ pub(crate) fn init_test_repo(path: &std::path::Path) {
     run_git(path, &["commit", "--allow-empty", "-m", "init"]);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one field initializer per App field, the test twin of the production constructor"
+)]
 pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
@@ -126,7 +186,8 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
         root: root.clone(),
     };
     std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
@@ -141,7 +202,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         leading_branch: Some("main".to_string()),
         auto_reopen_agents: None,
         startup_command: None,
-        env: Default::default(),
+        env: std::collections::BTreeMap::default(),
         current_branch: "main".to_string(),
         branch_status: ProjectBranchStatus::Unknown,
         path_missing: false,
@@ -193,6 +254,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
     let config_writer = yaran_core::config_queue::ConfigWriteQueue::with_status_lane(
         paths.config_path.clone(),
         worker_tx.clone(),
+        &yaran_core::config::Config::default(),
     );
     let engine = yaran_core::engine::Engine {
         // An existing install (no `[workspace]` section), so the harness keeps
@@ -217,11 +279,12 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         sessions: vec![session],
         staged_files: Vec::new(),
         unstaged_files: Vec::new(),
+        changed_files_revision: 0,
         terminal_counter: 0,
         github_integration_enabled: false,
         single_instance_lock,
         surface_kind: yaran_core::term_identity::SurfaceKind::Tui,
-        resource_collector: Default::default(),
+        resource_collector: Arc::default(),
         host_env: yaran_core::term_identity::HostEnvProbe::default(),
         worker_tx,
         worker_rx,
@@ -232,73 +295,99 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         command_applies: 0,
         deferred_commands: Vec::new(),
         reload_guard: None,
+        reload_origin: ReloadOrigin::default(),
+        reloaded_projects: None,
         providers: std::collections::HashMap::new(),
         running_provider_pins: std::collections::HashMap::new(),
-        launched_drop_paste: Default::default(),
-        watch: Default::default(),
+        launched_drop_paste: HashMap::default(),
+        watch: yaran_core::watch::runtime::WatchRuntime::default(),
         companion_terminals: std::collections::HashMap::new(),
         agent_tabs: std::collections::HashMap::new(),
+        slot_tab_positions: std::collections::HashMap::new(),
+        slot_tab_created_ms: std::collections::HashMap::new(),
         terminating_ptys: Vec::new(),
+        process_registry: AgentProcessRegistry::default(),
+        removal_workers: Vec::new(),
         pending_group_removals: Vec::new(),
         pending_detachments: Vec::new(),
+        pending_tab_restarts: Vec::new(),
+        unsaved_branch_drifts: std::collections::HashMap::new(),
         gh_status: crate::model::GhStatus::Unknown,
-        gh_probe: Default::default(),
-        pr_statuses: std::collections::HashMap::new(),
-        pr_overrides: std::collections::HashMap::new(),
-        pr_suppressions: std::collections::HashSet::new(),
+        gh_probe: GhProbeState::default(),
+        agent_prs: std::collections::HashMap::new(),
+        pr_prefs: std::collections::HashMap::new(),
+        pr_prefs_retry_at: None,
+        pr_unsaved: std::collections::HashSet::new(),
+        branch_histories: std::collections::HashMap::new(),
+        pr_revision: std::collections::HashMap::new(),
         branch_sync_sessions: Arc::new(Mutex::new(Vec::new())),
         pr_sync_sessions: Arc::new(Mutex::new(Vec::new())),
-        pr_sync: Arc::new(Default::default()),
+        pr_sync: Arc::new(PrSyncControl::default()),
         pr_poll_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         pr_poll_inactive_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        pr_inactive_sessions: Default::default(),
-        pr_inactive_sweep_at: Default::default(),
-        pr_return_checks_owed: Default::default(),
+        pr_inactive_sessions: HashSet::default(),
+        pr_inactive_sweep_at: Arc::default(),
+        pr_return_checks_owed: HashSet::default(),
+        pr_branch_asks: HashMap::default(),
+        pr_own_repos: HashMap::default(),
+        pr_branch_checks_owed: HashSet::default(),
         branch_sync_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        branch_sync_wait: Arc::new(Default::default()),
+        branch_sync_wait: Arc::new(BranchSyncWait::default()),
         pr_backoff: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        refs_watcher: None,
-        refs_watch_paths: std::collections::HashMap::new(),
         resume_fallback_candidates: std::collections::HashMap::new(),
         resumed_tab_runs: std::collections::HashSet::new(),
         pending_deletions: std::collections::HashSet::new(),
         folder_repo_statuses: std::collections::HashMap::new(),
-        changed_files_failures: Default::default(),
+        no_branch_checked_out: std::collections::HashSet::new(),
+        changed_files_failures: ChangedFilesFailures::default(),
         closing_sessions: std::collections::HashSet::new(),
         deletion_busy_messages: std::collections::HashMap::new(),
         watched_worktree: Arc::new(Mutex::new(None::<PathBuf>)),
-        changed_files_refresh: Default::default(),
+        changed_files_refresh: Arc::default(),
         watched_session_id: None,
-        current_origin: Default::default(),
+        current_origin: StatusScope::default(),
         has_active_processes: Arc::new(AtomicBool::new(false)),
+        serve_memory: Arc::default(),
         in_flight: std::collections::HashSet::new(),
         rename_expected: std::collections::HashMap::new(),
         pr_last_checked: std::collections::HashMap::new(),
         changed_files_poller_started: AtomicBool::new(false),
         branch_sync_worker_started: AtomicBool::new(false),
         pty_activity: std::collections::HashMap::new(),
+        terminal_activity_at: std::collections::HashMap::new(),
         pty_input: std::collections::HashMap::new(),
         pty_pointer: std::collections::HashMap::new(),
+        pty_used: std::collections::HashSet::new(),
         needs_attention: std::collections::HashSet::new(),
         failed_tab_runs: std::collections::HashMap::new(),
         pty_progress: std::collections::HashMap::new(),
         agent_viewed: std::collections::HashMap::new(),
         last_foreground_refresh: None,
-        limits: Default::default(),
-        amq: Default::default(),
+        limits: yaran_core::engine::limits::LimitsRuntime::default(),
+        amq: yaran_core::engine::amq::AmqRuntime::default(),
         pending_web_checkout_ops: std::collections::HashMap::new(),
+        pending_web_project_saves: std::collections::HashSet::new(),
+        pending_change_base_ops: std::collections::HashMap::new(),
         pending_web_add_project_ops: std::collections::HashMap::new(),
         pending_web_pr_lookup_ops: std::collections::HashMap::new(),
+        clones: Clones::default(),
         pending_pr_attach_ops: std::collections::HashMap::new(),
         pending_recreate_ops: std::collections::HashMap::new(),
         pending_delete_ops_web: std::collections::HashMap::new(),
         pending_delete_reports_web: std::collections::HashMap::new(),
         pending_create_ops: std::collections::HashMap::new(),
         pending_web_launch_ops: std::collections::HashMap::new(),
-        live_status_keys: Default::default(),
+        live_status_keys: LiveStatusKeys::default(),
         last_created_op_id: None,
+        operations: Operations::default(),
+        operation_in_dispatch: None,
+        attachments: Attachments::default(),
+        dispatch_policy: None,
+        deferred_operations: Vec::new(),
+        deferred_policies: Vec::new(),
         created_session_by_op: std::collections::HashMap::new(),
-        startup_launches: Default::default(),
+        startup_launches: yaran_core::auto_resume::StartupLaunchQueue::default(),
+        removal_coordination: RemovalCoordination::default(),
     };
     let app_live_status_keys = engine.live_status_keys.clone();
     let mut app = App {
@@ -306,8 +395,11 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         bindings,
         selected_left: 0,
         left_scroll_offset: 0,
-        left_section: crate::app::LeftSection::Projects,
-        selected_terminal_index: 0,
+        left_terminals: Vec::new(),
+        dock_layouts: std::collections::HashMap::new(),
+        dock_active: std::collections::HashMap::new(),
+        stopped_layout: None,
+        last_dock_strip: None,
         right_section: RightSection::Unstaged,
         files_index: 0,
         files_search: TextInput::new(),
@@ -315,17 +407,14 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         commit_input: TextInput::new()
             .with_multiline(4)
             .with_placeholder("Type your commit message\u{2026}"),
-        show_diff_line_numbers: false,
+        pending_commit: None,
         left_width_pct: 20,
         right_width_pct: 23,
-        terminal_pane_height_pct: 35,
+        terminal_dock_pct: 35,
         staged_pane_height_pct: 50,
         commit_pane_height_pct: 40,
         focus: FocusPane::Left,
         center_mode: CenterMode::Agent,
-        left_collapsed: false,
-        right_collapsed: false,
-        right_hidden: false,
         resize_mode: false,
         help_scroll: None,
         last_help_height: 0,
@@ -336,26 +425,38 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         last_error_dialog_lines: 0,
         pending_first_load: None,
         unpushed_count_rx: None,
+        project_worktree_files: None,
+        rename_pushed_rx: None,
+        pr_clone_check_rx: None,
+        ui_jobs: crate::app::ui_jobs::UiJobs::default(),
+        path_completion: crate::app::PathCompletion::default(),
+        browser_add: crate::app::BrowserAdd::default(),
+        theme_previews: None,
+        diff_wrap_ask: None,
+        pr_clone_awaiting: None,
         notes_fetch_rx: None,
         orphan_worktrees_rx: None,
-        cloud: Default::default(),
+        cloud: crate::app::cloud_commands::CloudState::default(),
         deferred_first_load_notes: None,
         notes_fetch_explicit_request: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
             false,
         )),
         fullscreen_overlay: FullscreenOverlay::None,
         startup_log_viewer: None,
+        server_log_viewer: None,
         // The production default from `ui.status_clear_seconds`, deliberately
         // NOT zero: zero switches the status line out of its queue and into
         // most-recent-wins, so a test app built that way exercises a path almost
         // no user runs and would let a queueing bug through untouched.
-        status: KeyedStatusController::with_clear_after(std::time::Duration::from_secs(
+        status: KeyedStatusController::with_clear_after(std::time::Duration::from_secs(u64::from(
             yaran_core::config::Config::default()
                 .ui
-                .status_clear_seconds as u64,
-        ))
+                .status_clear_seconds,
+        )))
         .with_live_keys(app_live_status_keys),
         missing_project_warning_gen: None,
+        palette_hint_gen: None,
+        palette_opened_over: super::PaletteOpenedOver::NotRecorded,
         prompt: PromptState::None,
         input_target: InputTarget::None,
         session_surface: crate::model::SessionSurface::Agent,
@@ -365,30 +466,31 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         active_terminal_id: None,
         focused_tabs: std::collections::HashMap::new(),
         host_forward_carry: Vec::new(),
+        extended_keys: crate::keybindings::ExtendedKeys::Off,
+        host_keys: crate::host_keys::HostKeysState::default(),
         host_forward_error_logged_at: None,
         agent_tab_regions: Vec::new(),
-        terminal_return_to_list: false,
-        last_pty_size: (0, 0),
-        last_pty_resize_target: None,
-        tui_launched_ptys: Default::default(),
-        create_agent_started_here: false,
+        pty_sizes: std::collections::HashMap::new(),
+        part_targets: crate::app::PartTargets::default(),
+        tui_launched_ptys: HashSet::default(),
+        pull_request_create: None,
+        clone_draft: None,
+        macro_editor_version: None,
         pending_new_agent_settings: None,
         armed_new_agent_settings: None,
         pending_pty_takeover: None,
         last_refused_pty_resize: None,
-        grid_generation: 0,
-        presize: Default::default(),
+        presize: crate::app::presize::PresizeState::default(),
         scroll_mode: std::collections::HashSet::new(),
         last_diff_height: 0,
         last_diff_visual_lines: 0,
         diff_rows: None,
+        diff_comments: crate::app::diff_comments::DiffCommentsUi::default(),
         theme: Theme::default_dark(),
         tick_count: 0,
         start_time: std::time::Instant::now(),
         refusal_blink: None,
-        inactive_collapsed: false,
         inactive_search_dismissed: None,
-        inactive_collapse_overridden: false,
         left_items_cache: Vec::new(),
         left_groups_cache: Vec::new(),
         collapsed_groups: std::collections::HashSet::new(),
@@ -396,6 +498,8 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         overlay_layout: OverlayMouseLayoutState::default(),
         mouse_drag: None,
         row_drag: None,
+        tab_drag: None,
+        last_tab_strip: None,
         center_mouse_forward: None,
         last_mouse_click: None,
         pressed_button: None,
@@ -405,34 +509,28 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
             bindings: Vec::new(),
         },
         raw_input_parser: crate::raw_input::RawInputParser::default(),
+        debug_raw_input: super::debug_input::DebugRawInput::default(),
         raw_input_buf: Vec::new(),
         loading_input_buf: Vec::new(),
-        in_bracket_paste: false,
-        raw_paste_normalize: false,
-        raw_paste_prev_cr: false,
         terminal_focus: crate::focus::TerminalFocus::new(),
         macro_bar: None,
         sigwinch_flag: Arc::new(AtomicBool::new(false)),
         sigwinch_sig_id: None,
         shutdown_flag: Arc::new(AtomicBool::new(false)),
         shutdown_sig_ids: Vec::new(),
-        force_redraw: false,
         redraw: RedrawGate::default(),
         welcome_tip_index: 0,
-        welcome_logo_visible: false,
-        welcome_logo_alt: false,
         welcome_tip_selection: usize::MAX,
-        pr_banner_at_bottom: true,
         syntax_cache: std::sync::Arc::new(crate::diff::SyntaxCache::new()),
         pending_diff: None,
-        pending_changes_job: None,
         human_board: super::human_board::HumanBoardState::default(),
+        changes_tree: ChangesTreeState::default(),
         diff_request_seq: 0,
-        snapshot_buf: crate::pty::TerminalSnapshot::empty(),
-        last_snapshot_id: None,
+        part_snapshots: crate::app::PartSnapshots::default(),
         terminal_selection: None,
         pending_link_click: None,
         pending_pr_banner_press: None,
+        pr_cursors: std::collections::HashMap::new(),
         last_link_open: None,
         url_opener: crate::app::default_url_opener(),
         startup_log_selection: None,
@@ -440,14 +538,16 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         pending_reload: None,
         reload_selected_session: None,
         reload_target: None,
+        drawn_ptys: Vec::new(),
+        published_ptys: None,
         companion: None,
-        background_server_preflight_pending: false,
-        background_server_wanted: false,
-        companion_followup_ran: false,
+        left_rows: Vec::new(),
+        tui_fallback_tabs: HashSet::default(),
         pending_background_server_start: None,
         pending_tailscale_mode_op: None,
         pending_cloud_mode_op: None,
-        server_flip_preflight_pending: false,
+        tailscale_answer_from: crate::app::TailscaleAnswerFrom::Serve,
+        reload_listener_changes: ReloadListenerChanges::default(),
         pending_persist_ops: std::collections::HashMap::new(),
         configure_save_op: None,
         pending_worktree_ops: std::collections::HashMap::new(),
@@ -461,9 +561,45 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         pending_changed_files_refresh: None,
         pending_server_flip_op: None,
         pending_config_reload_op: None,
-        project_chooser_context: None,
+        pending_branch_listing: None,
         agent_filter: None,
         test_scratch_dirs: tmp.into(),
+        panes: PaneFlags {
+            left_collapsed: false,
+            right_collapsed: false,
+            right_hidden: false,
+        },
+        inactive_tail: InactiveTailState {
+            collapsed: false,
+            overridden: false,
+        },
+        raw_paste: RawPaste {
+            in_bracket: false,
+            normalize: false,
+            newlines: crate::raw_input::PasteNewlines::default(),
+        },
+        welcome_logo: WelcomeLogo {
+            visible: false,
+            alt: false,
+        },
+        view_prefs: ViewPrefs {
+            show_diff_line_numbers: false,
+            pr_banner_at_bottom: true,
+        },
+        serving: ServingFlags {
+            flip_preflight_pending: false,
+            background_preflight_pending: false,
+            background_wanted: false,
+        },
+        left_list: LeftRowsState {
+            built: false,
+            cursor_parked: false,
+        },
+        notes: OneShotNotes {
+            force_redraw: false,
+            companion_followup_ran: false,
+            create_agent_started_here: false,
+        },
     };
     app.interactive_patterns = app.bindings.interactive_byte_patterns();
     app.rebuild_left_items();
@@ -471,16 +607,111 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
     app
 }
 
+impl App {
+    /// Record `size` as the geometry last sent to the focused part's pty, as a
+    /// render would, which is what a page of scrolling is measured against.
+    pub(crate) fn set_focused_pty_size(&mut self, size: (u16, u16)) {
+        if let Some(id) = self.selected_terminal_surface_id() {
+            self.pty_sizes.insert(id, size);
+        }
+    }
+}
+
+/// A browser tab at 10.0.0.7 watching `pty_id`, a terminal of `agent`, as
+/// the attachment registry records one.
+pub(crate) fn watch_from_a_browser(app: &App, pty_id: &str, agent: &str) -> u64 {
+    use yaran_core::attachments::{ConnectionFacts, Surface, Target, TargetKind};
+    app.engine.attachments.register(
+        "browser-tab",
+        ConnectionFacts {
+            surface: Surface::Browser,
+            device: Some("Firefox".to_string()),
+            address: Some("10.0.0.7".parse().unwrap()),
+            verified: false,
+            events: true,
+            browser: None,
+        },
+        None,
+    );
+    app.engine
+        .attachments
+        .attach(
+            "browser-tab",
+            Target {
+                kind: TargetKind::Tab,
+                id: pty_id.to_string(),
+                agent: Some(agent.to_string()),
+            },
+            None,
+            None,
+        )
+        .unwrap()
+}
+
+/// The browser tab [`watch_from_a_browser`] opened closes its terminal.
+pub(crate) fn stop_watching(app: &App, token: u64) {
+    app.engine.attachments.detach(
+        token,
+        yaran_core::attachments::Ending::Deliberate,
+        std::time::Instant::now(),
+        std::time::Duration::ZERO,
+    );
+}
+
+/// Whether the selected terminal surface has raised its has-output flag, the
+/// one the renderer checks before it draws the grid rather than the loading
+/// card. A frame drawn while it is down leaves the snapshot the test then
+/// inspects unrefreshed, so a wait on the child's text, cursor or history
+/// that a render follows waits on this too, rather than relying on the
+/// reader to have raised it in the same step it parsed that output.
+pub(crate) fn surface_has_output(app: &App) -> bool {
+    app.selected_terminal_surface_client()
+        .is_some_and(yaran_core::pty::PtyClient::has_output)
+}
+
+/// Block until the selected terminal surface has parsed `marker` into its
+/// visible grid and is ready to be drawn (see [`surface_has_output`]). Pass the
+/// LAST thing the child prints, so a test that scrolls or measures afterwards
+/// is not racing output that is still arriving. Panics if that has not
+/// happened within 10s.
+pub(crate) fn wait_for_parsed_output(app: &mut App, marker: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        app.refresh_snapshot_buf();
+        let screen: String = app
+            .part_snapshots
+            .main
+            .buf
+            .cells
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect();
+        if screen.contains(marker) && surface_has_output(app) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "test setup: the child's output {marker:?} was not parsed and drawable within 10s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Put the selected terminal surface into SCROLL MODE the way a user does:
 /// wait until the child has actually produced scrollback history, scroll up by
 /// `lines`, and record the gesture through the same entry point the scroll keys
 /// and the wheel use. Polls instead of sleeping a fixed amount, so the test is
 /// waiting on the fact it depends on (real history) rather than on a guess.
+/// Also waits until the surface is drawable (see [`surface_has_output`]).
 /// Panics if no history appears within ~2s.
 pub(crate) fn enter_scroll_mode(app: &mut App, lines: usize) {
     for _ in 0..200 {
+        if !surface_has_output(app) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
         if let Some(provider) = app.selected_terminal_surface_client() {
-            provider.scroll(true, lines);
+            provider.scroll(yaran_core::pty::ScrollDirection::Up, lines);
             if provider.scrollback_offset() > 0 {
                 app.note_user_scroll();
                 assert!(
@@ -501,19 +732,22 @@ pub(crate) fn enter_scroll_mode(app: &mut App, lines: usize) {
 /// so `refresh_snapshot_buf` resolves a provider: either `session_surface ==
 /// Agent` with the session's provider in `app.engine.providers`, or
 /// `session_surface == Terminal` with `active_terminal_id` pointing at an
-/// `app.engine.companion_terminals` entry. Panics with the observed cursor if
+/// `app.engine.companion_terminals` entry. Also waits until the surface is
+/// drawable (see [`surface_has_output`]). Panics with the observed cursor if
 /// the child does not reach the expected position within ~2s.
 pub(crate) fn wait_for_agent_cursor(app: &mut App, row: u16, col: u16) {
     for _ in 0..200 {
         app.refresh_snapshot_buf();
-        if matches!(app.snapshot_buf.cursor, Some(c) if c.row == row && c.col == col) {
+        if matches!(app.part_snapshots.get(app.focused_part()).buf.cursor, Some(c) if c.row == row && c.col == col)
+            && surface_has_output(app)
+        {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     panic!(
         "PTY did not park its cursor at row {row}, col {col} within 2s (got {:?})",
-        app.snapshot_buf.cursor
+        app.part_snapshots.get(app.focused_part()).buf.cursor
     );
 }
 
@@ -532,7 +766,7 @@ pub(crate) fn wait_for_agent_cursor(app: &mut App, row: u16, col: u16) {
 /// without the drain the crash excerpt comes off a half-filled buffer, and
 /// without the status `exit_success` is `None`, which stops a clean exit from
 /// closing its tab row. Break on `is_exited` alone and the test lands inside the
-/// window where the reader has EOFed but the child is not yet waitable (the
+/// window where the reader has `EOFed` but the child is not yet waitable (the
 /// kernel closes a dying task's descriptors before it makes the task waitable),
 /// one drain sees nothing, and the prune assertion fires: that is the roughly
 /// 1-in-40 flake this helper exists to remove.
@@ -609,6 +843,7 @@ pub(crate) fn project_default_provider_prompt(
     project_name: String,
 ) -> ChangeProjectDefaultProviderPrompt {
     ChangeProjectDefaultProviderPrompt {
+        return_to: None,
         project_id,
         project_name,
         current: ProviderKind::new("claude"),
@@ -699,6 +934,20 @@ fn test_app_cannot_launch_a_real_agent_cli() {
     yaran_core::test_provider::assert_fixture_config_is_harmless(&app.engine.config);
 }
 
+/// Run every job a key put on a worker to its end, continuation included.
+pub(crate) fn finish_ui_jobs(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !app.ui_jobs.is_idle() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a worker job never answered; status: {}",
+            app.status.text()
+        );
+        app.drain_ui_jobs();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Opening a worktree "in an editor" from this crate's tests resolves to the
 /// stand-in and opens nothing, and a real editor command is refused rather
 /// than launched on the developer's desktop.
@@ -723,6 +972,38 @@ fn test_app_opens_worktrees_only_in_the_stand_in_editor() {
         .open_worktree_in_editor(&path, "agent", &real)
         .unwrap_err();
     assert!(err.to_string().starts_with("test guard:"), "{err}");
+}
+
+/// The Pull requests modal as it opens for `session_id`.
+pub(crate) fn pull_requests_prompt(session_id: &str) -> crate::app::PullRequestsPrompt {
+    crate::app::PullRequestsPrompt {
+        session_id: session_id.to_string(),
+        view: crate::app::PullRequestsView::PullRequests,
+        cursor: 0,
+        show_hidden: false,
+    }
+}
+
+/// A pull request yaran found, as the sync would record it: `owner/repo#number`
+/// on github.com, titled `title`.
+pub(crate) fn found_pr(
+    owner_repo: &str,
+    number: u64,
+    state: yaran_core::model::PrState,
+    title: &str,
+) -> crate::model::AgentPr {
+    crate::model::AgentPr::found(
+        &yaran_core::model::PrInfo {
+            number,
+            state,
+            title: title.to_string(),
+            host: "github.com".to_string(),
+            owner_repo: owner_repo.to_string(),
+            url: format!("https://github.com/{owner_repo}/pull/{number}"),
+            ..Default::default()
+        },
+        Utc::now(),
+    )
 }
 
 /// The repository every test app is built on never signs a commit, even for a
@@ -757,4 +1038,40 @@ fn the_shared_fixture_repository_never_signs_under_a_signing_global_config() {
             "{key} in the shared fixture repository"
         );
     }
+}
+
+/// Run a sleeping shell as terminal `id` owned by `owner`, placed after every
+/// terminal already running, and rebuild the agents list. A project or
+/// standalone terminal becomes a row of the list; a session's lives in its
+/// agent's dock.
+pub(crate) fn add_terminal(app: &mut App, id: &str, owner: yaran_core::model::TerminalOwner) {
+    let client = crate::pty::PtyClient::spawn(
+        "/bin/sh",
+        &["-c".to_string(), "sleep 30".to_string()],
+        std::path::Path::new("."),
+        24,
+        80,
+        100,
+    )
+    .expect("spawn pty");
+    let sort_order = app
+        .engine
+        .companion_terminals
+        .values()
+        .map(|terminal| terminal.sort_order + 1)
+        .max()
+        .unwrap_or(0);
+    app.engine.companion_terminals.insert(
+        id.to_string(),
+        yaran_core::model::CompanionTerminal {
+            owner,
+            label: id.to_string(),
+            foreground_cmd: None,
+            client,
+            sort_order,
+            created_at: Utc::now(),
+            list_after: None,
+        },
+    );
+    app.rebuild_left_items();
 }

@@ -12,11 +12,17 @@ pub const MAX_CHECKPOINT_PEERS: usize = 40;
 /// One live worker as listed in a checkpoint prompt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrchestratorPeer {
+    /// The worker's AMQ handle, which the orchestrator addresses it by.
     pub handle: String,
+    /// The worker's display label.
     pub label: String,
+    /// The provider the worker runs.
     pub provider: String,
+    /// The worker's context mode.
     pub mode: ContextMode,
+    /// The worker's branch, empty when it has none.
     pub branch: String,
+    /// The worker's working directory.
     pub worktree: String,
 }
 
@@ -93,17 +99,26 @@ pub fn provider_needs_pty_orchestrator_policy(provider: &str) -> bool {
     !provider.eq_ignore_ascii_case("claude")
 }
 
+/// Whether a checkpoint candidate's agent is running now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerLiveness {
+    /// A provider tab of the agent is running.
+    Live,
+    /// Nothing of the agent is running.
+    NotRunning,
+}
+
 /// A checkpoint lists only LIVE WORKERS in the SAME PROJECT, never the
 /// orchestrator itself (cc7005d0: cross-project polling flooded workers).
 pub fn is_orchestrator_checkpoint_peer(
     candidate_id: &str,
     candidate_project_id: Option<&str>,
     candidate_mode: ContextMode,
-    candidate_is_live: bool,
+    candidate_liveness: PeerLiveness,
     orchestrator_id: &str,
     orchestrator_project_id: Option<&str>,
 ) -> bool {
-    candidate_is_live
+    candidate_liveness == PeerLiveness::Live
         && candidate_id != orchestrator_id
         && candidate_project_id == orchestrator_project_id
         && matches!(candidate_mode, ContextMode::Worker)
@@ -146,7 +161,7 @@ mod tests {
             .collect();
         let prompt = build_orchestrator_checkpoint_prompt(&peers);
         assert!(prompt.contains("- ... 3 more live agents omitted"));
-        assert!(!prompt.contains(&format!("- w{} ", MAX_CHECKPOINT_PEERS)));
+        assert!(!prompt.contains(&format!("- w{MAX_CHECKPOINT_PEERS} ")));
     }
 
     #[test]
@@ -194,7 +209,7 @@ mod tests {
             "w1",
             a,
             ContextMode::Worker,
-            true,
+            PeerLiveness::Live,
             "o1",
             a
         ));
@@ -202,7 +217,7 @@ mod tests {
             "w2",
             b,
             ContextMode::Worker,
-            true,
+            PeerLiveness::Live,
             "o1",
             a
         ));
@@ -210,7 +225,7 @@ mod tests {
             "a1",
             a,
             ContextMode::Attended,
-            true,
+            PeerLiveness::Live,
             "o1",
             a
         ));
@@ -218,7 +233,7 @@ mod tests {
             "w3",
             a,
             ContextMode::Worker,
-            false,
+            PeerLiveness::NotRunning,
             "o1",
             a
         ));
@@ -226,7 +241,7 @@ mod tests {
             "o1",
             a,
             ContextMode::Worker,
-            true,
+            PeerLiveness::Live,
             "o1",
             a
         ));

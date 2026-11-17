@@ -1,4 +1,5 @@
 import { dormantTabNeedsCard, slotTabIdOf } from "@/lib/agentTabs"
+import { sessionPrs } from "@/lib/pr"
 import type { YaranState } from "@/lib/store"
 import { ownerSessionId as terminalOwnerSessionId } from "@/lib/terminalOwner"
 import type { Bootstrap } from "@/lib/bootstrapApi"
@@ -11,7 +12,8 @@ export type SelectedTarget = NonNullable<YaranState["selectedTarget"]>
 // lookups are lossy on purpose: a project terminal has no owning session, and
 // every session-scoped field here is agent-only or tolerates `undefined`.
 export type TerminalAreaModel = {
-  pr: PrView | null
+  /** The selected agent's shown pull requests, in its order. */
+  prs: PrView[]
   bannerAtBottom: boolean
   targetId: string
   paneKey: string
@@ -31,6 +33,28 @@ export function targetPtyId(target: SelectedTarget): string {
   return target.kind === "agent" ? target.tabId : target.terminalId
 }
 
+type DormantContext = {
+  spine: YaranState["spine"]
+  startedDormantTabs: YaranState["startedDormantTabs"]
+  pendingSlotTab: YaranState["pendingSlotTab"]
+  endedInViewTab: YaranState["endedInViewTab"]
+}
+
+/**
+ * Whether the target's tab gets the "Start session" card instead of a pane:
+ * the pane's own chrome outside it (the Macros control) asks the same question,
+ * because a tab with no pane has nothing to carry its input.
+ */
+export function targetTabDormant(target: SelectedTarget, ctx: DormantContext): boolean {
+  return terminalAreaModel({
+    ...ctx,
+    target,
+    bootstrap: null,
+    selectedSessionId: null,
+    terminalEpoch: 0,
+  }).dormant
+}
+
 export function terminalAreaModel(ctx: {
   target: SelectedTarget
   spine: YaranState["spine"]
@@ -39,6 +63,7 @@ export function terminalAreaModel(ctx: {
   terminalEpoch: number
   startedDormantTabs: YaranState["startedDormantTabs"]
   pendingSlotTab: YaranState["pendingSlotTab"]
+  endedInViewTab: YaranState["endedInViewTab"]
 }): TerminalAreaModel {
   const { target, spine } = ctx
   // For an agent the streamed id is the FOCUSED TAB id; for a terminal it is
@@ -57,12 +82,13 @@ export function terminalAreaModel(ctx: {
     ? tabs.find((t) => t.id === target.tabId)
     : undefined
   const slotTabId = slotTabIdOf(ownerSessionId ?? "", session, ctx.pendingSlotTab)
+  const prSession = spine?.sessions.find((s) => s.id === ctx.selectedSessionId)
   return {
     // The PR belongs to the owning session, so it shows whether the agent or one
     // of its companion terminals is focused, as in the TUI. Placement honours
     // the same config: "bottom" puts the lane below the terminal, anything else
     // above.
-    pr: spine?.sessions.find((s) => s.id === ctx.selectedSessionId)?.pr ?? null,
+    prs: prSession ? sessionPrs(prSession) : [],
     bannerAtBottom: ctx.bootstrap?.pr_banner_position === "bottom",
     targetId,
     paneKey: isAgent ? `${targetId}:${ctx.terminalEpoch}` : targetId,
@@ -72,13 +98,15 @@ export function terminalAreaModel(ctx: {
     slotTabId,
     // Whether this tab gets the "Start session" card instead of the pane. The
     // helper owns the whole rule (a dormant extra tab waits; the agent's first
-    // tab starts on selection unless its last run failed).
+    // tab starts on selection unless its last run failed or just ended under
+    // the user).
     dormant: dormantTabNeedsCard(
       target,
       session,
       focusedTab,
       ctx.startedDormantTabs,
       slotTabId,
+      ctx.endedInViewTab,
     ),
   }
 }

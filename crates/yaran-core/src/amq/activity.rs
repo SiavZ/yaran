@@ -45,7 +45,13 @@ pub fn has_pending_inject(queue_root: &Path, receiver: &str) -> bool {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             return false;
         };
-        name.ends_with(".msg") || (name.starts_with(".inflight.") && name.ends_with(".msg"))
+        std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("msg"))
+            || (name.starts_with(".inflight.")
+                && std::path::Path::new(&name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("msg")))
     })
 }
 

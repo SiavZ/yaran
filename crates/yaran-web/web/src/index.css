@@ -109,10 +109,20 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
        the agent or terminal is busy. The period and the floor are
        `yaran_core::working_cue`'s WORKING_CUE_PERIOD_MS and PULSE_FLOOR, so the
        browser and the terminal UI pulse on one clock; a test pins them equal.
-       Opacity only, so it rides the compositor, and the surfaces that carry it
-       pair it with `motion-safe:transition-opacity` so a stop eases back to full
-       rather than freezing mid-dip. */
+       Opacity only, so it rides the compositor. On the glyph a stop eases back
+       to full from wherever the dip was (`useWorkingCue`), rather than
+       freezing or snapping. */
     --animate-working-pulse: working-pulse 1.6s ease-in-out infinite;
+    /* The glyph's half of the cue: the pulse above on the icon, plus this
+       bounce on a frame around it, four bounces per pulse
+       (WORKING_CUE_PERIOD_MS / 4), so every pulse boundary is a bounce
+       boundary. Two elements rather than one `animation` list, so the pulse
+       can yield at once to a higher state without restyling the element the
+       bounce runs on. Every stop lets the bounce in flight finish
+       (`useSettlingAnimation` ends it with its current iteration), so the
+       glyph rests exactly at translateY(0). The bounce is a user-locked
+       decision (CLAUDE.md, "Locked by the user"). */
+    --animate-working-bounce: working-bounce 0.4s ease-in-out infinite;
     /* The ellipsis that runs after the state word: four states over the SAME
        period, one every ELLIPSIS_STEP_MS, held rather than tweened. It rides in
        a slot the width of three dots, so the row behind it never shifts.
@@ -128,7 +138,10 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
        then repeat. Faster and more insistent than Tailwind's stock 2s
        `animate-pulse` (which this replaced), because the whole point of the dot
        is to be noticed from the corner of your eye. Pure opacity so reduced
-       motion can drop it wholesale (`motion-reduce:animate-none` on the dot). */
+       motion can drop it wholesale (`motion-reduce:animate-none` on the dot).
+       The period and the keyframes are `lib/attentionPulse.ts`'s, and a test
+       pins them equal; the favicon's blink keeps the period and the two-dip
+       shape with longer dips of its own. */
     --animate-attention-pulse: attention-pulse 2s ease-in-out infinite;
     /* One-shot fade for the row's state word (Working / Idle / Detached / …) so
        it transitions on change instead of snapping. Replayed by keying the span
@@ -158,6 +171,14 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
     0%, 100% { opacity: 1; }
     /* Keep the status word above AA contrast through the whole cycle. */
     50% { opacity: 0.8; }
+}
+
+/* Starts and ends on the resting frame, so a stop on a cycle boundary is exact.
+   Transform only: the pulse owns opacity. */
+@keyframes working-bounce {
+    0%, 100% { transform: translateY(0); }
+    25% { transform: translateY(-10%); }
+    75% { transform: translateY(10%); }
 }
 
 /* Discrete by design: the dots appear and disappear, they never fade. The
@@ -347,7 +368,7 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
    =========================================================================== */
 
 /* The theater toggle stacks both icons in one cell; `aria-pressed` picks the
-   settled one, and the flight rotates one out while the other rotates in. */
+   settled one, and the press rotates one out while the other rotates in. */
 .yaran-icswap > * {
   grid-area: 1 / 1;
 }
@@ -363,34 +384,11 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
 [aria-pressed="true"] .yaran-icswap .yaran-ic-max {
   opacity: 0;
 }
-.yaran-flight-out .yaran-ic-max,
-.yaran-flight-in .yaran-ic-min {
-  animation: yaran-ic-out 180ms ease 70ms both;
-}
-.yaran-flight-out .yaran-ic-min,
-.yaran-flight-in .yaran-ic-max {
-  animation: yaran-ic-in 180ms ease 70ms both;
-}
-@keyframes yaran-ic-out {
-  from {
-    opacity: 1;
-    transform: none;
-  }
-  to {
-    opacity: 0;
-    transform: rotate(90deg) scale(0.6);
-  }
-}
-@keyframes yaran-ic-in {
-  from {
-    opacity: 0;
-    transform: rotate(-90deg) scale(0.6);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
+/* The press turns one glyph out while the other turns in. It is driven with
+   the Web Animations API rather than keyframes on a class, because a mode
+   flipped back mid-swap has to run the glyphs back from the frame on screen,
+   and a keyframe animation swapped by a class restarts from its first frame
+   instead (see `theaterFlightParts.ts`). */
 
 /* THE FLOATING PILL WEARS THE BAND'S COLOUR, opaque, docked and floating
    alike. The fill is whatever the flap published for the band it hangs from
@@ -405,10 +403,17 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
 
 /* THE GRIP SLOT IS THE WIDTH THE CLUSTER GAINS IN FLIGHT. The docked flap has
    no grip and reserves no blank space for one, so the pill starts the detach
-   gripless (its box then equals the flap's exactly, which is what makes the
-   FLIP a pure translation) and the slot widens on the travel's own clock. The
-   negative margin swallows the row's 2px gap at zero width, so a collapsed grip
-   advances the row by exactly nothing. */
+   gripless (its box then equals the flap's, which is what makes the FLIP a pure
+   translation) and the slot widens on the travel's own clock.
+
+   At zero width the grip is still its two 1px borders, and the negative margin
+   swallows those along with the row's 2px gap, so a collapsed grip advances the
+   row by nothing. The border itself never changes: it is the solid half of the
+   keyboard focus ring, and a border width in flight is snapped to whole device
+   pixels, so it would sit at one device pixel per side and then hop. Width and
+   margin are lengths with no such snap and open on the one clock together. At a
+   fractional device pixel ratio the border and the margin round differently,
+   so the collapsed slot is exact only at whole-number ratios. */
 .yaran-pill-grip {
   transition:
     width 320ms cubic-bezier(0.2, 0, 0, 1),
@@ -416,77 +421,46 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
 }
 .yaran-pill-gripless .yaran-pill-grip {
   width: 0;
-  margin-right: -2px;
+  margin-right: -4px;
   padding: 0;
   overflow: hidden;
 }
-.yaran-flight-out .yaran-pill-grip {
-  animation: yaran-grip-in 380ms 100ms both;
-}
-.yaran-flight-in .yaran-pill-grip {
-  animation: yaran-grip-out 200ms ease both;
-}
-@keyframes yaran-grip-in {
-  from {
-    opacity: 0;
-  }
-}
-@keyframes yaran-grip-out {
-  to {
-    opacity: 0;
-  }
-}
+/* The grip fades in and out with the slot, driven from the choreography for
+   the same reason as the theater glyphs above. */
 
 /* The flap's concave fillets, reproduced on the travelling pill as the same
    arcs the docked flap draws, so the shape the flight leaves and the shape it
    re-forms are one object. They shrink away right at pull-off; on the way back
    they appear only AFTER the capsule has arrived, so the return reads
-   travel-then-snap and never a tab shape flying through the air. */
+   travel-then-snap and never a tab shape flying through the air.
+
+   Offsets are measured from the pill's padding box, one border width inside
+   the box the flap's arcs hang from, so each carries the pill's 1px border:
+   without it the arcs land a pixel low and a pixel in at the swap. */
 .yaran-pill-fillet {
   position: absolute;
-  top: 0;
+  top: -1px;
   display: none;
   pointer-events: none;
 }
 .yaran-pill-fillet-l {
-  left: -12px;
+  left: -13px;
   transform-origin: 100% 0;
 }
 .yaran-pill-fillet-r {
-  right: -12px;
+  right: -13px;
   transform-origin: 0 0;
 }
+/* In every flight stage they are in the box, and faded out (an inline
+   opacity) unless the choreography is animating them: shrinking off the band
+   at pull-off, growing back in the snap, and never growing in the air
+   (see `theaterFlightParts.ts`). Which stage it is does not decide whether
+   they show; the fade does. */
 .yaran-flight-out .yaran-pill-fillet,
+.yaran-flight-in .yaran-pill-fillet,
 .yaran-flight-attach .yaran-pill-fillet {
   display: block;
 }
-.yaran-flight-out .yaran-pill-fillet {
-  animation: yaran-fillet-out 180ms ease both;
-}
-.yaran-flight-attach .yaran-pill-fillet {
-  animation: yaran-fillet-in 180ms ease both;
-}
-@keyframes yaran-fillet-out {
-  from {
-    opacity: 1;
-    transform: none;
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.25);
-  }
-}
-@keyframes yaran-fillet-in {
-  from {
-    opacity: 0;
-    transform: scale(0.25);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 /* A viewer who asked for less motion never reaches a flight at all: the phase
    machine collapses every stage to an instant swap, so no phase class is ever
    applied. The grip's own transition is the one rule that is live outside a
@@ -573,4 +547,132 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
    DO need their !important, because Monaco's counterparts carry it.) */
 .yaran-diff-all-delete .editor.modified .margin-view-overlays .line-numbers {
   display: none;
+}
+
+/* Toast countdown (`ToastCountdown` in components/ui/sonner.tsx). Both parts are
+   absolutely placed against the toast itself, which sonner positions. They sit
+   inside its description slot, below the toast's direct children, which keeps
+   them clear of sonner's reduced-motion rule (it removes every animation on the
+   toast and on its direct children).
+
+   The clip box covers the toast's padding box, so the 2px strip at its foot is
+   cut by the toast's own rounded corners. */
+.yaran-toast-drain {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: calc(var(--border-radius) - 1px);
+  pointer-events: none;
+}
+.yaran-toast-drain::before,
+.yaran-toast-drain-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+}
+.yaran-toast-drain::before {
+  content: "";
+  background: var(--border);
+}
+.yaran-toast-drain-fill {
+  opacity: 0.75;
+  transform-origin: left center;
+  animation: yaran-toast-drain var(--yaran-drain-ms) linear forwards;
+}
+@keyframes yaran-toast-drain {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+/* Held exactly when sonner holds its timers: the stack is expanded (sonner's
+   own attribute), a pointer is down on it, or the page is hidden (the last two
+   mirrored by the Toaster). Held only: a hovered toast looks exactly as it does
+   unhovered, so nothing here changes how the bar is drawn. */
+[data-sonner-toast][data-expanded="true"] .yaran-toast-drain-fill,
+[data-yaran-pressed] .yaran-toast-drain-fill,
+[data-yaran-hidden] .yaran-toast-drain-fill {
+  animation-play-state: paused;
+}
+
+/* A mouse or pen press on a toast is a selection, never a swipe (see `Toaster`):
+   sonner still marks the toast swiped on the first move, and its own rule for
+   that state would switch the text's selection off under the drag. */
+[data-yaran-selecting] [data-sonner-toast][data-swiped="true"] {
+  user-select: text;
+}
+
+/* Less motion: the bar steps down once a second instead of gliding. */
+@media (prefers-reduced-motion: reduce) {
+  .yaran-toast-drain-fill {
+    animation-timing-function: steps(var(--yaran-drain-steps));
+  }
+}
+
+/* The agents list dissolves at its top edge while rows are hidden above it
+   (under the section header) and at its bottom edge while more of it is hidden
+   below, rather than being cut flat against the header or the launcher corner;
+   in the middle of a long list both edges fade. It is a mask on the scroll
+   container, not an overlay painted over it: the mask fades the rows to
+   transparent, so what shows through is whatever surface the list sits on (the
+   sidebar's on a computer, the app background on the phone hub) with no colour
+   named here, nothing sits between a pointer and the rows, and the scroll
+   height is untouched. The mask box is the container's own box, so it stays put
+   while the content scrolls under it.
+
+   Each edge's fade depth is a registered length so it can transition; at an
+   edge with nothing past it the depth is zero, and with both at zero the mask
+   is fully opaque.
+
+   A row brought into view (the selected row, or a search pick walked past an
+   edge) must land clear of the fade, so the full depth is also the container's
+   scroll padding, which scrolling an element into view (and a page step)
+   honours and a wheel, a drag or a scrollbar does not, so those still reach
+   the very top and bottom. Where there is
+   nothing past an edge, the padding there clamps against it and leaves no gap.
+   The selected-row reveal reads the same padding back as the depth. */
+@property --yaran-list-fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --yaran-list-fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+.yaran-list-fade {
+  --yaran-list-fade-depth: 2.5rem;
+  --yaran-list-fade-top: 0px;
+  --yaran-list-fade-bottom: 0px;
+  scroll-padding-block: var(--yaran-list-fade-depth);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--yaran-list-fade-top),
+    #000 calc(100% - var(--yaran-list-fade-bottom)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--yaran-list-fade-top),
+    #000 calc(100% - var(--yaran-list-fade-bottom)),
+    transparent
+  );
+  transition:
+    --yaran-list-fade-top 150ms ease-out,
+    --yaran-list-fade-bottom 150ms ease-out;
+}
+.yaran-list-fade[data-more-above] {
+  --yaran-list-fade-top: var(--yaran-list-fade-depth);
+}
+.yaran-list-fade[data-more-below] {
+  --yaran-list-fade-bottom: var(--yaran-list-fade-depth);
+}
+@media (prefers-reduced-motion: reduce) {
+  .yaran-list-fade {
+    transition: none;
+  }
 }

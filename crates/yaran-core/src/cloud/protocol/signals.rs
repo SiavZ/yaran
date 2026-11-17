@@ -9,6 +9,7 @@
 //! - Pure constants; Phase 11's `AccessRejection::code()` returns these.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/signals.rs
 //! └── cloud::protocol::test_fixtures
@@ -19,31 +20,49 @@
 //! ├── cloud::access_jwt
 //! ├── cloud::protocol
 //! └── yaran-web::cloud_ingress
+//! ```
 //! <module-headers:end>
 
 /// Sent on PTY and events sockets of a cloud-hostname connection at the Access JWT's
 /// `exp + skew` (`[cloud] close_sockets_at_access_expiry`).
 pub const SESSION_EXPIRED_CLOSE_CODE: u16 = 4401;
+/// The close reason sent with [`SESSION_EXPIRED_CLOSE_CODE`].
 pub const SESSION_EXPIRED_CLOSE_REASON: &str = "access session expired";
+/// The header a refusal names its [`RefusalCode`] in.
 pub const REFUSAL_HEADER: &str = "Yaran-Refusal";
 
 /// Every refusal yaran itself makes for a cloud-hostname request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RefusalCode {
+    /// No Access assertion came with the request.
     AccessMissing,
+    /// The assertion does not parse.
     AccessMalformed,
+    /// It is not signed with RS256.
     AccessBadAlgorithm,
+    /// Its key id is not in the team's key set.
     AccessUnknownKid,
+    /// Its signature does not verify.
     AccessBadSignature,
+    /// It comes from another team.
     AccessWrongIssuer,
+    /// It is for another application.
     AccessWrongAudience,
+    /// It has expired.
     AccessExpired,
+    /// It is not valid yet.
     AccessNotYetValid,
+    /// It is not an application token.
     AccessNotAppToken,
+    /// It is a service token.
     AccessServiceToken,
+    /// It names someone other than the paired owner.
     AccessNotOwner,
+    /// The team's key set could not be fetched, so nothing is let in.
     AccessKeysUnavailable,
+    /// The request names a host this machine does not serve.
     HostNotServed,
+    /// The request names no host.
     HostMissing,
 }
 

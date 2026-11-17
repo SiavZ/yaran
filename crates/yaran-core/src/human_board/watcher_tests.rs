@@ -1,9 +1,10 @@
 //! Watcher snapshots follow complete file changes and eventually reach the newest board.
 //!
 //! Uses atomic fixture writes and waits for observed readiness rather than scheduler timing.
-//! - Test-only child of human_board::tests.
+//! - Test-only child of `human_board::tests`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! human_board/watcher_tests.rs
 //! ├── human_board::tests
@@ -13,6 +14,7 @@
 //! Used by:
 //! human_board/watcher_tests.rs
 //! └── human_board::tests
+//! ```
 //! <module-headers:end>
 
 use super::*;
@@ -26,7 +28,7 @@ fn the_watcher_reports_at_once_and_again_on_every_change() {
     let first = watcher.next_within(wait).unwrap();
     assert_eq!(first.board.unwrap(), Board::default());
     store
-        .update(|board| board.post(card(CardKind::Task, None, "a"), at(0)))
+        .update(|board| board.post(&card(CardKind::Task, None, "a"), at(0)))
         .unwrap();
     let second = watcher.next_within(wait).unwrap();
     assert_eq!(second.board.unwrap().cards.len(), 1);
@@ -44,7 +46,7 @@ fn latest_skips_to_the_newest_snapshot() {
     let watcher = BoardWatcher::spawn(store.clone(), Duration::from_millis(5)).unwrap();
     for n in 0..3 {
         store
-            .update(|board| board.post(card(CardKind::Info, None, &format!("{n}")), at(n)))
+            .update(|board| board.post(&card(CardKind::Info, None, &format!("{n}")), at(n)))
             .unwrap();
         std::thread::sleep(Duration::from_millis(40));
     }

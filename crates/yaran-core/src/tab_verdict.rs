@@ -14,18 +14,38 @@
 //! in the same words; the browser ports [`humanize_age_ago`] and
 //! [`ending_sentence`] and pins the port in its own tests.
 
+use std::sync::OnceLock;
 use std::time::Instant;
+
+/// The moment this process first read its run clock.
+static RUN_CLOCK_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+fn run_clock_epoch() -> Instant {
+    *RUN_CLOCK_EPOCH.get_or_init(Instant::now)
+}
+
+/// Whole seconds on this process's run clock: monotonic, and meaningful only
+/// against another reading of the same run.
+///
+/// It is how a browser ages a verdict without comparing its clock with the
+/// server's: the verdict carries when it ended on this clock, a value that never
+/// changes, so publishing it moves nothing; each delivery of the document
+/// carries the clock's reading as it was sent, and the browser adds the time
+/// that has passed on its own clock since it received that reading.
+pub fn run_clock_seconds() -> u64 {
+    run_clock_epoch().elapsed().as_secs()
+}
 
 /// How many lines of the run's final output the verdict keeps. Small on
 /// purpose: this is the tail a person reads at a glance on a card, not a log.
 /// A provider that dies with a stack trace is not diagnosed here; it is
 /// diagnosed in `yaran.log`.
-pub const VERDICT_EXCERPT_MAX_LINES: usize = 8;
+pub(crate) const VERDICT_EXCERPT_MAX_LINES: usize = 8;
 
 /// How many CHARACTERS (never bytes) of each excerpt line are kept. Wide enough
 /// for an ordinary error sentence, bounded so one pathological line cannot ride
 /// the wire to every connected browser.
-pub const VERDICT_EXCERPT_MAX_CHARS: usize = 200;
+pub(crate) const VERDICT_EXCERPT_MAX_CHARS: usize = 200;
 
 /// The exhaustive set of ways a tab's run can have ended badly.
 ///
@@ -35,15 +55,21 @@ pub const VERDICT_EXCERPT_MAX_CHARS: usize = 200;
 pub enum TabRunEnding {
     /// The provider never started: the spawn itself failed, and this is what it
     /// said. Nothing ran, so there is no status and usually no output.
-    LaunchFailed { error: String },
+    LaunchFailed {
+        /// What the spawn said.
+        error: String,
+    },
     /// The child was reaped and its status was non-zero.
-    ExitedWithStatus { status: u32 },
+    ExitedWithStatus {
+        /// The exit status.
+        status: u32,
+    },
     /// The child's PTY ended without yaran ever seeing a status (a read error, or
     /// a child that closed its descriptors and was never reapable). "Exited,
     /// status unknown" is a genuinely different answer from any number.
     ExitedUnknownStatus,
     /// The child exited CLEANLY but was over inside
-    /// [`crate::engine::RAPID_EXIT_WINDOW`] with nobody typing into
+    /// [`crate::engine::RAPID_EXIT_WINDOW`] with nobody sending input to
     /// it, which yaran reads as a provider that never came up.
     RapidCleanExit,
 }
@@ -51,7 +77,7 @@ pub enum TabRunEnding {
 impl TabRunEnding {
     /// The stable wire spelling. Kept next to the variants so the two cannot
     /// drift, and matched exhaustively so a new variant must choose one.
-    pub fn wire_kind(&self) -> &'static str {
+    pub(crate) fn wire_kind(&self) -> &'static str {
         match self {
             TabRunEnding::LaunchFailed { .. } => "launch_failed",
             TabRunEnding::ExitedWithStatus { .. } => "exited",
@@ -88,8 +114,9 @@ impl TabRunEnding {
 /// step backwards under an NTP correction and print a negative age.
 #[derive(Clone, Debug)]
 pub struct TabRunVerdict {
+    /// How the run ended.
     pub ending: TabRunEnding,
-    pub ended_at: Instant,
+    pub(crate) ended_at: Instant,
     /// The last visible non-blank lines the run had on screen, captured ONCE at
     /// the moment the run ended (the client is gone immediately afterwards) and
     /// never topped up later.
@@ -97,7 +124,10 @@ pub struct TabRunVerdict {
 }
 
 impl TabRunVerdict {
+    /// A verdict on a run ending now, with the lines it left on screen.
     pub fn new(ending: TabRunEnding, excerpt: Vec<String>) -> Self {
+        // Started first, so the run clock cannot begin after a run it dates.
+        run_clock_epoch();
         Self {
             ending,
             ended_at: Instant::now(),
@@ -105,8 +135,16 @@ impl TabRunVerdict {
         }
     }
 
+    /// How many whole seconds ago the run ended.
     pub fn ended_seconds_ago(&self) -> u64 {
         self.ended_at.elapsed().as_secs()
+    }
+
+    /// When the run ended, in whole seconds on [`run_clock_seconds`]'s clock.
+    pub fn ended_at_run_clock(&self) -> u64 {
+        self.ended_at
+            .saturating_duration_since(run_clock_epoch())
+            .as_secs()
     }
 }
 
@@ -116,7 +154,7 @@ impl TabRunVerdict {
 /// The tail rather than the head: a CLI that fails says so on its way out, and
 /// the head of a screenful is a banner. Char-based throughout, because provider
 /// output is arbitrary UTF-8 and byte slicing panics inside a character.
-pub fn verdict_excerpt(text: &str) -> Vec<String> {
+pub(crate) fn verdict_excerpt(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim_end)
@@ -132,7 +170,7 @@ pub fn verdict_excerpt(text: &str) -> Vec<String> {
 /// How many of the run's LAST excerpt lines a refused resume quotes. Two, not
 /// the whole excerpt: this sentence lands on a status line and in a toast, and
 /// a CLI's refusal says the thing and then says what to do about it.
-pub const RESUME_REFUSAL_QUOTED_LINES: usize = 2;
+pub(crate) const RESUME_REFUSAL_QUOTED_LINES: usize = 2;
 
 /// The warning both surfaces raise when a RESUME run was refused: the provider
 /// came up, said why it would not resume, and quit at once.
@@ -201,7 +239,7 @@ pub fn refused_resume_warning(
 /// Coarse on purpose. The card answers "was this just now, or this morning";
 /// a card that claimed "1 minute 43 seconds ago" would be precise about a
 /// number nobody acts on.
-pub fn humanize_age_ago(seconds: u64) -> String {
+pub(crate) fn humanize_age_ago(seconds: u64) -> String {
     const MINUTE: u64 = 60;
     const HOUR: u64 = 60 * MINUTE;
     const DAY: u64 = 24 * HOUR;
@@ -230,7 +268,10 @@ fn spell_seconds(seconds: u64) -> String {
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     ];
     let unit = if seconds == 1 { "second" } else { "seconds" };
-    match WORDS.get(seconds as usize) {
+    match usize::try_from(seconds)
+        .ok()
+        .and_then(|index| WORDS.get(index))
+    {
         Some(word) => format!("{word} {unit}"),
         None => format!("{seconds} {unit}"),
     }

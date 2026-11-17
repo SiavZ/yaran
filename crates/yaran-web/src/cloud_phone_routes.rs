@@ -12,6 +12,7 @@
 //! - Read-only and cheap: no remote call, `no-store`; the file read runs off the runtime.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_phone_routes.rs
 //! ├── server
@@ -27,6 +28,7 @@
 //! cloud_phone_routes.rs
 //! ├── crate
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use axum::{
@@ -68,6 +70,7 @@ impl PhoneQrSource for CloudPaths {
     }
 }
 
+/// The phone-pairing QR route, merged into the main router.
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/cloud/phone-qr", get(get_phone_qr))
 }
@@ -108,7 +111,7 @@ fn refuse(status: StatusCode, message: &str) -> Response {
 
 /// The whole decision, for a given source (or none installed).
 pub(crate) fn phone_qr_response(source: Option<&dyn PhoneQrSource>) -> Response {
-    let Some(url) = source.and_then(|s| s.org_url()) else {
+    let Some(url) = source.and_then(PhoneQrSource::org_url) else {
         return refuse(
             StatusCode::CONFLICT,
             "This machine is not connected to a yaran org, so there is no phone code to show. Connect it with yaran cloud login, then try again.",
@@ -158,7 +161,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unpaired_machine_is_refused_with_a_sentence() {
-        for source in [None, Some(&Fake(None) as &dyn PhoneQrSource)] {
+        let unpaired: &dyn PhoneQrSource = &Fake(None);
+        for source in [None, Some(unpaired)] {
             let (status, text) = body(phone_qr_response(source)).await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert!(text.contains("yaran cloud login"), "{text}");

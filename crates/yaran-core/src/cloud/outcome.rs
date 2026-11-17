@@ -8,6 +8,7 @@
 //! - Pure; the status keys are the constants below, one per action.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/outcome.rs
 //! ├── cloud::machine_api_error
@@ -23,6 +24,7 @@
 //! ├── cloud::cli
 //! ├── cloud::cli::login
 //! ├── cloud::cli::manage
+//! ├── cloud::leg_outcome
 //! ├── cloud::login
 //! ├── cloud::login_session
 //! ├── yaran-core[test cloud_login]
@@ -31,6 +33,7 @@
 //! ├── yaran-tui::app::cloud_tests
 //! ├── yaran-web::cloud_routes
 //! └── yaran-web::cloud_routes::actions_routes
+//! ```
 //! <module-headers:end>
 
 use crate::cloud::machine_api_error::MachineApiError;
@@ -39,81 +42,134 @@ use crate::status_text;
 use crate::status_text::StatusText;
 use crate::statusline::StatusTone;
 
+/// The status key a Yaran Cloud login answers on.
 pub const KEY_LOGIN: &str = "cloud-login";
+/// The status key a disconnect answers on.
 pub const KEY_LOGOUT: &str = "cloud-logout";
+/// The status key a token rotation answers on.
 pub const KEY_ROTATE: &str = "cloud-rotate";
+/// The status key a status check answers on.
 pub const KEY_STATUS: &str = "cloud-status";
 
+/// The keyed busy a Yaran Cloud action shows under its fixed `key` while it runs.
+///
+/// The cloud actions answer on fixed keys that both surfaces share (a login a
+/// browser started can end on the terminal UI's line), so their busy cannot
+/// come from a `status_op`, which mints a key of its own. The pairing a
+/// `status_op` enforces is the caller's here: register `key` as live first,
+/// and always end it with the action's own final on the same key.
+pub fn busy_status(key: &str, text: impl Into<StatusText>) -> StatusUpdate {
+    StatusUpdate::busy(text).with_key(key)
+}
+
+/// How a Yaran Cloud action ended, as both surfaces report it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloudActionOutcome {
+    /// The machine is paired.
     Paired {
+        /// The machine's hostname.
         hostname: String,
+        /// The organization it is paired with.
         org_name: String,
     },
+    /// The machine is already paired with another organization.
     AlreadyPairedElsewhere {
+        /// That organization.
         org: String,
     },
+    /// The control plane speaks no protocol version this yaran does.
     ProtocolUnsupported {
+        /// The oldest version it speaks.
         min: i64,
+        /// The newest version it speaks.
         max: i64,
+        /// The version this yaran speaks.
         ours: i64,
     },
+    /// Nobody approved the login in time.
     LoginTimedOut,
+    /// The login was cancelled.
     LoginCancelled,
     /// Another login or a disconnect changed the pairing while this action ran; the
     /// newer state was kept.
     PairingChanged,
-    /// The newer pairing was kept; cleanup_started records an acknowledged teardown
+    /// The newer pairing was kept; `cleanup_started` records an acknowledged teardown
     /// request for the discarded claim. Any machine it replaced is still torn down.
     LoginSuperseded {
+        /// Whether the control plane confirmed it is removing the discarded claim.
         cleanup_started: bool,
     },
     /// The claim succeeded but could not be persisted; its replacement effects remain.
     LoginNotStored {
+        /// Why the credentials could not be written.
         reason: String,
+        /// Whether the control plane confirmed it is removing the claim.
         cleanup_started: bool,
     },
     /// Not an error: the surface shows the URL to open by hand.
     BrowserUnavailable {
+        /// The address to open by hand.
         url: String,
     },
+    /// The control plane refused the claim.
     ClaimRefused {
+        /// Its error code.
         code: String,
+        /// Its message.
         message: String,
     },
     /// A refusal of a signed machine call other than the claim.
     Refused {
+        /// Its error code.
         code: String,
+        /// Its message.
         message: String,
     },
+    /// The machine was disconnected.
     Unpaired {
+        /// The hostname it had.
         hostname: String,
     },
     /// Sticky warning: the token stays valid until an admin removes the machine.
     UnpairedLocallyOnly {
+        /// The hostname it had.
         hostname: String,
     },
+    /// The machine is not paired, so there was nothing to do.
     NotPaired,
+    /// The tunnel token was rotated.
     Rotated {
+        /// The machine's hostname.
         hostname: String,
     },
+    /// The consent key was rotated, so every remembered phone asks again.
     ConsentKeyRotated {
+        /// The machine's hostname.
         hostname: String,
     },
+    /// The control plane says this machine is no longer paired.
     Revoked {
+        /// The hostname it had.
         hostname: String,
     },
+    /// This machine's clock is too far from the control plane's.
     ClockSkew {
+        /// The control plane's time, when it said.
         server_time: Option<String>,
     },
+    /// The control plane could not be reached, or answered badly.
     Network {
+        /// What went wrong.
         detail: String,
     },
+    /// The cloud credentials file could not be read.
     CredentialsUnreadable {
+        /// Why.
         reason: String,
     },
     /// A typed org URL or machine name was refused before anything was sent.
     InvalidInput {
+        /// Why.
         reason: String,
     },
 }
@@ -143,6 +199,7 @@ impl CloudActionOutcome {
         }
     }
 
+    /// The tone the outcome is reported in.
     pub fn tone(&self) -> StatusTone {
         match self {
             Self::Paired { .. }
@@ -192,6 +249,10 @@ impl CloudActionOutcome {
     }
 
     /// The one sentence for this outcome.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one sentence per outcome, kept in one match so none is missed"
+    )]
     pub fn report(&self) -> StatusText {
         let login = "yaran cloud login";
         let logout = "yaran cloud logout";
@@ -233,7 +294,11 @@ impl CloudActionOutcome {
             ),
             Self::LoginSuperseded { cleanup_started } => status_text!(
                 "Another login or disconnect changed this machine's Yaran Cloud pairing while this login was finishing, so the newer state was kept. ",
-                discarded_claim_cleanup(*cleanup_started),
+                if *cleanup_started {
+                    CLAIM_REMOVED
+                } else {
+                    CLAIM_NOT_CONFIRMED
+                },
                 " If you chose Replace on the confirm page, the replaced machine is being disconnected anyway; run ",
                 q("yaran cloud status"),
                 ", and run ",
@@ -247,7 +312,11 @@ impl CloudActionOutcome {
                 "The control plane accepted this login, but yaran could not save its credentials: ",
                 reason.as_str(),
                 ". ",
-                discarded_claim_cleanup(*cleanup_started),
+                if *cleanup_started {
+                    CLAIM_REMOVED
+                } else {
+                    CLAIM_NOT_CONFIRMED
+                },
                 " If you chose Replace on the confirm page, the replaced machine is being disconnected anyway. Run ",
                 q("yaran cloud status"),
                 " to check this machine, fix the credentials problem, then run ",
@@ -314,14 +383,13 @@ impl CloudActionOutcome {
                 let detail = server_time
                     .as_deref()
                     .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .map(|t| {
+                    .map_or_default(|t| {
                         let offset = chrono::Utc::now().signed_duration_since(t).num_seconds();
                         format!(
                             " (the server time is {}, this clock is {offset:+} s off)",
                             t.format("%Y-%m-%dT%H:%M:%SZ")
                         )
-                    })
-                    .unwrap_or_default();
+                    });
                 status_text!(format!(
                     "The control plane rejected the request because this machine's clock is wrong{detail}; fix the system clock and try again."
                 ))
@@ -346,13 +414,10 @@ impl CloudActionOutcome {
     }
 }
 
-fn discarded_claim_cleanup(started: bool) -> &'static str {
-    if started {
-        "The control plane is removing this login's new pairing."
-    } else {
-        "The control plane did not confirm removal of this login's new pairing. Ask an administrator to check and remove it if it is still listed."
-    }
-}
+/// What became of a discarded claim, when the control plane confirmed its removal.
+const CLAIM_REMOVED: &str = "The control plane is removing this login's new pairing.";
+/// The same, when it did not.
+const CLAIM_NOT_CONFIRMED: &str = "The control plane did not confirm removal of this login's new pairing. Ask an administrator to check and remove it if it is still listed.";
 
 #[cfg(test)]
 mod tests {

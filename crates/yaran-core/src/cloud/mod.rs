@@ -8,6 +8,7 @@
 //! - No runtime behaviour of its own.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/mod.rs
 //! ├── cloud::access_jwks
@@ -54,6 +55,7 @@
 //! Used by:
 //! cloud/mod.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 pub mod access_jwks;

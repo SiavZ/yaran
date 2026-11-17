@@ -69,8 +69,45 @@ fn wait_until(mut predicate: impl FnMut() -> bool, message: &str) {
     }
 }
 
+/// How a click fixture's terminal is set up.
+#[derive(Clone, Copy)]
+struct Setup {
+    /// Scrollback lines.
+    capacity: usize,
+    /// The child is on the alternate screen.
+    alt: bool,
+    /// The pane is fullscreen.
+    fullscreen: bool,
+    /// The provider forwards the mouse.
+    forward: bool,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Self {
+            capacity: 8,
+            alt: false,
+            fullscreen: false,
+            forward: false,
+        }
+    }
+}
+
+/// Which half of a click.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Button {
+    Down,
+    Up,
+}
+
 impl ClickFixture {
-    fn new(capacity: usize, alt: bool, fullscreen: bool, forward: bool) -> Self {
+    fn new(setup: Setup) -> Self {
+        let Setup {
+            capacity,
+            alt,
+            fullscreen,
+            forward,
+        } = setup;
         let mut app = test_app(default_bindings());
         app.engine.sessions[0].provider = ProviderKind::from_str("jcode");
         app.engine
@@ -126,7 +163,7 @@ impl ClickFixture {
         terminal.draw(|frame| app.render(frame)).unwrap();
         let area = app
             .mouse_layout
-            .agent_term
+            .focused_term
             .expect("rendered terminal target");
         assert!(area.width > 4 && area.height > 3, "{area:?}");
         assert!(!app.scroll_mode_active());
@@ -143,12 +180,13 @@ impl ClickFixture {
         }
     }
 
-    fn pointer(&mut self, down: bool) {
+    fn pointer(&mut self, button: Button) {
+        let down = button == Button::Down;
         let (column, row) = self.point;
         if self.fullscreen {
             let final_byte = if down { 'M' } else { 'm' };
             let raw = format!("\x1b[<0;{};{}{final_byte}", column + 1, row + 1);
-            self.app.process_raw_input_bytes(raw.as_bytes()).unwrap();
+            self.app.process_raw_input_bytes(raw.as_bytes());
         } else {
             self.app.handle_mouse(MouseEvent {
                 kind: if down {
@@ -172,7 +210,9 @@ impl ClickFixture {
                 assert!(
                     !self
                         .app
-                        .snapshot_buf
+                        .part_snapshots
+                        .main
+                        .buf
                         .cursor
                         .is_some_and(|cursor| { cursor.row == 1 && cursor.col == 1 }),
                     "cursor fixture already at commanded destination"
@@ -189,12 +229,16 @@ impl ClickFixture {
                     let effect_arrived = match command {
                         "CURSOR" => self
                             .app
-                            .snapshot_buf
+                            .part_snapshots
+                            .main
+                            .buf
                             .cursor
                             .is_some_and(|cursor| cursor.row == 1 && cursor.col == 1),
                         "OUTPUT" => self
                             .app
-                            .snapshot_buf
+                            .part_snapshots
+                            .main
+                            .buf
                             .cells
                             .iter()
                             .map(|cell| cell.symbol.as_str())
@@ -215,7 +259,7 @@ impl ClickFixture {
         let (column, row) = self.point;
         if self.fullscreen {
             let raw = format!("\x1b[<32;{};{}M", column + column_delta + 1, row + 1);
-            self.app.process_raw_input_bytes(raw.as_bytes()).unwrap();
+            self.app.process_raw_input_bytes(raw.as_bytes());
         } else {
             self.app.handle_mouse(MouseEvent {
                 kind: MouseEventKind::Drag(MouseButton::Left),
@@ -243,7 +287,7 @@ impl ClickFixture {
             "unexpected click wire: fullscreen={}, origin={:?}, generation={}, selection={:?}",
             self.fullscreen,
             self.app.snapshot_selection_origin(),
-            self.app.grid_generation,
+            self.app.part_snapshots.main.generation,
             self.app.terminal_selection
         );
     }
@@ -279,69 +323,91 @@ impl ClickFixture {
     }
 }
 
-fn stationary_click_case(
-    capacity: usize,
-    alt: bool,
-    fullscreen: bool,
-    forward: bool,
-    repaint: Option<&str>,
-) {
-    let mut fixture = ClickFixture::new(capacity, alt, fullscreen, forward);
+fn stationary_click_case(setup: Setup, repaint: Option<&str>) {
+    let Setup { capacity, alt, .. } = setup;
+    let mut fixture = ClickFixture::new(setup);
     if !alt {
         assert_eq!(
             fixture.app.snapshot_selection_origin().history_saturated,
             capacity == 8
         );
     }
-    fixture.pointer(true);
+    fixture.pointer(Button::Down);
     fixture.repaint(repaint);
-    fixture.pointer(false);
+    fixture.pointer(Button::Up);
     fixture.assert_click_wire();
 }
 
 #[test]
 fn windowed_stationary_click_survives_saturated_history_output() {
-    stationary_click_case(8, false, false, false, Some("OUTPUT"));
+    stationary_click_case(Setup::default(), Some("OUTPUT"));
 }
 
 #[test]
 fn fullscreen_stationary_click_survives_saturated_history_output() {
-    stationary_click_case(8, false, true, false, Some("OUTPUT"));
+    stationary_click_case(
+        Setup {
+            fullscreen: true,
+            ..Setup::default()
+        },
+        Some("OUTPUT"),
+    );
 }
 
 #[test]
 fn saturated_history_cursor_only_repaint_preserves_stationary_click() {
-    stationary_click_case(8, false, false, false, Some("CURSOR"));
+    stationary_click_case(Setup::default(), Some("CURSOR"));
 }
 
 #[test]
 fn below_capacity_output_preserves_stationary_click() {
-    stationary_click_case(1000, false, false, false, Some("OUTPUT"));
+    stationary_click_case(
+        Setup {
+            capacity: 1000,
+            ..Setup::default()
+        },
+        Some("OUTPUT"),
+    );
 }
 
 #[test]
 fn alternate_screen_after_saturated_primary_preserves_stationary_click() {
-    stationary_click_case(8, true, false, false, Some("CURSOR"));
+    stationary_click_case(
+        Setup {
+            alt: true,
+            ..Setup::default()
+        },
+        Some("CURSOR"),
+    );
 }
 
 #[test]
 fn idle_periodic_render_preserves_saturated_history_stationary_click() {
-    stationary_click_case(8, false, false, false, None);
+    stationary_click_case(Setup::default(), None);
 }
 
 #[test]
 fn direct_forwarding_preserves_stationary_click_during_saturated_repaint() {
-    stationary_click_case(8, false, false, true, Some("OUTPUT"));
+    stationary_click_case(
+        Setup {
+            forward: true,
+            ..Setup::default()
+        },
+        Some("OUTPUT"),
+    );
 }
 
 #[test]
 fn same_cell_drag_jitter_preserves_stationary_click_after_drift() {
     for fullscreen in [false, true] {
-        let mut fixture = ClickFixture::new(8, false, fullscreen, false);
-        fixture.pointer(true);
+        let mut fixture = ClickFixture::new(Setup {
+            fullscreen,
+            ..Setup::default()
+        });
+        fixture.pointer(Button::Down);
         fixture.repaint(Some("OUTPUT"));
         fixture.drag(0);
-        fixture.pointer(false);
+        fixture.pointer(Button::Up);
         fixture.assert_click_wire();
         fixture.assert_no_copy();
     }
@@ -350,8 +416,11 @@ fn same_cell_drag_jitter_preserves_stationary_click_after_drift() {
 #[test]
 fn moved_drag_after_drift_neither_replays_click_nor_copies_stale_text() {
     for fullscreen in [false, true] {
-        let mut fixture = ClickFixture::new(8, false, fullscreen, false);
-        fixture.pointer(true);
+        let mut fixture = ClickFixture::new(Setup {
+            fullscreen,
+            ..Setup::default()
+        });
+        fixture.pointer(Button::Down);
         fixture.repaint(Some("OUTPUT"));
         fixture.drag(1);
         assert!(
@@ -360,7 +429,7 @@ fn moved_drag_after_drift_neither_replays_click_nor_copies_stale_text() {
         );
         // A subsequent return to the press cell must not resurrect click eligibility.
         fixture.drag(0);
-        fixture.pointer(false);
+        fixture.pointer(Button::Up);
         assert!(fixture.app.terminal_selection.is_none());
         fixture.assert_wire(b"");
         fixture.assert_no_copy();
@@ -370,13 +439,16 @@ fn moved_drag_after_drift_neither_replays_click_nor_copies_stale_text() {
 #[test]
 fn scroll_mode_suppresses_stationary_click_replay() {
     for fullscreen in [false, true] {
-        let mut fixture = ClickFixture::new(8, false, fullscreen, false);
+        let mut fixture = ClickFixture::new(Setup {
+            fullscreen,
+            ..Setup::default()
+        });
         enter_scroll_mode(&mut fixture.app, 1);
         fixture.repaint(None);
         assert!(fixture.app.scroll_mode_active());
-        fixture.pointer(true);
+        fixture.pointer(Button::Down);
         fixture.repaint(None);
-        fixture.pointer(false);
+        fixture.pointer(Button::Up);
         assert!(fixture.app.scroll_mode_active());
         fixture.assert_wire(b"");
         fixture.assert_no_copy();
@@ -388,8 +460,8 @@ fn viewport_resize_retires_pending_stationary_click() {
     // A one-column outer resize can round to the SAME split-pane width.
     // Use unambiguous changes and verify the actual published inner target.
     for (width, height) in [(100, 40), (120, 34)] {
-        let mut fixture = ClickFixture::new(8, false, false, false);
-        fixture.pointer(true);
+        let mut fixture = ClickFixture::new(Setup::default());
+        fixture.pointer(Button::Down);
         let before = fixture.app.snapshot_selection_origin().grid_size;
         fixture.terminal.backend_mut().resize(width, height);
         fixture
@@ -400,7 +472,7 @@ fn viewport_resize_retires_pending_stationary_click() {
         let area = fixture
             .app
             .mouse_layout
-            .agent_term
+            .focused_term
             .expect("resized terminal target");
         let expected = (area.height, area.width);
         assert_ne!(
@@ -417,7 +489,7 @@ fn viewport_resize_retires_pending_stationary_click() {
         fixture.repaint(None);
         assert_ne!(fixture.app.snapshot_selection_origin().grid_size, before);
         assert!(fixture.app.terminal_selection.is_none());
-        fixture.pointer(false);
+        fixture.pointer(Button::Up);
         fixture.assert_wire(b"");
         fixture.assert_no_copy();
     }
@@ -425,8 +497,8 @@ fn viewport_resize_retires_pending_stationary_click() {
 
 #[test]
 fn switching_surface_and_back_retires_pending_stationary_click() {
-    let mut fixture = ClickFixture::new(8, false, false, false);
-    let mut other = ClickFixture::new(8, false, false, false);
+    let mut fixture = ClickFixture::new(Setup::default());
+    let mut other = ClickFixture::new(Setup::default());
     let other_slot = other.app.engine.sessions[0].slot_tab_id().to_string();
     let other_client = other
         .app
@@ -441,13 +513,13 @@ fn switching_surface_and_back_retires_pending_stationary_click() {
         .engine
         .providers
         .insert(TabId::new(other_id.clone()), other_client);
-    fixture.pointer(true);
+    fixture.pointer(Button::Down);
     fixture.app.engine.sessions[0].slot_tab_id = other_id;
     fixture.repaint(None);
     assert!(fixture.app.terminal_selection.is_none());
     fixture.app.engine.sessions[0].slot_tab_id = original_slot;
     fixture.repaint(None);
-    fixture.pointer(false);
+    fixture.pointer(Button::Up);
     fixture.assert_wire(b"");
     fixture.assert_no_copy();
 }

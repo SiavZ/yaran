@@ -1,0 +1,598 @@
+//! A name the file writes that is not a setting name (a token pasted where a
+//! key goes) never reaches any printer without `--show`: the start checks,
+//! both surfaces' start errors, `get` of every table (body and corrections),
+//! `set`'s messages and `yaran config diff`. Generated tokens are placed in
+//! every structural position: each fixed table, each map of user-chosen
+//! names, under values that are not tables, and under misplaced password
+//! hashes.
+use super::*;
+use std::fmt::Write as _;
+use yaran_core::start_check_fixtures::{
+    BINDING_VALUE_POSITIONS, BROKEN_PLAINTEXT_PASSWORD_FILES, NAME_POSITIONS as POSITIONS,
+    PLAINTEXT_PASSWORD_POSITIONS, PROJECT_VALUE_POSITIONS, VALUE_POSITIONS, name_tokens as tokens,
+};
+
+/// Every table `get` is asked for.
+const TABLES: &[&str] = &[
+    "ui",
+    "defaults",
+    "logging",
+    "capabilities",
+    "editor",
+    "terminal",
+    "startup_command_terminal",
+    "server",
+    "server.auth",
+    "env",
+    "providers",
+    "providers.claude",
+    "providers.mytool",
+    "macros",
+    "keys",
+    "projects",
+];
+
+fn paths_in(dir: &std::path::Path) -> YaranPaths {
+    YaranPaths {
+        root: dir.to_path_buf(),
+        config_path: dir.join("config.toml"),
+        sessions_db_path: dir.join("sessions.sqlite3"),
+        worktrees_root: dir.join("worktrees"),
+        lock_path: dir.join("dux.lock"),
+        socket_path: dir.join("yaran.sock"),
+    }
+}
+
+struct NoSecrets;
+impl SecretSource for NoSecrets {
+    fn read_stdin(&mut self) -> Result<Password> {
+        bail!("no stdin")
+    }
+    fn prompt_twice(
+        &mut self,
+        _: &str,
+        _: Option<Meter<'_>>,
+    ) -> Result<Option<(Password, Password)>> {
+        Ok(None)
+    }
+}
+
+/// Everything yaran prints about `body`, printer by printer.
+fn printed(body: &str) -> Vec<(String, String)> {
+    let mut said = Vec::new();
+    for problem in yaran_core::config::start_problems_of(body) {
+        said.push(("start problem".to_string(), problem.message));
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let paths = paths_in(tmp.path());
+    std::fs::write(&paths.config_path, body).expect("seed");
+    if let Err(error) = crate::config::ensure_config(&paths) {
+        said.push(("terminal UI start".to_string(), format!("{error:#}")));
+    }
+    std::fs::write(&paths.config_path, body).expect("seed");
+    if let Err(error) = yaran_core::config::load_config(&paths) {
+        said.push(("yaran server start".to_string(), format!("{error:#}")));
+    }
+    for table in TABLES {
+        std::fs::write(&paths.config_path, body).expect("seed");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = run_get(&[table.to_string()], &paths, &mut out, &mut err);
+        let mut text = String::from_utf8_lossy(&out).into_owned();
+        text.push_str(&String::from_utf8_lossy(&err));
+        if let Err(error) = result {
+            let _ = write!(text, "{error:#}");
+        }
+        said.push((format!("get {table}"), text));
+    }
+    std::fs::write(&paths.config_path, body).expect("seed");
+    let mut out = Vec::new();
+    let result = run_set(
+        &["ui.left_width_pct".to_string(), "30".to_string()],
+        &paths,
+        &mut NoSecrets,
+        &mut out,
+    );
+    let mut text = String::from_utf8_lossy(&out).into_owned();
+    if let Err(error) = result {
+        let _ = write!(text, "{error:#}");
+    }
+    said.push(("set".to_string(), text));
+    // A set over a setting the file may have written as a table, or with a
+    // table in it, reports what it replaced.
+    std::fs::write(&paths.config_path, body).expect("seed");
+    let mut out = Vec::new();
+    let result = run_set(
+        &["ui.theme".to_string(), "dux_dark".to_string()],
+        &paths,
+        &mut NoSecrets,
+        &mut out,
+    );
+    let mut text = String::from_utf8_lossy(&out).into_owned();
+    if let Err(error) = result {
+        let _ = write!(text, "{error:#}");
+    }
+    said.push(("set ui.theme".to_string(), text));
+    if let Ok(mut config) = toml::from_str::<yaran_core::config::Config>(body) {
+        config.source_text = yaran_core::config::SourceText::of(body);
+        said.push((
+            "config diff".to_string(),
+            crate::cli::collect_config_changes(&config).join("\n"),
+        ));
+    }
+    said.extend(previews(body, yaran_core::config_keys::HeldBack::Masked));
+    said.extend(listings(
+        &paths,
+        body,
+        yaran_core::config_keys::HeldBack::Masked,
+    ));
+    said
+}
+
+/// What `yaran env ls`, `yaran macros ls` and `yaran providers ls` print about
+/// `body` with no yaran running, `held_back` passed to `env ls`, in every shape.
+fn listings(
+    paths: &YaranPaths,
+    body: &str,
+    held_back: yaran_core::config_keys::HeldBack,
+) -> Vec<(String, String)> {
+    use yaran_core::client::config_resources::{Source, env_ls, macros_ls, providers_ls};
+    use yaran_core::client::output::Shape;
+    let mut said = Vec::new();
+    for shape in [Shape::Table, Shape::Json, Shape::Ids] {
+        std::fs::write(&paths.config_path, body).expect("seed");
+        let source = Source::File(paths);
+        for (printer, result) in [
+            (
+                format!("env ls (show {held_back:?})"),
+                env_ls(&source, held_back, shape),
+            ),
+            ("macros ls".to_string(), macros_ls(&source, shape)),
+            ("providers ls".to_string(), providers_ls(&source, shape)),
+        ] {
+            let text = match result {
+                Ok(text) => text,
+                Err(error) => error.message,
+            };
+            said.push((format!("{printer} {shape:?}"), text));
+        }
+    }
+    said
+}
+
+/// What the command line prints about `name` when it is typed as a provider,
+/// a macro or an environment variable with no yaran running: `providers show`,
+/// `macros show`, the questions `env set`, `env rm`, `macros add` and `macros
+/// rm` ask, `env set`'s name check, and each change on the file.
+fn named(paths: &YaranPaths, body: &str, name: &str) -> Vec<(String, String)> {
+    use yaran_core::client::config_resources::{
+        Source, Writer, check_env_name, macros_show, providers_show, remove_env,
+        remove_env_question, remove_macro, remove_macro_question, set_env, set_env_question,
+        set_macro, set_macro_question,
+    };
+    let text = |result: Result<String, yaran_core::client::CliError>| match result {
+        Ok(text) => text,
+        Err(error) => error.message,
+    };
+    let stopped = yaran_core::config_resources::StoppedYaran::hold(paths).expect("hold the lock");
+    let mut said = vec![
+        ("env set question".to_string(), set_env_question(name)),
+        ("env rm question".to_string(), remove_env_question(name)),
+        ("macros add question".to_string(), set_macro_question(name)),
+        (
+            "macros rm question".to_string(),
+            remove_macro_question(name),
+        ),
+        (
+            "env set name check".to_string(),
+            text(check_env_name(name).map(|()| String::new())),
+        ),
+    ];
+    std::fs::write(&paths.config_path, body).expect("seed");
+    said.push((
+        "providers show".to_string(),
+        text(providers_show(&Source::File(paths), name)),
+    ));
+    std::fs::write(&paths.config_path, body).expect("seed");
+    said.push((
+        "macros show".to_string(),
+        text(macros_show(&Source::File(paths), name)),
+    ));
+    std::fs::write(&paths.config_path, body).expect("seed");
+    said.push((
+        "env set".to_string(),
+        text(set_env(Writer::File(&stopped), name, "v")),
+    ));
+    std::fs::write(&paths.config_path, body).expect("seed");
+    said.push((
+        "env rm".to_string(),
+        text(remove_env(Writer::File(&stopped), name)),
+    ));
+    // A save that succeeds, and the two it refuses for what it was given.
+    for (text_given, surface) in [("t", "agent"), ("", "agent"), ("t", "nowhere")] {
+        std::fs::write(&paths.config_path, body).expect("seed");
+        said.push((
+            format!("macros add ({text_given:?}, {surface})"),
+            text(set_macro(
+                Writer::File(&stopped),
+                name,
+                text_given.to_string(),
+                surface,
+            )),
+        ));
+    }
+    std::fs::write(&paths.config_path, body).expect("seed");
+    said.push((
+        "macros rm".to_string(),
+        text(remove_macro(Writer::File(&stopped), name)),
+    ));
+    said
+}
+
+/// `yaran env ls` prints an environment value only with `--show`.
+#[test]
+fn env_ls_prints_a_value_only_with_show() {
+    crate::config::install_canonical_renderer();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let paths = paths_in(tmp.path());
+    let body = "[env]\nAPI_TOKEN = \"zzSECRETvalue\"\n";
+    for (printer, text) in listings(&paths, body, yaran_core::config_keys::HeldBack::Masked) {
+        assert!(!text.contains("zzSECRETvalue"), "{printer}: {text}");
+    }
+    let shown: Vec<String> = listings(&paths, body, yaran_core::config_keys::HeldBack::Shown)
+        .into_iter()
+        .filter(|(printer, _)| printer.starts_with("env ls") && !printer.ends_with("Ids"))
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(shown.len(), 2);
+    assert!(
+        shown.iter().all(|text| text.contains("zzSECRETvalue")),
+        "{shown:?}"
+    );
+}
+
+/// yaran's own documented file with `line` added where a user adds one: at
+/// its very end, and first inside `[macros]` (which it used to end in) and
+/// `[keys]`, wherever those now sit.
+fn documented_positions(line: &str) -> Vec<String> {
+    crate::config::install_canonical_renderer();
+    let base = crate::config::render_default_config();
+    let mut positions = vec![format!("{base}\n{line}\n")];
+    for section in ["macros", "keys"] {
+        let header = format!("\n[{section}]\n");
+        let at = base
+            .find(&header)
+            .expect("the documented file has the section")
+            + header.len();
+        positions.push(format!("{}{line}\n{}", &base[..at], &base[at..]));
+    }
+    positions
+}
+
+/// The previews of `yaran config regenerate` and `yaran config restore-docs`,
+/// with `held_back` as given, as each prints them.
+fn previews(body: &str, held_back: yaran_core::config_keys::HeldBack) -> Vec<(String, String)> {
+    let mut said = vec![(
+        format!("regenerate preview (show {held_back:?})"),
+        crate::cli::regenerate_preview(body, &crate::config::render_default_config(), held_back),
+    )];
+    if let Ok(restored) = crate::config::restore_documentation(body) {
+        said.push((
+            format!("restore-docs preview (show {held_back:?})"),
+            crate::cli::restore_docs_preview(body, &restored.text, held_back),
+        ));
+    }
+    said
+}
+
+#[test]
+fn a_name_that_is_not_a_setting_name_never_reaches_a_printer() {
+    crate::config::install_canonical_renderer();
+    let mut leaks = Vec::new();
+    for token in tokens() {
+        let fragment = &token[..12];
+        let quoted = toml::Value::String(token.clone()).to_string();
+        let bare = &quoted[1..quoted.len() - 1];
+        for position in POSITIONS {
+            let body = position.replace("{T}", bare);
+            assert!(toml::from_str::<toml::Table>(&body).is_ok(), "{body}");
+            // `env ls --show` prints values, and still no name it hides.
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let paths = paths_in(tmp.path());
+            let mut shown = listings(&paths, &body, yaran_core::config_keys::HeldBack::Shown);
+            // The name typed on the command line, as the file has it.
+            shown.extend(named(&paths, &body, &token));
+            for (printer, text) in printed(&body).into_iter().chain(shown) {
+                if text.contains(fragment) {
+                    leaks.push(format!("{printer} on {body:?}:\n{text}"));
+                }
+            }
+        }
+        for (printer, text) in through_a_running_yaran(&token) {
+            if text.contains(fragment) {
+                leaks.push(format!("{printer} through a running yaran:\n{text}"));
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n---\n"));
+}
+
+/// What `yaran macros add` and `yaran macros rm` print about `name` when a
+/// running yaran makes the change. The stand-in answers as the engine does,
+/// naming the macro as it was given in every outcome and refusal, so the
+/// command line must never pass those sentences on as they are.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey that serves yaran and runs every printing command against it"
+)]
+fn through_a_running_yaran(name: &str) -> Vec<(String, String)> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use yaran_core::client::config_resources::{Writer, remove_macro, set_macro};
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(
+        dir.path(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .unwrap();
+    let socket = dir.path().join("yaran.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let given = name.to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            let _ = reader.read_line(&mut request);
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; length];
+            let _ = reader.read_exact(&mut body);
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let quoted = serde_json::to_string(&given).unwrap();
+            let record = |state: &str, message: String| {
+                serde_json::json!({
+                    "id": "op1", "kind": "macro.set", "state": state, "message": message,
+                    "created": [], "removed": [], "parts": [],
+                })
+                .to_string()
+            };
+            let (status, reply) = if request.contains("/api/v1/build") {
+                (200, r#"{"version":"v1","process":"p","api":1}"#.to_string())
+            } else if request.starts_with("DELETE") {
+                (404, format!("unknown macro {quoted}"))
+            } else if body.contains("nowhere") {
+                (
+                    400,
+                    format!("Macro {quoted} has an unknown surface \"nowhere\"."),
+                )
+            } else if body.contains(r#""text":"""#) {
+                (400, format!("Macro {quoted} has no text."))
+            } else if body.contains("fail") {
+                (
+                    202,
+                    record("failed", format!("Couldn't save macro {quoted}.")),
+                )
+            } else {
+                (202, record("succeeded", format!("Saved macro {quoted}.")))
+            };
+            let _ = write!(
+                reader.get_mut(),
+                "HTTP/1.1 {status} X\r\ncontent-length: {}\r\n\r\n{reply}",
+                reply.len()
+            );
+        }
+    });
+    let lock_path = dir.path().join("dux.lock");
+    let _lock = yaran_core::lockfile::SingleInstanceLock::acquire(&lock_path).unwrap();
+    std::fs::write(
+        &lock_path,
+        format!(
+            "{}\ncontrol-socket={}\n",
+            std::process::id(),
+            socket.display()
+        ),
+    )
+    .unwrap();
+    let client = yaran_core::client::connect::connect(
+        &yaran_core::client::connect::Target::Local,
+        &lock_path,
+    )
+    .expect("the stand-in answers");
+    let writer = || Writer::Yaran {
+        client: &client,
+        wait: Some(std::time::Duration::from_secs(5)),
+    };
+    let text = |result: Result<String, yaran_core::client::CliError>| match result {
+        Ok(text) => text,
+        Err(error) => error.message,
+    };
+    let mut said = Vec::new();
+    for (given_text, surface) in [
+        ("t", "agent"),
+        ("fail", "agent"),
+        ("", "agent"),
+        ("t", "nowhere"),
+    ] {
+        said.push((
+            format!("macros add ({given_text:?}, {surface})"),
+            text(set_macro(writer(), name, given_text.to_string(), surface)),
+        ));
+    }
+    said.push(("macros rm".to_string(), text(remove_macro(writer(), name))));
+    said
+}
+
+/// A VALUE below a key the formatter does not name is never printed either:
+/// nothing at or below a hidden key reaches a printer without `--show`.
+#[test]
+fn a_value_below_a_hidden_key_never_reaches_a_printer() {
+    crate::config::install_canonical_renderer();
+    let mut leaks = Vec::new();
+    for token in tokens() {
+        let fragment = &token[..12];
+        let quoted = toml::Value::String(token.clone()).to_string();
+        let bare = &quoted[1..quoted.len() - 1];
+        for position in VALUE_POSITIONS {
+            let body = position.replace("{V}", bare);
+            assert!(toml::from_str::<toml::Table>(&body).is_ok(), "{body}");
+            for (printer, text) in printed(&body) {
+                if text.contains(fragment) {
+                    leaks.push(format!("{printer} on {body:?}:\n{text}"));
+                }
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n---\n"));
+}
+
+/// A `[keys]` binding's value is printed where a setting's value is the
+/// point (`get keys` and `yaran config diff`, which print what the file sets,
+/// as they print any setting's value) and nowhere else: a binding that is not
+/// a key yaran understands (a token pasted there) is named by its action and
+/// line in every problem, refusal and `set` message.
+#[test]
+fn a_binding_value_reaches_no_printer_but_the_value_printers() {
+    crate::config::install_canonical_renderer();
+    let mut leaks = Vec::new();
+    for token in tokens() {
+        let fragment = &token[..12];
+        let quoted = toml::Value::String(token.clone()).to_string();
+        let bare = &quoted[1..quoted.len() - 1];
+        for position in BINDING_VALUE_POSITIONS {
+            let body = position.replace("{V}", bare);
+            assert!(toml::from_str::<toml::Table>(&body).is_ok(), "{body}");
+            for (printer, text) in printed(&body) {
+                let prints_values = printer == "get keys" || printer == "config diff";
+                if !prints_values && text.contains(fragment) {
+                    leaks.push(format!("{printer} on {body:?}:\n{text}"));
+                }
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n---\n"));
+}
+
+/// A project's path, name and id reach no printer without `--show`: every
+/// problem names a project by its line, and `get projects` and `yaran config
+/// diff` summarize projects.
+#[test]
+fn a_project_value_reaches_no_printer() {
+    crate::config::install_canonical_renderer();
+    let mut leaks = Vec::new();
+    for token in tokens() {
+        let fragment = &token[..12];
+        // A path and an id can hold the token's characters but a quote.
+        let plain: String = token.chars().filter(char::is_ascii_alphanumeric).collect();
+        for position in PROJECT_VALUE_POSITIONS {
+            let body = position.replace("{V}", &plain);
+            assert!(toml::from_str::<toml::Table>(&body).is_ok(), "{body}");
+            for (printer, text) in printed(&body) {
+                if text.contains(&plain[..12]) || text.contains(fragment) {
+                    leaks.push(format!("{printer} on {body:?}:\n{text}"));
+                }
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n---\n"));
+}
+
+/// Everything yaran prints about `body` with `--show`, where a printer takes
+/// it: every table `get` is asked for, the password itself, both previews,
+/// and `yaran config diff --raw`.
+fn printed_with_show(body: &str) -> Vec<(String, String)> {
+    let mut said = previews(body, yaran_core::config_keys::HeldBack::Shown);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let paths = paths_in(tmp.path());
+    said.extend(listings(
+        &paths,
+        body,
+        yaran_core::config_keys::HeldBack::Shown,
+    ));
+    let mut asks: Vec<Vec<&str>> = TABLES.iter().map(|table| vec![*table, "--show"]).collect();
+    asks.push(vec!["server.auth.password"]);
+    asks.push(vec!["server.auth.password", "--show"]);
+    for args in asks {
+        std::fs::write(&paths.config_path, body).expect("seed");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let result = run_get(&args, &paths, &mut out, &mut err);
+        let mut text = String::from_utf8_lossy(&out).into_owned();
+        text.push_str(&String::from_utf8_lossy(&err));
+        if let Err(error) = result {
+            let _ = write!(text, "{error:#}");
+        }
+        said.push((format!("get {}", args.join(" ")), text));
+    }
+    if let Ok(config) = toml::from_str::<yaran_core::config::Config>(body) {
+        said.push((
+            "config diff --raw".to_string(),
+            crate::cli::raw_diff_text(&config),
+        ));
+    }
+    said
+}
+
+/// A plaintext password written in the file reaches no printer in any shape
+/// yaran's own start check calls one, and `--show` makes no exception for it.
+#[test]
+fn a_plaintext_password_reaches_no_printer_even_with_show() {
+    crate::config::install_canonical_renderer();
+    let mut leaks = Vec::new();
+    for token in tokens() {
+        let fragment = &token[..12];
+        let quoted = toml::Value::String(token.clone()).to_string();
+        let bare = &quoted[1..quoted.len() - 1];
+        let positions = PLAINTEXT_PASSWORD_POSITIONS
+            .iter()
+            .map(|position| (*position).to_string())
+            .chain(documented_positions("password = \"{V}\""));
+        for position in positions {
+            let body = position.replace("{V}", bare);
+            assert!(toml::from_str::<toml::Table>(&body).is_ok(), "{body}");
+            assert!(
+                !yaran_core::config::plaintext_password_problems(&body).is_empty(),
+                "the start check does not call {body:?} a plaintext password"
+            );
+            let mut said = printed(&body);
+            said.extend(printed_with_show(&body));
+            for (printer, text) in said {
+                if text.contains(fragment) {
+                    leaks.push(format!("{printer} on {body:?}:\n{text}"));
+                }
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n---\n"));
+}
+
+/// A file that is not TOML prints none of its text anywhere, `--show`
+/// included: yaran cannot tell where a secret sits in it.
+#[test]
+fn a_file_that_is_not_toml_reaches_no_printer_even_with_show() {
+    crate::config::install_canonical_renderer();
+    let mut leaks = Vec::new();
+    for token in tokens() {
+        let fragment = &token[..12];
+        let quoted = toml::Value::String(token.clone()).to_string();
+        let bare = &quoted[1..quoted.len() - 1];
+        for broken in BROKEN_PLAINTEXT_PASSWORD_FILES {
+            let body = broken.replace("{V}", bare);
+            assert!(toml::from_str::<toml::Table>(&body).is_err(), "{body}");
+            let mut said = printed(&body);
+            said.extend(printed_with_show(&body));
+            for (printer, text) in said {
+                if text.contains(fragment) {
+                    leaks.push(format!("{printer} on {body:?}:\n{text}"));
+                }
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n---\n"));
+}

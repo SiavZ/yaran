@@ -8,6 +8,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/pair_refusal.rs
 //! └── cloud::protocol::errors
@@ -17,12 +18,17 @@
 //! cloud/pair_refusal.rs
 //! ├── cloud
 //! └── cloud::login
+//! ```
 //! <module-headers:end>
 
 use crate::cloud::protocol::errors::ErrorCode;
 
 /// The reason behind a refused pairing whose callback carried `code`, phrased to sit
 /// inside "The control plane refused to pair this machine: <reason> (<code>)".
+#[expect(
+    clippy::too_many_lines,
+    reason = "one sentence per refusal code, matched exhaustively"
+)]
 pub fn pair_refusal_reason(code: &str) -> &'static str {
     match ErrorCode::parse(code) {
         ErrorCode::PairDenied => {

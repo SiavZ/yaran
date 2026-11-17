@@ -16,7 +16,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
-import { ListPlus, Pencil, Trash2 } from "lucide-react"
+import { ListPlus, Pencil, Trash2, TriangleAlert } from "lucide-react"
 
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { Badge } from "@/components/ui/badge"
@@ -53,7 +53,9 @@ import {
 } from "@/lib/macros"
 import {
   closeMacrosDialog,
+  dismissMacrosConflict,
   persistMacroOrder,
+  reloadMacrosDraft,
   saveMacros,
   useYaran,
 } from "@/lib/store"
@@ -82,7 +84,7 @@ function MacrosEditor({ initial, saving, setSaving, savingRef }: {
   // The bootstrap document holds the authoritative macro list. Until it loads,
   // the draft was seeded empty, so a wholesale save would wipe the server's
   // macros: disable Save in that window (the store also refuses it defensively).
-  const { bootstrap } = useYaran()
+  const { bootstrap, macrosConflict } = useYaran()
   const [macros, setMacros] = useState(initial)
   const [mode, setMode] = useState<EditorMode>({ kind: "list" })
   // The draft index pending delete confirmation, or null. Inline confirm row
@@ -187,7 +189,14 @@ function MacrosEditor({ initial, saving, setSaving, savingRef }: {
             items={macroDragIds(macros)}
             strategy={verticalListSortingStrategy}
           >
-            <ul className="flex min-h-0 max-h-72 flex-col gap-1 overflow-y-auto">
+            {/* The scrollbar keeps clear of the rows' Edit and Delete
+                buttons: a stable gutter plus right padding, pulled into the
+                dialog's own padding so a row's border still ends where the
+                Add macro button does wherever the scrollbar overlays. */}
+            <ul
+              data-testid="macros-scroll"
+              className="-mr-2 flex min-h-0 max-h-72 flex-col gap-1 overflow-y-auto pr-2 [scrollbar-gutter:stable]"
+            >
               {macros.map((macro, index) => (
                 <SortableMacroRow
                   key={index}
@@ -230,6 +239,8 @@ function MacrosEditor({ initial, saving, setSaving, savingRef }: {
         <p className="shrink-0 text-xs text-destructive">{validationError}</p>
       ) : null}
 
+      {macrosConflict ? <StaleSaveNotice message={macrosConflict} /> : null}
+
       {/* Misclick-safe spacing between the list/add controls and the footer. */}
       <div className="h-1 shrink-0" />
       <DialogFooter className="shrink-0">
@@ -245,6 +256,30 @@ function MacrosEditor({ initial, saving, setSaving, savingRef }: {
         </Button>
       </DialogFooter>
     </DialogContent>
+  )
+}
+
+// A save the server refused because the list changed after the dialog read it.
+// Reloading throws these edits away, so "Keep editing" has focus.
+function StaleSaveNotice({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="flex flex-col gap-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+        <span>{message}</span>
+      </div>
+      <div className="flex justify-end gap-3">
+        <Button variant="outline" autoFocus onClick={dismissMacrosConflict}>
+          Keep editing
+        </Button>
+        <Button variant="destructive" onClick={() => void reloadMacrosDraft()}>
+          Reload macros
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -458,7 +493,7 @@ function MacroForm({
 }
 
 export function MacrosDialog() {
-  const { macrosDialogOpen, macrosDraft } = useYaran()
+  const { macrosDialogOpen, macrosDraft, macrosDraftEpoch } = useYaran()
   const savingRef = useRef(false)
   const [saving, setSaving] = useState(false)
 
@@ -469,7 +504,15 @@ export function MacrosDialog() {
         if (!o && !savingRef.current) closeMacrosDialog()
       }}
     >
-      {macrosDialogOpen && <MacrosEditor initial={macrosDraft} saving={saving} setSaving={setSaving} savingRef={savingRef} />}
+      {macrosDialogOpen && (
+        <MacrosEditor
+          key={macrosDraftEpoch}
+          initial={macrosDraft}
+          saving={saving}
+          setSaving={setSaving}
+          savingRef={savingRef}
+        />
+      )}
     </Dialog>
   )
 }

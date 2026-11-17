@@ -7,6 +7,7 @@
 //!   in outcome sentences, and a QR painted from the two theme tokens only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_tests.rs
 //! ├── app
@@ -29,6 +30,7 @@
 //! app/cloud_tests.rs
 //! ├── app
 //! └── app::modal
+//! ```
 //! <module-headers:end>
 
 use std::sync::mpsc;
@@ -166,7 +168,7 @@ fn each_cloud_modal_declares_its_family() {
 fn each_palette_command_opens_its_modal() {
     let mut app = test_app(default_bindings());
     app.engine.config.cloud.org_url = SAMPLE_ORG.into();
-    app.execute_command("cloud-login".into()).unwrap();
+    app.execute_command("cloud-login").unwrap();
     let PromptState::Cloud(CloudPrompt::Login(login)) = &app.prompt else {
         panic!("{:?}", app.prompt);
     };
@@ -175,18 +177,18 @@ fn each_palette_command_opens_its_modal() {
         "pre-filled from [cloud] org_url"
     );
     for (name, rotate) in [("cloud-logout", false), ("cloud-rotate-token", true)] {
-        app.execute_command(name.into()).unwrap();
+        app.execute_command(name).unwrap();
         match &app.prompt {
             PromptState::Cloud(CloudPrompt::Logout(ConfirmFocus::Cancel)) if !rotate => {}
             PromptState::Cloud(CloudPrompt::Rotate(ConfirmFocus::Cancel)) if rotate => {}
             other => panic!("{name}: {other:?}"),
         }
     }
-    app.execute_command("cloud-status".into()).unwrap();
+    app.execute_command("cloud-status").unwrap();
     drain_until(&mut app, |app| {
         matches!(app.prompt, PromptState::Cloud(CloudPrompt::Status(Some(_))))
     });
-    app.execute_command("cloud-pair-phone".into()).unwrap();
+    app.execute_command("cloud-pair-phone").unwrap();
     drain_until(&mut app, |app| {
         matches!(
             app.prompt,
@@ -200,7 +202,7 @@ fn escape_cancels_a_running_login_and_closes_its_listener() {
     let worker = MockWorker::start(|_| {
         MockResponse::json(
             200,
-            serde_json::json!({
+            &serde_json::json!({
                 "service": "yaran-cloud", "protocol": {"min": 1, "max": 1}, "setup": "closed",
                 "org": {"name": "Example Org", "url": SAMPLE_ORG},
                 "access": {"team_domain": "team.cloudflareaccess.com"}, "worker": {"version": "1.0.0"},
@@ -216,7 +218,7 @@ fn escape_cancels_a_running_login_and_closes_its_listener() {
         Ok(())
     });
     app.engine.config.cloud.org_url = SAMPLE_ORG.into();
-    app.execute_command("cloud-login".into()).unwrap();
+    app.execute_command("cloud-login").unwrap();
     app.handle_key(key(KeyCode::Enter)).unwrap();
     assert!(
         status_for(&app, KEY_LOGIN).is_some(),
@@ -244,13 +246,13 @@ fn escape_cancels_a_running_login_and_closes_its_listener() {
 fn space_activates_the_focused_button() {
     let mut app = test_app(default_bindings());
     // Cancel has focus: Space closes and runs nothing.
-    app.execute_command("cloud-logout".into()).unwrap();
+    app.execute_command("cloud-logout").unwrap();
     app.handle_key(key(KeyCode::Char(' '))).unwrap();
     assert!(matches!(app.prompt, PromptState::None));
     assert!(app.status.snapshot().iter().all(|s| s.key.is_none()));
 
     // Focus moved onto Rotate token: Space runs it, and the worker answers.
-    app.execute_command("cloud-rotate-token".into()).unwrap();
+    app.execute_command("cloud-rotate-token").unwrap();
     app.handle_key(key(KeyCode::Tab)).unwrap();
     assert!(matches!(
         app.prompt,
@@ -274,10 +276,10 @@ fn outcome_sentences_render_as_chips() {
     let found = (0..buf.area.height).find_map(|y| {
         let row: String = (0..width).map(|x| buf[(x, y)].symbol()).collect();
         row.find(name)
-            .map(|at| (row[..at].chars().count() as u16, y))
+            .map(|at| (u16::try_from(row[..at].chars().count()).unwrap(), y))
     });
     let (x, y) = found.expect("the NotPaired sentence names the command");
-    for dx in 0..name.len() as u16 {
+    for dx in 0..u16::try_from(name.len()).unwrap() {
         let cell = &buf[(x + dx, y)];
         assert_eq!(
             (Some(cell.fg), Some(cell.bg)),
@@ -338,6 +340,7 @@ fn every_loadable_theme_paints_the_qr_black_on_white() {
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
         lock_path: root.join("yaran.lock"),
+        socket_path: root.join("yaran.sock"),
         root,
     };
     for listing in crate::theme::discover_available(&paths) {

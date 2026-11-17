@@ -5,6 +5,7 @@ import type {
   PanelProps,
 } from "react-resizable-panels"
 
+import { isInGateLayer, onGateUp } from "@/lib/gateLayer"
 import { DIVIDER_DRAG_THRESHOLD_PX } from "@/lib/paneDivider"
 import {
   CHANGES_PANE_COLLAPSE_EPSILON,
@@ -24,6 +25,10 @@ export const CHANGES_PANE_HEAL_FRAMES = 5
 
 interface GestureState {
   pointerDown: boolean
+  // The pointer the press in progress came from. A release or cancel from any
+  // other pointer (a second finger, or a release another module sends) is not
+  // this gesture's end.
+  pointerId: number | undefined
   collapseArmed: boolean
   pointerMoved: boolean
   cancelled: boolean
@@ -54,6 +59,7 @@ export function useChangesPaneController(showChanges: boolean) {
   const collapseCommitRef = useRef<number | null>(null)
   const gestureRef = useRef<GestureState>({
     pointerDown: false,
+    pointerId: undefined,
     collapseArmed: false,
     pointerMoved: false,
     cancelled: false,
@@ -160,11 +166,14 @@ export function useChangesPaneController(showChanges: boolean) {
   // bad zero-width report can arrive later; the next pointerdown resets it.
   useEffect(() => {
     const onDown = (event: Event) => {
+      // A press on the sign-in gate's page is no gesture on the panes it hides.
+      if (isInGateLayer(event.target)) return
       const gesture = gestureRef.current
+      const point = event as PointerEvent
       gesture.pointerDown = true
+      gesture.pointerId = point.pointerId
       gesture.pointerMoved = false
       gesture.cancelled = false
-      const point = event as PointerEvent
       gesture.origin =
         typeof point.clientX === "number"
           ? { x: point.clientX, y: point.clientY }
@@ -186,8 +195,9 @@ export function useChangesPaneController(showChanges: boolean) {
       }
     }
 
-    const onUp = () => {
+    const onUp = (event: Event) => {
       const gesture = gestureRef.current
+      if ((event as PointerEvent).pointerId !== gesture.pointerId) return
       gesture.pointerDown = false
       const pending = gesture.persistPending
       gesture.persistPending = null
@@ -197,8 +207,9 @@ export function useChangesPaneController(showChanges: boolean) {
       scheduleCollapseCommit()
     }
 
-    const onCancel = () => {
+    const onCancel = (event: Event) => {
       const gesture = gestureRef.current
+      if ((event as PointerEvent).pointerId !== gesture.pointerId) return
       gesture.pointerDown = false
       gesture.cancelled = true
       gesture.persistPending = null
@@ -212,12 +223,25 @@ export function useChangesPaneController(showChanges: boolean) {
       })
     }
 
+    // A drag the sign-in gate interrupts can have its release land on the
+    // gate, where `onDown`'s guard and the library both ignore it; forget it,
+    // or a layout change after the next sign-in would be booked to it.
+    const stopGateReset = onGateUp(() => {
+      const gesture = gestureRef.current
+      gesture.pointerDown = false
+      gesture.pointerMoved = false
+      gesture.collapseArmed = false
+      gesture.persistPending = null
+      gesture.cancelled = true
+    })
+
     window.addEventListener("pointerdown", onDown, true)
     window.addEventListener("pointermove", onMove, true)
     window.addEventListener("pointerup", onUp, true)
     window.addEventListener("pointercancel", onCancel, true)
     window.addEventListener("keydown", onKeyDown, true)
     return () => {
+      stopGateReset()
       window.removeEventListener("pointerdown", onDown, true)
       window.removeEventListener("pointermove", onMove, true)
       window.removeEventListener("pointerup", onUp, true)

@@ -4,7 +4,10 @@
 //!
 //! It is not a modal: no [`crate::app::PromptState`], no entry in the modal
 //! registry, and no rect in the click-outside dismissal engine, so pane and tab
-//! navigation keep working over it.
+//! navigation keep working over it. For the same reason it is filled with the
+//! pane-card surface (`Theme::pane_card_bg`, the pane's own background unless a
+//! theme sets it), never the modal one: it shares a dialog's ring and title, not
+//! its fill.
 //!
 //! Degradation, as the pane shrinks, in order:
 //!
@@ -172,8 +175,7 @@ pub(crate) fn plan_pane_card(
     // padding it sits inside: forgetting the padding here is what let a button
     // paint clipped inside a ring that looked wide enough.
     let min_inner = paintable_button
-        .map(|width| width.saturating_add(SIDE_PADDING * 2))
-        .unwrap_or(MIN_INNER)
+        .map_or(MIN_INNER, |width| width.saturating_add(SIDE_PADDING * 2))
         .max(MIN_INNER);
     // WIDTH decides whether a ring is possible at all, exactly as the take-over
     // card does: a pane too narrow to hold the measure plus two columns of
@@ -199,7 +201,7 @@ pub(crate) fn plan_pane_card(
     loop {
         if ring_possible {
             let heights = measure_all(&kept, blocks, ring_w, &measure);
-            if stack_height(&kept, blocks, &heights) + 2 <= area.height {
+            if stack_height(&kept, blocks, &heights).saturating_add(2) <= area.height {
                 return Some(place(area, Some(ring_inner), &kept, blocks, &heights));
             }
         }
@@ -271,35 +273,32 @@ fn place(
     heights: &[u16],
 ) -> CardPlan {
     let inner_h = stack_height(kept, blocks, heights);
-    match ring_inner_w {
-        Some(inner_w) => {
-            let card = Rect::new(
-                area.x + (area.width - (inner_w + 2)) / 2,
-                area.y + (area.height - (inner_h + 2)) / 2,
-                inner_w + 2,
-                inner_h + 2,
-            );
-            let content_w = inner_w.saturating_sub(SIDE_PADDING * 2).max(1);
-            CardPlan {
-                ring: Some(card),
-                blocks: stack(
-                    kept,
-                    heights,
-                    card.x + 1 + SIDE_PADDING,
-                    card.y + 1,
-                    content_w,
-                ),
-                content_width: content_w,
-            }
+    if let Some(inner_w) = ring_inner_w {
+        let card = Rect::new(
+            area.x + (area.width - (inner_w + 2)) / 2,
+            area.y + (area.height - (inner_h + 2)) / 2,
+            inner_w + 2,
+            inner_h + 2,
+        );
+        let content_w = inner_w.saturating_sub(SIDE_PADDING * 2).max(1);
+        CardPlan {
+            ring: Some(card),
+            blocks: stack(
+                kept,
+                heights,
+                card.x + 1 + SIDE_PADDING,
+                card.y + 1,
+                content_w,
+            ),
+            content_width: content_w,
         }
-        None => {
-            let content_w = bare_content_width(area).max(1);
-            let y = area.y + (area.height.saturating_sub(inner_h)) / 2;
-            CardPlan {
-                ring: None,
-                blocks: stack(kept, heights, area.x + SIDE_PADDING, y, content_w),
-                content_width: content_w,
-            }
+    } else {
+        let content_w = bare_content_width(area).max(1);
+        let y = area.y + (area.height.saturating_sub(inner_h)) / 2;
+        CardPlan {
+            ring: None,
+            blocks: stack(kept, heights, area.x + SIDE_PADDING, y, content_w),
+            content_width: content_w,
         }
     }
 }
@@ -308,13 +307,19 @@ fn place(
 /// ending the card gets a blank row under it except a button, which sits on the
 /// bottom edge.
 fn stack_height(kept: &[usize], blocks: &[CardBlockPlan], heights: &[u16]) -> u16 {
-    let bodies: u16 = heights.iter().sum();
-    let gaps = BLOCK_GAP * u16::try_from(kept.len().saturating_sub(1)).unwrap_or(0);
+    let bodies = heights
+        .iter()
+        .fold(0u16, |sum, height| sum.saturating_add(*height));
+    let gaps =
+        BLOCK_GAP.saturating_mul(u16::try_from(kept.len().saturating_sub(1)).unwrap_or(u16::MAX));
     let bottom = match kept.last() {
         Some(index) if blocks[*index].is_button => 0,
         _ => TOP_PADDING,
     };
-    TOP_PADDING + bodies + gaps + bottom
+    TOP_PADDING
+        .saturating_add(bodies)
+        .saturating_add(gaps)
+        .saturating_add(bottom)
 }
 
 /// Lay the surviving blocks out from `y` downwards.
@@ -375,6 +380,19 @@ mod tests {
         plan_pane_card(area, preferred, button, &plans, |index, _width| {
             blocks[index].1
         })
+    }
+
+    #[test]
+    fn blocks_measuring_past_a_u16_between_them_still_plan() {
+        let plan = laid_out(
+            Rect::new(0, 0, 60, 24),
+            46,
+            None,
+            &[block(0, 3), block(1, u16::MAX), block(2, u16::MAX)],
+        )
+        .expect("the short block fits once the tall ones are dropped");
+        assert_eq!(plan.blocks.len(), 1);
+        assert_eq!(plan.blocks[0].index, 0);
     }
 
     #[test]

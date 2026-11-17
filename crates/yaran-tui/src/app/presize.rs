@@ -16,8 +16,10 @@ use std::time::{Duration, Instant};
 use ratatui::layout::Rect;
 
 use super::pty_ownership::PtyDriver;
-use super::render::minimized_agent_term_size;
-use super::*;
+#[cfg(test)]
+use super::render::TabStrip;
+use super::render::{BannerRow, minimized_agent_term_size};
+use super::{App, FullscreenOverlay, InputTarget, SessionIdRef, SessionSurface, TabId, TabIdRef};
 
 /// How long the windowed center pane must keep one geometry before background
 /// PTYs follow it. Every presize costs a hidden agent a full transcript
@@ -118,15 +120,22 @@ impl App {
             };
             // `render_center` hides the banner while typing into the selected
             // agent, so a sibling tab is shown without it too.
-            let banner = self.engine.pr_statuses.contains_key(&session_id)
+            let banner = self.engine.shown_pr(&session_id).is_some()
                 && !(is_input && selected.as_deref() == Some(session_id.as_str()));
             let tab_count = self
                 .engine
                 .ordered_tab_ids_for_session(SessionIdRef::new(&session_id))
                 .len();
-            let Some((rows, cols)) =
-                minimized_agent_term_size(area, banner, tab_count, always_show)
-            else {
+            let Some((rows, cols)) = minimized_agent_term_size(
+                area,
+                if banner {
+                    BannerRow::Top
+                } else {
+                    BannerRow::None
+                },
+                tab_count,
+                always_show.into(),
+            ) else {
                 continue;
             };
             if client.grid_size() == Some((rows, cols)) {
@@ -156,6 +165,7 @@ mod tests {
     use super::*;
     use crate::app::background_server::tests::FakeCompanion;
     use crate::app::test_support::{default_bindings, test_app};
+    use crate::app::{CenterMode, FocusPane, LeftItem};
     use crate::model::SessionStatus;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -232,18 +242,17 @@ mod tests {
         app.engine
             .providers
             .get(TabIdRef::new(tab))
-            .and_then(|client| client.grid_size())
+            .and_then(yaran_core::pty::PtyClient::grid_size)
     }
 
     fn winches(app: &App, tab: &str) -> usize {
         app.engine
             .providers
             .get(TabIdRef::new(tab))
-            .map(|client| client.visible_text_excerpt(200).matches("WINCH").count())
-            .unwrap_or_default()
+            .map_or_default(|client| client.visible_text_excerpt(200).matches("WINCH").count())
     }
 
-    /// Wait until the child has reported `count` SIGWINCHes, then a little
+    /// Wait until the child has reported `count` `SIGWINCHes`, then a little
     /// longer so a late extra one would also show up.
     fn settle_winches(app: &App, tab: &str, count: usize) -> usize {
         for _ in 0..300 {
@@ -283,10 +292,13 @@ mod tests {
                 .presize
                 .area
                 .expect("a windowed render records its area");
-            let rendered = app.mouse_layout.agent_term.expect("the terminal was drawn");
+            let rendered = app
+                .mouse_layout
+                .focused_term
+                .expect("the terminal was drawn");
             let tabs = app.session_tab_ids("session-1").len();
             assert_eq!(
-                minimized_agent_term_size(area, false, tabs, false),
+                minimized_agent_term_size(area, BannerRow::None, tabs, TabStrip::WhenSeveral),
                 Some((rendered.height, rendered.width)),
                 "tab strip shown: {extra_tab}"
             );
@@ -303,7 +315,7 @@ mod tests {
         let pane = grid(&app, "session-1-slot").expect("the shown agent is sized");
         assert_ne!(pane, (10, 10), "the render sized the shown agent");
         assert_eq!(grid(&app, "session-2-slot"), Some((10, 10)));
-        let selected_dedupe = (app.last_pty_size, app.last_pty_resize_target.clone());
+        let selected_dedupe = app.part_targets.clone();
 
         // Not before the geometry has held still.
         assert_eq!(app.presize_background_agent_ptys(Instant::now()), 0);
@@ -312,7 +324,7 @@ mod tests {
         assert_eq!(app.presize_background_agent_ptys(settled()), 1);
         assert_eq!(grid(&app, "session-2-slot"), Some(pane));
         assert_eq!(
-            (app.last_pty_size, app.last_pty_resize_target.clone()),
+            app.part_targets.clone(),
             selected_dedupe,
             "the shown surface's resize dedupe is the render pass's, untouched"
         );
@@ -365,7 +377,7 @@ mod tests {
     /// A layout that is only passing through (a pane toggled for a few seconds
     /// and back, a window edge mid-drag) must not make every hidden agent
     /// repaint. Measured on 64 agents with a 1 s settle: a 5 s detour sent
-    /// every agent two SIGWINCHes, one each way, where the previous build sent
+    /// every agent two `SIGWINCHes`, one each way, where the previous build sent
     /// none. Nothing moves until the geometry has held for the full settle.
     #[test]
     fn a_layout_held_for_less_than_the_settle_presizes_nothing() {
@@ -379,7 +391,11 @@ mod tests {
             "half way through the settle nothing is presized"
         );
         assert_eq!(
-            app.presize_background_agent_ptys(now + PRESIZE_SETTLE - Duration::from_millis(100)),
+            app.presize_background_agent_ptys(
+                (now + PRESIZE_SETTLE)
+                    .checked_sub(Duration::from_millis(100))
+                    .unwrap()
+            ),
             0,
             "just short of the settle nothing is presized"
         );

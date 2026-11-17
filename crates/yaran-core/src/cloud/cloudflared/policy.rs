@@ -4,6 +4,7 @@
 //! - Pure; every clock is passed in, so the timing is table-tested.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/policy.rs
 //! └── watch::rule
@@ -15,6 +16,7 @@
 //! ├── cloud::cloudflared::supervisor
 //! ├── cloud::leg_run
 //! └── cloud::leg_start
+//! ```
 //! <module-headers:end>
 
 use std::time::{Duration, Instant};
@@ -24,7 +26,9 @@ use std::time::{Duration, Instant};
 pub enum ChildExit {
     /// It ended after yaran's own SIGTERM, whatever the code.
     AfterOurStop,
+    /// It exited on its own with this code.
     Code(i32),
+    /// A signal yaran did not send ended it.
     Signal(i32),
     /// It could not be spawned at all.
     SpawnFailed(std::io::ErrorKind),
@@ -33,18 +37,22 @@ pub enum ChildExit {
 /// Whose binary was running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinarySource {
+    /// The binary yaran downloaded and verified.
     Managed,
+    /// The binary `[cloud] cloudflared_path` names.
     User,
 }
 
 /// What to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitAction {
+    /// Stop: yaran asked for it.
     Done,
     /// The token was unreadable or invalid (255): ask the control plane, do not loop.
     Heal,
     /// cloudflared tried to self-update despite the flag: re-verify the managed binary.
     Reverify,
+    /// Restart it after the backoff.
     Restart,
     /// The binary cannot be run at all.
     StopUnavailable,
@@ -56,7 +64,7 @@ pub fn plan_after_exit(exit: ChildExit, source: BinarySource) -> ExitAction {
         (ChildExit::AfterOurStop, _) => ExitAction::Done,
         (ChildExit::Code(255), _) => ExitAction::Heal,
         (ChildExit::Code(10 | 11), BinarySource::Managed) => ExitAction::Reverify,
-        (ChildExit::Code(10 | 11), BinarySource::User) => ExitAction::Restart,
+        // A user's binary is theirs to keep current: an update exit just restarts.
         (ChildExit::Code(_) | ChildExit::Signal(_), _) => ExitAction::Restart,
         (ChildExit::SpawnFailed(kind), _) => match kind {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
@@ -70,12 +78,16 @@ pub fn plan_after_exit(exit: ChildExit, source: BinarySource) -> ExitAction {
 /// Restart delays: `WatchBackoff`'s deterministic curve (multiplier fixed at 2) plus jitter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RestartBackoff {
+    /// The first delay, in milliseconds.
     pub initial_ms: u64,
+    /// The longest delay, in milliseconds.
     pub max_ms: u64,
+    /// The random spread added to each delay, in milliseconds.
     pub jitter_ms: u64,
 }
 
 impl RestartBackoff {
+    /// The delay before restart `attempt` (0-based), jitter included.
     pub fn delay(&self, attempt: u32, rng: &mut impl rand::Rng) -> Duration {
         let curve = crate::watch::rule::WatchBackoff {
             initial_ms: self.initial_ms,
@@ -104,6 +116,7 @@ pub enum FailureNotice {
     First,
     /// The run has failed `ESCALATE_AFTER` times without Ready: make it sticky.
     Escalate,
+    /// Nothing to say yet.
     Quiet,
 }
 
@@ -121,11 +134,13 @@ impl FailureRun {
         self.attempt
     }
 
+    /// cloudflared reported Ready: the failure run ends.
     pub fn on_ready(&mut self, now: Instant) {
         self.ready_since.get_or_insert(now);
         self.reached_ready = true;
     }
 
+    /// cloudflared lost Ready.
     pub fn on_not_ready(&mut self, now: Instant) {
         if self
             .ready_since
@@ -158,6 +173,7 @@ pub struct UnauthorizedTracker {
 }
 
 impl UnauthorizedTracker {
+    /// A tracker that confirms Unauthorized after `window` of it.
     pub fn new(window: Duration) -> Self {
         Self {
             window,
@@ -165,6 +181,7 @@ impl UnauthorizedTracker {
         }
     }
 
+    /// cloudflared logged an Unauthorized.
     pub fn saw_unauthorized(&mut self, now: Instant) {
         self.since.get_or_insert(now);
     }

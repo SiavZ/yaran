@@ -70,7 +70,7 @@ fn offset_into_instant(
     if secs <= 0 {
         return Some(now_instant);
     }
-    now_instant.checked_add(Duration::from_secs(secs as u64))
+    now_instant.checked_add(Duration::from_secs(u64::try_from(secs).ok()?))
 }
 
 fn relative_into_instant(value: f64, multiplier: f64, now_instant: Instant) -> Option<Instant> {
@@ -166,9 +166,9 @@ mod tests {
 
     fn instant_offset_secs(target: Instant, base: Instant) -> i64 {
         if target >= base {
-            target.duration_since(base).as_secs() as i64
+            i64::try_from(target.duration_since(base).as_secs()).unwrap()
         } else {
-            -(base.duration_since(target).as_secs() as i64)
+            -i64::try_from(base.duration_since(target).as_secs()).unwrap()
         }
     }
 

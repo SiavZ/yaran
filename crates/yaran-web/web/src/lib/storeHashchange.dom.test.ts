@@ -39,6 +39,13 @@ const SPINE = {
 }
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   const body = u.includes("/api/v1/workspace")
     ? SPINE
@@ -85,7 +92,7 @@ describe("a plain hash anchor drives the router", () => {
     vi.unstubAllGlobals()
   })
 
-  it("leaves the standalone surface when its open-in-yaran anchor is clicked", async () => {
+  it("swaps between the standalone surface and the workspace on a same-tab fragment move, and Back undoes it, the phone's overlay opener included", async () => {
     window.location.hash = "#/editor/agent/s1"
     const mod = await import("./store")
     await vi.waitFor(() => {
@@ -107,5 +114,115 @@ describe("a plain hash anchor drives the router", () => {
     expect(mod.getSnapshot().editorRoute).toBeNull()
     expect(mod.getSnapshot().selectedSessionId).toBe("s1")
     expect(window.location.hash).toBe("#/agent/s1")
+
+    // The phone's Changes screen opens a file in the standalone editor in
+    // this same tab, and the browser's Back lands on the Changes screen again.
+    mod.openChangesScreen()
+    expect(window.location.hash).toBe("#/agent/s1/changes")
+    mod.openStandaloneEditorInThisTab(
+      { kind: "agent", sessionId: "s1" },
+      { mode: "diff", path: "a.ts" },
+    )
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    })
+    expect(window.location.hash).toBe("#/editor/agent/s1/diff/a.ts")
+    expect(mod.getSnapshot().editorRoute).toMatchObject({
+      mode: "diff",
+      path: "a.ts",
+    })
+
+    history.back()
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    })
+    expect(window.location.hash).toBe("#/agent/s1/changes")
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+
+    // The in-page overlay does not render on a phone, so the overlay's own
+    // opener takes the same same-tab road there rather than writing an
+    // address the phone cannot show.
+    const wide = window.innerWidth
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 })
+    try {
+      mod.openEditor({ kind: "agent", sessionId: "s1" }, "a.ts", "diff")
+      await vi.waitFor(() => {
+        expect(mod.getSnapshot().standaloneEditor).toBe(true)
+      })
+      expect(window.location.hash).toBe("#/editor/agent/s1/diff/a.ts")
+      history.back()
+      await vi.waitFor(() => {
+        expect(mod.getSnapshot().standaloneEditor).toBe(false)
+      })
+      expect(window.location.hash).toBe("#/agent/s1/changes")
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: wide })
+    }
+  })
+
+  it("the standalone editor's Up control pushes the agent's Changes screen, never stepping back", async () => {
+    window.location.hash = "#/editor/agent/s1/file/a.ts"
+    const mod = await import("./store")
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().spine).not.toBeNull()
+    })
+    expect(mod.getSnapshot().standaloneEditor).toBe(true)
+    const back = vi.spyOn(history, "back")
+    const go = vi.spyOn(history, "go")
+    const before = history.length
+
+    mod.leaveStandaloneEditor({ kind: "agent", sessionId: "s1" })
+
+    await vi.waitFor(() => {
+      expect(mod.getSnapshot().standaloneEditor).toBe(false)
+    })
+    expect(window.location.hash).toBe("#/agent/s1/changes")
+    expect(mod.getSnapshot().mobileScreen).toBe("changes")
+    expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+    expect(mod.getSnapshot().editorRoute).toBeNull()
+    // A push: the editor stays behind it in history, and nothing traversed.
+    expect(history.length).toBe(before + 1)
+    expect(back).not.toHaveBeenCalled()
+    expect(go).not.toHaveBeenCalled()
+    back.mockRestore()
+    go.mockRestore()
+  })
+})
+
+describe("where the standalone editor's Up control goes", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock)
+    vi.stubGlobal("WebSocket", FakeWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("names the agent's Changes screen for an agent root, a standalone agent included", async () => {
+    const mod = await import("./store")
+    expect(mod.standaloneEditorUpHash({ kind: "agent", sessionId: "s1" })).toBe(
+      "#/agent/s1/changes",
+    )
+  })
+
+  it("names the terminal's own screen for a terminal root, which has no Changes screen", async () => {
+    const mod = await import("./store")
+    expect(
+      mod.standaloneEditorUpHash({
+        kind: "terminal",
+        terminalId: "t9",
+        owner: { kind: "project", projectId: "p1" },
+      }),
+    ).toBe("#/project/p1/terminal/t9")
+    expect(
+      mod.standaloneEditorUpHash({
+        kind: "terminal",
+        terminalId: "t3",
+        owner: { kind: "standalone" },
+      }),
+    ).toBe("#/terminal/t3")
   })
 })

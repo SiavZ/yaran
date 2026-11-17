@@ -26,6 +26,30 @@ const fixture = journey.fixture || "steady"
 // (a serving port, a set of macros, a theme) does not have to type it into a
 // dialog first. Takes the rendered config text and returns the text to write.
 const patchConfig = journey.config || ((text) => text)
+// What runs in the captured terminal: the terminal UI (the default),
+// `yaran server`, whose console is what a journey shooting the server's own
+// output wants on screen, or a plain shell, for a journey that types a yaran
+// command (`yaran config set`) and shoots what it prints.
+const launch = journey.launch || "tui"
+if (!["tui", "server", "shell"].includes(launch)) {
+  fail(`journey.launch must be "tui", "server" or "shell", not ${launch}`, 64)
+}
+// Where the shell's user lives. A yaran command typed there finds its config
+// through the platform default under this home, so what it prints names the
+// path a reader has rather than the capture's own YARAN_HOME.
+const shellHome = "/home/you"
+// An optional stand-in for the Tailscale CLI, so a journey can show yaran on a
+// tailnet in a container that has none. See standInTailscale below.
+const tailscale = journey.tailscale || null
+// Whether the journey shows GitHub: the integration stays on and the screenshot
+// fixtures' stand-in gh answers from its canned table. Off, the integration is
+// off and no gh is on the PATH, so nothing a journey shows depends on one. The
+// journey points a repository's origin at GitHub itself, once its agents exist:
+// yaran pulls a project before creating an agent, and nothing answers that URL.
+const github = journey.github === true
+// Not under /capture: that is a tmpfs, which Docker mounts noexec, so a script
+// written there cannot run. The container's own layer is disposable too.
+const standInBin = "/opt/yaran-stand-in/bin"
 
 function readInteger(name, fallback, minimum) {
   const value = Number(process.env[name] || fallback)
@@ -90,7 +114,7 @@ function seedState() {
     .replace(/^default_mode = "shared"$/m, 'default_mode = "worktree"')
     .replace(/^disable_automated_welcome_screen = false$/m, "disable_automated_welcome_screen = true")
     .replace(/^disable_release_notes = false$/m, "disable_release_notes = true")
-    .replace(/^github_integration = true$/m, "github_integration = false")
+    .replace(/^github_integration = true$/m, `github_integration = ${github}`)
     .replace(/^theme = .*$/m, `theme = "${theme}"`)
   config += `
 [providers.fake]
@@ -98,6 +122,14 @@ command = "/usr/local/bin/fake-agent"
 args = []
 `
   fs.writeFileSync(configPath, patchConfig(config))
+}
+
+/// Put the screenshot fixtures' stand-in gh on the PATH yaran is started with.
+function standInGitHub() {
+  if (!github) return
+  fs.mkdirSync(standInBin, { recursive: true })
+  fs.copyFileSync("/fixtures/gh", path.join(standInBin, "gh"))
+  fs.chmodSync(path.join(standInBin, "gh"), 0o755)
 }
 
 /// The fixture the fake provider reads is an environment variable, and the
@@ -109,7 +141,9 @@ async function setFixture(name) {
   const text = fs.readFileSync(configPath, "utf8").replace(/\n\[env\][\s\S]*?(?=\n\[|$)/, "")
   fs.writeFileSync(configPath, `${text}\n[env]\nYARAN_FAKE_FIXTURE = "${name}"\n`)
   await palette("reload-config")
-  // Success waits its turn behind the workspace's queued info messages.
+  // Status infos are queued and each holds the line for its full window
+  // (six seconds by default), so the confirmation can sit behind several
+  // earlier ones before it is shown.
   await waitFor("Configuration reloaded", 60000)
 }
 
@@ -121,6 +155,39 @@ function seedLooseWorktree(project, branch) {
   fs.mkdirSync(path.dirname(at), { recursive: true })
   git(repo, "worktree", "add", "-q", "-b", branch, at, "HEAD")
   fs.appendFileSync(path.join(at, "README.md"), "\nA note left in this worktree.\n")
+}
+
+/// Put a stand-in `tailscale` on the PATH yaran is started with, answering the
+/// three questions yaran asks (`ip`, `status --json --peers=false` and
+/// `serve status --json`) with the journey's answers and failing anything else,
+/// and give the container's loopback interface the address it reports, so the
+/// Tailscale listener really binds. The capture container is disposable and has
+/// its own network namespace, which is the only reason that second step is
+/// acceptable; it needs the NET_ADMIN capability compose grants the capture
+/// service.
+function standInTailscale() {
+  if (!tailscale) return
+  const { ip, status, serve } = tailscale
+  if (!ip || !status || !serve) fail("journey.tailscale needs ip, status and serve", 64)
+  const dir = "/capture/tailscale"
+  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(standInBin, { recursive: true })
+  fs.writeFileSync(path.join(dir, "status.json"), status)
+  fs.writeFileSync(path.join(dir, "serve.json"), serve)
+  const script = path.join(standInBin, "tailscale")
+  fs.writeFileSync(
+    script,
+    `#!/bin/sh
+case "$*" in
+  "ip") echo ${ip} ;;
+  "status --json --peers=false") cat ${dir}/status.json ;;
+  "serve status --json") cat ${dir}/serve.json ;;
+  *) echo "the stand-in tailscale only answers what yaran asks" >&2; exit 1 ;;
+esac
+`,
+  )
+  fs.chmodSync(script, 0o755)
+  run("ip", ["addr", "add", `${ip}/32`, "dev", "lo"])
 }
 
 function tmux(...args) {
@@ -135,10 +202,21 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
+/// Whether the screen says `needle`, read the way a person reads it: every run
+/// of spaces on either side counts as one. A name in a dialog renders as a chip,
+/// padded by one cell each side, so the title that used to read
+/// `Add Project: /root` now reads `Add Project:  /root ` and an exact match
+/// fails on spacing alone. Only spaces are folded, never line breaks, so a
+/// needle still has to sit on one row of the screen.
+function screenSays(text, needle) {
+  const fold = (value) => value.replace(/ {2,}/g, " ")
+  return fold(text).includes(fold(needle))
+}
+
 async function waitFor(needle, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (captureText().includes(needle)) return
+    if (screenSays(captureText(), needle)) return
     await sleep(100)
   }
   throw new Error(`timed out waiting for ${JSON.stringify(needle)}\n\n${captureText()}`)
@@ -153,13 +231,15 @@ function headerNamesAgent(name) {
   return new RegExp(`(› |agent: )${escaped}(\\s|$)`).test(header)
 }
 
-async function waitForSelectedAgent(name, timeoutMs) {
+/// Wait until a predicate over the whole screen holds. `what` names the
+/// condition for the timeout message.
+async function waitUntil(predicate, what, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (headerNamesAgent(name)) return
+    if (predicate(captureText())) return
     await sleep(100)
   }
-  throw new Error(`timed out waiting for the header to name ${JSON.stringify(name)}\n\n${captureText()}`)
+  throw new Error(`timed out waiting for ${what}\n\n${captureText()}`)
 }
 
 function sendKeys(...keys) {
@@ -173,6 +253,9 @@ function sendText(text) {
 async function addProject(absolutePath, label) {
   await focusSidebar()
   sendKeys("a")
+  // The folder browser's title names the directory it opened on (the home
+  // directory, as a chip), so this proves the browser is up without pinning
+  // which directory it is.
   await waitFor("Add Project:")
   await browseTo(absolutePath)
   await waitFor(`Added project "${label}" to workspace`, 20000)
@@ -224,8 +307,11 @@ async function focusPane() {
 ///
 /// Two confirmations, each waited for by name rather than slept over: the
 /// palette command opens the provider chooser, and the chooser's own Enter is
-/// what creates the tab. The pane is then focused AND interactive, so the focus
-/// is aimed back at yaran before the caller's next chord.
+/// what creates the tab, which is seen as the new pill's ordinal in the tab
+/// strip. Not the sidebar row's "N tabs": a narrow sidebar gives the tab count
+/// up first, so it is not on screen at every grid. The pane is then focused
+/// AND interactive, so the focus is aimed back at yaran before the caller's next
+/// chord.
 async function addTab(expectedCount) {
   await palette("new-agent-tab")
   await waitFor("New Tab Provider", 15000)
@@ -264,26 +350,51 @@ async function createStandaloneAgent(absolutePath, label) {
   await sleep(600)
 }
 
+/// The projects the driver adds before every journey, in the order it adds
+/// them. A journey's project index means this list, never the chooser's rows.
+const PROJECTS = ["demo-api", "demo-web"]
+
 async function createAgent(projectIndex, name) {
+  const project = PROJECTS[projectIndex]
+  if (!project) throw new Error(`no project at index ${projectIndex}; the driver adds ${PROJECTS.join(", ")}`)
   // Creating an agent leaves the center pane focused, so a second creation's
   // key would land on a pane that has no binding for it.
   await focusSidebar()
   sendKeys("n")
   await waitFor("New agent in project")
-  const projectName = ["demo-api", "demo-web"][projectIndex]
-  if (!projectName) throw new Error(`unknown capture project index ${projectIndex}`)
-  // The picker sorts by recency, so an index into the seeded projects is not
-  // an index into its current rows. Search the intended fixture by name.
+  // Picked by NAME through the chooser's own search, not by counting rows: the
+  // chooser lists the selected project first, and which project is selected
+  // after the setup's two adds is the app's call, not something to predict.
+  // Searching the full name leaves exactly one row, and Enter picks it.
   sendKeys("/")
-  sendText(projectName)
+  await sleep(300)
+  sendText(project)
+  await sleep(600)
   sendKeys("Enter")
   await waitFor("Name New Agent", 20000)
   sendText(name)
   sendKeys("Enter")
-  // The launch completion selects this agent and updates the header. Status
-  // wording may quote a generated branch, and failure fixtures replace success
-  // immediately, so neither status is a reliable signal for the next gesture.
-  await waitForSelectedAgent(name, 60000)
+  // Wait for the creation to FINISH, not merely for the row to appear. The row
+  // shows up while the worktree is still being made, and yaran focuses the new
+  // agent's pane when it finishes: a journey that carried on at the row would
+  // have its next keystrokes stolen by that focus change.
+  //
+  // A plain create is deliberately silent on the status line (the new row and
+  // its streaming pane already say it), so the finish is read off the screen
+  // itself: the header's crumb names the new agent AND the focus has moved to
+  // its pane, whose footer is the only one offering Reconnect. The sidebar held
+  // the focus until then (focusSidebar above), so that footer cannot be stale.
+  //
+  // An agent born on a fixture that exits at once (which is how a journey
+  // stages the Inactive tail) may never take the focus, and its exit error is
+  // the other report that ends the wait.
+  await waitUntil(
+    (text) =>
+      (headerNamesAgent(name) && text.includes("Reconnect")) ||
+      screenSays(text, 'Press "r" to relaunch'),
+    `the agent ${name} to finish being created`,
+    60000,
+  )
   await sleep(600)
   // yaran focuses the new agent's pane, and it is interactive there: leave every
   // journey on the sidebar so the next key is a yaran key, whatever it is.
@@ -308,13 +419,29 @@ async function selectAgent(name, maxRows = 24) {
 
 async function main() {
   seedState()
+  standInTailscale()
+  standInGitHub()
+  const searchPath = tailscale || github ? `${standInBin}:${process.env.PATH}` : process.env.PATH
+  if (launch === "shell") {
+    // The seeded state, reached through the home's default config directory.
+    fs.mkdirSync(path.join(shellHome, ".config"), { recursive: true })
+    fs.symlinkSync(yaranHome, path.join(shellHome, ".config", "yaran"))
+  }
+  const command = { tui: "yaran", server: "yaran server", shell: "bash --noprofile --norc -i" }[launch]
+  const environment =
+    launch === "shell"
+      ? `env -u YARAN_HOME HOME='${shellHome}' PS1='$ ' PATH='${searchPath}' TERM=xterm-256color COLORTERM=truecolor`
+      : `env YARAN_HOME='${yaranHome}' YARAN_FAKE_FIXTURE='${fixture}' PATH='${searchPath}' TERM=xterm-256color COLORTERM=truecolor`
   tmux(
-    "new-session", "-d", "-c", "/", "-x", String(cols), "-y", String(rows), "-s", session,
-    `env YARAN_HOME='${yaranHome}' YARAN_FAKE_FIXTURE='${fixture}' TERM=xterm-256color COLORTERM=truecolor yaran`,
+    "new-session", "-d", "-c", launch === "shell" ? shellHome : "/",
+    "-x", String(cols), "-y", String(rows), "-s", session,
+    `${environment} ${command}`,
   )
-  await waitFor("Press a to add a project")
-  await addProject("/capture/repos/demo-api", "demo-api")
-  await addProject("/capture/repos/demo-web", "demo-web")
+  if (launch === "tui") {
+    await waitFor("Press a to add a project")
+    await addProject("/capture/repos/demo-api", "demo-api")
+    await addProject("/capture/repos/demo-web", "demo-web")
+  }
   await journey({
     addTab,
     captureText,

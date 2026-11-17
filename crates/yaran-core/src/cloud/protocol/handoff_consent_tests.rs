@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::protocol::handoff_consent`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/handoff_consent_tests.rs
 //! ├── cloud::protocol::handoff_consent
@@ -13,6 +14,7 @@
 //! Used by:
 //! cloud/protocol/handoff_consent_tests.rs
 //! └── cloud::protocol::handoff_consent
+//! ```
 //! <module-headers:end>
 
 use super::*;
@@ -82,7 +84,7 @@ fn every_device_signature_case_matches() {
 fn the_consent_cookie_reproduces_byte_for_byte() {
     let f = fixture("handoff/consent-cookie.json");
     let key = unhex(f["key_hex"].as_str().unwrap());
-    let kv = f["kv"].as_u64().unwrap() as u32;
+    let kv = u32::try_from(f["kv"].as_u64().unwrap()).unwrap();
     let (host, fp24, iat) = (
         f["host"].as_str().unwrap(),
         f["fp24"].as_str().unwrap(),
@@ -119,7 +121,7 @@ fn the_consent_cookie_reproduces_byte_for_byte() {
             c["value"].as_str().unwrap(),
             c["host"].as_str().unwrap(),
             &key,
-            c["current_kv"].as_u64().unwrap() as u32,
+            u32::try_from(c["current_kv"].as_u64().unwrap()).unwrap(),
             c["now"].as_i64().unwrap(),
         );
         match c["expect_reason"].as_str() {
@@ -148,7 +150,7 @@ fn the_skip_rule_agrees_with_every_row() {
             dts_fresh: row["dts_fresh"].as_bool().unwrap(),
             device_revoked: row["device_revoked"].as_bool().unwrap(),
             key: &key,
-            current_kv: f["current_kv"].as_u64().unwrap() as u32,
+            current_kv: u32::try_from(f["current_kv"].as_u64().unwrap()).unwrap(),
             now: f["now"].as_i64().unwrap(),
         };
         let expect = match row["expect"].as_str().unwrap() {
@@ -161,12 +163,12 @@ fn the_skip_rule_agrees_with_every_row() {
             "{name}: a skip needs a verified signature"
         );
         assert_eq!(
-            consent_sets_cookie(HandoffDecision::Continue, input.verified),
+            consent_sets_cookie(HandoffDecision::Continue, &input),
             row["continue_sets_cookie"],
             "{name}"
         );
         assert!(
-            !consent_sets_cookie(HandoffDecision::Cancel, input.verified),
+            !consent_sets_cookie(HandoffDecision::Cancel, &input),
             "{name}"
         );
     }

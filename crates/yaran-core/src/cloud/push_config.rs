@@ -9,6 +9,7 @@
 //! - Pure values; no I/O.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: serde, serde_json, std
 //!
@@ -22,6 +23,7 @@
 //! ├── engine::push_hook
 //! ├── engine::push_hook::tests
 //! └── yaran-core[test cloud_push_emitter]
+//! ```
 //! <module-headers:end>
 
 use std::ops::RangeInclusive;
@@ -29,7 +31,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+/// How long attention changes for one agent are folded together by default.
 pub const DEFAULT_COALESCE_SECONDS: u32 = 2;
+/// How long an unsent push waits for the control plane by default.
 pub const DEFAULT_OFFLINE_TTL_SECONDS: u32 = 600;
 /// Below 30 s a short Wi-Fi drop loses notifications; above a day a "needs you" is history.
 pub const OFFLINE_TTL_RANGE: RangeInclusive<u32> = 30..=86_400;
@@ -57,20 +61,29 @@ impl Default for PushKeys {
     }
 }
 
+/// How the push emitter runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PushSettings {
+    /// Whether it sends at all: `push_notifications` and a mode other than `no`.
     pub enabled: bool,
+    /// How long changes for one agent are folded together.
     pub coalesce: Duration,
+    /// How long an unsent push waits before it is dropped.
     pub offline_ttl: Duration,
 }
 
 impl PushSettings {
+    /// Pushes off, with the default windows.
     pub fn off() -> Self {
-        Self::new(false, &PushKeys::default())
+        Self {
+            enabled: false,
+            ..Self::new(&PushKeys::default())
+        }
     }
 
-    /// `enabled` is the gate: `push_notifications && mode != no`.
-    pub fn new(enabled: bool, keys: &PushKeys) -> Self {
+    /// Pushes on, with `keys`' windows clamped to their ranges.
+    pub fn new(keys: &PushKeys) -> Self {
+        let enabled = true;
         let ttl = keys
             .push_offline_ttl_seconds
             .clamp(*OFFLINE_TTL_RANGE.start(), *OFFLINE_TTL_RANGE.end());
@@ -90,19 +103,16 @@ mod tests {
     #[test]
     fn push_settings_clamp_the_keys() {
         let s = |coalesce, ttl| {
-            PushSettings::new(
-                true,
-                &PushKeys {
-                    push_coalesce_seconds: coalesce,
-                    push_offline_ttl_seconds: ttl,
-                },
-            )
+            PushSettings::new(&PushKeys {
+                push_coalesce_seconds: coalesce,
+                push_offline_ttl_seconds: ttl,
+            })
         };
         assert_eq!(s(0, 1).offline_ttl, Duration::from_secs(30));
         assert_eq!(s(0, 1).coalesce, Duration::ZERO);
-        assert_eq!(s(9_999, 999_999).offline_ttl, Duration::from_secs(86_400));
+        assert_eq!(s(9_999, 999_999).offline_ttl, Duration::from_hours(24));
         assert_eq!(s(9_999, 600).coalesce, Duration::from_secs(300));
-        let d = PushSettings::new(true, &PushKeys::default());
+        let d = PushSettings::new(&PushKeys::default());
         assert_eq!(
             (d.coalesce, d.offline_ttl),
             (Duration::from_secs(2), Duration::from_secs(600))

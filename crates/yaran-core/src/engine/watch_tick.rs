@@ -37,17 +37,17 @@ pub const WATCH_TYPING_QUIET: Duration = Duration::from_secs(5);
 /// agents. Well under the shortest rule backoff in use (250 ms), so a rule
 /// still sees a new match within one interval. Clocks (pending fires,
 /// cooldowns) keep advancing every tick on the text from the last rescan.
-pub const WATCH_RESCAN_INTERVAL: Duration = Duration::from_millis(200);
+pub(crate) const WATCH_RESCAN_INTERVAL: Duration = Duration::from_millis(200);
 
 /// The rescan budget of one tick is the tab count split over this many ticks,
 /// so a herd of tabs that fall due together is drained in at most this many
 /// ticks. At the UI's tick rate that stays well inside one more
-/// WATCH_RESCAN_INTERVAL.
-pub const WATCH_RESCAN_SPREAD_TICKS: usize = 4;
+/// `WATCH_RESCAN_INTERVAL`.
+pub(crate) const WATCH_RESCAN_SPREAD_TICKS: usize = 4;
 
 /// Fewer tabs than this are all rescanned in one tick: spreading a handful
 /// buys nothing and would only delay them.
-pub const WATCH_MIN_RESCANS_PER_TICK: usize = 4;
+pub(crate) const WATCH_MIN_RESCANS_PER_TICK: usize = 4;
 
 /// A freshly started agent's first output replays what it showed before: a
 /// resumed session redraws its transcript, and a reload adopts its terminal as
@@ -57,15 +57,15 @@ pub const WATCH_MIN_RESCANS_PER_TICK: usize = 4;
 /// built-in rules therefore take its screen as already seen; a sentinel printed
 /// later fires as usual. Long enough for a resumed TUI to finish drawing its
 /// history. User rules are not held: they often answer a startup prompt.
-pub const WATCH_BUILT_IN_STARTUP_SETTLE: Duration = Duration::from_secs(10);
+pub(crate) const WATCH_BUILT_IN_STARTUP_SETTLE: Duration = Duration::from_secs(10);
 
 /// How long a read of a compact instructions file stays current. An older one
 /// is repeated in the background, so an edited file reaches the rule without a
 /// restart.
-pub const COMPACT_INSTRUCTIONS_REFRESH: Duration = Duration::from_secs(30);
+pub(crate) const COMPACT_INSTRUCTIONS_REFRESH: Duration = Duration::from_secs(30);
 
 /// How many changed tabs one tick may rescan, given `tabs` attached tabs.
-pub fn watch_rescans_per_tick(tabs: usize) -> usize {
+pub(crate) fn watch_rescans_per_tick(tabs: usize) -> usize {
     tabs.div_ceil(WATCH_RESCAN_SPREAD_TICKS)
         .max(WATCH_MIN_RESCANS_PER_TICK)
 }
@@ -92,8 +92,11 @@ pub struct WatchSessionSettings {
 /// One row of the watch-rules list: a rule on a live tab.
 #[derive(Clone, Debug)]
 pub struct WatchRuleRow {
+    /// The tab the rule watches.
     pub tab_id: TabId,
+    /// The agent the tab belongs to.
     pub session_id: String,
+    /// The rule and its state.
     pub snapshot: RuleSnapshot,
     /// A built-in rule (auto-clear or auto-compact). Not user-toggleable from
     /// the list.
@@ -179,8 +182,7 @@ impl Engine {
             .config
             .providers
             .get(provider.as_str())
-            .map(|cfg| cfg.watch.clone())
-            .unwrap_or_default();
+            .map_or_default(|cfg| cfg.watch.clone());
         let settings = self.watch_session_settings(&session_id);
         let auto_clear_idx = if settings.auto_clear {
             let clear = crate::watch::builtin::provider_clear_command(&provider);
@@ -394,6 +396,10 @@ impl Engine {
 
     /// [`Self::tick_watch_rules`] at a given instant, so tests can drive the
     /// rescan schedule on logical time instead of the host's.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one tick: rebuild changed rule sets, rescan the due tabs, then fire what is due, in that order"
+    )]
     fn tick_watch_rules_at(&mut self, now: Instant) -> Vec<StatusUpdate> {
         let mut statuses = Vec::new();
         // Phase 2 of two-phase delivery first, so a submit key deferred last
@@ -455,14 +461,14 @@ impl Engine {
                         WatchSnapshot {
                             generation,
                             scanned_at: now,
-                            text: text.clone(),
+                            text: std::sync::Arc::<str>::clone(&text),
                             key,
                         },
                     );
                     (text, key)
                 }
                 None => match self.watch.last_snapshot.get(&tab) {
-                    Some(c) => (c.text.clone(), c.key),
+                    Some(c) => (std::sync::Arc::<str>::clone(&c.text), c.key),
                     None => continue,
                 },
             };
@@ -1134,15 +1140,25 @@ mod tests {
         .expect("spawn printing pty")
     }
 
+    /// Which built-in rules a test's worker settings turn on.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Builtins {
+        /// Auto-clear only.
+        Clear,
+        /// Auto-compact only.
+        Compact,
+        /// Both.
+        Both,
+    }
+
     pub(super) fn worker_settings(
-        auto_clear: bool,
-        auto_compact: bool,
+        builtins: Builtins,
         compact_path: Option<String>,
     ) -> crate::session_settings::SessionSettings {
         crate::session_settings::SessionSettings {
             mode: crate::session_settings::ContextMode::Worker,
-            auto_clear_on_task_done: auto_clear,
-            auto_compact_on_compact: auto_compact,
+            auto_clear_on_task_done: builtins != Builtins::Compact,
+            auto_compact_on_compact: builtins != Builtins::Clear,
             compact_instructions_path: compact_path,
             ..Default::default()
         }
@@ -1168,7 +1184,7 @@ mod tests {
         let (mut engine, _guard) = engine_with_tab(printing_pty("idle"), Vec::new());
         engine.amq.session_settings.insert(
             "s1".to_string(),
-            worker_settings(false, true, Some(raw_path.clone())),
+            worker_settings(Builtins::Compact, Some(raw_path.clone())),
         );
 
         engine.tick_watch_rules();
@@ -1258,7 +1274,7 @@ mod tests {
             .into_owned();
         engine.amq.session_settings.insert(
             "s1".to_string(),
-            worker_settings(false, true, Some(raw_path.clone())),
+            worker_settings(Builtins::Compact, Some(raw_path.clone())),
         );
         engine.process_compact_instructions_loaded(
             raw_path,
@@ -1379,7 +1395,7 @@ mod tests {
         engine
             .amq
             .session_settings
-            .insert("s1".to_string(), worker_settings(true, false, None));
+            .insert("s1".to_string(), worker_settings(Builtins::Clear, None));
         // Absorb the sentinel the way an AMQ inject's pause does.
         engine.suppress_watch_rules(tab, Instant::now() + Duration::from_millis(100));
         engine.tick_watch_rules();
@@ -1398,7 +1414,7 @@ mod tests {
             .into_owned();
         engine.amq.session_settings.insert(
             "s1".to_string(),
-            worker_settings(true, true, Some(raw_path.clone())),
+            worker_settings(Builtins::Both, Some(raw_path.clone())),
         );
         engine.process_compact_instructions_loaded(
             raw_path,

@@ -42,6 +42,7 @@ use yaran_core::human_board::{
 use yaran_core::ids::TabIdRef;
 use yaran_core::statusline::StatusTone;
 
+use super::components::FocusStep;
 use super::text_input::TextInput;
 use super::{App, FocusPane, InputTarget, PromptState, RightSection};
 use crate::logger;
@@ -84,10 +85,10 @@ impl RightTab {
 
     /// The tab's name in the strip. The every-card queue is "All" beside
     /// people's queues and simply "Board" when it is the only one.
-    pub(crate) fn label(&self, has_people: bool) -> String {
+    pub(crate) fn label(&self, people: &[String]) -> String {
         match self {
             RightTab::Queue(Some(person)) => person.clone(),
-            RightTab::Queue(None) if has_people => "All".to_string(),
+            RightTab::Queue(None) if !people.is_empty() => "All".to_string(),
             RightTab::Queue(None) => "Board".to_string(),
             RightTab::Changes => "Changes".to_string(),
         }
@@ -253,10 +254,29 @@ pub(crate) struct CardStops {
     pub(crate) assign: bool,
 }
 
+/// How the card dialog is left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CardExit {
+    /// Close it and change nothing.
+    Close,
+    /// Press its action: mark done, reopen, or send the typed reply and mark done.
+    Act,
+}
+
+/// Whether a sent reply also marks its card done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReplyDone {
+    /// Send it and leave the card open.
+    Keep,
+    /// Send it and mark the card done.
+    MarkDone,
+}
+
 impl HumanBoardCardFocus {
     /// The next stop of the ring: the reply field and the recipient (when the
     /// dialog has them), then the buttons in the order they are drawn.
-    pub(crate) fn step(self, forward: bool, stops: CardStops) -> Self {
+    pub(crate) fn step(self, direction: FocusStep, stops: CardStops) -> Self {
+        let forward = direction == FocusStep::Forward;
         let mut ring: Vec<Self> = Vec::with_capacity(6);
         if stops.reply {
             ring.push(Self::Reply);
@@ -439,8 +459,7 @@ impl HumanBoardState {
     /// The selectable card ids, in row order.
     pub(crate) fn slots(&self) -> Vec<CardId> {
         self.readable()
-            .map(|board| board_rows(board, &self.view()).1)
-            .unwrap_or_default()
+            .map_or_default(|board| board_rows(board, &self.view()).1)
     }
 
     /// The selected card's position among the selectable cards.
@@ -513,8 +532,8 @@ impl HumanBoardState {
             self.selected = None;
             return;
         }
-        let current = self.selected_slot().unwrap_or(0) as isize;
-        let next = (current + delta).clamp(0, slots.len() as isize - 1) as usize;
+        let current = self.selected_slot().unwrap_or(0);
+        let next = current.saturating_add_signed(delta).min(slots.len() - 1);
         self.selected = Some(slots[next].clone());
     }
 
@@ -564,8 +583,7 @@ pub(crate) fn announcement(fresh: &[Card]) -> Option<String> {
     let from = newest
         .from
         .as_deref()
-        .map(|from| format!(" from {from}"))
-        .unwrap_or_default();
+        .map_or_default(|from| format!(" from {from}"));
     let urgency = if newest.priority.is_urgent() {
         format!("{} priority, ", newest.priority.label())
     } else {
@@ -600,7 +618,7 @@ pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, 
             BoardJob::Reopen { id, .. } => board.reopen(id, now),
             BoardJob::Reply { id, message, .. } => {
                 let was_open = board.card(id).is_some_and(Card::is_open);
-                board.reply(id, message.clone(), now)?;
+                board.reply(id, &message.clone(), now)?;
                 Ok(was_open && board.card(id).is_some_and(|card| !card.is_open()))
             }
             BoardJob::Assign { id, person, by, .. } => {
@@ -811,7 +829,7 @@ impl App {
                     result: Err(reason.clone()),
                 });
                 self.set_warning(format!(
-                    "The shared board is not syncing: {reason}. Run `yaran board sync` to sync \
+                    "The shared board is not syncing: {reason}. Run \"yaran board sync\" to sync \
                      it by hand."
                 ));
             }
@@ -840,11 +858,10 @@ impl App {
                         .human_board
                         .settings
                         .as_ref()
-                        .map(|settings| settings.sync_every.as_secs())
-                        .unwrap_or_default();
+                        .map_or_default(|settings| settings.sync_every.as_secs());
                     self.set_warning(format!(
                         "The shared board did not sync: {err}. Your board changes are kept here \
-                         and it tries again every {every}s; `yaran board sync` runs one by hand."
+                         and it tries again every {every}s; \"yaran board sync\" runs one by hand."
                     ));
                 }
             }
@@ -889,9 +906,11 @@ impl App {
             .tab
             .as_ref()
             .and_then(|tab| tabs.iter().position(|t| t == tab))
-            .unwrap_or(0) as isize;
-        let len = tabs.len() as isize;
-        let next = (at + delta).rem_euclid(len) as usize;
+            .unwrap_or(0);
+        let len = tabs.len();
+        // A step of any size, either way, lands on a tab: wrap it into 0..len first.
+        let step = delta.rem_euclid(isize::try_from(len).unwrap_or(isize::MAX));
+        let next = (at + step.unsigned_abs()) % len;
         self.show_right_tab(tabs[next].clone());
     }
 
@@ -930,7 +949,7 @@ impl App {
             self.set_ui_hint(format!(
                 "The right column now shows Tasks for Human, with a tab per queue and a Changes \
                  tab for the changed files ({next_tab} switches tabs). Agents post to it with \
-                 `yaran board post`. Run toggle-human-board from the palette ({palette_key}) to \
+                 \"yaran board post\". Run toggle-human-board from the palette ({palette_key}) to \
                  switch back."
             ));
         } else {
@@ -972,7 +991,7 @@ impl App {
             HumanBoardCardFocus::Close
         };
         self.mark_board_card_read(&card);
-        self.human_board.card_view = Default::default();
+        self.human_board.card_view = crate::app::human_board_dialog::CardView::default();
         self.prompt = PromptState::HumanBoardCard {
             card: Box::new(card),
             focus,
@@ -1101,7 +1120,7 @@ impl App {
             return Some(ReplyTarget {
                 session_id: session.id.clone(),
                 tab_id,
-                label: self.session_label(session),
+                label: session.display_label(),
                 is_poster: true,
             });
         }
@@ -1110,7 +1129,7 @@ impl App {
         Some(ReplyTarget {
             session_id: session.id.clone(),
             tab_id,
-            label: self.session_label(session),
+            label: session.display_label(),
             is_poster: false,
         })
     }
@@ -1163,14 +1182,15 @@ impl App {
     /// Resolve the card dialog: close it, and act when its action was chosen.
     /// With a reply typed, the action is sending it and marking the card
     /// done; without one, it is mark done or reopen.
-    pub(crate) fn resolve_human_board_card(&mut self, act: bool) {
+    pub(crate) fn resolve_human_board_card(&mut self, exit: CardExit) {
+        let act = exit == CardExit::Act;
         if act
             && let PromptState::HumanBoardCard {
                 reply: Some(reply), ..
             } = &self.prompt
             && !reply.input.text.trim().is_empty()
         {
-            self.send_board_reply(true);
+            self.send_board_reply(ReplyDone::MarkDone);
             return;
         }
         let prompt = std::mem::replace(&mut self.prompt, PromptState::None);
@@ -1215,8 +1235,7 @@ impl App {
             .human_board
             .settings
             .as_ref()
-            .map(|settings| settings.people.clone())
-            .unwrap_or_default();
+            .map_or_default(|settings| settings.people.clone());
         let same = yaran_core::human_board::same_person;
         // Start on the first person whose queue the card is not in.
         let selected = people
@@ -1337,7 +1356,8 @@ impl App {
     /// and an agent chosen, Send passes on what another side wrote instead.
     /// Anything that stops the send leaves the dialog open with the reply
     /// still in it, and says why.
-    pub(crate) fn send_board_reply(&mut self, mark_done: bool) {
+    pub(crate) fn send_board_reply(&mut self, done: ReplyDone) {
+        let mark_done = done == ReplyDone::MarkDone;
         let PromptState::HumanBoardCard {
             card,
             reply: Some(reply),
@@ -1415,13 +1435,16 @@ impl App {
                     &typed,
                 );
                 if from_elsewhere {
-                    prompt.push_str(&format!(
-                        " (Read the whole card with yaran board show {id}; report back on it with \
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut prompt,
+                        format_args!(
+                            " (Read the whole card with yaran board show {id}; report back on it with \
                          yaran board reply {id}.)",
-                        id = card.id
-                    ));
+                            id = card.id
+                        ),
+                    );
                 }
-                self.type_board_reply(target, &card, prompt, text, after);
+                self.type_board_reply(target, &card, &prompt, text, after);
             }
         }
     }
@@ -1432,7 +1455,7 @@ impl App {
         &mut self,
         target: ReplyTarget,
         card: &Card,
-        prompt: String,
+        prompt: &str,
         reply: String,
         after: AfterSubmit,
     ) {
@@ -1455,7 +1478,7 @@ impl App {
             ));
             return;
         }
-        let writes = yaran_core::macros::compose_send_writes(&prompt);
+        let writes = yaran_core::macros::compose_send_writes(prompt);
         let (body, has_submit) = match writes.as_slice() {
             [body, _submit] => (body.clone(), true),
             [submit] => (submit.clone(), false),
@@ -1524,8 +1547,8 @@ impl App {
             if !self.write_into_agent_tab(&pending.target.tab_id, b"\r") {
                 self.status.clear(BOARD_JOB_STATUS_KEY, None);
                 self.set_warning(format!(
-                    "Your reply on card {} is typed into {} but was not submitted: another device \
-                     took over its terminal. Press Enter there to send it; the card stays open.",
+                    "Your reply on card {} is typed into {} but was not submitted: its terminal \
+                     could not accept Enter. Press Enter there to send it; the card stays open.",
                     pending.card_label, pending.target.label
                 ));
                 continue;
@@ -1602,7 +1625,7 @@ impl App {
         );
         let (tx, rx) = mpsc::channel();
         let store = self.human_board_store();
-        let worker_job = job.clone();
+        let worker_job = job;
         let spawned = std::thread::Builder::new()
             .name("yaran-human-board-job".into())
             .spawn(move || {
@@ -1648,6 +1671,10 @@ impl App {
         self.apply_board_job_answer(answer);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one status sentence per job kind and outcome, kept in one match"
+    )]
     pub(crate) fn apply_board_job_answer(&mut self, answer: BoardJobAnswer) {
         self.status.clear(BOARD_JOB_STATUS_KEY, None);
         self.mark_frame_dirty();
@@ -1679,22 +1706,22 @@ impl App {
             )),
             (BoardJob::Resolve { label, .. }, Ok(true)) => self.set_info(format!(
                 "Marked card {label} done. It moves under Done on the board, and the agent \
-                 that posted it sees it resolved by {RESOLVED_BY} in `yaran board list --all`."
+                 that posted it sees it resolved by {RESOLVED_BY} in \"yaran board list --all\"."
             )),
             (BoardJob::Resolve { label, .. }, Ok(false)) => {
-                self.set_info(format!("Card {label} was already done; nothing changed."))
+                self.set_info(format!("Card {label} was already done; nothing changed."));
             }
             (BoardJob::Reopen { label, .. }, Ok(true)) => {
-                self.set_info(format!("Reopened card {label}; it is back on the board."))
+                self.set_info(format!("Reopened card {label}; it is back on the board."));
             }
             (BoardJob::Reopen { label, .. }, Ok(false)) => {
-                self.set_info(format!("Card {label} was already open; nothing changed."))
+                self.set_info(format!("Card {label} was already open; nothing changed."));
             }
             (BoardJob::Resolve { label, .. }, Err(err)) => {
-                self.set_error(format!("Could not mark card {label} done: {err}"))
+                self.set_error(format!("Could not mark card {label} done: {err}"));
             }
             (BoardJob::Reopen { label, .. }, Err(err)) => {
-                self.set_error(format!("Could not reopen card {label}: {err}"))
+                self.set_error(format!("Could not reopen card {label}: {err}"));
             }
             (
                 BoardJob::Reply {
@@ -1759,10 +1786,10 @@ impl App {
                     format!("Added your reply to card {label} and marked it done; {reach}.")
                 } else {
                     format!("Added your reply to card {label}; {reach}. The card stays open.")
-                })
+                });
             }
             (BoardJob::Reply { label, .. }, Err(err)) => {
-                self.set_error(format!("Could not add your reply to card {label}: {err}"))
+                self.set_error(format!("Could not add your reply to card {label}: {err}"));
             }
             (BoardJob::Assign { label, person, .. }, Ok(true)) => self.set_info(format!(
                 "Card {label} is now in {person}'s queue; it shows on their tab and reaches \
@@ -1772,7 +1799,7 @@ impl App {
                 "Card {label} was already in {person}'s queue; nothing changed."
             )),
             (BoardJob::Assign { label, person, .. }, Err(err)) => {
-                self.set_error(format!("Could not assign card {label} to {person}: {err}"))
+                self.set_error(format!("Could not assign card {label} to {person}: {err}"));
             }
             (BoardJob::CloseStaleNews { hours, .. }, Ok(true)) => self.set_info(format!(
                 "Closed the news cards older than {hours}h that nobody had marked done; they are \
@@ -1780,7 +1807,7 @@ impl App {
             )),
             (BoardJob::CloseStaleNews { .. }, Ok(false)) => {}
             (BoardJob::CloseStaleNews { .. }, Err(err)) => {
-                self.set_warning(format!("Could not close old news on the board: {err}"))
+                self.set_warning(format!("Could not close old news on the board: {err}"));
             }
             (BoardJob::MarkRelayed { label, to, .. }, Ok(_)) => self.set_info(format!(
                 "Passed the other side's replies on card {label} to {to}; the card shows they \

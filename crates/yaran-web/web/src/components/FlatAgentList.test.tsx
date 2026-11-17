@@ -1,14 +1,20 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import type { DragEndEvent } from "@dnd-kit/core"
+import {
+  fireAnimationIteration,
+  fireAnimationStart,
+  expectLookEasesIn,
+  stubGlyphEase,
+} from "@/test/animationEvents"
 import type { YaranState } from "@/lib/store"
 import type { SessionView, TerminalView } from "@/lib/types"
 
 // Drag-from-any-mode contract. dnd-kit cannot run a real drag under jsdom (it
 // measures rects), so DndContext is mocked to a passthrough that CAPTURES each
-// `onDragEnd` (mount order: agents first, terminals second) and the tests call
+// `onDragEnd` and the tests call
 // it with synthetic DragEndEvents. useSortable is a static stub; what these
 // tests pin about drag AVAILABILITY is therefore the component's own
 // `sortable ? dragProps : {}` gate (main rows carry the sortable attributes in
@@ -46,6 +52,7 @@ vi.mock("@dnd-kit/sortable", () => ({
 
 const reorderAgentsMock = vi.fn()
 const reorderTerminalsMock = vi.fn()
+const placeTerminalsInListMock = vi.fn()
 const setAgentSortMock = vi.fn()
 const setAgentSearchMock = vi.fn()
 const openNewAgentPickerMock = vi.fn()
@@ -60,6 +67,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
     useYaran: () => mockState,
     reorderAgents: (...args: unknown[]) => reorderAgentsMock(...args),
     reorderTerminals: (...args: unknown[]) => reorderTerminalsMock(...args),
+    placeTerminalsInList: (...args: unknown[]) => placeTerminalsInListMock(...args),
     setAgentSort: (...args: unknown[]) => setAgentSortMock(...args),
     setAgentSearch: (...args: unknown[]) => setAgentSearchMock(...args),
     openNewAgentPicker: (...args: unknown[]) => openNewAgentPickerMock(...args),
@@ -140,7 +148,7 @@ function makeSession(
 
 function makeTerminal(over: Partial<TerminalView> & { id: string }): TerminalView {
   return {
-    owner: { kind: "session", session_id: "zeta" },
+    owner: { kind: "project", project_id: "p1" },
     label: over.id,
     has_output: false,
     working: false,
@@ -160,8 +168,9 @@ function makeState(sort: string): YaranState {
   return {
     spine: {
       projects: [{ id: "p1", name: "Repo" }],
-      // Both terminals are owned by the Zeta agent, in one flat, owner-tagged
-      // collection ordered by `sort_order`.
+      // Two project terminals, rows of the list, in one flat, owner-tagged
+      // collection ordered by `sort_order`. With no anchor they lead the
+      // manual order.
       terminals: [
         makeTerminal({
           id: "t-z",
@@ -196,6 +205,7 @@ function makeState(sort: string): YaranState {
     agentSort: sort,
     pendingAgentOrder: null,
     pendingTerminalOrder: null,
+    pendingTerminalPlacement: {},
     changes: null,
     createTabInFlight: [],
   } as unknown as YaranState
@@ -210,6 +220,7 @@ beforeEach(() => {
   dragEndHandlers.length = 0
   reorderAgentsMock.mockClear()
   reorderTerminalsMock.mockClear()
+  placeTerminalsInListMock.mockClear()
   setAgentSortMock.mockClear()
   setAgentSearchMock.mockClear()
   openNewAgentPickerMock.mockClear()
@@ -225,16 +236,10 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-// Handler capture order: the agents DndContext mounts first, the Terminals
-// section's second.
-function agentsDragEnd(): (event: DragEndEvent) => void {
+// The one DndContext over the list's main rows.
+function listDragEnd(): (event: DragEndEvent) => void {
   const h = dragEndHandlers[0]
-  if (!h) throw new Error("agents DndContext not mounted")
-  return h
-}
-function terminalsDragEnd(): (event: DragEndEvent) => void {
-  const h = dragEndHandlers[1]
-  if (!h) throw new Error("terminals DndContext not mounted")
+  if (!h) throw new Error("the list's DndContext is not mounted")
   return h
 }
 
@@ -242,10 +247,10 @@ function drop(handler: (event: DragEndEvent) => void, active: string, over: stri
   handler({ active: { id: active }, over: { id: over } } as DragEndEvent)
 }
 
-describe("FlatAgentList section order", () => {
+describe("FlatAgentList list derivations", () => {
   it("reuses list derivations on selection changes and rebuilds them when the workspace changes", async () => {
     const flatList = await import("@/lib/flatList")
-    const sort = vi.spyOn(flatList, "sortMainSessions")
+    const sort = vi.spyOn(flatList, "orderFlatRows")
     try {
       const view = render(<FlatAgentList handlers={handlers} />)
       expect(sort).toHaveBeenCalledTimes(1)
@@ -272,27 +277,51 @@ describe("FlatAgentList section order", () => {
       sort.mockRestore()
     }
   })
+})
 
-  it("renders Terminals ABOVE the Inactive quiet tail", () => {
-    // Wanted order: main agents, then Terminals, then Inactive. Both section
-    // headers exist in this fixture (a quiet session and two terminals), so
-    // the DOM order of the two toggles pins the layout.
-    render(<FlatAgentList handlers={handlers} />)
-    const terminals = screen.getByText("Terminals")
+describe("FlatAgentList one list", () => {
+  it("sorts the project and standalone terminals among the agents, above the Inactive tail, with no Terminals divider", () => {
+    const state = makeState("name")
+    state.spine!.terminals = [
+      ...state.spine!.terminals,
+      // An agent's own terminal lives with its agent, never in the list.
+      makeTerminal({
+        id: "t-own",
+        label: "aaa-own",
+        owner: { kind: "session", session_id: "zeta" },
+      }),
+    ]
+    mockState = state
+    const { container } = render(<FlatAgentList handlers={handlers} />)
+    const rows = [...container.querySelectorAll("[data-sidebar-row]")].map((row) =>
+      row.getAttribute("data-sidebar-row"),
+    )
+    // By name: alpha, bash (t-a), mike, zeta, zsh (t-z); the tail is collapsed.
+    expect(rows).toEqual([
+      "agent:alpha",
+      "terminal:t-a",
+      "agent:mike",
+      "agent:zeta",
+      "terminal:t-z",
+    ])
+    expect(screen.queryByText("Terminals")).toBeNull()
     const inactive = screen.getByText("Inactive")
-    const position = terminals.compareDocumentPosition(inactive)
-    // DOCUMENT_POSITION_FOLLOWING (4): `inactive` comes after `terminals`.
-    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBe(4)
+    expect(
+      container
+        .querySelector('[data-sidebar-row="terminal:t-z"]')!
+        .compareDocumentPosition(inactive) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
   })
 
-  it("keeps the collapse defaults: Terminals open, Inactive closed while an agent is active", () => {
-    render(<FlatAgentList handlers={handlers} />)
-    expect(
-      screen.getByText("Terminals").closest("button")?.getAttribute("aria-expanded"),
-    ).toBe("true")
-    expect(
-      screen.getByText("Inactive").closest("button")?.getAttribute("aria-expanded"),
-    ).toBe("false")
+  it("keeps a stopped agent with a terminal of its own out of the Inactive tail", () => {
+    const state = makeState("name")
+    state.spine!.terminals = [
+      makeTerminal({ id: "t-own", owner: { kind: "session", session_id: "gone" } }),
+    ]
+    mockState = state
+    const { container } = render(<FlatAgentList handlers={handlers} />)
+    expect(container.querySelector('[data-sidebar-row="agent:gone"]')).toBeTruthy()
+    expect(screen.queryByText("Inactive")).toBeNull()
   })
 })
 
@@ -477,6 +506,8 @@ describe("FlatAgentList agent row branch", () => {
         },
       } as SessionView,
     ]
+    // The project terminals would name the project on their own rows.
+    state.spine!.terminals = []
     mockState = state
     render(<FlatAgentList handlers={handlers} />)
     expect(screen.getByText("notes")).toBeTruthy()
@@ -509,6 +540,7 @@ describe("FlatAgentList agent row branch", () => {
         },
       } as SessionView,
     ]
+    state.spine!.terminals = []
     mockState = state
     render(<FlatAgentList handlers={handlers} />)
     const tag = screen.getByText("notes").closest("span")?.parentElement
@@ -532,7 +564,7 @@ describe("FlatAgentList agent row branch", () => {
 
   // A STANDALONE terminal's owner tag is the same star in the same tone: one
   // indicator, learned once, meaning "this one lives in your folder, not in a
-  // yaran-managed working copy". An OWNED terminal keeps the ↳ arrow, where it
+  // yaran-managed working copy". A project terminal keeps the ↳ arrow, where it
   // means "owned by".
   it("marks a standalone terminal with the star and keeps the arrow on owned terminals", () => {
     const base = makeState("name")
@@ -544,7 +576,7 @@ describe("FlatAgentList agent row branch", () => {
           makeTerminal({
             id: "t-owned",
             label: "owned",
-            owner: { kind: "session", session_id: "zeta" },
+            owner: { kind: "project", project_id: "p2" },
           }),
           makeTerminal({
             id: "t-solo",
@@ -562,9 +594,7 @@ describe("FlatAgentList agent row branch", () => {
     expect(solo!.querySelector(".sr-only")?.textContent).toBe("standalone")
     expect(solo!.className).toContain("text-yaran-standalone")
     // The owned terminal keeps the muted arrow and no star.
-    const owned = screen
-      .getByText("Zeta@Repo")
-      .closest("span")?.parentElement
+    const owned = screen.getByText("p2").closest("span")?.parentElement
     expect(owned).toBeTruthy()
     expect(owned!.textContent).toContain("↳")
     expect(owned!.textContent).not.toContain("✷")
@@ -605,8 +635,8 @@ describe("FlatAgentList search-match highlight", () => {
     mockState = withQuery("alph")
     render(<FlatAgentList handlers={handlers} />)
     const mark = screen.getByText("Alph")
-    // Token-derived emphasis only, never a hardcoded color.
-    expect(mark.className).toContain("bg-primary")
+    // The shared match highlight, the one every web search paints with.
+    expect(mark.tagName).toBe("MARK")
     // The full label survives around the mark.
     expect(shown(mark.parentElement)).toBe("Alpha")
   })
@@ -625,7 +655,7 @@ describe("FlatAgentList search-match highlight", () => {
     const marks = screen.getAllByText("Rep")
     expect(marks.length).toBeGreaterThan(0)
     for (const mark of marks) {
-      expect(mark.className).toContain("bg-primary")
+      expect(mark.tagName).toBe("MARK")
     }
     // At least one mark is the project tag itself.
     expect(marks.some((m) => m.parentElement?.textContent === "Repo")).toBe(true)
@@ -642,17 +672,16 @@ describe("FlatAgentList search-match highlight", () => {
   })
 
   it("highlights an owner-label hit on the terminal row's second line", () => {
-    // "zeta@" only occurs in the companion terminal's owner label
-    // ("Zeta@Repo"), a searched field the row renders on line two.
-    mockState = withQuery("zeta@")
+    // "ckend" only occurs in a project terminal's owner label, the project's
+    // name, a searched field the row renders on line two.
+    mockState = withQuery("ckend")
+    mockState.spine!.terminals = [
+      makeTerminal({ id: "t-b", owner: { kind: "project", project_id: "Backend" } }),
+    ]
     render(<FlatAgentList handlers={handlers} />)
-    // Both of Zeta's terminals carry the owner label, so match all marks.
-    const marks = screen.getAllByText("Zeta@")
-    expect(marks.length).toBeGreaterThan(0)
-    for (const mark of marks) {
-      expect(mark.className).toContain("bg-primary")
-      expect(mark.parentElement?.textContent).toBe("Zeta@Repo")
-    }
+    const mark = screen.getByText("ckend")
+    expect(mark.tagName).toBe("MARK")
+    expect(mark.parentElement?.textContent).toBe("Backend")
   })
 
   it("highlights the matched terminal label too", () => {
@@ -661,7 +690,7 @@ describe("FlatAgentList search-match highlight", () => {
     mockState = withQuery("zs")
     render(<FlatAgentList handlers={handlers} />)
     const mark = screen.getByText("zs")
-    expect(mark.className).toContain("bg-primary")
+    expect(mark.tagName).toBe("MARK")
     expect(shown(mark.parentElement)).toBe("zsh")
   })
 })
@@ -682,48 +711,55 @@ describe("FlatAgentList drag from any sort mode", () => {
 
   it("a drop from name mode persists the DISPLAYED order with the move, totally, and flips to manual", () => {
     render(<FlatAgentList handlers={handlers} />)
-    // Displayed (name) = [alpha, mike, zeta] with [gone] appended as the tail.
-    // Dragging zeta onto alpha's slot within that view:
-    drop(agentsDragEnd(), "zeta", "alpha")
+    // Displayed (name) = [alpha, t-a, mike, zeta, t-z] with [gone] appended
+    // as the tail. Dragging zeta onto alpha's slot within that view keeps the
+    // whole screen as the user left it: the agents in that order, and each
+    // terminal after the agent it now follows.
+    drop(listDragEnd(), "agent:zeta", "agent:alpha")
     expect(setAgentSortMock).toHaveBeenCalledWith("manual")
-    expect(reorderAgentsMock).toHaveBeenCalledWith([
-      "zeta",
-      "alpha",
-      "mike",
-      "gone",
-    ])
+    expect(reorderAgentsMock).toHaveBeenCalledWith(["zeta", "alpha", "mike", "gone"])
+    expect(placeTerminalsInListMock).toHaveBeenCalledWith({ "t-a": "alpha", "t-z": "mike" })
+    expect(reorderTerminalsMock).toHaveBeenCalledWith(["t-a", "t-z"])
   })
 
   it("a drop in manual mode keeps the base-order move semantics and does not re-flip", () => {
     mockState = makeState("manual")
     render(<FlatAgentList handlers={handlers} />)
-    // Base = [zeta, gone, alpha, mike]; manual moves within it verbatim.
-    drop(agentsDragEnd(), "zeta", "alpha")
+    // Base = [t-z, t-a, zeta, gone, alpha, mike]; manual moves within it
+    // verbatim, and the terminals at the top stay there.
+    drop(listDragEnd(), "agent:zeta", "agent:alpha")
     expect(setAgentSortMock).not.toHaveBeenCalled()
-    expect(reorderAgentsMock).toHaveBeenCalledWith([
-      "gone",
-      "alpha",
-      "zeta",
-      "mike",
-    ])
+    expect(reorderAgentsMock).toHaveBeenCalledWith(["gone", "alpha", "zeta", "mike"])
+    expect(placeTerminalsInListMock).not.toHaveBeenCalled()
+    expect(reorderTerminalsMock).not.toHaveBeenCalled()
+  })
+
+  it("anchors a dropped terminal after the agent row above it", () => {
+    mockState = makeState("manual")
+    render(<FlatAgentList handlers={handlers} />)
+    drop(listDragEnd(), "terminal:t-a", "agent:mike")
+    expect(placeTerminalsInListMock).toHaveBeenCalledWith({ "t-a": "mike" })
+    expect(reorderAgentsMock).not.toHaveBeenCalled()
+    expect(setAgentSortMock).not.toHaveBeenCalled()
+  })
+
+  it("a terminal drop from name mode keeps the displayed order and flips to manual", () => {
+    render(<FlatAgentList handlers={handlers} />)
+    // Dragging t-z onto t-a's displayed slot puts it right under alpha.
+    drop(listDragEnd(), "terminal:t-z", "terminal:t-a")
+    expect(setAgentSortMock).toHaveBeenCalledWith("manual")
+    expect(reorderAgentsMock).toHaveBeenCalledWith(["alpha", "mike", "zeta", "gone"])
+    expect(placeTerminalsInListMock).toHaveBeenCalledWith({ "t-z": "alpha", "t-a": "alpha" })
+    expect(reorderTerminalsMock).not.toHaveBeenCalled()
   })
 
   it("a no-op drop (same slot) neither reorders nor flips to manual", () => {
     render(<FlatAgentList handlers={handlers} />)
-    drop(agentsDragEnd(), "alpha", "alpha")
+    drop(listDragEnd(), "agent:alpha", "agent:alpha")
     expect(setAgentSortMock).not.toHaveBeenCalled()
     expect(reorderAgentsMock).not.toHaveBeenCalled()
   })
 
-  it("a terminal drop from name mode persists the displayed terminal order and flips to manual", () => {
-    render(<FlatAgentList handlers={handlers} />)
-    // Base by sort_order = [t-z (zsh), t-a (bash)]; name-displayed =
-    // [t-a (bash), t-z (zsh)]. Dragging t-z onto t-a's displayed slot keeps
-    // the on-screen arrangement the user produced: [t-z, t-a].
-    drop(terminalsDragEnd(), "t-z", "t-a")
-    expect(setAgentSortMock).toHaveBeenCalledWith("manual")
-    expect(reorderTerminalsMock).toHaveBeenCalledWith(["t-z", "t-a"])
-  })
 })
 
 // PR navigation has its own link, outside the agent's select button.
@@ -757,6 +793,35 @@ describe("FlatAgentList PR chip", () => {
     handlers.onSelectSession.mockClear()
     fireEvent.click(screen.getByLabelText("Pull request #42, open"))
     expect(handlers.onSelectSession).not.toHaveBeenCalled()
+  })
+
+  it("shows the number with one pull request and the count with several, colored by the shown one", () => {
+    const open = vi.fn()
+    vi.stubGlobal("open", open)
+    mockState = makeState("name")
+    const shown = {
+      number: 418,
+      url: "https://github.com/o/r/pull/418",
+      title: "Store every tab",
+      state: "draft",
+    } as NonNullable<SessionView["pr"]>
+    mockState.spine!.sessions[0].pr = shown
+    mockState.spine!.sessions[0].prs = [shown]
+    const { unmount } = render(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByLabelText("Pull request #418, draft").textContent).toBe("#418")
+    unmount()
+
+    mockState.spine!.sessions[0].prs = [
+      shown,
+      { ...shown, number: 77, state: "open", url: "https://github.com/o/r/pull/77" },
+      { ...shown, number: 415, state: "merged", url: "https://github.com/o/r/pull/415" },
+    ]
+    render(<FlatAgentList handlers={handlers} />)
+    const badge = screen.getByLabelText("Pull request #418, draft, and 2 more")
+    expect(badge.textContent).toBe("3")
+    expect(badge.className).toContain("text-yaran-pr-draft")
+    fireEvent.click(badge)
+    expect(open).toHaveBeenCalledWith("https://github.com/o/r/pull/418", "_blank", "noopener")
   })
 })
 
@@ -830,21 +895,6 @@ describe("FlatAgentList terminal editor menu entries", () => {
     expect(tab!.getAttribute("target")).toBe("_blank")
     expect(tab!.getAttribute("rel")).toBe("noopener")
     expect(tab!.className).not.toContain("max-md:hidden")
-  })
-
-  it("sends a SESSION-owned terminal to its agent's editor, not to a terminal root", async () => {
-    // Both fixture terminals belong to the Zeta agent, so both rows point at
-    // the agent address: same worktree, same editor, no second one.
-    await openTerminalMenu()
-    const tab = screen
-      .getByText("Open editor in new tab")
-      .closest('[role="menuitem"]')
-    expect(tab!.getAttribute("href")).toBe("#/editor/agent/zeta")
-    fireEvent.click(screen.getByText("Open editor here"))
-    expect(openEditorMock).toHaveBeenCalledWith({
-      kind: "agent",
-      sessionId: "zeta",
-    })
   })
 
   it("gives a PROJECT terminal and a STANDALONE terminal their own rooted addresses", async () => {
@@ -951,10 +1001,9 @@ describe("FlatAgentList attach-a-file entries", () => {
 })
 
 // THE ROW MENU IS THE COMPUTER'S HOME FOR THE PANE'S INPUT GROUP. Typing
-// directly in the terminal takes the whole bottom bar away, the input `⋯` with
-// it, so the way back has to live in a menu that is always reachable. On this
-// surface that is the pane's own row menu, and these pin that the desktop half
-// is really there: the group's home was previously asserted only on the phone.
+// directly in the terminal takes the whole bottom bar away, so the controls
+// have to live in a menu that is always reachable. On this surface that is the
+// pane's own row menu, and these pin that the desktop half is really there.
 describe("FlatAgentList input group in the row menus", () => {
   const label = () => screen.queryByText("Input")
   const wayBack = () => screen.queryByText("Use virtual input")
@@ -1006,10 +1055,9 @@ describe("FlatAgentList input group in the row menus", () => {
     expect(wayBack()).toBeTruthy()
   })
 
-  // ABSENT, NEVER DISABLED: the bottom `⋯` owns the other direction while the
-  // virtual input is up, and a row offered in both menus at once is the drift
-  // the single publisher exists to prevent.
-  it("leaves the way back out while the pane says the bottom bar has it", async () => {
+  // ABSENT, NEVER DISABLED: a switch the setting has decided is not offered at
+  // all, since a press could not take effect.
+  it("leaves the switch out while the pane does not offer it", async () => {
     const mod = await import("@/lib/paneInputGroup")
     mod.registerPaneInputGroup("alpha", {
       surfaceSwitch: false,
@@ -1082,31 +1130,17 @@ describe("FlatAgentList input group in the row menus", () => {
   })
 })
 
-// The section's own controls: a + that acts and a sort trigger that only
-// reveals a menu, sharing one height token at the header's right edge.
+// The Agents header carries the sort control and no + of its own: creating
+// lives behind the launcher corner.
 describe("FlatAgentList Agents header", () => {
-  it("offers a + that opens the new-agent picker in one tap", () => {
+  it("offers no creation button beside the sort trigger", () => {
     render(<FlatAgentList handlers={handlers} />)
-    fireEvent.click(screen.getByRole("button", { name: "New agent" }))
-    expect(openNewAgentPickerMock).toHaveBeenCalledWith("new")
-  })
-
-  it("gives the + and the sort trigger one height and the phone floor", () => {
-    render(<FlatAgentList handlers={handlers} />)
-    const plus = screen.getByRole("button", { name: "New agent" })
     const sort = screen.getByRole("button", { name: "Sort agents" })
-    for (const control of [plus, sort]) {
-      expect(control.className).toContain("h-7")
-      // The sort trigger's old 36px exemption is retired: the + is now its
-      // horizontal neighbour, which was the stated basis for the relaxation.
-      expect(control.className).toContain("max-md:min-h-10")
-      expect(control.className).not.toContain("max-md:min-h-9")
-    }
+    expect(sort.parentElement!.querySelectorAll("button")).toHaveLength(1)
+    expect(screen.queryByRole("button", { name: "New agent" })).toBeNull()
   })
 
-  // The + rides sort's gate: the empty state below carries its own hero button,
-  // and two buttons offering the same click on one screen is one too many.
-  it("hides both controls when there is no agent to sort", () => {
+  it("hides the sort trigger when there is no agent to sort", () => {
     mockState = {
       ...makeState("name"),
       spine: {
@@ -1121,7 +1155,7 @@ describe("FlatAgentList Agents header", () => {
     } as unknown as YaranState
     render(<FlatAgentList handlers={handlers} />)
     expect(screen.queryByRole("button", { name: "Sort agents" })).toBeNull()
-    // The empty state's hero remains, and it is the only "New agent" button.
+    // The empty state's hero is the one way forward on screen.
     expect(screen.getAllByRole("button", { name: /^new agent$/i })).toHaveLength(
       1,
     )
@@ -1183,72 +1217,232 @@ describe("FlatAgentList sort control", () => {
   })
 })
 
-// One pill style for every section count, immediately after the section word.
-// Right edges carry controls only.
+// The Inactive count sits in its pill right after the section word; right edges
+// carry controls only.
 describe("FlatAgentList section counters", () => {
-  it("renders the Agents, Terminals and Inactive counts in the same pill", () => {
+  it("keeps the Inactive count in its pill", () => {
     render(<FlatAgentList handlers={handlers} />)
-    for (const word of ["Agents", "Terminals", "Inactive"]) {
-      const pill = screen.getByText(word).nextElementSibling as HTMLElement
-      expect(pill, word).toBeTruthy()
-      expect(pill.className, word).toContain("rounded-full")
-      expect(pill.className, word).toContain("bg-muted")
-      // Not pushed to the right edge any more.
-      expect(pill.className, word).not.toContain("ml-auto")
-    }
+    const pill = screen.getByText("Inactive").nextElementSibling as HTMLElement
+    expect(pill.className).toContain("rounded-full")
+    expect(pill.className).not.toContain("ml-auto")
   })
 })
 
-describe("FlatAgentList Terminals divider", () => {
-  it("creates a standalone terminal in one tap", () => {
-    render(<FlatAgentList handlers={handlers} />)
-    fireEvent.click(
-      screen.getByRole("button", { name: "New standalone terminal in your home folder" }),
+// jsdom lays nothing out and has no scrollIntoView, so geometry is stubbed by
+// row key: the list's scroller spans 0-200, a row missing from the table sits
+// in view at the top, and a row given a far-down rect is below the fold.
+describe("FlatAgentList reveals the selected row", () => {
+  const scrollIntoView = vi.fn()
+  let rects: Record<string, { top: number; bottom: number }>
+
+  function rect(top: number, bottom: number): DOMRect {
+    return {
+      top,
+      bottom,
+      left: 0,
+      right: 100,
+      x: 0,
+      y: top,
+      width: 100,
+      height: bottom - top,
+      toJSON: () => ({}),
+    } as DOMRect
+  }
+
+  beforeEach(() => {
+    scrollIntoView.mockClear()
+    rects = {}
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Element) {
+        const key = this.getAttribute("data-sidebar-row")
+        if (key === null) return rect(0, 200)
+        const r = rects[key] ?? { top: 0, bottom: 40 }
+        return rect(r.top, r.bottom)
+      },
     )
-    expect(createStandaloneTerminalMock).toHaveBeenCalledOnce()
+    Element.prototype.scrollIntoView = scrollIntoView
   })
 
-  // Nested interactive elements are invalid HTML and route clicks by coin
-  // toss: the + is a SIBLING of the collapse toggle, as on the agent rows.
-  it("keeps the + outside the collapse toggle", () => {
-    render(<FlatAgentList handlers={handlers} />)
-    const toggle = screen.getByText("Terminals").closest("button")!
-    const plus = screen.getByRole("button", {
-      name: "New standalone terminal in your home folder",
-    })
-    expect(toggle.contains(plus)).toBe(false)
-    expect(plus.contains(toggle)).toBe(false)
-    // Misclick-safe spacing between the two, and the word stays in the toggle
-    // so the whole label still expands the section.
-    expect((plus.parentElement as HTMLElement).className).toContain("gap-2")
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete (Element.prototype as Partial<Element>).scrollIntoView
   })
 
-  it("still collapses and expands, and the + does not toggle it", () => {
-    render(<FlatAgentList handlers={handlers} />)
-    const toggle = () => screen.getByText("Terminals").closest("button")!
-    expect(toggle().getAttribute("aria-expanded")).toBe("true")
-    fireEvent.click(
-      screen.getByRole("button", { name: "New standalone terminal in your home folder" }),
+  function scrolledRows(): (string | null)[] {
+    return scrollIntoView.mock.contexts.map((el) =>
+      (el as Element).getAttribute("data-sidebar-row"),
     )
-    expect(toggle().getAttribute("aria-expanded")).toBe("true")
-    fireEvent.click(toggle())
-    expect(toggle().getAttribute("aria-expanded")).toBe("false")
-    fireEvent.click(toggle())
-    expect(toggle().getAttribute("aria-expanded")).toBe("true")
-  })
+  }
 
-  // The section renders nothing at zero terminals, so the divider + can never
-  // create the FIRST one; the launcher corner's ⋯ is its zero-state home.
-  it("is absent entirely when there is no terminal", () => {
+  it("scrolls an off-screen row into view when it becomes the selection", () => {
+    rects["agent:mike"] = { top: 600, bottom: 640 }
+    const { rerender } = render(<FlatAgentList handlers={handlers} />)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
     mockState = {
-      ...makeState("name"),
-      spine: { ...makeState("name").spine, terminals: [] },
-    } as unknown as YaranState
+      ...mockState,
+      selectedTarget: { kind: "agent", sessionId: "mike", tabId: "mike" },
+    }
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(scrolledRows()).toEqual(["agent:mike"])
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" })
+  })
+
+  it("scrolls to a just-created terminal once its row appears", () => {
+    const { rerender } = render(<FlatAgentList handlers={handlers} />)
+    // Selected before the workspace push that carries its row.
+    mockState = {
+      ...mockState,
+      selectedTarget: { kind: "terminal", terminalId: "t-new" },
+    } as YaranState
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    rects["terminal:t-new"] = { top: 900, bottom: 940 }
+    mockState = {
+      ...mockState,
+      spine: {
+        ...mockState.spine!,
+        terminals: [
+          ...mockState.spine!.terminals,
+          makeTerminal({ id: "t-new", label: "fish", sort_order: 3 }),
+        ],
+      },
+    } as YaranState
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(scrolledRows()).toEqual(["terminal:t-new"])
+  })
+
+  it("scrolls to a just-created agent once its row appears", () => {
+    mockState = {
+      ...mockState,
+      selectedTarget: { kind: "agent", sessionId: "newbie", tabId: "newbie" },
+    }
+    const { rerender } = render(<FlatAgentList handlers={handlers} />)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    rects["agent:newbie"] = { top: 700, bottom: 740 }
+    mockState = {
+      ...mockState,
+      spine: {
+        ...mockState.spine!,
+        sessions: [
+          ...mockState.spine!.sessions,
+          makeSession({ id: "newbie", title: "Newbie" }),
+        ],
+      },
+    }
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(scrolledRows()).toEqual(["agent:newbie"])
+  })
+
+  it("leaves an already-visible selected row where it is", () => {
+    rects["agent:alpha"] = { top: 40, bottom: 80 }
+    const { rerender } = render(<FlatAgentList handlers={handlers} />)
+    mockState = {
+      ...mockState,
+      selectedTarget: { kind: "agent", sessionId: "alpha", tabId: "alpha" },
+    }
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  // The scroller (0-200) carries the fade depth as its scroll padding, as
+  // `.yaran-list-fade` sets it, and reports a scroll position of `scrollTop`
+  // within 1000px of content.
+  function selectAlphaInFadingList(scrollTop: number) {
+    const { rerender } = render(<FlatAgentList handlers={handlers} />)
+    const scroller = screen.getByText("Alpha").closest(".overflow-y-auto") as HTMLElement
+    scroller.style.setProperty("scroll-padding-top", "40px")
+    scroller.style.setProperty("scroll-padding-bottom", "40px")
+    Object.defineProperty(scroller, "scrollTop", { value: scrollTop })
+    Object.defineProperty(scroller, "scrollHeight", { value: 1000 })
+    Object.defineProperty(scroller, "clientHeight", { value: 200 })
+    mockState = {
+      ...mockState,
+      selectedTarget: { kind: "agent", sessionId: "alpha", tabId: "alpha" },
+    }
+    rerender(<FlatAgentList handlers={handlers} />)
+  }
+
+  it("treats a selected row under the top fade as out of view", () => {
+    rects["agent:alpha"] = { top: 10, bottom: 50 }
+    selectAlphaInFadingList(300)
+    expect(scrolledRows()).toEqual(["agent:alpha"])
+  })
+
+  it("treats a selected row under the bottom fade as out of view", () => {
+    rects["agent:alpha"] = { top: 150, bottom: 190 }
+    selectAlphaInFadingList(300)
+    expect(scrolledRows()).toEqual(["agent:alpha"])
+  })
+
+  it("leaves a row at the top of a list scrolled to the top, where nothing fades", () => {
+    rects["agent:alpha"] = { top: 10, bottom: 50 }
+    selectAlphaInFadingList(0)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it("does not scroll again on a workspace push that keeps the selection", () => {
+    rects["agent:mike"] = { top: 600, bottom: 640 }
+    mockState = {
+      ...mockState,
+      selectedTarget: { kind: "agent", sessionId: "mike", tabId: "mike" },
+    }
+    const { rerender } = render(<FlatAgentList handlers={handlers} />)
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+
+    // The user scrolls away, then pushes arrive: new session data, a new
+    // target object for the same agent (another tab of it), a new terminal.
+    for (let i = 0; i < 3; i += 1) {
+      mockState = {
+        ...mockState,
+        selectedTarget: { kind: "agent", sessionId: "mike", tabId: `tab-${i}` },
+        spine: {
+          ...mockState.spine!,
+          sessions: mockState.spine!.sessions.map((s) =>
+            s.id === "mike" ? { ...s, working: i % 2 === 0 } : s,
+          ),
+          terminals: [
+            ...mockState.spine!.terminals,
+            makeTerminal({ id: `t-push-${i}`, sort_order: 10 + i }),
+          ],
+        },
+      }
+      rerender(<FlatAgentList handlers={handlers} />)
+    }
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+  })
+
+  // "Gone" is exited, so its row waits inside the collapsed Inactive tail.
+  function selectHiddenQuietAgent() {
+    rects["agent:gone"] = { top: 800, bottom: 840 }
+    mockState = {
+      ...mockState,
+      selectedTarget: { kind: "agent", sessionId: "gone", tabId: "gone" },
+    }
     render(<FlatAgentList handlers={handlers} />)
-    expect(screen.queryByText("Terminals")).toBeNull()
-    expect(
-      screen.queryByRole("button", { name: "New standalone terminal in your home folder" }),
-    ).toBeNull()
+    expect(screen.queryByText("Gone")).toBeNull()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  }
+
+  // The tail opens without the list itself re-rendering, so the row is found
+  // by the mutation observer, whose callback runs as a microtask.
+  it("reveals a hidden selected row when the user opens its section", async () => {
+    selectHiddenQuietAgent()
+    fireEvent.click(screen.getByText("Inactive"))
+    await act(async () => {})
+    expect(scrolledRows()).toEqual(["agent:gone"])
+  })
+
+  it("never moves a list the user scrolled while the selected row was hidden", async () => {
+    selectHiddenQuietAgent()
+    const scroller = screen.getByText("Inactive").closest(".overflow-y-auto")!
+    fireEvent.scroll(scroller)
+    fireEvent.click(screen.getByText("Inactive"))
+    await act(async () => {})
+    expect(screen.getByText("Gone")).toBeTruthy()
+    expect(scrollIntoView).not.toHaveBeenCalled()
   })
 })
 
@@ -1280,14 +1474,14 @@ describe("FlatAgentList empty state", () => {
     render(<FlatAgentList handlers={handlers} />)
     expect(screen.getByText("No agents yet")).toBeTruthy()
     const button = screen.getByRole("button", { name: /^new agent$/i })
-    // The touch floor, matching the launcher corner this button stands in for.
+    // The touch floor, matching the launcher corner.
     expect(button.className).toContain("max-md:min-h-11")
     fireEvent.click(button)
     expect(openNewAgentPickerMock).toHaveBeenCalledWith("new")
   })
 
-  // Same pure helper as the launcher corner's verb, so the two buttons on
-  // screen can never offer different next steps.
+  // Only on a confirmed zero: the one state where a new agent has nothing
+  // to pick.
   it("flips to Add project when there is no project to make an agent in", () => {
     mockState = emptyState([])
     render(<FlatAgentList handlers={handlers} />)
@@ -1352,6 +1546,8 @@ describe("FlatAgentList line two alignment", () => {
         },
       } as SessionView,
     ]
+    // The project terminals would name the project on their own rows.
+    state.spine!.terminals = []
     mockState = state
     render(<FlatAgentList handlers={handlers} />)
 
@@ -1388,7 +1584,7 @@ describe("FlatAgentList line two alignment", () => {
           makeTerminal({
             id: "t-owned",
             label: "owned",
-            owner: { kind: "session", session_id: "zeta" },
+            owner: { kind: "project", project_id: "p2" },
           }),
           makeTerminal({
             id: "t-solo",
@@ -1400,7 +1596,7 @@ describe("FlatAgentList line two alignment", () => {
     } as YaranState
     render(<FlatAgentList handlers={handlers} />)
 
-    const owned = screen.getByText("Zeta@Repo").closest("span")!.parentElement!
+    const owned = screen.getByText("p2").closest("span")!.parentElement!
     const solo = screen.getByText("play").closest("span")!.parentElement!
     for (const tag of [owned, solo]) {
       expect(tag.className).toContain("items-baseline")
@@ -1499,9 +1695,9 @@ describe("FlatAgentList row actions on a coarse pointer", () => {
       expect(cls).toContain("md:opacity-0")
       // Revealed by hover, by keyboard focus anywhere in the row, and held
       // open while the menu itself is open.
-      expect(cls).toContain(`md:group-hover/${group}:max-w-8`)
-      expect(cls).toContain(`md:group-focus-within/${group}:max-w-8`)
-      expect(cls).toContain("md:has-[[data-popup-open]]:max-w-8")
+      expect(cls).toContain(`md:group-hover/${group}:max-w-10`)
+      expect(cls).toContain(`md:group-focus-within/${group}:max-w-10`)
+      expect(cls).toContain("md:has-[[data-popup-open]]:max-w-10")
     }
   })
 
@@ -1519,8 +1715,77 @@ describe("FlatAgentList row actions on a coarse pointer", () => {
   })
 })
 
+// The row ⋯ trigger's keyboard focus ring. jsdom cannot lay out or evaluate a
+// media query, so what is pinned is the classes that decide the geometry: the
+// ring is drawn by the square trigger itself (the shared Button's ring), the
+// reveal wrapper that clips for its width animation lets that ring out while
+// the trigger holds keyboard focus instead of shearing its sides off, and no
+// revealed width cap is narrower than the 40px coarse-pointer trigger.
+describe("FlatAgentList row ⋯ focus ring", () => {
+  const labels = ["Session actions", "Terminal actions"] as const
+
+  function parts(label: string) {
+    const trigger = screen.getAllByLabelText(label)[0]
+    const wrapper = trigger.parentElement
+    if (!wrapper) throw new Error(`no wrapper for ${label}`)
+    return { trigger, wrapper }
+  }
+
+  it("draws the ring on the trigger, never on its wrapper", () => {
+    render(<FlatAgentList handlers={handlers} />)
+    for (const label of labels) {
+      const { trigger, wrapper } = parts(label)
+      expect(trigger.className).toContain("focus-visible:ring-3")
+      expect(trigger.className).toContain("focus-visible:ring-ring/50")
+      expect(wrapper.className).not.toMatch(/ring/)
+    }
+  })
+
+  it("keeps the trigger square at every size, the coarse pointer's included", () => {
+    render(<FlatAgentList handlers={handlers} />)
+    for (const label of labels) {
+      const cls = parts(label).trigger.className.split(/\s+/)
+      // Width and height only ever move together.
+      expect(cls.filter((c) => /(^|:)(w|h|min-w|max-w|flex|basis)-/.test(c))).toEqual([])
+      expect(cls).not.toContain("flex-1")
+      expect(cls).not.toContain("grow")
+      expect(cls).toContain("shrink-0")
+      expect(cls).toContain("max-md:size-10")
+      expect(cls).toContain("pointer-coarse:size-10")
+    }
+  })
+
+  it("lets the ring out of the clipping wrapper while the trigger has keyboard focus", () => {
+    render(<FlatAgentList handlers={handlers} />)
+    for (const label of labels) {
+      const cls = parts(label).wrapper.className
+      expect(cls).toContain("overflow-hidden")
+      expect(cls).toContain("has-[:focus-visible]:overflow-visible")
+    }
+  })
+
+  it("caps no revealed width below the 40px coarse-pointer trigger", () => {
+    render(<FlatAgentList handlers={handlers} />)
+    for (const label of labels) {
+      const caps = parts(label)
+        .wrapper.className.split(/\s+/)
+        .map((c) => /(?:^|:)max-w-(\d+)$/.exec(c))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => Number(m[1]))
+        // max-w-0 is the idle state, which reveals nothing.
+        .filter((n) => n !== 0)
+      expect(caps.length).toBeGreaterThan(0)
+      for (const cap of caps) expect(cap).toBeGreaterThanOrEqual(10)
+    }
+  })
+})
+
 describe("FlatAgentList working cue", () => {
   const PULSE = "motion-safe:animate-working-pulse"
+  // The glyph pulses and a frame around it bounces: two elements, so the
+  // pulse can yield at once without restarting the bounce.
+  const BOUNCE = "motion-safe:animate-working-bounce"
+  const frameOf = (glyph: Element) => glyph.closest("[data-slot='working-glyph']")!
 
   // What a screen reader would read off the row: its subtree's text, minus the
   // parts marked aria-hidden.
@@ -1563,15 +1828,16 @@ describe("FlatAgentList working cue", () => {
 
   // The glyph and the word fire on the ONE flag, so they cannot fall out of
   // step, and the name is not part of the cue at all.
-  it("pulses the glyph and the state word together on a working agent row", () => {
+  it("bounces and pulses the glyph with the state word on a working agent row", () => {
     mockState = workingAlpha()
     const { container } = render(<FlatAgentList handlers={handlers} />)
 
-    const glyph = container.querySelector("svg.lucide-bot")
-    expect(glyph?.getAttribute("class")).toContain(PULSE)
-    // Paired with the opacity transition so a stop eases back to rest rather
-    // than freezing mid-dip.
-    expect(glyph?.getAttribute("class")).toContain("motion-safe:transition-opacity")
+    const glyph = container.querySelector("svg.lucide-bot")!
+    expect(glyph.getAttribute("class")).toContain(PULSE)
+    expect(frameOf(glyph).getAttribute("class")).toContain(BOUNCE)
+    // Every stop finishes the bounce at rest, so nothing ever eases the frame
+    // back from mid-bounce.
+    expect(frameOf(glyph).getAttribute("class")).not.toContain("transition")
 
     const word = screen.getByText("Working")
     expect(word.className).toContain(PULSE)
@@ -1605,9 +1871,9 @@ describe("FlatAgentList working cue", () => {
     const { container } = render(<FlatAgentList handlers={handlers} />)
 
     expect(container.querySelectorAll(".working-dots")).toHaveLength(0)
-    expect(
-      container.querySelector("svg.lucide-bot")?.getAttribute("class"),
-    ).not.toContain(PULSE)
+    const glyph = container.querySelector("svg.lucide-bot")!
+    expect(glyph.getAttribute("class")).not.toContain(PULSE)
+    expect(frameOf(glyph).getAttribute("class")).not.toContain(BOUNCE)
     expect(screen.getByText("Idle").className).not.toContain(PULSE)
   })
 
@@ -1640,10 +1906,11 @@ describe("FlatAgentList working cue", () => {
     expect(word.className).not.toContain(PULSE)
     expect(container.querySelectorAll(".working-dots")).toHaveLength(0)
 
-    const glyph = container.querySelector("svg.lucide-bot")
-    expect(glyph?.getAttribute("class")).not.toContain(PULSE)
-    // The wrapper is the one thing animating, and it is the attention blink.
-    expect(glyph?.parentElement?.getAttribute("class")).toContain(
+    const glyph = container.querySelector("svg.lucide-bot")!
+    expect(glyph.getAttribute("class")).not.toContain(PULSE)
+    expect(frameOf(glyph).getAttribute("class")).not.toContain(BOUNCE)
+    // The frame is the one thing animating, and it is the attention blink.
+    expect(frameOf(glyph).getAttribute("class")).toContain(
       "motion-safe:animate-attention-pulse",
     )
   })
@@ -1662,9 +1929,9 @@ describe("FlatAgentList working cue", () => {
     } as YaranState
     const { container } = render(<FlatAgentList handlers={handlers} />)
 
-    expect(
-      container.querySelector("svg.lucide-square-terminal")?.getAttribute("class"),
-    ).toContain(PULSE)
+    const glyph = container.querySelector("svg.lucide-square-terminal")!
+    expect(glyph.getAttribute("class")).toContain(PULSE)
+    expect(frameOf(glyph).getAttribute("class")).toContain(BOUNCE)
     const word = screen.getByText("Running")
     expect(word.className).toContain(PULSE)
     expect(word.querySelectorAll(".working-dots")).toHaveLength(1)
@@ -1693,6 +1960,22 @@ describe("FlatAgentList working cue", () => {
     expect(css).toContain(
       `--animate-working-pulse: working-pulse ${period} ease-in-out infinite;`,
     )
+    // The glyph's bounce runs four times per pulse, so every pulse boundary is
+    // also a bounce boundary: the glyph comes to rest at full opacity AND at
+    // its start position on the same frame.
+    const bounce = `${periodMs / 4 / 1000}s`
+    expect(bounce).toBe("0.4s")
+    expect(css).toContain(
+      `--animate-working-bounce: working-bounce ${bounce} ease-in-out infinite;`,
+    )
+    const bob = /@keyframes working-bounce\s*\{([\s\S]*?)\n\}/.exec(css)
+    expect(bob).toBeTruthy()
+    // It starts and ends on the resting frame, so a stop on a boundary is exact.
+    expect(bob![1]).toContain("0%, 100% { transform: translateY(0); }")
+    expect(bob![1]).toContain("25% { transform: translateY(-10%); }")
+    expect(bob![1]).toContain("75% { transform: translateY(10%); }")
+    // Transform only: the pulse owns opacity.
+    expect(bob![1]).not.toContain("opacity")
     expect(css).toContain(
       `--animate-working-dots: working-dots ${period} steps(1, end) infinite;`,
     )
@@ -1762,6 +2045,193 @@ describe("FlatAgentList working cue", () => {
       .join(" ")
     expect(classes).toContain(PULSE)
     expect(classes).not.toMatch(/(?<!motion-safe:)animate-working-pulse/)
+    // The bounce is gated the same way, so reduced motion gets no bounce at all.
+    expect(classes).toContain(BOUNCE)
+    expect(classes).not.toMatch(/(?<!motion-safe:)animate-working-bounce/)
+  })
+
+  // The word is always the truth: it reads Idle the moment work stops, and the
+  // glyph's pulse stops with it. Only the bounce finishes its motion, holding
+  // until the bounce in flight comes back to rest, and no longer.
+  it("switches the word at once and lets the glyph finish its bounce", () => {
+    mockState = workingAlpha()
+    const { container, rerender } = render(<FlatAgentList handlers={handlers} />)
+    const glyph = () => container.querySelector("svg.lucide-bot")!
+    const frame = () => frameOf(glyph())
+    fireAnimationStart(frame(), "working-bounce")
+
+    const stopped = makeState("name")
+    mockState = {
+      ...stopped,
+      spine: {
+        ...stopped.spine,
+        sessions: [makeSession({ id: "alpha", title: "Alpha" })],
+        terminals: [],
+      },
+    } as YaranState
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByText("Idle")).toBeTruthy()
+    expect(screen.queryByText("Working")).toBeNull()
+    expect(container.querySelectorAll(".working-dots")).toHaveLength(0)
+    expect(glyph().getAttribute("class")).not.toContain(PULSE)
+    expect(frame().getAttribute("class")).toContain(BOUNCE)
+
+    // The pulse's boundary is not what the frame waits for; the bounce's is.
+    fireAnimationIteration(glyph(), "working-pulse")
+    expect(frame().getAttribute("class")).toContain(BOUNCE)
+    fireAnimationIteration(frame(), "working-bounce")
+    expect(frame().getAttribute("class")).not.toContain(BOUNCE)
+  })
+
+  // Needs-you outranks working, and the pulse must never run inside the
+  // attention blink, so the pulse yields at once and the blink starts at once;
+  // the bounce in flight still finishes at rest rather than teleporting.
+  it("hands a working agent row to needs-you and finishes its bounce", () => {
+    mockState = workingAlpha()
+    const { container, rerender } = render(<FlatAgentList handlers={handlers} />)
+    const glyph = () => container.querySelector("svg.lucide-bot")!
+    const frame = () => frameOf(glyph())
+    fireAnimationStart(frame(), "working-bounce")
+
+    const base = makeState("name")
+    mockState = {
+      ...base,
+      spine: {
+        ...base.spine,
+        sessions: [
+          makeSession({ id: "alpha", title: "Alpha", needs_attention: true }),
+        ],
+        terminals: [],
+      },
+    } as YaranState
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByText("Needs you")).toBeTruthy()
+    expect(glyph().closest("[aria-label='Needs attention']")).toBeTruthy()
+    expect(glyph().getAttribute("class")).not.toContain(PULSE)
+    expect(frame().getAttribute("class")).toContain(BOUNCE)
+    fireAnimationIteration(frame(), "working-bounce")
+    expect(frame().getAttribute("class")).not.toContain(BOUNCE)
+  })
+
+  it("switches a stopping terminal row's word at once and lets its glyph finish", () => {
+    const base = makeState("name")
+    const withTerminal = (working: boolean) =>
+      ({
+        ...base,
+        spine: {
+          ...base.spine,
+          sessions: [],
+          terminals: [
+            makeTerminal({ id: "t-a", label: "bash", foreground_cmd: "vim", working }),
+          ],
+        },
+      }) as YaranState
+    mockState = withTerminal(true)
+    const { container, rerender } = render(<FlatAgentList handlers={handlers} />)
+    const frame = () => frameOf(container.querySelector("svg.lucide-square-terminal")!)
+    fireAnimationStart(frame(), "working-bounce")
+
+    mockState = withTerminal(false)
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByText("Idle")).toBeTruthy()
+    expect(screen.queryByText("Running")).toBeNull()
+    expect(frame().getAttribute("class")).toContain(BOUNCE)
+
+    fireAnimationIteration(frame(), "working-bounce")
+    expect(frame().getAttribute("class")).not.toContain(BOUNCE)
+  })
+
+  // The exact stop, on a real row: the bounce is shortened to end with the
+  // iteration it is in, and the class leaves on the browser's finish.
+  it("ends a stopping row's bounce on its current iteration", async () => {
+    mockState = workingAlpha()
+    const { container, rerender } = render(<FlatAgentList handlers={handlers} />)
+    const frame = frameOf(container.querySelector("svg.lucide-bot")!)
+    let finish!: () => void
+    const updateTiming = vi.fn()
+    const bounce = {
+      animationName: "working-bounce",
+      finished: new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+      effect: { getComputedTiming: () => ({ currentIteration: 11 }), updateTiming },
+    }
+    Object.defineProperty(frame, "getAnimations", {
+      configurable: true,
+      value: () => [bounce],
+    })
+    fireAnimationStart(frame, "working-bounce")
+
+    const stopped = makeState("name")
+    mockState = {
+      ...stopped,
+      spine: {
+        ...stopped.spine,
+        sessions: [makeSession({ id: "alpha", title: "Alpha" })],
+        terminals: [],
+      },
+    } as YaranState
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(updateTiming).toHaveBeenCalledWith({ iterations: 12 })
+    expect(frame.getAttribute("class")).toContain(BOUNCE)
+    await act(async () => finish())
+    expect(frame.getAttribute("class")).not.toContain(BOUNCE)
+  })
+})
+
+
+// The cue's animation clocks, played by stand-ins: jsdom implements neither
+// `getAnimations` nor `animate`, so the tests answer for the browser.
+describe("FlatAgentList working cue timing", () => {
+  function fake(animationName: string, startTime: number) {
+    return {
+      animationName,
+      startTime,
+      finished: new Promise<void>(() => {}),
+      effect: { getComputedTiming: () => ({ currentIteration: 0 }), updateTiming: vi.fn() },
+    }
+  }
+  function stub(name: "getAnimations" | "animate", value: unknown) {
+    Object.defineProperty(Element.prototype, name, { configurable: true, value })
+  }
+  afterEach(() => {
+    delete (Element.prototype as { getAnimations?: unknown }).getAnimations
+    delete (Element.prototype as { animate?: unknown }).animate
+  })
+  function withAlpha(over: Partial<SessionView>): YaranState {
+    const base = makeState("name")
+    return {
+      ...base,
+      spine: {
+        ...base.spine,
+        sessions: [makeSession({ id: "alpha", title: "Alpha", ...over })],
+        terminals: [],
+      },
+    } as YaranState
+  }
+
+  // Work resuming while the last bounce is in flight restarts both pulses; the
+  // word's is anchored to the same bounce as the glyph's, so the two stay in
+  // step instead of the word starting over at its own phase zero.
+  it("anchors a resumed state word's pulse to the glyph's bounce", () => {
+    const bounce = fake("working-bounce", 1000)
+    const wordPulse = fake("working-pulse", 2345)
+    stub("getAnimations", function (this: Element) {
+      if (this.getAttribute("data-slot") === "working-glyph") return [bounce]
+      if (this.textContent === "Working" && this.tagName === "SPAN") return [wordPulse]
+      return []
+    })
+    mockState = withAlpha({ working: true })
+    const { container, rerender } = render(<FlatAgentList handlers={handlers} />)
+    const frame = container.querySelector("[data-slot='working-glyph']")!
+    fireAnimationStart(frame, "working-bounce")
+
+    mockState = withAlpha({})
+    rerender(<FlatAgentList handlers={handlers} />)
+    mockState = withAlpha({ working: true })
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(wordPulse.startTime).toBe(1000)
+    expect(bounce.startTime).toBe(1000)
   })
 })
 
@@ -1789,5 +2259,137 @@ describe("workspace navigation accessibility", () => {
     render(<FlatAgentList handlers={handlers} />)
     expect(screen.getByRole("status").textContent).toBe("Loading workspace…")
     expect(screen.queryByText("No agents yet")).toBeNull()
+  })
+})
+
+// USER-LOCKED. The user decided that a working agent's and a running terminal's
+// sidebar glyph BOUNCES together with the pulse, four bounces per pulse on the
+// shared clock, and always finishes its cycle at rest: on a plain stop AND on a
+// hand-over to a higher state (needs-you, typing), where only the pulse yields
+// at once and the bounce in flight still finishes (user, 2026-09-28: "finish
+// the bounce of course but you can add the icon at any time, what we care to
+// maintain is the bounce so it doesn't teleport"). A hand-over also eases the
+// glyph's opacity back like a plain stop, and the higher state's look on the
+// glyph (the attention color and blink) waits until it has landed and then
+// eases in (user, 2026-10-14: "it just paints the icon in the middle of a
+// bounce and it's not transitioned colour but a flat \"bang!\""). It was
+// deleted once by an autonomous pass that rewrote the tenet to allow it; this
+// guard is what CLAUDE.md's "Locked by the user" section names. Do not edit,
+// weaken or delete it, or change what it pins, without the user's explicit
+// request.
+describe("USER-LOCKED: working glyph bounces with the pulse and settles at rest", () => {
+  const LOCKED =
+    'This is a user-locked decision recorded in CLAUDE.md "Locked by the user" ' +
+    "(the web working glyph bounces with the pulse, four per pulse, finishes its " +
+    "bounce at rest and eases back to full opacity on every stop, a hand-over to " +
+    "a higher state included, and takes that state's look only once it has " +
+    "landed). Do not change it without the user's explicit request."
+  const ATTENTION = "[class*='animate-attention-pulse']"
+  // The bounce rides a frame around the glyph and the pulse rides the glyph,
+  // so dropping the pulse can never restart the bounce.
+  const BOUNCE = "motion-safe:animate-working-bounce"
+  const PULSE = "motion-safe:animate-working-pulse"
+  const frameOf = (glyph: Element) => glyph.closest("[data-slot='working-glyph']")!
+
+  it("keeps the bounce keyframes and four bounces per pulse", async () => {
+    const { readFileSync } = await import("node:fs")
+    const css = readFileSync(`${process.cwd()}/src/index.css`, "utf8")
+    const rust = readFileSync(
+      `${process.cwd()}/../../yaran-core/src/working_cue.rs`,
+      "utf8",
+    )
+    const periodMs = Number(/WORKING_CUE_PERIOD_MS: u64 = (\d+)/.exec(rust)![1])
+
+    const bob = /@keyframes working-bounce\s*\{([\s\S]*?)\n\}/.exec(css)
+    expect(bob, LOCKED).toBeTruthy()
+    expect(bob![1], LOCKED).toContain("0%, 100% { transform: translateY(0); }")
+    expect(bob![1], LOCKED).toMatch(/translateY\(-\d+%\)/)
+    expect(css, LOCKED).toContain(
+      `--animate-working-pulse: working-pulse ${periodMs / 1000}s ease-in-out infinite;`,
+    )
+    expect(css, LOCKED).toContain(
+      `--animate-working-bounce: working-bounce ${periodMs / 4 / 1000}s ease-in-out infinite;`,
+    )
+  })
+
+  function stateWith(sessions: SessionView[], terminals: TerminalView[]): YaranState {
+    const base = makeState("name")
+    return { ...base, spine: { ...base.spine, sessions, terminals } } as YaranState
+  }
+
+  it("bounces both sidebar glyphs while working and settles each at rest", () => {
+    mockState = stateWith(
+      [makeSession({ id: "alpha", title: "Alpha", working: true })],
+      [makeTerminal({ id: "t-a", label: "bash", foreground_cmd: "vim", working: true })],
+    )
+    const { container, rerender } = render(<FlatAgentList handlers={handlers} />)
+    const bot = () => container.querySelector("svg.lucide-bot")!
+    const term = () => container.querySelector("svg.lucide-square-terminal")!
+    for (const glyph of [bot(), term()]) {
+      expect(frameOf(glyph).getAttribute("class"), LOCKED).toContain(BOUNCE)
+      expect(glyph.getAttribute("class"), LOCKED).toContain(PULSE)
+      fireAnimationStart(frameOf(glyph), "working-bounce")
+    }
+
+    // Work stops: neither glyph may drop the bounce until the bounce in flight
+    // is back at rest.
+    mockState = stateWith(
+      [makeSession({ id: "alpha", title: "Alpha" })],
+      [makeTerminal({ id: "t-a", label: "bash", foreground_cmd: "vim" })],
+    )
+    rerender(<FlatAgentList handlers={handlers} />)
+    for (const glyph of [bot(), term()]) {
+      expect(frameOf(glyph).getAttribute("class"), LOCKED).toContain(BOUNCE)
+      fireAnimationIteration(frameOf(glyph), "working-bounce")
+      expect(frameOf(glyph).getAttribute("class"), LOCKED).not.toContain(BOUNCE)
+    }
+  })
+
+  // A higher state taking over is a stop like any other for the glyph: the
+  // bounce finishes at rest and the opacity eases back to full. The word, its
+  // dots and the label a screen reader hears switch at once; the glyph's
+  // attention look waits for the landing and then eases in.
+  it("lands the glyph before a higher state's look when needs-you or typing takes over", async () => {
+    mockState = stateWith(
+      [makeSession({ id: "alpha", title: "Alpha", working: true })],
+      [makeTerminal({ id: "t-a", label: "bash", foreground_cmd: "vim", working: true })],
+    )
+    const { container, rerender } = render(<FlatAgentList handlers={handlers} />)
+    const bot = () => container.querySelector("svg.lucide-bot")!
+    const term = () => container.querySelector("svg.lucide-square-terminal")!
+    const eases = [stubGlyphEase(bot()), stubGlyphEase(term())]
+    for (const glyph of [bot(), term()]) fireAnimationStart(frameOf(glyph), "working-bounce")
+
+    mockState = stateWith(
+      [makeSession({ id: "alpha", title: "Alpha", working: true, needs_attention: true })],
+      [
+        makeTerminal({
+          id: "t-a",
+          label: "bash",
+          foreground_cmd: "vim",
+          working: true,
+          typing: true,
+        }),
+      ],
+    )
+    rerender(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByText("Needs you"), LOCKED).toBeTruthy()
+    expect(screen.queryByText("Working"), LOCKED).toBeNull()
+    expect(screen.queryByText("Running"), LOCKED).toBeNull()
+    expect(container.querySelectorAll(".working-dots"), LOCKED).toHaveLength(0)
+    expect(bot().closest("[aria-label='Needs attention']"), LOCKED).toBeTruthy()
+    for (const [i, glyph] of [bot(), term()].entries()) {
+      expect(glyph.getAttribute("class"), LOCKED).not.toContain(PULSE)
+      expect(eases[i].animate, LOCKED).toHaveBeenCalledTimes(1)
+      expect(frameOf(glyph).getAttribute("class"), LOCKED).toContain(BOUNCE)
+      fireAnimationIteration(frameOf(glyph), "working-bounce")
+      expect(frameOf(glyph).getAttribute("class"), LOCKED).not.toContain(BOUNCE)
+    }
+    // Landed but still easing back to full: no blink yet.
+    expect(bot().closest(ATTENTION), LOCKED).toBeNull()
+    for (const ease of eases) await ease.eased()
+    const look = bot().closest(ATTENTION)?.getAttribute("class") ?? ""
+    expect(look, LOCKED).toContain("text-cyan-100")
+    expectLookEasesIn(look, LOCKED)
   })
 })

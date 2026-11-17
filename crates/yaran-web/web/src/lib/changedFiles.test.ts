@@ -5,7 +5,13 @@ import {
   filterChangedFiles,
   formatRecapCount,
   mergeChangedFilesRecaps,
+  CHANGED_FILE_FIELDS,
+  changedFileCount,
+  changedStatusLookup,
+  discardActsOn,
+  folderCountLabel,
   reconcileSelection,
+  reuseUnchangedFiles,
   summarizeChangedFiles,
 } from "./changedFiles"
 import type { ChangedFileView } from "./types"
@@ -125,6 +131,121 @@ describe("reconcileSelection", () => {
     )
     expect(next.staged.size).toBe(0)
     expect(next.unstaged.size).toBe(0)
+  })
+
+  // A caller memoizes on the selection's identity, so "nothing dropped" must be
+  // answered by reference rather than by a rebuilt copy of every set.
+  it("returns the same selection when every checked path survives", () => {
+    const prev = {
+      staged: new Set(["kept-staged.ts"]),
+      unstaged: new Set(["kept-unstaged.ts"]),
+    }
+    expect(reconcileSelection(prev, slice)).toBe(prev)
+  })
+
+  it("keeps the surviving section's set when only the other one drops a path", () => {
+    const prev = {
+      staged: new Set(["kept-staged.ts"]),
+      unstaged: new Set(["gone.ts"]),
+    }
+    const next = reconcileSelection(prev, slice)
+    expect(next).not.toBe(prev)
+    expect(next.staged).toBe(prev.staged)
+    expect(next.unstaged.size).toBe(0)
+  })
+
+  it("does not index the live list for an empty selection", () => {
+    const huge = {
+      staged: [] as ChangedFileView[],
+      unstaged: new Proxy([] as ChangedFileView[], {
+        get(target, key, receiver) {
+          if (key === "map") throw new Error("indexed the list for nothing")
+          return Reflect.get(target, key, receiver)
+        },
+      }),
+    }
+    const prev = { staged: new Set<string>(), unstaged: new Set<string>() }
+    expect(reconcileSelection(prev, huge)).toBe(prev)
+  })
+})
+
+describe("reuseUnchangedFiles", () => {
+  it("returns the previous array when the fresh one says the same thing", () => {
+    const previous = [file("a.ts"), file("b.ts", "??")]
+    const next = [file("a.ts"), file("b.ts", "??")]
+    expect(reuseUnchangedFiles(previous, next)).toBe(previous)
+  })
+
+  it("keeps each unchanged file's object and takes the changed ones", () => {
+    const previous = [file("a.ts"), file("b.ts")]
+    const moved = { ...file("b.ts"), additions: 4 }
+    const result = reuseUnchangedFiles(previous, [file("a.ts"), moved, file("c.ts")])
+    expect(result).not.toBe(previous)
+    expect(result[0]).toBe(previous[0])
+    expect(result[1]).toBe(moved)
+    expect(result.map((f) => f.path)).toEqual(["a.ts", "b.ts", "c.ts"])
+  })
+
+  it("treats a rename's source as part of the file", () => {
+    const previous = [{ ...file("new.ts", "R"), renamed_from: "old.ts" }]
+    const next = [{ ...file("new.ts", "R"), renamed_from: "other.ts" }]
+    expect(reuseUnchangedFiles(previous, next)[0]).toBe(next[0])
+  })
+
+  // `Required<ChangedFileView>` stops compiling when the wire grows a field
+  // this sample does not set, and the comparator's field list is typed against
+  // the same keys, so a new field cannot slip past the comparison unseen.
+  it("compares every field of the wire type", () => {
+    const full: Required<ChangedFileView> = {
+      status: "R",
+      path: "new.ts",
+      additions: 3,
+      deletions: 2,
+      binary: false,
+      diff_excluded: false,
+      renamed_from: "old.ts",
+      kind: "directory",
+      file_count: 3,
+      nested_repositories: 0,
+      linked_worktrees: 0,
+      fingerprint: "aa",
+      nested_repositories_not_staged: 0,
+      linked_worktrees_not_staged: 0,
+      bare_repositories: ["a.git"],
+      files_in_bare_repositories: 0,
+      repositories_inside: ["a"],
+    }
+    expect(Object.keys(CHANGED_FILE_FIELDS).sort()).toEqual(Object.keys(full).sort())
+    const changed: { [K in keyof ChangedFileView]-?: ChangedFileView[K] } = {
+      status: "M",
+      path: "other.ts",
+      additions: 4,
+      deletions: 5,
+      binary: true,
+      diff_excluded: true,
+      renamed_from: "elsewhere.ts",
+      kind: "nested_repository",
+      file_count: 4,
+      nested_repositories: 1,
+      linked_worktrees: 1,
+      fingerprint: "bb",
+      nested_repositories_not_staged: 1,
+      linked_worktrees_not_staged: 1,
+      bare_repositories: ["b.git"],
+      files_in_bare_repositories: 1,
+      repositories_inside: ["b"],
+    }
+    for (const key of Object.keys(full) as (keyof ChangedFileView)[]) {
+      const next = { ...full, [key]: changed[key] }
+      expect(reuseUnchangedFiles([full], [next])[0], key).toBe(next)
+    }
+    expect(reuseUnchangedFiles([full], [{ ...full }])[0]).toBe(full)
+  })
+
+  it("follows the fresh order when files only moved position", () => {
+    const previous = [file("a.ts"), file("b.ts")]
+    const result = reuseUnchangedFiles(previous, [file("b.ts"), file("a.ts")])
+    expect(result).toEqual([previous[1], previous[0]])
   })
 })
 
@@ -271,5 +392,140 @@ describe("mergeChangedFilesRecaps", () => {
       binaryCount: 2,
       diffExcludedCount: 4,
     })
+  })
+})
+
+describe("folded folders in the totals", () => {
+  it("counts a folder by the files inside it", () => {
+    const folder: ChangedFileView = {
+      ...file("node_modules", "??"),
+      kind: "directory",
+      file_count: 28747,
+    }
+    const nested: ChangedFileView = {
+      ...file("vendor/lib", "??"),
+      kind: "nested_repository",
+    }
+    expect(changedFileCount(folder)).toBe(28747)
+    expect(changedFileCount(nested)).toBe(1)
+    expect(changedFileCount(file("a.ts"))).toBe(1)
+    expect(summarizeChangedFiles([folder, nested, file("a.ts")]).count).toBe(28749)
+  })
+
+  it("names the nested repositories a folder holds apart from its files", () => {
+    const withNested = (files: number, nested: number): ChangedFileView => ({
+      ...file("vendor", "??"),
+      kind: "directory",
+      file_count: files,
+      nested_repositories: nested,
+    })
+    expect(folderCountLabel(withNested(3, 1))).toBe("3 files and 1 nested repository")
+    expect(folderCountLabel(withNested(0, 2))).toBe("2 nested repositories")
+    expect(folderCountLabel(withNested(28747, 0))).toBe("28,747 files")
+    expect(folderCountLabel({ ...withNested(1, 1), linked_worktrees: 1 })).toBe(
+      "1 file, 1 nested repository and 1 worktree of this repository",
+    )
+  })
+
+  // A folder staged whole leaves the repositories inside it out, and its row
+  // says so, in the same words as the terminal UI.
+  it("says which repositories a staged folder left out", () => {
+    const staged = (repositories: number, worktrees: number): ChangedFileView => ({
+      ...file("vendor", "A"),
+      kind: "directory",
+      file_count: 5,
+      nested_repositories_not_staged: repositories || undefined,
+      linked_worktrees_not_staged: worktrees || undefined,
+    })
+    expect(folderCountLabel(staged(1, 0))).toBe("5 files \u00b7 1 nested repository not staged")
+    expect(folderCountLabel(staged(0, 2))).toBe(
+      "5 files \u00b7 2 worktrees of this repository not staged",
+    )
+    expect(folderCountLabel(staged(2, 1))).toBe(
+      "5 files \u00b7 2 nested repositories and 1 worktree of this repository not staged",
+    )
+  })
+
+  // A list field compares by what it holds: a refetch hands over a fresh
+  // array for the same bare repositories, which must not count as a change.
+  it("compares the bare repositories by what they name", () => {
+    const before: ChangedFileView = {
+      ...file("vendor", "??"),
+      kind: "directory",
+      file_count: 3,
+      bare_repositories: ["vendor/a.git"],
+    }
+    const same: ChangedFileView = { ...before, bare_repositories: ["vendor/a.git"] }
+    const moved: ChangedFileView = { ...before, bare_repositories: ["vendor/b.git"] }
+    expect(reuseUnchangedFiles([before], [same])[0]).toBe(before)
+    expect(reuseUnchangedFiles([before], [moved])[0]).toBe(moved)
+  })
+
+  it("does not offer a delete for a folder whose files all sit in bare repositories", () => {
+    const allBare: ChangedFileView = {
+      ...file("top.git", "??"),
+      kind: "directory",
+      file_count: 12,
+      bare_repositories: ["top.git"],
+      files_in_bare_repositories: 12,
+    }
+    expect(discardActsOn(allBare)).toBe(false)
+    expect(discardActsOn({ ...allBare, file_count: 13 })).toBe(true)
+  })
+
+  it("compares the folder fields like every other field", () => {
+    const before: ChangedFileView = { ...file("dist", "??"), kind: "directory", file_count: 3 }
+    const after: ChangedFileView = { ...before, file_count: 4 }
+    expect(reuseUnchangedFiles([before], [after])).toEqual([after])
+    expect(reuseUnchangedFiles([before], [after])[0]).toBe(after)
+  })
+})
+
+// A file inside a folded folder has no row of its own, so its status is the
+// folder's: the editor marks it the way the changes pane would if it listed it.
+describe("changedStatusLookup", () => {
+  const folded = (path: string, status: string): ChangedFileView => ({
+    ...file(path, status),
+    kind: "directory",
+    file_count: 3,
+  })
+
+  it("answers a path exactly, else from its nearest folded folder", () => {
+    const lookup = changedStatusLookup([
+      [folded("node_modules", "?"), file("src/a.ts", "M"), folded("gen/out", "?")],
+      [folded("vendor", "A"), file("src/a.ts", "A")],
+    ])
+    expect(lookup.get("src/a.ts")).toBe("M")
+    expect(lookup.get("node_modules")).toBe("?")
+    expect(lookup.get("node_modules/pkg/index.js")).toBe("?")
+    expect(lookup.get("vendor/lib/x.c")).toBe("A")
+    expect(lookup.get("gen/out/a.js")).toBe("?")
+    expect(lookup.get("gen/other.js")).toBeUndefined()
+    expect(lookup.get("node_modules_x/a.js")).toBeUndefined()
+    expect(lookup.get("src/b.ts")).toBeUndefined()
+  })
+
+  it("does not answer for a path inside a repository counted inside a folder", () => {
+    const lookup = changedStatusLookup([
+      [
+        {
+          ...folded("vendor", "?"),
+          repositories_inside: ["vendor/lib", "vendor/wt"],
+        },
+      ],
+    ])
+    expect(lookup.get("vendor/x.js")).toBe("?")
+    expect(lookup.get("vendor/lib")).toBeUndefined()
+    expect(lookup.get("vendor/lib/own.c")).toBeUndefined()
+    expect(lookup.get("vendor/wt/src/a.rs")).toBeUndefined()
+    expect(lookup.get("vendor/library/a.js")).toBe("?")
+  })
+
+  it("does not answer for a path inside a repository of its own", () => {
+    const lookup = changedStatusLookup([
+      [{ ...file("vendor/lib", "?"), kind: "nested_repository" }],
+    ])
+    expect(lookup.get("vendor/lib")).toBe("?")
+    expect(lookup.get("vendor/lib/own.c")).toBeUndefined()
   })
 })

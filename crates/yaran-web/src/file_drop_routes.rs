@@ -38,7 +38,8 @@
 //! A tree drop reuses this route rather than getting one of its own, because
 //! everything except the destination is the part that is easy to get wrong: the
 //! size cap, the concurrency permit taken before the body is buffered, the name
-//! validated and never rewritten, the create relative to a pinned directory
+//! validated and never rewritten (except slugified in an agent's upload folder,
+//! see [`yaran_core::file_drop::slugify_drop_name`]), the create relative to a pinned directory
 //! handle, the refusal of a symlink at any candidate, and the collision suffix.
 //!
 //! On an occupied name a drop suffixes where the editor's MOVE refuses. Both
@@ -63,7 +64,7 @@
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -103,8 +104,8 @@ struct DropQuery {
 struct SavedDropBody {
     /// The absolute path, which is what the browser pastes.
     path: String,
-    /// The name it was saved under. Differs from `requested_name` on a
-    /// collision.
+    /// The name it was saved under. Differs from `requested_name` when an
+    /// agent's upload folder slugified it or a collision forced a suffix.
     saved_name: String,
     /// The name as dropped, so the browser can report the pair rather than a
     /// count when they differ.
@@ -115,7 +116,7 @@ struct SavedDropBody {
     /// the SERVER is the machine whose home directory it is; the browser has no
     /// way to know.
     folder_label: String,
-    /// True when a collision forced a different name.
+    /// True when the saved name differs from the dropped one.
     renamed: bool,
 }
 
@@ -134,10 +135,9 @@ pub fn routes(state: &AppState) -> Router<AppState> {
             // display. A `0` cap is handled inside the handler as "file drop is
             // off" rather than as a zero-byte limit, so the refusal can say so.
             .layer(DefaultBodyLimit::max(max_bytes.max(1)))
-            // Outermost is the point: the body is buffered in full before the
-            // handler's first line, so a permit taken inside it would be taken after
-            // the memory was already spent. A request beyond the limit waits up to
-            // `PERMIT_WAIT` and is then refused.
+            // Outermost is the point: the permit is held for the whole body read,
+            // so a request beyond the concurrency limit has spent no memory on its
+            // body yet. It waits up to `PERMIT_WAIT` and is then refused.
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 hold_a_file_drop_permit,
@@ -176,23 +176,20 @@ async fn hold_a_file_drop_permit(
 ) -> Response {
     let permit = tokio::time::timeout(
         PERMIT_WAIT,
-        state.file_drop_semaphore.clone().acquire_owned(),
+        std::sync::Arc::clone(&state.file_drop_semaphore).acquire_owned(),
     )
     .await;
-    let _permit = match permit {
-        Ok(permit) => permit,
-        Err(_) => {
-            yaran_core::logger::warn(
-                "[server] /api/v1/file-drop refused: no upload slot came free within \
-                 the wait (file_drop_max_concurrency)",
-            );
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The server is already handling as many dropped files as it \
-                 allows at once. Try the drop again shortly.",
-            )
-                .into_response();
-        }
+    let Ok(_permit) = permit else {
+        yaran_core::logger::warn(
+            "[server] /api/v1/file-drop refused: no upload slot came free within \
+             the wait (file_drop_max_concurrency)",
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The server is already handling as many dropped files as it \
+             allows at once. Try the drop again shortly.",
+        )
+            .into_response();
     };
     next.run(req).await
 }
@@ -217,23 +214,28 @@ fn unknown_pane(pane_id: &str) -> String {
     )
 }
 
-async fn upload_dropped_file(
-    State(state): State<AppState>,
-    Query(query): Query<DropQuery>,
-    body: Result<Bytes, BytesRejection>,
-) -> Response {
+/// The pty a drop is for, resolved from the pane's id, or the refusal that
+/// answers before the body is kept: file drop switched off, a pane id nothing
+/// answers to, or a terminal another device is driving.
+async fn drop_pty(
+    state: &AppState,
+    query: &DropQuery,
+) -> Result<String, crate::rest_common::RouteRejection> {
     if state.file_drop_max_bytes == 0 {
-        return (
+        return Err((
             StatusCode::FORBIDDEN,
             "File drop is switched off on this server. Set [server] \
              file_drop_max_bytes in config.toml to a size in bytes and restart \
              to turn it back on."
                 .to_string(),
         )
-            .into_response();
+            .into_response()
+            .into());
     }
     if !id_within_bound(&query.pty) {
-        return (StatusCode::NOT_FOUND, unknown_pane(&query.pty)).into_response();
+        return Err((StatusCode::NOT_FOUND, unknown_pane(&query.pty))
+            .into_response()
+            .into());
     }
 
     // Canonicalized once, before anything is asked about it. A pane addresses its
@@ -243,44 +245,118 @@ async fn upload_dropped_file(
     // ownership is recorded against the real pty key, so a check asked with the
     // placeholder would find nothing and pass a drop it should have refused.
     let Some(pty) = state.engine.pty_key_for_pane_id(query.pty.clone()).await else {
-        return (StatusCode::NOT_FOUND, unknown_pane(&query.pty)).into_response();
+        return Err((StatusCode::NOT_FOUND, unknown_pane(&query.pty))
+            .into_response()
+            .into());
     };
 
-    // The courtesy check: the websocket's own write check enforces input authority,
-    // and this only tells a viewer who cannot paste before the file is written. An
-    // editor tree drop pastes nothing, so it is skipped explicitly, or a browser
-    // carrying a `conn` from the pane it came from could have a durable save
-    // refused by a check that does not apply to it.
+    if let Some(refusal) = held_elsewhere(state, &pty, query) {
+        return Err(refusal.into());
+    }
+    Ok(pty)
+}
+
+/// The courtesy check: the websocket's own write check enforces input authority,
+/// and this only tells a viewer who cannot paste before the file is written. An
+/// editor tree drop pastes nothing, so it is skipped explicitly, or a browser
+/// carrying a `conn` from the pane it came from could have a durable save
+/// refused by a check that does not apply to it.
+///
+/// Asked twice: before the body is read, so a viewer is told at once, and again
+/// once the body has arrived, because another device can take over while a slow
+/// upload is still arriving, and the file would then be saved and never pasted.
+fn held_elsewhere(state: &AppState, pty: &str, query: &DropQuery) -> Option<Response> {
     if query.dir.is_none()
         && let Some(conn) = query.conn
-        && state.input_held_by_someone_else(&pty, conn)
+        && state.input_held_by_someone_else(pty, conn)
     {
+        return Some(
+            (
+                StatusCode::CONFLICT,
+                "Another device is driving this terminal, so the path could not be \
+                 pasted. Take over input and drop the file again.",
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+/// Read and discard what is left of a refused drop's body, up to `limit` bytes,
+/// holding none of it. Answering with the body unread makes the server close the
+/// connection under data the client is still sending, and the browser can then
+/// see a reset rather than the refusal. A body past the limit, or one that
+/// fails, is abandoned there: the answer is sent either way.
+async fn drain_body(body: axum::body::Body, limit: usize) {
+    use futures_util::StreamExt;
+
+    let mut seen = 0usize;
+    let mut stream = body.into_data_stream();
+    while let Some(Ok(chunk)) = stream.next().await {
+        seen = seen.saturating_add(chunk.len());
+        if seen > limit {
+            return;
+        }
+    }
+}
+
+/// The answer to a body that could not be read. The limit is enforced by the
+/// body-limit layer, which rejects with its own terse message; that one is
+/// replaced with one naming the setting. Any other failure is a body that did
+/// not arrive in full, which no setting would have changed.
+fn body_refusal(rejection: &BytesRejection, max_bytes: usize) -> Response {
+    if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
         return (
-            StatusCode::CONFLICT,
-            "Another device is driving this terminal, so the path could not be \
-             pasted. Take over input and drop the file again."
-                .to_string(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "That file is over the {max_bytes} byte limit for a dropped file. \
+                 Nothing was written. Raise [server] file_drop_max_bytes in \
+                 config.toml and restart to allow bigger files."
+            ),
         )
             .into_response();
     }
+    yaran_core::logger::warn(&format!(
+        "[server] /api/v1/file-drop: the request body could not be read: {rejection}"
+    ));
+    (
+        StatusCode::BAD_REQUEST,
+        "The file did not arrive in full, so nothing was written. Try the drop again.",
+    )
+        .into_response()
+}
 
-    let bytes = match body {
-        Ok(b) => b,
-        Err(_) => {
-            // The limit is enforced by the body-limit layer, which rejects with
-            // its own terse message; replace it with one that names the setting.
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!(
-                    "That file is over the {} byte limit for a dropped file. \
-                     Nothing was written. Raise [server] file_drop_max_bytes in \
-                     config.toml and restart to allow bigger files.",
-                    state.file_drop_max_bytes
-                ),
-            )
-                .into_response();
+/// Takes the raw request rather than a body extractor, because an extractor is
+/// run before the handler's first line: the refusals in [`drop_pty`] would then
+/// come only after the whole body had been buffered. A refusal still reads the
+/// body to its end, discarding it, so the answer reaches the browser; and the
+/// ownership check is asked again once the body is in, just before the write.
+async fn upload_dropped_file(
+    State(state): State<AppState>,
+    Query(query): Query<DropQuery>,
+    request: Request,
+) -> Response {
+    let pty = match drop_pty(&state, &query).await {
+        Ok(pty) => pty,
+        Err(refusal) => {
+            // With file drop switched off there is no configured size, so the
+            // drain is bounded by the default one.
+            let limit = match state.file_drop_max_bytes {
+                0 => yaran_core::config::DEFAULT_FILE_DROP_MAX_BYTES,
+                configured => configured,
+            };
+            drain_body(request.into_body(), limit).await;
+            return refusal.into_response();
         }
     };
+
+    let bytes = match Bytes::from_request(request, &state).await {
+        Ok(bytes) => bytes,
+        Err(rejection) => return body_refusal(&rejection, state.file_drop_max_bytes),
+    };
+    if let Some(refusal) = held_elsewhere(&state, &pty, &query) {
+        return refusal;
+    }
 
     let destination = match query.dir.clone() {
         Some(dir) => {
@@ -300,12 +376,32 @@ async fn upload_dropped_file(
     // task as the write itself, rather than costing the response a second hop.
     let refresh_target = state.engine.file_drop_refresh_target(pty.clone()).await;
     let worktree = refresh_target.as_ref().map(|(_, w)| w.clone());
+    // A drop that lands in an agent's worktree holds it while it writes, so a
+    // removal of that worktree waits for it, and is refused once the removal
+    // has begun rather than creating the upload directory in a folder that is
+    // going.
+    let hold = match &worktree {
+        Some(worktree) => match crate::git_routes::hold_root_for_write(
+            &state,
+            worktree,
+            yaran_core::worktree_ops::WorktreeOpKind::Upload,
+            "save the dropped file",
+        )
+        .await
+        {
+            Ok(hold) => Some(hold),
+            Err(r) => return r.into_response(),
+        },
+        None => None,
+    };
 
     let filename = query.filename.clone();
+    let ops = state.engine.worktree_ops().clone();
     // Everything from here is filesystem work: pinning the directory (a /proc
-    // read, or an `lsof` process on macOS) and writing the file. Off the async
+    // read, or a kernel query on macOS) and writing the file. Off the async
     // reactor, exactly like the editor's file routes.
     let saved = tokio::task::spawn_blocking(move || {
+        let _hold = hold;
         // A destination that cannot be used is a refusal in its OWN words: a
         // path that could not be sent to the terminal, or a process yaran is not
         // allowed to read. Flattening those into "could not write the file"
@@ -313,9 +409,22 @@ async fn upload_dropped_file(
         let dir = destination
             .open()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
+        // The folder the file actually lands in is held too, whatever pane the
+        // drop came from: a terminal's shell can stand inside an agent's
+        // worktree that is being removed, and the drop must neither land there
+        // nor bring the folder back.
+        let _target_hold = ops
+            .hold(dir.path(), yaran_core::worktree_ops::WorktreeOpKind::Upload)
+            .map_err(|refused| {
+                std::io::Error::new(
+                    std::io::ErrorKind::ResourceBusy,
+                    refused.sentence("save the dropped file").to_string(),
+                )
+            })?;
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-        let saved = yaran_core::file_drop::save_drop(&dir, &filename, &bytes, &stamp)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let saved =
+            yaran_core::file_drop::save_drop(&dir, &filename, destination.naming(), &bytes, &stamp)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
         // On the final path, once it exists, and resolved on both sides: a
         // terminal's shell may have been `cd`'d to a sibling directory whose path
         // merely starts with the worktree's.
@@ -348,6 +457,11 @@ async fn upload_dropped_file(
         // A refusal (an unusable name, a symlink in the way, a destination that
         // cannot be written) is a client condition and names its reason, so the
         // browser can put that reason in the toast rather than a generic one.
+        // The folder it would land in is being removed: the same 409 the
+        // worktree hold above answers with.
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ResourceBusy => {
+            (StatusCode::CONFLICT, e.to_string()).into_response()
+        }
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -399,22 +513,22 @@ mod tests {
 
     /// A real router with agent "s1" pointed at a fresh worktree, and file drop
     /// configured with the given limits.
-    async fn router_with_limits(
+    fn router_with_limits(
         max_bytes: usize,
         max_concurrency: u32,
     ) -> (tempfile::TempDir, std::path::PathBuf, axum::Router) {
-        router_with(max_bytes, max_concurrency, None).await
+        router_with(max_bytes, max_concurrency, None)
     }
 
     /// The same router with `ui.upload_directory` written into the config the
     /// engine boots from, so a test can prove the setting reaches the drop.
-    async fn router_with_upload_directory(
+    fn router_with_upload_directory(
         directory: &str,
     ) -> (tempfile::TempDir, std::path::PathBuf, axum::Router) {
-        router_with(1024 * 1024, 4, Some(directory)).await
+        router_with(1024 * 1024, 4, Some(directory))
     }
 
-    async fn router_with(
+    fn router_with(
         max_bytes: usize,
         max_concurrency: u32,
         upload_directory: Option<&str>,
@@ -436,7 +550,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         {
@@ -450,7 +565,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
                 .unwrap();
@@ -469,8 +584,8 @@ mod tests {
         (tmp, wt, app)
     }
 
-    async fn router() -> (tempfile::TempDir, std::path::PathBuf, axum::Router) {
-        router_with_limits(1024 * 1024, 4).await
+    fn router() -> (tempfile::TempDir, std::path::PathBuf, axum::Router) {
+        router_with_limits(1024 * 1024, 4)
     }
 
     fn drop_req(query: &str, body: Vec<u8>) -> Request<axum::body::Body> {
@@ -504,7 +619,7 @@ mod tests {
         /// generation, and the worktrees the engine was asked to recompute.
         fn refreshes(&self) -> (u64, Vec<String>) {
             (
-                self.state.changes.invalidation_generation(),
+                self.state.changes.invalidation_generation("s1"),
                 self.state.engine.refresh_requests(),
             )
         }
@@ -575,7 +690,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         {
@@ -589,7 +705,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
                 .unwrap();
@@ -605,7 +721,7 @@ mod tests {
         let (handle, join) = crate::engine_actor::spawn_engine_thread(engine);
 
         // The router owns its state, so a probe route hands a clone back out.
-        let slot: std::sync::Arc<std::sync::Mutex<Option<AppState>>> = Default::default();
+        let slot: std::sync::Arc<std::sync::Mutex<Option<AppState>>> = std::sync::Arc::default();
         let captured = std::sync::Arc::clone(&slot);
         let probe = Router::new().route(
             "/test/state",
@@ -645,6 +761,19 @@ mod tests {
             app,
             state,
         }
+    }
+
+    /// A drop into an agent whose worktree is being removed is refused before
+    /// anything is written: the upload directory would otherwise be created
+    /// inside a folder that is going, or bring it back once it had gone.
+    #[tokio::test]
+    async fn a_drop_on_an_agent_whose_worktree_is_being_removed_is_refused() {
+        let world = drop_world().await;
+        let _removal = world.handle.worktree_ops().announce_removal(&world.wt);
+        let resp = world.drop_on("s1-slot", "shot.png").await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(body_text(resp).await.contains("removing the worktree"));
+        assert!(!world.wt.join(".yaran").exists(), "nothing may be written");
     }
 
     #[tokio::test]
@@ -700,6 +829,38 @@ mod tests {
             std::fs::canonicalize(&refreshes[0]).unwrap(),
             std::fs::canonicalize(&world.wt).unwrap(),
         );
+    }
+
+    #[tokio::test]
+    async fn an_agent_drop_is_reported_under_its_slugified_name() {
+        // Quotes in a pasted path are what agent CLIs misread, so the upload
+        // folder saves the slug and says so through the rename pair.
+        let world = drop_world().await;
+        let resp = world.drop_on("s1-slot", "it%27s%20%22final%22.txt").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+        assert_eq!(body["requested_name"], "it's \"final\".txt");
+        assert_eq!(body["saved_name"], "it-s-final.txt");
+        assert_eq!(body["renamed"], true);
+        assert!(
+            body["path"].as_str().unwrap().ends_with("/it-s-final.txt"),
+            "the pasted path must carry the slug: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_terminal_drop_keeps_its_exact_name() {
+        // A terminal's folder is where the user keeps the file, so its name is
+        // theirs, quotes and all.
+        let world = drop_world().await;
+        let terminal = world.create_terminal("/api/v1/sessions/s1/terminals").await;
+        world.cd(&terminal, &world.wt).await;
+        let resp = world.drop_on(&terminal, "it%27s%20%22final%22.txt").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+        assert_eq!(body["saved_name"], "it's \"final\".txt");
+        assert_eq!(body["renamed"], false);
+        assert!(world.wt.join("it's \"final\".txt").exists());
     }
 
     #[tokio::test]
@@ -768,6 +929,27 @@ mod tests {
         assert!(refreshes.is_empty(), "got {refreshes:?}");
     }
 
+    /// A project terminal belongs to no agent, so the drop has no agent
+    /// worktree to hold; what keeps it out of a worktree being removed is the
+    /// hold on the folder the file would actually land in, which is wherever
+    /// the shell stands. Its shell has `cd`'d into an agent's worktree whose
+    /// removal has begun: the drop is refused with 409 and writes nothing.
+    #[tokio::test]
+    async fn a_drop_on_a_terminal_standing_inside_a_worktree_being_removed_is_refused() {
+        let world = drop_world().await;
+        let terminal = world.create_terminal("/api/v1/projects/p1/terminals").await;
+        world.cd(&terminal, &world.wt).await;
+        let _removal = world.handle.worktree_ops().announce_removal(&world.wt);
+
+        let resp = world.drop_on(&terminal, "shot.png").await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(body_text(resp).await.contains("removing the worktree"));
+        assert!(
+            !world.wt.join("shot.png").exists(),
+            "nothing may be written into a folder being removed"
+        );
+    }
+
     #[tokio::test]
     async fn dropping_on_a_standalone_terminal_refreshes_nothing_even_inside_a_worktree() {
         // A standalone terminal is owned by nothing at all. Same answer, and the
@@ -807,7 +989,7 @@ mod tests {
         // file goes to the agent's upload directory, out of the way of git, and
         // the route hands back the path, because the path is what the browser
         // pastes.
-        let (_tmp, wt, app) = router().await;
+        let (_tmp, wt, app) = router();
         let resp = app
             .oneshot(drop_req(
                 "pty=s1-slot&filename=Screen%20Shot.png",
@@ -818,9 +1000,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
 
-        assert_eq!(body["saved_name"], "Screen Shot.png");
+        assert_eq!(body["saved_name"], "screen-shot.png");
         assert_eq!(body["requested_name"], "Screen Shot.png");
-        assert_eq!(body["renamed"], false);
+        assert_eq!(body["renamed"], true);
         let path = std::path::PathBuf::from(body["path"].as_str().unwrap());
         let uploads = wt.join(".yaran").join("uploads");
         assert_eq!(
@@ -857,7 +1039,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_pane_drop_lands_in_the_upload_directory() {
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             let resp = app
                 .oneshot(drop_req("pty=s1&filename=shot.png", b"png".to_vec()))
                 .await
@@ -878,7 +1060,7 @@ mod tests {
         async fn a_tree_drop_lands_in_the_folder_that_was_dropped_on() {
             // The editor's file tree addresses an agent root by its session id
             // too (`rootPtyId`), so it regressed with the pane.
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             std::fs::create_dir_all(wt.join("assets")).unwrap();
             let resp = app
                 .oneshot(drop_req(
@@ -918,6 +1100,33 @@ mod tests {
             assert!(
                 !world.wt.join(".yaran").exists(),
                 "a refused drop must write nothing"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_take_over_while_the_body_arrives_refuses_and_writes_nothing() {
+            let world = drop_world().await;
+            let state = world.state.clone();
+            let body = axum::body::Body::from_stream(futures_util::stream::once(async move {
+                state.give_input_to("s1-slot", 7);
+                Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"png"))
+            }));
+            let resp = world
+                .app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/file-drop?pty=s1-slot&filename=shot.png&conn=99")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CONFLICT);
+            assert!(
+                !world.wt.join(".yaran").exists(),
+                "a drop refused after its body arrived must write nothing"
             );
         }
 
@@ -974,7 +1183,7 @@ mod tests {
         // The content is deliberately awkward: non-Latin text, an emoji outside
         // the BMP, a CRLF and a lone LF. Any re-encoding, newline normalization
         // or BOM on the way through would show up here as different bytes.
-        let (_tmp, wt, app) = router().await;
+        let (_tmp, wt, app) = router();
         let text = "エラーログ\r\nline two\n🙂 done";
         let resp = app
             .oneshot(drop_req(
@@ -1008,7 +1217,7 @@ mod tests {
         // the walk that creates the directory could have been ignoring it and
         // every one of them would still pass. A nested, multi-component,
         // non-hidden path so the parent-creating walk is exercised too.
-        let (_tmp, wt, app) = router_with_upload_directory("tmp/yaran/drops").await;
+        let (_tmp, wt, app) = router_with_upload_directory("tmp/yaran/drops");
         let resp = app
             .oneshot(drop_req("pty=s1-slot&filename=shot.png", b"png".to_vec()))
             .await
@@ -1060,7 +1269,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_the_same_name_twice_is_reported_with_the_new_name() {
-        let (_tmp, _wt, app) = router().await;
+        let (_tmp, _wt, app) = router();
         let first = app
             .clone()
             .oneshot(drop_req("pty=s1-slot&filename=shot.png", b"one".to_vec()))
@@ -1085,7 +1294,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_traversing_filename_is_refused_and_writes_nothing() {
-        let (tmp, _wt, app) = router().await;
+        let (tmp, _wt, app) = router();
         let resp = app
             .oneshot(drop_req(
                 "pty=s1-slot&filename=..%2F..%2Fescaped.png",
@@ -1107,7 +1316,7 @@ mod tests {
         // A terse framework rejection ("length limit exceeded") tells the user
         // nothing they can act on, so the route replaces it with one that names
         // the limit and the setting that moves it.
-        let (_tmp, wt, app) = router_with_limits(16, 4).await;
+        let (_tmp, wt, app) = router_with_limits(16, 4);
         let resp = app
             .oneshot(drop_req("pty=s1-slot&filename=big.png", vec![0u8; 4096]))
             .await
@@ -1125,7 +1334,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_zero_size_cap_switches_file_drop_off() {
-        let (_tmp, wt, app) = router_with_limits(0, 4).await;
+        let (_tmp, wt, app) = router_with_limits(0, 4);
         let resp = app
             .oneshot(drop_req("pty=s1-slot&filename=shot.png", b"x".to_vec()))
             .await
@@ -1137,8 +1346,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_drop_reads_its_body_to_the_end_before_answering() {
+        // Answering with the body unread closes the connection under the
+        // client's upload, and the browser sees a reset instead of the refusal.
+        use futures_util::StreamExt;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (_tmp, _wt, app) = router_with_limits(0, 4);
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&finished);
+        let chunks = futures_util::stream::iter([b"first".as_slice(), b"last".as_slice()]).map(
+            move |chunk| {
+                if chunk == b"last" {
+                    flag.store(true, Ordering::SeqCst);
+                }
+                Ok::<_, std::io::Error>(axum::body::Bytes::from_static(chunk))
+            },
+        );
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/file-drop?pty=s1-slot&filename=shot.png")
+                    .body(axum::body::Body::from_stream(chunks))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the refused body must be read to its end"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_fails_to_arrive_is_not_called_too_large() {
+        let (_tmp, wt, app) = router();
+        let body = axum::body::Body::from_stream(futures_util::stream::once(async {
+            Err::<axum::body::Bytes, _>(std::io::Error::other("connection reset"))
+        }));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/file-drop?pty=s1-slot&filename=shot.png")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let msg = body_text(resp).await;
+        assert!(!msg.contains("file_drop_max_bytes"), "got: {msg}");
+        assert!(std::fs::read_dir(&wt).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
     async fn an_unknown_pty_is_not_found() {
-        let (_tmp, _wt, app) = router().await;
+        let (_tmp, _wt, app) = router();
         let resp = app
             .oneshot(drop_req("pty=nobody&filename=shot.png", b"x".to_vec()))
             .await
@@ -1163,7 +1430,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         {
@@ -1177,7 +1445,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
                 .unwrap();
@@ -1265,8 +1533,24 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_tree_drop_keeps_its_exact_name() {
+            // Only the agent's upload folder slugifies; a file added to the
+            // project keeps the name the user gave it.
+            let (_tmp, wt, app) = router();
+            let resp = app
+                .oneshot(tree_drop("s1-slot", "Report%20Q3%20(draft).PDF", ""))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+            assert_eq!(body["saved_name"], "Report Q3 (draft).PDF");
+            assert_eq!(body["renamed"], false);
+            assert!(wt.join("Report Q3 (draft).PDF").exists());
+        }
+
+        #[tokio::test]
         async fn dropping_on_a_folder_row_saves_a_visible_file_in_that_folder() {
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             std::fs::create_dir_all(wt.join("assets")).unwrap();
 
             let resp = app
@@ -1297,7 +1581,7 @@ mod tests {
         async fn dropping_on_empty_tree_space_saves_at_the_worktree_root() {
             // Empty space is the ROOT, and the root travels as the empty
             // string, so this also pins that encoding.
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             let resp = app
                 .oneshot(tree_drop("s1-slot", "notes.md", ""))
                 .await
@@ -1315,7 +1599,7 @@ mod tests {
         async fn a_drop_of_several_files_saves_every_one_of_them() {
             // One request per file, which is what the browser sends, and the
             // point is that the second does not disturb the first.
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             std::fs::create_dir_all(wt.join("docs")).unwrap();
             for name in ["one.md", "two.md", "three.md"] {
                 let resp = app
@@ -1338,7 +1622,7 @@ mod tests {
             // instead. Both promises are the same where it counts: the file
             // already there is never overwritten, and the browser is told
             // which name was actually used.
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             std::fs::write(wt.join("notes.md"), "mine\n").unwrap();
 
             let resp = app
@@ -1364,7 +1648,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_non_latin_name_survives_a_tree_drop_exactly_as_dropped() {
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             let resp = app
                 .oneshot(tree_drop(
                     "s1-slot",
@@ -1381,7 +1665,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_directory_escaping_the_worktree_is_refused_and_writes_nothing() {
-            let (tmp, wt, app) = router().await;
+            let (tmp, wt, app) = router();
             let resp = app
                 .oneshot(tree_drop("s1-slot", "escaped.png", "..%2F.."))
                 .await
@@ -1395,7 +1679,7 @@ mod tests {
 
         #[tokio::test]
         async fn the_git_directory_is_refused() {
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             std::fs::create_dir_all(wt.join(".git/hooks")).unwrap();
             let resp = app
                 .oneshot(tree_drop("s1-slot", "pre-commit", ".git%2Fhooks"))
@@ -1413,7 +1697,7 @@ mod tests {
             // so a file arriving here means a stale tree or a made-up request.
             // Writing into it is impossible, so say so rather than failing
             // opaquely.
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             std::fs::write(wt.join("README.md"), "x").unwrap();
             let resp = app
                 .oneshot(tree_drop("s1-slot", "logo.png", "README.md"))
@@ -1430,7 +1714,7 @@ mod tests {
             // is a lazy cache, so this is the ordinary stale-tree journey: a raw
             // `No such file or directory (os error 2)` would pass a status-only
             // assertion, while every other refusal on this path is a sentence.
-            let (_tmp, wt, app) = router().await;
+            let (_tmp, wt, app) = router();
             let resp = app
                 .oneshot(tree_drop("s1-slot", "logo.png", "nope"))
                 .await
@@ -1521,7 +1805,7 @@ mod tests {
             // hear about it now rather than up to ten seconds later.
             let world = drop_world().await;
             let (generation, refreshes) = world.refreshes();
-            assert!(refreshes.is_empty());
+            assert_eq!(refreshes, Vec::<String>::new());
 
             let resp = world
                 .app
@@ -1635,7 +1919,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let (_tmp, _wt, app) = router_with_limits(1024 * 1024, 1).await;
+        let (_tmp, _wt, app) = router_with_limits(1024 * 1024, 1);
 
         // The first upload's body yields one chunk and then never completes, so
         // its handler stays parked inside the buffering step, holding the permit.
@@ -1735,7 +2019,7 @@ mod tests {
              between the constant and a wait nobody would sit through."
         );
 
-        let (_tmp, _wt, app) = router_with_limits(1024 * 1024, 1).await;
+        let (_tmp, _wt, app) = router_with_limits(1024 * 1024, 1);
 
         let (holding_tx, holding_rx) = tokio::sync::oneshot::channel::<()>();
         let (_blocker_tx, blocker_rx) = tokio::sync::oneshot::channel::<()>();

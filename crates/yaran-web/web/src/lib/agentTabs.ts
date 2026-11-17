@@ -4,6 +4,7 @@
 
 import { chip, type Prose } from "./prose"
 import type { Spine } from "./workspaceApi"
+import { reorderById } from "./reorder"
 import type { AgentTabView, SessionView } from "./types"
 import type { SelectedTarget } from "./store"
 import { workspaceProjectId } from "@/lib/agentWorkspace"
@@ -41,6 +42,34 @@ export function slotTabTargetId(sessionId: string): string {
   return sessionId
 }
 
+// The strip order this client just dragged but the server has not confirmed yet.
+// `answered` is set once the request has been answered: the overlay then goes
+// with the first workspace document that was made after that answer, whatever
+// order it shows, so a reorder another screen made in between is not hidden
+// until a reload. A fetched document is after it when it began after the answer;
+// a pushed one when its revision reaches `minRev`, the lowest the server named
+// as showing the reorder. Pushes travel on another channel from the answer, so a
+// stale one can arrive after it, and with no revision named none retires it.
+export interface PendingTabOrder {
+  ids: string[]
+  answered: { seq: number; minRev: number | null } | null
+}
+
+// The session as this client's screen shows it: the tabs in the order just
+// dragged, and the slot where a close just moved it. Every reader that names
+// or lands on a tab (the pill, the close dialogs, the close's landing) reads
+// this, or it names a different strip from the one in front of the user.
+export function sessionAsShown(
+  session: SessionView,
+  pendingOrder: PendingTabOrder | undefined,
+  pendingSlot: PendingSlotTab | undefined,
+): SessionView {
+  const tabs = pendingOrder ? reorderById(session.tabs, pendingOrder.ids) : session.tabs
+  const slot = pendingSlot?.promotedTabId ?? session.slot_tab_id
+  if (tabs === session.tabs && slot === session.slot_tab_id) return session
+  return { ...session, tabs, slot_tab_id: slot }
+}
+
 // What a close of the slot tab leaves behind until a spine catches up. Keyed on
 // the closed tab because that is the fact a spine can retire; keying it on the
 // promoted id would pin a dead answer once another promotion moved the slot on.
@@ -75,6 +104,12 @@ export function slotTabIdOf(
 //   dormant slot tab whose      card, as the diagnosis surface: it would
 //     last run ENDED BADLY      otherwise relaunch every time the user looks
 //     (`last_run_failed`)       at it, with no way out
+//   dormant slot tab whose      card (the idle screen): the user just quit it,
+//     run ended while on        so staying on the agent is not asking for it
+//     screen (`endedInViewTabId`) again
+//   dormant slot tab while one  card: an agent stopped with its terminals left
+//     of the agent's terminals  going was stopped on purpose, so nothing that
+//     runs (`terminalRunning`)  opens it starts it; only its Start does
 //   started by this client      no card: the press is sent and the spine has not
 //     (`startedDormantTabs`)    caught up (see `startDormantTab`)
 //   no session                  card: defensive only, since callers derive
@@ -89,21 +124,25 @@ export function dormantTabNeedsCard(
   focusedTab: AgentTabView | undefined,
   startedDormantTabs: string[],
   slotTabId?: string,
+  endedInViewTabId?: string | null,
+  terminalRunning = false,
 ): boolean {
   if (!target || target.kind !== "agent") return false
   if (!focusedTab || focusedTab.has_live_process) return false
   if (startedDormantTabs.includes(focusedTab.id)) return false
+  if (focusedTab.id === endedInViewTabId) return true
   const slot = slotTabId ?? session?.slot_tab_id
   if (!session || focusedTab.id !== slot) return true
-  return focusedTab.last_run_failed === true
+  return focusedTab.last_run_failed === true || terminalRunning
 }
 
-// Whether an exited agent should drop the user back to the welcome screen. A
-// run that ended badly does not eject: that tab's dormant card is the diagnosis
-// surface and the welcome screen would replace it. Gated on `everReady` so a
-// pane that never came up cannot eject on a status it never saw change, and on
-// slot-ness because an extra tab's exit only turns that tab dormant.
-export function exitEjectsToWelcome(
+// Whether the slot tab's run just ended cleanly under this pane, which is what
+// the pane reports to the store (`settleSlotTabExit`). A run that ended badly is
+// not reported: that tab's dormant card is already the diagnosis surface. Gated
+// on `everReady` so a pane that never came up cannot report a status it never
+// saw change, and on slot-ness because an extra tab's clean exit closes its row
+// and the selection follows the promotion on its own.
+export function slotTabEndedInView(
   isSessionSlotTab: boolean,
   everReady: boolean,
   sessionStatus: string | undefined,
@@ -143,16 +182,22 @@ export function shouldShowTabStrip(
 }
 
 // Display labels for a session's tabs: the provider name, with a trailing " 2",
-// " 3", … for repeats in tab order. Output order matches the input.
+// " 3", … on the later tabs of a repeated provider, numbered by CREATION order
+// (the strip position breaks a tie), so dragging a pill never renames it.
+// Output order matches the input.
 //
 // Twin of yaran-core `agent_tabs::tab_labels`, which owns the rule; pinned by
 // shared vectors. Keep the two in lockstep.
 export function tabLabels(tabs: AgentTabView[]): string[] {
-  const seen = new Map<string, number>()
-  return tabs.map((tab) => {
-    const n = (seen.get(tab.provider) ?? 0) + 1
-    seen.set(tab.provider, n)
-    return n === 1 ? tab.provider : `${tab.provider} ${n}`
+  return tabs.map((tab, i) => {
+    const created = tab.created_at_ms ?? 0
+    const older = tabs.filter(
+      (other, j) =>
+        other.provider === tab.provider &&
+        ((other.created_at_ms ?? 0) < created ||
+          ((other.created_at_ms ?? 0) === created && j < i)),
+    ).length
+    return older === 0 ? tab.provider : `${tab.provider} ${older + 1}`
   })
 }
 
@@ -209,12 +254,25 @@ export function closeDetachesAgent(
   return (tab?.has_live_process ?? false) ? liveTabs <= 1 : liveTabs === 0
 }
 
+// The tab the view lands on when the one on screen closes, like a browser tab:
+// the tab to its right, or the one to its left when it was the last. `tabs` is
+// the strip as it stood BEFORE the close. Absent when the closed tab was the
+// only one, or is not in the strip.
+export function tabAfterClose(
+  tabs: readonly AgentTabView[],
+  closedTabId: string,
+): string | undefined {
+  const index = tabs.findIndex((t) => t.id === closedTabId)
+  if (index === -1) return undefined
+  return (tabs[index + 1] ?? tabs[index - 1])?.id
+}
+
 // The prose name of the tab that takes the session slot, absent unless the slot
 // tab is the one closing.
 //
-// The successor is the first tab that is not this one, which relies on
-// `SessionView.tabs` arriving slot-tab-first then extras in strip order (its
-// contract in `lib/types.ts`), the same ordering the engine promotes by.
+// The successor is the first tab that is not this one: the leftmost, because
+// `SessionView.tabs` arrives in strip order (its contract in `lib/types.ts`),
+// the same ordering the engine promotes by.
 export function slotSuccessorLabel(
   session: SessionView | undefined,
   tab: AgentTabView | undefined,

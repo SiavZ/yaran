@@ -8,11 +8,13 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_outcome.rs
 //! ├── cloud::leg
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome::tests
+//! ├── cloud::outcome
 //! ├── engine
 //! ├── status_text
 //! └── statusline
@@ -29,6 +31,7 @@
 //! ├── yaran-web::cloud_loop
 //! ├── yaran-web::cloud_mode
 //! └── yaran-web::cloud_mode_routes
+//! ```
 //! <module-headers:end>
 
 use super::leg::{CloudLegEvent, LegStop};
@@ -37,8 +40,11 @@ use crate::engine::StatusUpdate;
 use crate::status_text::StatusText;
 use crate::statusline::StatusTone;
 
+/// The status key a `[cloud] mode` change answers on.
 pub const CLOUD_MODE_KEY: &str = "cloud-mode";
+/// The status key the tunnel's readiness is reported on.
 pub const CLOUD_LEG_KEY: &str = "cloud-leg";
+/// The status key cloudflared's download and version are reported on.
 pub const CLOUD_CLOUDFLARED_KEY: &str = "cloud-cloudflared";
 
 /// What a live `[cloud] mode` change did. Exhaustive.
@@ -46,14 +52,21 @@ pub const CLOUD_CLOUDFLARED_KEY: &str = "cloud-cloudflared";
 pub enum CloudModeOutcome {
     /// The leg is starting; readiness is reported later on `cloud-leg`.
     Starting {
+        /// The machine's hostname.
         hostname: String,
     },
+    /// The leg was already running.
     AlreadyRunning {
+        /// The machine's hostname.
         hostname: String,
     },
+    /// The leg was stopped.
     Stopped,
+    /// The machine is not paired, so nothing started.
     NotPaired,
+    /// The pairing is revoked, so nothing started.
     Revoked {
+        /// The hostname it had.
         hostname: String,
     },
     /// Nothing is serving: the choice is saved and applies when a listener starts.
@@ -65,12 +78,16 @@ pub enum CloudModeOutcome {
 /// One outcome rendered for a status line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudModeReport {
+    /// Whether it is a warning rather than information.
     pub warning: bool,
+    /// Whether it stays on screen until replaced.
     pub sticky: bool,
+    /// The sentence.
     pub message: StatusText,
 }
 
 impl CloudModeOutcome {
+    /// The outcome as a status line, for the saved `mode`.
     pub fn report(&self, mode: CloudMode) -> CloudModeReport {
         let saved = format!("[cloud] mode is saved as \"{}\". ", mode.as_str());
         let info = |message: StatusText| CloudModeReport {
@@ -133,7 +150,7 @@ impl CloudModeOutcome {
         } else {
             StatusTone::Info
         };
-        let update = StatusUpdate::keyed(CLOUD_MODE_KEY, tone, report.message);
+        let update = keyed_status(CLOUD_MODE_KEY, tone, report.message);
         if report.sticky {
             update.sticky()
         } else {
@@ -157,6 +174,17 @@ pub fn tls_disclosure(hostname: &str) -> String {
     format!("Cloudflare terminates TLS for {hostname} and can see this traffic.")
 }
 
+/// A status on one of the fixed cloud keys both surfaces share. A busy one goes
+/// through [`super::outcome::busy_status`], because `StatusUpdate::keyed` is for
+/// finals only.
+fn keyed_status(key: &str, tone: StatusTone, text: impl Into<StatusText>) -> StatusUpdate {
+    if tone == StatusTone::Busy {
+        super::outcome::busy_status(key, text)
+    } else {
+        StatusUpdate::keyed(key, tone, text)
+    }
+}
+
 /// What a leg event says on `cloud-leg` / `cloud-cloudflared`, if anything.
 /// `owner` is the Access owner email; `mode` decides whether failures stick.
 pub fn leg_status(
@@ -165,7 +193,7 @@ pub fn leg_status(
     owner: &str,
     mode: CloudMode,
 ) -> Option<StatusUpdate> {
-    let leg = |tone, text: StatusText| Some(StatusUpdate::keyed(CLOUD_LEG_KEY, tone, text));
+    let leg = |tone, text: StatusText| Some(keyed_status(CLOUD_LEG_KEY, tone, text));
     let sticky_if_yes = |update: StatusUpdate| {
         if mode.warns_when_unpaired() {
             update.sticky()
@@ -175,9 +203,9 @@ pub fn leg_status(
     };
     match event {
         CloudLegEvent::Acquiring { pct, total_mb } => {
-            let size = total_mb.map(|mb| format!(" ({mb} MB)")).unwrap_or_default();
-            let pct = pct.map(|p| format!(": {p}%")).unwrap_or_default();
-            Some(StatusUpdate::keyed(
+            let size = total_mb.map_or_default(|mb| format!(" ({mb} MB)"));
+            let pct = pct.map_or_default(|p| format!(": {p}%"));
+            Some(keyed_status(
                 CLOUD_CLOUDFLARED_KEY,
                 StatusTone::Busy,
                 format!(
@@ -248,7 +276,7 @@ pub fn leg_status(
 }
 
 fn stop_status(stop: &LegStop, hostname: &str) -> Option<StatusUpdate> {
-    let leg = |tone, text: StatusText| Some(StatusUpdate::keyed(CLOUD_LEG_KEY, tone, text));
+    let leg = |tone, text: StatusText| Some(keyed_status(CLOUD_LEG_KEY, tone, text));
     match stop {
         LegStop::Requested => None,
         LegStop::CredentialsGone => leg(

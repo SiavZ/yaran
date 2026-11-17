@@ -6,6 +6,7 @@
 //! - Blocking; called from the leg's supervisor thread. Loopback only, proxy disabled.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/ready.rs
 //! └── cloud::cloudflared::test_support
@@ -17,7 +18,9 @@
 //! ├── cloud::leg
 //! ├── cloud::leg::tests
 //! ├── cloud::leg_run
+//! ├── yaran-web::cloud_loop
 //! └── yaran-web::cloud_loop::live_cloud_mode_tests
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;
@@ -25,9 +28,12 @@ use std::time::Duration;
 /// What one probe found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
+    /// cloudflared reports ready.
     Ready {
+        /// How many edge connections it holds.
         connections: u32,
     },
+    /// cloudflared answers but is not ready yet.
     NotReady,
     /// Nothing answered (cloudflared still starting, or gone).
     Unreachable,
@@ -35,6 +41,7 @@ pub enum Readiness {
 
 /// Poll every second until Ready, every five after.
 pub const POLL_UNTIL_READY: Duration = Duration::from_secs(1);
+/// Poll interval once ready.
 pub const POLL_WHILE_READY: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -69,7 +76,10 @@ pub fn judge(status: u16, body: &str) -> Readiness {
     }
     let connections = serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|v| v.get("readyConnections").and_then(|n| n.as_u64()))
+        .and_then(|v| {
+            v.get("readyConnections")
+                .and_then(serde_json::Value::as_u64)
+        })
         .unwrap_or(0);
     match u32::try_from(connections) {
         Ok(0) => Readiness::NotReady,

@@ -1,6 +1,6 @@
 //! End-to-end WebSocket transport tests (the "debug client").
 //!
-//! Post-cutover (Phase 6) the legacy `/ws` socket, the broadcast ViewModel, and
+//! Post-cutover (Phase 6) the legacy `/ws` socket, the broadcast `ViewModel`, and
 //! the `ServerMessage`/`ClientMessage` command protocol are gone. Reads and actions
 //! are REST (`/api/v1/...`); change/status signals ride `/ws/events`; terminal byte
 //! streams ride the nested per-PTY sockets.
@@ -53,6 +53,14 @@ fn sample_session(
 }
 
 async fn boot() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
+    boot_with_extra_sessions(&[]).await
+}
+
+/// [`boot`], with one more session per id in `extra`, each on a branch named
+/// after it and in a plain directory of its own under the root.
+async fn boot_with_extra_sessions(
+    extra: &[&str],
+) -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
     let tmp = yaran_core::test_scratch::ScratchDir::new();
     let root = tmp.path().to_path_buf();
     let paths = YaranPaths {
@@ -60,11 +68,12 @@ async fn boot() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         // Seed the owning project so session-delete (which looks up the project)
         // can take the inline path.
         store
@@ -76,10 +85,10 @@ async fn boot() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session(
                 "s1",
@@ -87,9 +96,21 @@ async fn boot() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
                 "feat",
                 root.to_string_lossy().as_ref(),
             ))
-            .unwrap();
+            .expect("save the test agent");
+        for id in extra {
+            let worktree = root.join(id);
+            std::fs::create_dir_all(&worktree).expect("create the test directory");
+            store
+                .create_session(&sample_session(
+                    id,
+                    "p1",
+                    id,
+                    worktree.to_string_lossy().as_ref(),
+                ))
+                .expect("save the test agent");
+        }
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -118,15 +139,17 @@ async fn boot() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
     engine.config.limits.disk_warn_pct = 0;
     let (handle, _join) = spawn_engine_thread(engine);
     let app = router(handle);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp)
 }
@@ -162,11 +185,12 @@ async fn boot_with_repo() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) 
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -176,10 +200,10 @@ async fn boot_with_repo() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) 
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session(
                 "s1",
@@ -187,9 +211,9 @@ async fn boot_with_repo() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) 
                 "feat",
                 root.to_string_lossy().as_ref(),
             ))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -213,15 +237,17 @@ async fn boot_with_repo() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) 
     engine.config.limits.disk_warn_pct = 0;
     let (handle, _join) = spawn_engine_thread(engine);
     let app = router(handle);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp)
 }
@@ -273,6 +299,15 @@ async fn http_file_diff_returns_sides_and_rejects_traversal() {
     assert_eq!(resp.status(), 400, "path traversal must be rejected");
 }
 
+/// `count` lines reading `<word> 0` up to `<word> <count - 1>`, each ending in a newline.
+fn numbered_lines(word: &str, count: usize) -> String {
+    use std::fmt::Write as _;
+    (0..count).fold(String::new(), |mut lines, i| {
+        writeln!(lines, "{word} {i}").expect("writing to a String cannot fail");
+        lines
+    })
+}
+
 /// A version past the editor's size ceiling answers 200 with the head of git's
 /// own patch rather than the 400 it used to, so the browser has something to
 /// show for a file it cannot hold.
@@ -281,7 +316,7 @@ async fn http_file_diff_answers_a_huge_file_with_the_diff_head() {
     let (addr, tmp) = boot_with_repo().await;
     // Comfortably past the 5 MiB working-copy ceiling, in lines short enough
     // that the patch is far longer than the head cap.
-    let huge: String = (0..600_000).map(|i| format!("line {i}\n")).collect();
+    let huge = numbered_lines("line", 600_000);
     assert!(
         huge.len() > 5 * 1024 * 1024,
         "the fixture must be past the ceiling"
@@ -335,12 +370,12 @@ async fn http_file_diff_answers_a_huge_tracked_file_with_the_diff_head() {
     };
     // Committed over the ceiling, then rewritten line for line so the patch is
     // far longer than the head cap.
-    let committed: String = (0..600_000).map(|i| format!("old {i}\n")).collect();
+    let committed = numbered_lines("old", 600_000);
     assert!(committed.len() > 5 * 1024 * 1024);
     std::fs::write(root.join("tracked-big.txt"), &committed).expect("write");
     run(&["add", "--", "tracked-big.txt"]);
     run(&["commit", "-q", "-m", "big"]);
-    let rewritten: String = (0..600_000).map(|i| format!("new {i}\n")).collect();
+    let rewritten = numbered_lines("new", 600_000);
     std::fs::write(root.join("tracked-big.txt"), &rewritten).expect("rewrite");
 
     let client = reqwest::Client::new();
@@ -457,11 +492,12 @@ async fn boot_for_create_agent_window(
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -471,12 +507,12 @@ async fn boot_for_create_agent_window(
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -510,15 +546,17 @@ async fn boot_for_create_agent_window(
         ),
         None => router(handle),
     };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp)
 }
@@ -564,14 +602,11 @@ fn spine_has_project_terminal(spine: &serde_json::Value, terminal_id: &str) -> b
 }
 
 fn spine_terminal_has_owner_kind(spine: &serde_json::Value, terminal_id: &str, kind: &str) -> bool {
-    spine["terminals"]
-        .as_array()
-        .map(|terminals| {
-            terminals.iter().any(|t| {
-                t["id"].as_str() == Some(terminal_id) && t["owner"]["kind"].as_str() == Some(kind)
-            })
+    spine["terminals"].as_array().is_some_and(|terminals| {
+        terminals.iter().any(|t| {
+            t["id"].as_str() == Some(terminal_id) && t["owner"]["kind"].as_str() == Some(kind)
         })
-        .unwrap_or(false)
+    })
 }
 
 // ── REST action endpoints + the events/PTY sockets ───────────────────────────
@@ -586,7 +621,7 @@ type ClientWs =
 async fn connect_events(addr: SocketAddr) -> (ClientWs, String) {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
         .await
-        .unwrap();
+        .expect("open the websocket");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
         if let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_millis(500), ws.next()).await
@@ -594,10 +629,22 @@ async fn connect_events(addr: SocketAddr) -> (ClientWs, String) {
             && let Ok(v) = serde_json::from_str::<serde_json::Value>(&t)
             && v["event"] == "connected"
         {
-            return (ws, v["id"].as_str().unwrap().to_string());
+            return (
+                ws,
+                v["id"]
+                    .as_str()
+                    .expect("the hello frame carries a connection id")
+                    .to_string(),
+            );
         }
     }
     panic!("never received the connected frame");
+}
+
+/// [`connect_events`] presenting `user_agent`, as a browser's events socket
+/// presents the same one its terminal sockets do.
+async fn connect_events_as(addr: SocketAddr, user_agent: &str) -> (ClientWs, String) {
+    connect_events_at(addr, "/ws/events", user_agent).await
 }
 
 /// Whether a `status` event whose message contains `needle` arrives within the
@@ -633,6 +680,65 @@ async fn saw_status_with(ws: &mut ClientWs, needles: &[&str], timeout: Duration)
         }
     }
     false
+}
+
+/// The first `status` frame carrying every one of `needles`, parsed, if one
+/// arrives within the window: [`saw_status_with`] for a test that compares
+/// what the frame says.
+async fn status_frame_with(
+    ws: &mut ClientWs,
+    needles: &[&str],
+    timeout: Duration,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_millis(200), ws.next()).await
+            && let Ok(t) = m.into_text()
+            && t.contains("\"event\":\"status\"")
+            && needles.iter().all(|needle| t.contains(needle))
+        {
+            return serde_json::from_str(&t).ok();
+        }
+    }
+    None
+}
+
+/// Assert a change followed as an operation answered `202` with a `Location`
+/// naming its record, and hand back the record's id.
+async fn followed(resp: reqwest::Response) -> String {
+    assert_eq!(resp.status().as_u16(), 202, "a followed change answers 202");
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location header")
+        .to_string();
+    let record: serde_json::Value = resp.json().await.expect("the record");
+    let id = record["id"].as_str().expect("the record's id").to_string();
+    assert_eq!(location, format!("/api/v1/operations/{id}"));
+    id
+}
+
+/// Read operation `id` in short waits until it has an outcome, the way a client
+/// that asked for it does.
+async fn operation_outcome(addr: SocketAddr, id: &str) -> serde_json::Value {
+    let client = reqwest::Client::new();
+    for _ in 0..15 {
+        let record: serde_json::Value = client
+            .get(format!(
+                "http://{addr}/api/v1/operations/{id}?wait_seconds=2"
+            ))
+            .send()
+            .await
+            .expect("GET operation")
+            .json()
+            .await
+            .expect("the record");
+        if record["state"] != "running" {
+            return record;
+        }
+    }
+    panic!("operation {id} never finished");
 }
 
 /// Whether a `status` event of the given tone arrives within the window,
@@ -681,11 +787,12 @@ async fn boot_with_gated_startup_command() -> (
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -696,10 +803,10 @@ async fn boot_with_gated_startup_command() -> (
                 auto_reopen_agents: None,
                 // Blocks until the test opens the FIFO for writing.
                 startup_command: Some(format!("cat {}", gate.display())),
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session(
                 "s1",
@@ -707,9 +814,9 @@ async fn boot_with_gated_startup_command() -> (
                 "feat",
                 root.to_string_lossy().as_ref(),
             ))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -726,15 +833,17 @@ async fn boot_with_gated_startup_command() -> (
     engine.config.limits.disk_warn_pct = 0;
     let (handle, _join) = spawn_engine_thread(engine);
     let app = router(handle);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, gate, tmp)
 }
@@ -923,7 +1032,7 @@ async fn a_final_is_replayable_continuously_from_the_moment_it_is_broadcast() {
 /// sleep in the suite would cost more than the coverage is worth.)
 #[tokio::test]
 async fn a_half_done_delete_reports_a_sticky_error_to_the_watching_connection() {
-    let (addr, _tmp) = boot().await;
+    let (addr, tmp) = boot_with_extra_sessions(&["s2", "s3"]).await;
     let (mut ws_a, _id_a) = connect_events(addr).await;
 
     // Deleting s1 with its worktree runs an async removal whose git call fails
@@ -951,6 +1060,422 @@ async fn a_half_done_delete_reports_a_sticky_error_to_the_watching_connection() 
         seen.contains("\"sticky\":true"),
         "a half-done delete must be marked sticky on the wire, got {seen}"
     );
+
+    // The same delete of s2, with its branch, followed as an operation: it
+    // answers with an id at once, and the record ends on the same kind of
+    // final and says what became of each part: the agent is gone, its
+    // worktree could not be removed, and its branch was never reached.
+    let resp = client
+        .delete(format!(
+            "http://{addr}/api/v1/sessions/s2?delete_worktree=true&delete_branch=true&operation=1"
+        ))
+        .send()
+        .await
+        .expect("DELETE session");
+    let op = followed(resp).await;
+    let seen = saw_status_tone(&mut ws_a, "error", Duration::from_secs(10)).await;
+    let seen = seen.expect("the second delete's error reaches the connection too");
+    let record = operation_outcome(addr, &op).await;
+    let frame: serde_json::Value = serde_json::from_str(&seen).unwrap();
+    assert_eq!(record["state"], "partial");
+    assert_eq!(record["message"], frame["message"]);
+    assert_eq!(record["removed"], serde_json::json!(["s2"]));
+    let parts = record["parts"].as_array().expect("parts");
+    assert_eq!(parts.len(), 2, "{record}");
+    assert_eq!(parts[0]["part"], "worktree");
+    assert_eq!(
+        parts[0]["subject"],
+        tmp.path().join("s2").to_string_lossy().as_ref()
+    );
+    assert_eq!(parts[0]["outcome"], "failed");
+    assert_eq!(
+        parts[1],
+        serde_json::json!({"part": "branch", "subject": "s2", "outcome": "kept"})
+    );
+
+    // A delete of s3 while a browser watches it, from a client with no
+    // connection of its own, is refused naming that browser and where it is;
+    // told to go ahead over it, the delete runs.
+    let _watcher = connect_pty_as(addr, "/ws/sessions/s3/pty", "yaran-test-browser").await;
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/sessions/s3"))
+        .send()
+        .await
+        .expect("DELETE session");
+    assert_eq!(resp.status().as_u16(), 409);
+    let refused: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(refused["error"], "attached");
+    assert_eq!(refused["blockers"].as_array().map(Vec::len), Some(1));
+    assert_eq!(refused["blockers"][0]["device"], "yaran-test-browser");
+    assert_eq!(refused["blockers"][0]["address"], "127.0.0.1");
+    assert_eq!(refused["blockers"][0]["target"]["agent"], "s3");
+    let resp = client
+        .delete(format!(
+            "http://{addr}/api/v1/sessions/s3?force_connected=true"
+        ))
+        .send()
+        .await
+        .expect("DELETE session");
+    assert_eq!(resp.status().as_u16(), 204);
+}
+
+/// Open a terminal socket at `path` (query included) presenting
+/// `user_agent`, and wait for its handshake, by which time it is attached.
+async fn connect_pty_as(addr: SocketAddr, path: &str, user_agent: &str) -> ClientWs {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{addr}{path}")
+        .into_client_request()
+        .expect("build the websocket request");
+    request.headers_mut().insert(
+        "user-agent",
+        user_agent.parse().expect("a valid user agent header"),
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("connect the pty socket");
+    next_event_frame(&mut ws, "connected", Duration::from_secs(8))
+        .await
+        .expect("the pty handshake");
+    ws
+}
+
+/// DELETE `/api/v1/sessions/{id}` as the browser tab `connection` (or as a
+/// client with none), answering the status and the body.
+async fn delete_agent_as(
+    addr: SocketAddr,
+    id: &str,
+    connection: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let mut request = reqwest::Client::new().delete(format!("http://{addr}/api/v1/sessions/{id}"));
+    if let Some(connection) = connection {
+        request = request.header("x-connection-id", connection);
+    }
+    let resp = request.send().await.expect("DELETE session");
+    let status = resp.status().as_u16();
+    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+/// Retry the delete of `id` until it is no longer refused, for up to five
+/// seconds, answering the last status: a socket's close reaches the server a
+/// moment after the client sends it.
+async fn delete_agent_once_free(addr: SocketAddr, id: &str, connection: Option<&str>) -> u16 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, _) = delete_agent_as(addr, id, connection).await;
+        if status != 409 || tokio::time::Instant::now() >= deadline {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The server's connections list names each browser tab with its address and
+/// what it streams. A browser tab's terminal sockets name its events
+/// connection, so the tab deleting the agent it is viewing is not in its own
+/// way; a second tab on the same machine, with the same address and the same
+/// `User-Agent`, is.
+#[tokio::test]
+async fn a_browser_tab_is_listed_and_not_in_its_own_way_but_a_second_tab_on_the_same_machine_is() {
+    let (addr, _tmp) = boot().await;
+    let (_events_a, tab_a) = connect_events_as(addr, "yaran-same-browser").await;
+    let (_events_b, tab_b) = connect_events_as(addr, "yaran-same-browser").await;
+    let _pty_a = connect_pty_as(
+        addr,
+        &format!("/ws/sessions/s1/pty?events={tab_a}"),
+        "yaran-same-browser",
+    )
+    .await;
+    let pty_b = connect_pty_as(
+        addr,
+        &format!("/ws/sessions/s1/pty?events={tab_b}"),
+        "yaran-same-browser",
+    )
+    .await;
+
+    let listed: serde_json::Value =
+        reqwest::get(format!("http://{addr}/api/v1/server/connections"))
+            .await
+            .expect("GET connections")
+            .json()
+            .await
+            .unwrap();
+    let listed = listed.as_array().expect("an array");
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    for tab in [&tab_a, &tab_b] {
+        let entry = listed
+            .iter()
+            .find(|entry| entry["id"] == tab.as_str())
+            .unwrap_or_else(|| panic!("{tab} is listed: {listed:?}"));
+        assert_eq!(entry["surface"], "browser");
+        assert_eq!(entry["device"], "yaran-same-browser");
+        assert_eq!(entry["address"], "127.0.0.1");
+        assert_eq!(entry["driving"], false);
+        assert_eq!(entry["attachments"][0]["kind"], "tab");
+        assert_eq!(entry["attachments"][0]["agent"], "s1");
+        assert_eq!(entry["attachments"].as_array().map(Vec::len), Some(1));
+    }
+
+    let (status, refused) = delete_agent_as(addr, "s1", Some(&tab_a)).await;
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(
+        refused["blockers"].as_array().map(Vec::len),
+        Some(1),
+        "only the other tab is in the way: {refused}"
+    );
+
+    drop(pty_b);
+    assert_eq!(delete_agent_once_free(addr, "s1", Some(&tab_a)).await, 204);
+}
+
+/// Two tabs naming the same browser id (`?browser=`) are one browser in the
+/// agent's count and share a code in the listing, yet the other tab is still in
+/// the way of a delete: the id counts and groups, and decides nothing. A
+/// malformed id is no id at all.
+#[tokio::test]
+async fn tabs_of_one_browser_count_once_but_still_block_each_other() {
+    let (addr, _tmp) = boot().await;
+    let laptop = "0123456789abcdef0123456789abcdef";
+    let (_events_a, tab_a) =
+        connect_events_at(addr, &format!("/ws/events?browser={laptop}"), "yaran-ua").await;
+    let (_events_b, tab_b) =
+        connect_events_at(addr, &format!("/ws/events?browser={laptop}"), "yaran-ua").await;
+    let (_events_c, tab_c) =
+        connect_events_at(addr, "/ws/events?browser=not%20an%20id", "yaran-ua").await;
+    let mut ptys = Vec::new();
+    for tab in [&tab_a, &tab_b] {
+        ptys.push(
+            connect_pty_as(
+                addr,
+                &format!("/ws/sessions/s1/pty?events={tab}"),
+                "yaran-ua",
+            )
+            .await,
+        );
+    }
+
+    let sessions: serde_json::Value = reqwest::get(format!("http://{addr}/api/v1/sessions"))
+        .await
+        .expect("GET sessions")
+        .json()
+        .await
+        .unwrap();
+    let s1 = sessions
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == "s1"))
+        .expect("s1 is listed");
+    assert_eq!(s1["remote_viewers"], 1, "two tabs, one browser: {s1}");
+
+    let listed: serde_json::Value =
+        reqwest::get(format!("http://{addr}/api/v1/server/connections"))
+            .await
+            .expect("GET connections")
+            .json()
+            .await
+            .unwrap();
+    let browser_of = |tab: &str| {
+        listed
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == tab))
+            .map_or_else(
+                || panic!("{tab} is listed: {listed}"),
+                |row| row["browser"].clone(),
+            )
+    };
+    assert_eq!(browser_of(&tab_a), "01234567");
+    assert_eq!(browser_of(&tab_b), "01234567");
+    assert_eq!(browser_of(&tab_c), serde_json::Value::Null);
+
+    let (status, refused) = delete_agent_as(addr, "s1", Some(&tab_a)).await;
+    assert_eq!(status, 409, "the other tab is in the way: {refused}");
+}
+
+/// A terminal socket the server cannot link to its tab's events connection (it
+/// named none, as one opened before the tab's id arrived does) still counts as
+/// the browser it names, so the tab and its terminal are one browser; one that
+/// names no browser counts as a browser of its own.
+#[tokio::test]
+async fn an_unlinked_terminal_socket_counts_as_the_browser_it_names() {
+    let (addr, _tmp) = boot().await;
+    let laptop = "0123456789abcdef0123456789abcdef";
+    let (_events, _tab) =
+        connect_events_at(addr, &format!("/ws/events?browser={laptop}"), "yaran-ua").await;
+    let _pty = connect_pty_as(
+        addr,
+        &format!("/ws/sessions/s1/pty?browser={laptop}"),
+        "yaran-ua",
+    )
+    .await;
+    let remote_viewers = || async {
+        let sessions: serde_json::Value = reqwest::get(format!("http://{addr}/api/v1/sessions"))
+            .await
+            .expect("GET sessions")
+            .json()
+            .await
+            .unwrap();
+        sessions
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == "s1"))
+            .expect("s1 is listed")["remote_viewers"]
+            .clone()
+    };
+    assert_eq!(
+        remote_viewers().await,
+        1,
+        "the tab and its terminal are one browser"
+    );
+
+    let _anonymous = connect_pty_as(addr, "/ws/sessions/s1/pty", "yaran-ua").await;
+    assert_eq!(
+        remote_viewers().await,
+        2,
+        "a socket naming no browser is its own"
+    );
+}
+
+/// A phone whose terminal socket was lost while its owner was looking at it
+/// (the last beat said so) still protects that agent for the grace, even once
+/// its events socket is reaped too; one whose page was not being looked at
+/// does not, and one whose socket was closed cleanly releases it at once.
+#[tokio::test]
+async fn a_phone_that_parked_its_terminal_while_looking_at_it_still_blocks_a_delete() {
+    let (addr, _tmp) = boot_with_extra_sessions(&["s2", "s3"]).await;
+    // (agent, the last beat looked at it, the socket closed cleanly)
+    let mut phones = Vec::new();
+    for (agent, viewed, clean) in [
+        ("s1", true, false),
+        ("s2", false, false),
+        ("s3", true, true),
+    ] {
+        let (events, phone) = connect_events_as(addr, "yaran-test-phone").await;
+        let mut pty = connect_pty_as(
+            addr,
+            &format!("/ws/sessions/{agent}/pty?events={phone}"),
+            "yaran-test-phone",
+        )
+        .await;
+        pty.send(Message::Text(
+            format!(r#"{{"beat":1,"viewed":{viewed}}}"#).into(),
+        ))
+        .await
+        .unwrap();
+        next_event_frame(&mut pty, "beat", Duration::from_secs(8))
+            .await
+            .expect("the beat is answered");
+        if clean {
+            pty.close(None).await.unwrap();
+        } else {
+            drop(pty);
+        }
+        phones.push((events, phone));
+    }
+    let first_phone = phones[0].1.clone();
+    // Every phone's events socket is lost too, never closed: the connection
+    // just stops, as a reap sees it.
+    drop(phones);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        delete_agent_once_free(addr, "s2", None).await,
+        204,
+        "the agent the phone was not looking at is free once its socket was lost"
+    );
+    assert_eq!(
+        delete_agent_once_free(addr, "s3", None).await,
+        204,
+        "a cleanly closed socket releases its agent at once"
+    );
+    let (status, refused) = delete_agent_as(addr, "s1", None).await;
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["blockers"][0]["device"], "yaran-test-phone");
+    assert_eq!(refused["blockers"][0]["driving"], false);
+
+    // The phone comes back: its new events socket names the one it lost, so
+    // the agent it was looking at is its own again, not in its own way.
+    let (_back, phone) = connect_events_at(
+        addr,
+        &format!("/ws/events?after={first_phone}"),
+        "yaran-test-phone",
+    )
+    .await;
+    assert_eq!(delete_agent_once_free(addr, "s1", Some(&phone)).await, 204);
+}
+
+/// An events socket opened at `path` (query included) presenting
+/// `user_agent`, with its connection id.
+async fn connect_events_at(addr: SocketAddr, path: &str, user_agent: &str) -> (ClientWs, String) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{addr}{path}")
+        .into_client_request()
+        .expect("build the websocket request");
+    request.headers_mut().insert(
+        "user-agent",
+        user_agent.parse().expect("a valid user agent header"),
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("open the websocket");
+    let hello = next_event_frame(&mut ws, "connected", Duration::from_secs(5))
+        .await
+        .expect("the connected frame");
+    (
+        ws,
+        hello["id"]
+            .as_str()
+            .expect("the hello frame carries a connection id")
+            .to_string(),
+    )
+}
+
+/// A created standalone agent's wire shape: a folder workspace at `folder_path`
+/// with none of the git fields a screen could mistake for a branch.
+fn assert_a_folder_workspace(body: &serde_json::Value, folder_path: &str) {
+    assert_eq!(body["workspace"]["kind"].as_str(), Some("folder"));
+    assert_eq!(body["workspace"]["folder_path"].as_str(), Some(folder_path));
+    for absent in [
+        "branch_name",
+        "initial_branch",
+        "source_branch",
+        "project_id",
+    ] {
+        assert!(
+            body["workspace"][absent].is_null(),
+            "{absent} must not exist on a folder workspace, got {body}"
+        );
+    }
+    assert_eq!(body["title"].as_str(), Some("notes"));
+}
+
+/// Every branch-identity route refuses the standalone agent `id`, saying what
+/// the agent is.
+async fn every_branch_route_refuses_a_standalone_agent(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    id: &str,
+) {
+    for (method, path) in [
+        ("POST", format!("/api/v1/sessions/{id}/git/push")),
+        ("POST", format!("/api/v1/sessions/{id}/git/pull")),
+    ] {
+        let resp = client
+            .request(
+                method.parse().expect("a valid HTTP method"),
+                format!("http://{addr}{path}"),
+            )
+            .send()
+            .await
+            .expect("git route");
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        assert!(
+            (400..500).contains(&status),
+            "{path} must refuse a standalone agent, got {status}: {text}"
+        );
+        assert!(
+            text.contains("standalone agent"),
+            "{path} must say what this agent is, got {text}"
+        );
+    }
 }
 
 /// THE WHOLE JOURNEY for a standalone agent, over the real HTTP surface: create
@@ -993,23 +1518,7 @@ async fn a_standalone_agent_runs_in_a_plain_folder_and_survives_delete_untouched
 
     // THE WIRE SHAPE: a folder workspace, and NO git fields to be mistaken for
     // a branch. This is the guarantee the tagged union exists for.
-    assert_eq!(body["workspace"]["kind"].as_str(), Some("folder"));
-    assert_eq!(
-        body["workspace"]["folder_path"].as_str(),
-        Some(folder_path.as_str())
-    );
-    for absent in [
-        "branch_name",
-        "initial_branch",
-        "source_branch",
-        "project_id",
-    ] {
-        assert!(
-            body["workspace"][absent].is_null(),
-            "{absent} must not exist on a folder workspace, got {body}"
-        );
-    }
-    assert_eq!(body["title"].as_str(), Some("notes"));
+    assert_a_folder_workspace(&body, &folder_path);
 
     // It joins the ordinary flat agent list, and no sidebar group claims it.
     assert!(
@@ -1032,26 +1541,7 @@ async fn a_standalone_agent_runs_in_a_plain_folder_and_survives_delete_untouched
 
     // EVERY branch-identity route refuses it on the server. Hiding the buttons
     // is not an answer when each of these is reachable from a command line.
-    for (method, path) in [
-        ("POST", format!("/api/v1/sessions/{id}/git/push")),
-        ("POST", format!("/api/v1/sessions/{id}/git/pull")),
-    ] {
-        let resp = client
-            .request(method.parse().unwrap(), format!("http://{addr}{path}"))
-            .send()
-            .await
-            .expect("git route");
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        assert!(
-            (400..500).contains(&status),
-            "{path} must refuse a standalone agent, got {status}: {text}"
-        );
-        assert!(
-            text.contains("standalone agent"),
-            "{path} must say what this agent is, got {text}"
-        );
-    }
+    every_branch_route_refuses_a_standalone_agent(&client, addr, &id).await;
 
     // A worktree-removing delete is refused OUT LOUD rather than quietly
     // downgraded: silent success theater about a destructive request is how a
@@ -1180,7 +1670,7 @@ async fn rest_create_session_returns_201_and_scopes_status() {
     );
     let body: serde_json::Value = resp.json().await.expect("created session json");
     let new_id = body["id"].as_str().expect("created session id");
-    assert!(!new_id.is_empty());
+    assert_ne!(new_id, "");
     assert_eq!(body["workspace"]["kind"].as_str(), Some("managed"));
     assert_eq!(body["workspace"]["project_id"].as_str(), Some("p1"));
 
@@ -1199,6 +1689,57 @@ async fn rest_create_session_returns_201_and_scopes_status() {
         .await,
         "a different connection must not receive the scoped create status"
     );
+
+    // Followed as an operation, the create answers its id at once, and the
+    // record ends on the create's own final and names the agent it made.
+    let resp = client
+        .post(format!("http://{addr}/api/v1/sessions?operation=1"))
+        .header("x-connection-id", &id_a)
+        .json(&serde_json::json!({"kind":"new","project_id":"p1","name":"followed"}))
+        .send()
+        .await
+        .expect("POST create");
+    let op = followed(resp).await;
+    let record = operation_outcome(addr, &op).await;
+    assert_eq!(record["kind"], "agent.create");
+    assert_eq!(record["state"], "succeeded");
+    let created = record["created"][0].as_str().expect("the created agent");
+    assert!(
+        wait_for_workspace(addr, |spine| spine["sessions"]
+            .as_array()
+            .is_some_and(|sessions| sessions.iter().any(|s| s["id"] == created)))
+        .await,
+        "the record names an agent the workspace lists"
+    );
+    let key = format!("\"key\":\"{op}\"");
+    let final_frame = status_frame_with(
+        &mut ws_a,
+        &[&key, "\"tone\":\"info\""],
+        Duration::from_secs(8),
+    )
+    .await
+    .expect("the create's final reaches the posting connection");
+    assert_eq!(record["message"], final_frame["message"]);
+
+    // A change sent by a client with no connection of its own, as the
+    // command line is, raises its status for everybody watching.
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/sessions/{new_id}"))
+        .send()
+        .await
+        .expect("DELETE session");
+    assert_eq!(resp.status().as_u16(), 204);
+    for ws in [&mut ws_a, &mut ws_b] {
+        assert!(
+            saw_status_with(
+                ws,
+                &["\"scope\":\"all\"", "Deleted"],
+                Duration::from_secs(8)
+            )
+            .await,
+            "every connection hears the delete a client with no connection made"
+        );
+    }
 }
 
 /// The deferred create, end to end through a real server: a create still running
@@ -1341,6 +1882,30 @@ async fn rest_create_session_from_pr_422_when_the_lookup_fails() {
         elapsed < Duration::from_secs(5),
         "the failure must answer promptly, took {elapsed:?}"
     );
+
+    // Followed as an operation, the same create answers its id at once and
+    // the record resolves to the lookup's failure.
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/sessions?operation=1"))
+        .json(&serde_json::json!({
+            "kind": "from_pr",
+            "project_id": "p1",
+            "pr": "#42",
+            "name": "followed-from-pr",
+        }))
+        .send()
+        .await
+        .expect("POST create");
+    let op = followed(resp).await;
+    let record = operation_outcome(addr, &op).await;
+    assert_eq!(record["state"], "failed");
+    assert!(
+        record["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not have a GitHub origin remote"),
+        "{record}"
+    );
 }
 
 /// A worker-backed add that FAILS answers `422` with the worker's message rather
@@ -1387,7 +1952,25 @@ async fn rest_add_project_422_when_the_add_fails() {
         Duration::from_secs(8),
     )
     .await;
+    // Followed as an operation, the same add answers its id at once and the
+    // record ends on the worker's failure.
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/projects?operation=1"))
+        .json(&serde_json::json!({
+            "path": folder.path().to_string_lossy(),
+            "init_repo": true,
+        }))
+        .send()
+        .await
+        .expect("POST add");
+    let op = followed(resp).await;
+    let record = operation_outcome(addr, &op).await;
     restore_writable(folder.path());
+    assert_eq!(record["state"], "failed");
+    assert!(
+        record["message"].as_str().unwrap().contains("init failed"),
+        "{record}"
+    );
 
     assert_eq!(status, 422, "a failed add must not answer 202: {body}");
     assert!(
@@ -1524,15 +2107,60 @@ async fn rest_create_session_idempotency_replays_same_session() {
         .json()
         .await
         .unwrap();
-    let p1_count = sessions
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter(|s| s["workspace"]["project_id"].as_str() == Some("p1"))
-                .count()
-        })
-        .unwrap_or(0);
+    let p1_count = sessions.as_array().map_or(0, |arr| {
+        arr.iter()
+            .filter(|s| s["workspace"]["project_id"].as_str() == Some("p1"))
+            .count()
+    });
     assert_eq!(p1_count, 1, "idempotent replay must not create a duplicate");
+
+    // Followed as an operation, the key is kept just the same: a retry, while
+    // the create runs or after it ended, answers the first record and creates
+    // nothing.
+    let followed_create = || {
+        client
+            .post(format!("http://{addr}/api/v1/sessions?operation=1"))
+            .header("idempotency-key", "followed-1")
+            .json(&serde_json::json!({"kind":"new","project_id":"p1","name":"followed"}))
+            .send()
+    };
+    let op = followed(followed_create().await.expect("followed create")).await;
+    let again = followed(followed_create().await.expect("a retry")).await;
+    assert_eq!(again, op, "the retry answers the first record");
+    let record = operation_outcome(addr, &op).await;
+    assert_eq!(record["state"], "succeeded", "{record}");
+    let after = followed(followed_create().await.expect("a later retry")).await;
+    assert_eq!(
+        after, op,
+        "a retry after it ended still answers the first record"
+    );
+    let unfollowed = client
+        .post(format!("http://{addr}/api/v1/sessions"))
+        .header("idempotency-key", "followed-1")
+        .json(&serde_json::json!({"kind":"new","project_id":"p1","name":"followed"}))
+        .send()
+        .await
+        .expect("an unfollowed retry");
+    assert_eq!(unfollowed.status().as_u16(), 200);
+    let replayed: serde_json::Value = unfollowed.json().await.unwrap();
+    assert_eq!(
+        replayed["id"], record["created"][0],
+        "an unfollowed retry answers the agent the followed create made"
+    );
+    let sessions: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/sessions"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let count = sessions.as_array().map_or(0, |arr| {
+        arr.iter()
+            .filter(|s| s["workspace"]["project_id"].as_str() == Some("p1"))
+            .count()
+    });
+    assert_eq!(count, 2, "the followed retries created nothing");
 }
 
 /// Like `boot()`, but seeds TWO sessions (`s1`, `s2`) under `p1`, so the nested
@@ -1546,11 +2174,12 @@ async fn boot_two_sessions() -> (SocketAddr, yaran_core::test_scratch::ScratchDi
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -1560,10 +2189,10 @@ async fn boot_two_sessions() -> (SocketAddr, yaran_core::test_scratch::ScratchDi
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session(
                 "s1",
@@ -1571,7 +2200,7 @@ async fn boot_two_sessions() -> (SocketAddr, yaran_core::test_scratch::ScratchDi
                 "feat",
                 root.to_string_lossy().as_ref(),
             ))
-            .unwrap();
+            .expect("save the test agent");
         store
             .create_session(&sample_session(
                 "s2",
@@ -1579,9 +2208,9 @@ async fn boot_two_sessions() -> (SocketAddr, yaran_core::test_scratch::ScratchDi
                 "feat2",
                 root.to_string_lossy().as_ref(),
             ))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -1605,15 +2234,17 @@ async fn boot_two_sessions() -> (SocketAddr, yaran_core::test_scratch::ScratchDi
     engine.config.limits.disk_warn_pct = 0;
     let (handle, _join) = spawn_engine_thread(engine);
     let app = router(handle);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp)
 }
@@ -1627,9 +2258,9 @@ async fn create_terminal_via_rest(addr: SocketAddr, session_id: &str) -> String 
         ))
         .send()
         .await
-        .unwrap();
+        .expect("send the request");
     assert_eq!(resp.status().as_u16(), 201, "terminal create should be 201");
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body: serde_json::Value = resp.json().await.expect("the response body is JSON");
     body["terminal_id"]
         .as_str()
         .expect("terminal_id in create response")
@@ -2158,6 +2789,54 @@ async fn an_applied_resize_tells_every_attached_socket_the_ptys_new_grid() {
     );
 }
 
+/// A resize frame naming a grid no terminal can have (empty, or tens of
+/// gigabytes of cells) is refused whole and silently: it applies nothing,
+/// announces nothing and claims nothing, take-over or not.
+#[tokio::test]
+async fn a_resize_to_a_degenerate_or_absurd_grid_is_refused_whole() {
+    let (addr, _tmp) = boot().await;
+    let url = format!("ws://{addr}/ws/sessions/s1/pty");
+    let (mut ws_a, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect first pty socket");
+    let _ = next_event_frame(&mut ws_a, "connected", Duration::from_secs(8))
+        .await
+        .expect("the first handshake");
+
+    ws_a.send(Message::Text(r#"{"rows":0,"cols":0}"#.into()))
+        .await
+        .unwrap();
+    ws_a.send(Message::Text(
+        r#"{"rows":65535,"cols":65535,"takeover":true}"#.into(),
+    ))
+    .await
+    .unwrap();
+    let refused = next_event_frame(&mut ws_a, "size", Duration::from_secs(2)).await;
+    assert!(
+        refused.is_none(),
+        "an out-of-bounds resize was applied: {refused:?}"
+    );
+
+    // Neither frame claimed the pty, so a second connection's PLAIN resize is
+    // still the one that sizes it.
+    let (mut ws_b, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect second pty socket");
+    let _ = next_event_frame(&mut ws_b, "connected", Duration::from_secs(8))
+        .await
+        .expect("the second handshake");
+    ws_b.send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
+        .await
+        .unwrap();
+    let size = next_event_frame(&mut ws_a, "size", Duration::from_secs(8))
+        .await
+        .expect("the unowned pty takes the second connection's plain resize");
+    assert_eq!(
+        (size["rows"].as_u64(), size["cols"].as_u64()),
+        (Some(24), Some(80))
+    );
+}
+
 #[tokio::test]
 async fn a_grid_change_is_forwarded_only_to_sockets_for_that_pty() {
     let (addr, _tmp) = boot().await;
@@ -2207,18 +2886,6 @@ async fn a_grid_change_is_forwarded_only_to_sockets_for_that_pty() {
 /// discard it as a stale duplicate.
 #[tokio::test]
 async fn an_owner_disconnecting_broadcasts_an_owner_cleared_pty_owner() {
-    let (addr, _tmp) = boot().await;
-
-    // A watcher on the events socket, subscribed to the coarse `sessions` topic
-    // that carries `pty.owner`.
-    let (mut events, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
-        .await
-        .expect("connect the events socket");
-    events
-        .send(Message::Text(r#"{"subscribe":["sessions"]}"#.into()))
-        .await
-        .unwrap();
-
     /// Drain events until a `pty.owner` for `s1` arrives, or give up.
     async fn next_pty_owner(
         ws: &mut tokio_tungstenite::WebSocketStream<
@@ -2236,6 +2903,18 @@ async fn an_owner_disconnecting_broadcasts_an_owner_cleared_pty_owner() {
         }
         None
     }
+
+    let (addr, _tmp) = boot().await;
+
+    // A watcher on the events socket, subscribed to the coarse `sessions` topic
+    // that carries `pty.owner`.
+    let (mut events, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
+        .await
+        .expect("connect the events socket");
+    events
+        .send(Message::Text(r#"{"subscribe":["sessions"]}"#.into()))
+        .await
+        .unwrap();
 
     // The driver attaches and claims the unowned pty with an ordinary resize.
     let url = format!("ws://{addr}/ws/sessions/s1/pty");
@@ -2288,21 +2967,6 @@ async fn an_owner_disconnecting_broadcasts_an_owner_cleared_pty_owner() {
 /// must see the first connection's id.
 #[tokio::test]
 async fn the_connected_handshake_names_the_ptys_current_owner() {
-    let (addr, _tmp) = boot().await;
-    let url = format!("ws://{addr}/ws/sessions/s1/pty");
-
-    // A watcher on the events socket, to capture the epoch the claim's own
-    // `pty.owner` broadcast carries. The handshake's `owner_epoch` must be read
-    // from the SAME counter in the same lock acquisition as the owner, so the
-    // two values must agree.
-    let (mut events, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
-        .await
-        .expect("connect the events socket");
-    events
-        .send(Message::Text(r#"{"subscribe":["sessions"]}"#.into()))
-        .await
-        .unwrap();
-
     /// The first Text frame on a PTY socket is the `connected` handshake; the
     /// Binary frames around it are the scrollback replay and live output.
     async fn first_text(
@@ -2320,6 +2984,21 @@ async fn the_connected_handshake_names_the_ptys_current_owner() {
         }
         panic!("no connected frame arrived");
     }
+
+    let (addr, _tmp) = boot().await;
+    let url = format!("ws://{addr}/ws/sessions/s1/pty");
+
+    // A watcher on the events socket, to capture the epoch the claim's own
+    // `pty.owner` broadcast carries. The handshake's `owner_epoch` must be read
+    // from the SAME counter in the same lock acquisition as the owner, so the
+    // two values must agree.
+    let (mut events, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
+        .await
+        .expect("connect the events socket");
+    events
+        .send(Message::Text(r#"{"subscribe":["sessions"]}"#.into()))
+        .await
+        .unwrap();
 
     let (mut ws_a, _) = tokio_tungstenite::connect_async(&url)
         .await
@@ -2394,6 +3073,134 @@ async fn the_connected_handshake_names_the_ptys_current_owner() {
     );
 }
 
+/// A device drives a whole ROW. A terminal opened in an agent another
+/// connection drives is that connection's from its first handshake, so its
+/// creator watches it; one opened in an agent nobody drives is claimed with
+/// the agent by its creator's first resize.
+#[tokio::test]
+async fn a_terminal_belongs_to_whoever_drives_its_agents_row() {
+    async fn owner_on_open(addr: SocketAddr, path: &str) -> (ClientWs, serde_json::Value) {
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}{path}"))
+            .await
+            .expect("connect a pty socket");
+        let hello = next_event_frame(&mut ws, "connected", Duration::from_secs(8))
+            .await
+            .expect("the connected handshake");
+        (ws, hello)
+    }
+    async fn claim(ws: &mut ClientWs, marker: &str) {
+        ws.send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
+            .await
+            .unwrap();
+        ws.send(Message::Binary(format!("{marker}\n").into_bytes().into()))
+            .await
+            .unwrap();
+        let _ = accumulate_until(ws, marker, Duration::from_secs(8)).await;
+    }
+
+    // Driven: the agent's driver owns the new terminal from the start.
+    let (addr, _tmp) = boot().await;
+    let (mut agent, hello) = owner_on_open(addr, "/ws/sessions/s1/pty").await;
+    let driver = hello["id"].as_str().expect("an id").to_string();
+    claim(&mut agent, "yaran-row-driven-marker").await;
+    let terminal = create_terminal_via_rest(addr, "s1").await;
+    let path = format!("/ws/sessions/s1/terminals/{terminal}/pty");
+    let (_creator, hello) = owner_on_open(addr, &path).await;
+    assert_eq!(
+        hello["owner"].as_str(),
+        Some(driver.as_str()),
+        "the terminal joined the row its agent's driver holds"
+    );
+
+    // Undriven: the creator's own resize takes the terminal and the agent.
+    let (addr, _tmp) = boot().await;
+    let terminal = create_terminal_via_rest(addr, "s1").await;
+    let path = format!("/ws/sessions/s1/terminals/{terminal}/pty");
+    let (mut creator, hello) = owner_on_open(addr, &path).await;
+    assert_eq!(hello["owner"], serde_json::Value::Null);
+    let creator_id = hello["id"].as_str().expect("an id").to_string();
+    // The resize alone, no stdin: a write claims too, and this is about the
+    // resize. The applied grid coming back means the claim was granted.
+    creator
+        .send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
+        .await
+        .unwrap();
+    next_event_frame(&mut creator, "size", Duration::from_secs(8))
+        .await
+        .expect("the creator's resize applied");
+    let (_agent, hello) = owner_on_open(addr, "/ws/sessions/s1/pty").await;
+    assert_eq!(
+        hello["owner"].as_str(),
+        Some(creator_id.as_str()),
+        "the creator's claim took the agent with its terminal"
+    );
+}
+
+/// A page is ONE driver of a row however many of its panes are open: the
+/// agent's pane and the terminal docked under it name the same page, share a
+/// driver id, and the second types into the row the first claimed. A second
+/// page is a second driver and watches. The row is let go of only when the
+/// page's last socket on it closes.
+#[tokio::test]
+async fn the_panes_of_one_page_drive_a_row_as_one_driver() {
+    async fn open(addr: SocketAddr, path: &str) -> (ClientWs, serde_json::Value) {
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}{path}"))
+            .await
+            .expect("connect a pty socket");
+        let hello = next_event_frame(&mut ws, "connected", Duration::from_secs(8))
+            .await
+            .expect("the connected handshake");
+        (ws, hello)
+    }
+    let page = "0123456789abcdef0123456789abcdef";
+    let other = "fedcba9876543210fedcba9876543210";
+    let (addr, _tmp) = boot().await;
+    let terminal = create_terminal_via_rest(addr, "s1").await;
+    let (mut agent, hello) = open(addr, &format!("/ws/sessions/s1/pty?page={page}")).await;
+    let driver = hello["id"].as_str().expect("an id").to_string();
+    agent
+        .send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
+        .await
+        .unwrap();
+    next_event_frame(&mut agent, "size", Duration::from_secs(8))
+        .await
+        .expect("the agent pane claimed the row");
+
+    let dock_path = format!("/ws/sessions/s1/terminals/{terminal}/pty");
+    let (mut dock, hello) = open(addr, &format!("{dock_path}?page={page}")).await;
+    assert_eq!(
+        hello["id"].as_str(),
+        Some(driver.as_str()),
+        "one page, one driver"
+    );
+    assert_eq!(hello["owner"].as_str(), Some(driver.as_str()));
+    dock.send(Message::Binary(b"echo yaran-seat-marker\n".to_vec().into()))
+        .await
+        .unwrap();
+    let echoed = accumulate_until(&mut dock, "yaran-seat-marker", Duration::from_secs(8)).await;
+    assert!(
+        String::from_utf8_lossy(&echoed).contains("yaran-seat-marker"),
+        "the docked terminal types into the row its page drives"
+    );
+
+    let (_watcher, hello) = open(addr, &format!("{dock_path}?page={other}")).await;
+    assert_ne!(hello["id"].as_str(), Some(driver.as_str()));
+    assert_eq!(
+        hello["owner"].as_str(),
+        Some(driver.as_str()),
+        "a second page watches"
+    );
+
+    drop(agent);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (_again, hello) = open(addr, &format!("{dock_path}?page={other}")).await;
+    assert_eq!(
+        hello["owner"].as_str(),
+        Some(driver.as_str()),
+        "the page still drives the row through its open terminal"
+    );
+}
+
 /// The `connected` handshake also names the owner's DEVICE: the `User-Agent`
 /// the owning connection presented at its upgrade, recorded at claim time and
 /// read under the same owners-lock acquisition as `owner` and `owner_epoch`.
@@ -2406,9 +3213,6 @@ async fn the_connected_handshake_names_the_ptys_current_owner() {
 /// to what an older client already parses.
 #[tokio::test]
 async fn the_connected_handshake_names_the_owners_device() {
-    let (addr, _tmp) = boot().await;
-    let url = format!("ws://{addr}/ws/sessions/s1/pty");
-
     /// The first Text frame on a PTY socket is the `connected` handshake; the
     /// Binary frames around it are the scrollback replay and live output.
     async fn first_text(
@@ -2427,8 +3231,12 @@ async fn the_connected_handshake_names_the_owners_device() {
         panic!("no connected frame arrived");
     }
 
-    // The driver connects with a `User-Agent`, as every real browser does.
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let (addr, _tmp) = boot().await;
+    let url = format!("ws://{addr}/ws/sessions/s1/pty");
+
+    // The driver connects with a `User-Agent`, as every real browser does.
     let mut request = url.clone().into_client_request().expect("a client request");
     request.headers_mut().insert(
         axum::http::header::USER_AGENT,
@@ -2557,7 +3365,7 @@ async fn an_oversized_frame_is_refused_and_never_reaches_the_pty() {
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
             Ok(Some(Ok(Message::Binary(b)))) => acc.extend_from_slice(&b),
-            Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => {
+            Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => {
                 ended = true;
                 break;
             }
@@ -2606,6 +3414,17 @@ async fn an_oversized_frame_is_refused_and_never_reaches_the_pty() {
 /// 64 MiB default lets the same message through, failing the same way.
 #[tokio::test]
 async fn a_fragmented_message_past_the_message_cap_is_refused() {
+    // One byte over the MESSAGE cap in total, chopped into fragments far below
+    // the frame cap. The fragment size is fixed rather than "half the payload"
+    // so every frame stays under the frame cap regardless of the total.
+    //
+    // The marker leads the payload rather than trailing it: it therefore rides
+    // the FIRST fragment, so an accepted message starts echoing immediately
+    // instead of after 16 MiB have travelled. A trailing marker made the failure
+    // path take 8.4s against an 8s deadline under mutation, one slow machine away
+    // from an accepted payload being scored as a refusal.
+    const FRAGMENT: usize = 4 * 1024 * 1024;
+
     use tokio_tungstenite::tungstenite::protocol::frame::Frame;
     use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
 
@@ -2620,16 +3439,6 @@ async fn a_fragmented_message_past_the_message_cap_is_refused() {
         .await
         .unwrap();
 
-    // One byte over the MESSAGE cap in total, chopped into fragments far below
-    // the frame cap. The fragment size is fixed rather than "half the payload"
-    // so every frame stays under the frame cap regardless of the total.
-    //
-    // The marker leads the payload rather than trailing it: it therefore rides
-    // the FIRST fragment, so an accepted message starts echoing immediately
-    // instead of after 16 MiB have travelled. A trailing marker made the failure
-    // path take 8.4s against an 8s deadline under mutation, one slow machine away
-    // from an accepted payload being scored as a refusal.
-    const FRAGMENT: usize = 4 * 1024 * 1024;
     let marker = b"yaran-fragmented-oversize-marker\n";
     let mut payload = marker.to_vec();
     payload.resize(OVER_MESSAGE_CAP_BYTES, b'x');
@@ -2663,7 +3472,7 @@ async fn a_fragmented_message_past_the_message_cap_is_refused() {
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
             Ok(Some(Ok(Message::Binary(b)))) => acc.extend_from_slice(&b),
-            Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => {
+            Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => {
                 ended = true;
                 break;
             }
@@ -2818,6 +3627,26 @@ async fn terminal_rest_create_and_delete() {
     let client = reqwest::Client::new();
 
     let terminal_id = create_terminal_via_rest(addr, "s1").await;
+    // The flat terminals read answers from the engine as it is now, so it
+    // already lists the terminal its create just answered for.
+    let listed: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/terminals"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let entry = listed
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|t| t["id"] == terminal_id.as_str())
+        .unwrap_or_else(|| panic!("{terminal_id} is not listed: {listed}"));
+    assert_eq!(
+        entry["owner"],
+        serde_json::json!({ "kind": "session", "session_id": "s1" })
+    );
     assert!(
         wait_for_workspace(addr, |spine| spine_has_terminal(spine, &terminal_id)).await,
         "spine never contained the REST-created terminal {terminal_id}"
@@ -2872,6 +3701,35 @@ async fn terminal_rest_create_and_delete() {
         404,
         "create on unknown session → 404"
     );
+
+    // Followed as operations, a create and a close each finish inside the call
+    // and name the terminal.
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/sessions/s1/terminals?operation=1"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let record = operation_outcome(addr, &followed(resp).await).await;
+    assert_eq!(record["kind"], "terminal.create");
+    assert_eq!(record["state"], "succeeded");
+    let terminal_id = record["created"][0].as_str().unwrap().to_string();
+    assert!(
+        wait_for_workspace(addr, |spine| spine_has_terminal(spine, &terminal_id)).await,
+        "the record names the terminal it created"
+    );
+    let resp = client
+        .delete(format!(
+            "http://{addr}/api/v1/sessions/s1/terminals/{terminal_id}?operation=1"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let record = operation_outcome(addr, &followed(resp).await).await;
+    assert_eq!(record["kind"], "terminal.close");
+    assert_eq!(record["state"], "succeeded");
+    assert_eq!(record["removed"], serde_json::json!([terminal_id]));
 }
 
 /// Create a project terminal on `project_id` over REST and return its id.
@@ -2883,7 +3741,7 @@ async fn create_project_terminal_via_rest(addr: SocketAddr, project_id: &str) ->
         ))
         .send()
         .await
-        .unwrap();
+        .expect("send the request");
     assert_eq!(
         resp.status().as_u16(),
         201,
@@ -2893,7 +3751,7 @@ async fn create_project_terminal_via_rest(addr: SocketAddr, project_id: &str) ->
         resp.headers().contains_key("location"),
         "201 must carry a Location header"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body: serde_json::Value = resp.json().await.expect("the response body is JSON");
     body["terminal_id"]
         .as_str()
         .expect("terminal_id in create response")
@@ -2984,6 +3842,27 @@ async fn project_terminal_rest_create_and_delete() {
         404,
         "create on unknown project → 404"
     );
+
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/projects/p1/terminals?operation=1"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let record = operation_outcome(addr, &followed(resp).await).await;
+    assert_eq!(record["state"], "succeeded");
+    let terminal_id = record["created"][0].as_str().unwrap().to_string();
+    let resp = client
+        .delete(format!(
+            "http://{addr}/api/v1/projects/p1/terminals/{terminal_id}?operation=1"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let record = operation_outcome(addr, &followed(resp).await).await;
+    assert_eq!(record["state"], "succeeded");
+    assert_eq!(record["removed"], serde_json::json!([terminal_id]));
 }
 
 /// Create a standalone terminal over REST and return its id. No owner id,
@@ -2994,7 +3873,7 @@ async fn create_standalone_terminal_via_rest(addr: SocketAddr) -> String {
         .post(format!("http://{addr}/api/v1/terminals"))
         .send()
         .await
-        .unwrap();
+        .expect("send the request");
     assert_eq!(
         resp.status().as_u16(),
         201,
@@ -3004,7 +3883,7 @@ async fn create_standalone_terminal_via_rest(addr: SocketAddr) -> String {
         resp.headers().contains_key("location"),
         "201 must carry a Location header"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body: serde_json::Value = resp.json().await.expect("the response body is JSON");
     body["terminal_id"]
         .as_str()
         .expect("terminal_id in create response")
@@ -3033,17 +3912,14 @@ async fn a_standalone_terminal_opens_streams_and_closes_at_un_nested_addresses()
     assert!(
         wait_for_workspace(addr, |spine| {
             spine_has_standalone_terminal(spine, &tid)
-                && spine["terminals"]
-                    .as_array()
-                    .map(|ts| {
-                        ts.iter().any(|t| {
-                            t["id"].as_str() == Some(tid.as_str())
-                                && t["owner"]["cwd_label"]
-                                    .as_str()
-                                    .is_some_and(|l| !l.is_empty())
-                        })
+                && spine["terminals"].as_array().is_some_and(|ts| {
+                    ts.iter().any(|t| {
+                        t["id"].as_str() == Some(tid.as_str())
+                            && t["owner"]["cwd_label"]
+                                .as_str()
+                                .is_some_and(|l| !l.is_empty())
                     })
-                    .unwrap_or(false)
+                })
         })
         .await,
         "a standalone terminal must reach the browser tagged, with its directory"
@@ -3096,6 +3972,23 @@ async fn a_standalone_terminal_opens_streams_and_closes_at_un_nested_addresses()
         wait_for_workspace(addr, |spine| !spine_has_standalone_terminal(spine, &tid)).await,
         "the deleted standalone terminal must leave the spine"
     );
+
+    let resp = client
+        .post(format!("http://{addr}/api/v1/terminals?operation=1"))
+        .send()
+        .await
+        .unwrap();
+    let record = operation_outcome(addr, &followed(resp).await).await;
+    assert_eq!(record["state"], "succeeded");
+    let tid = record["created"][0].as_str().unwrap().to_string();
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/terminals/{tid}?operation=1"))
+        .send()
+        .await
+        .unwrap();
+    let record = operation_outcome(addr, &followed(resp).await).await;
+    assert_eq!(record["state"], "succeeded");
+    assert_eq!(record["removed"], serde_json::json!([tid]));
 }
 
 /// The un-nested address is not a back door. An OWNED terminal is a 404 there,
@@ -3340,8 +4233,11 @@ async fn tearing_down_agent_pty_closes_its_attached_socket() {
         "agent PTY never came up"
     );
 
+    // Going ahead over the socket attached to it.
     let killed = client
-        .post(format!("http://{addr}/api/v1/sessions/s1/kill"))
+        .post(format!(
+            "http://{addr}/api/v1/sessions/s1/kill?force_connected=true"
+        ))
         .send()
         .await
         .unwrap();
@@ -3352,12 +4248,11 @@ async fn tearing_down_agent_pty_closes_its_attached_socket() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut closed = false;
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
-            Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => {
-                closed = true;
-                break;
-            }
-            _ => continue,
+        if let Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) =
+            tokio::time::timeout(Duration::from_millis(300), ws.next()).await
+        {
+            closed = true;
+            break;
         }
     }
     assert!(
@@ -3368,8 +4263,8 @@ async fn tearing_down_agent_pty_closes_its_attached_socket() {
 
 /// The session-nested git and file routes reach their handlers over real HTTP (a
 /// stage against an unknown session 404s), and the old body-keyed `/api/v1/git/*` /
-/// `/api/v1/file/*` paths no longer reach the handler (they fall through to the SPA
-/// fallback, which never returns the handler's 404).
+/// `/api/v1/file/*` paths no longer reach the handler (they fall through to the
+/// fallback's `{"error":"not_found"}`, never a handler's answer).
 #[tokio::test]
 async fn rest_nested_git_and_file_routes_resolve() {
     let (addr, _tmp) = boot().await;
@@ -3395,16 +4290,16 @@ async fn rest_nested_git_and_file_routes_resolve() {
         "/api/v1/sessions/:id/files/read"
     );
 
-    // The retired body-keyed paths no longer reach the handler (no 404 from it).
+    // The retired body-keyed paths no longer reach a handler.
     let old_git = client
         .post(format!("http://{addr}/api/v1/git/stage"))
         .json(&serde_json::json!({"session_id":"nope","path":"a.txt"}))
         .send()
         .await
         .unwrap();
-    assert_ne!(
-        old_git.status().as_u16(),
-        404,
+    assert_eq!(
+        old_git.text().await.unwrap(),
+        r#"{"error":"not_found"}"#,
         "the old body-keyed /api/v1/git/* path must be gone"
     );
 
@@ -3414,9 +4309,9 @@ async fn rest_nested_git_and_file_routes_resolve() {
         .send()
         .await
         .unwrap();
-    assert_ne!(
-        old_file.status().as_u16(),
-        404,
+    assert_eq!(
+        old_file.text().await.unwrap(),
+        r#"{"error":"not_found"}"#,
         "the old body-keyed /api/v1/file/* path must be gone"
     );
 }
@@ -3446,7 +4341,7 @@ async fn thin_reads_still_nest_terminals_for_both_owner_kinds() {
         .await
         .unwrap();
     assert_eq!(
-        empty["terminals"].as_array().map(|a| a.len()),
+        empty["terminals"].as_array().map(std::vec::Vec::len),
         Some(0),
         "an owner with no terminals must carry an empty array"
     );
@@ -3517,7 +4412,7 @@ async fn thin_reads_still_nest_terminals_for_both_owner_kinds() {
     // The project's terminals are ITS OWN: the session terminal above belongs to
     // s1, not to p1, so it must not be folded in here.
     assert_eq!(
-        p1["terminals"].as_array().map(|a| a.len()),
+        p1["terminals"].as_array().map(std::vec::Vec::len),
         Some(1),
         "a project must not absorb its sessions' terminals"
     );
@@ -3576,22 +4471,29 @@ async fn build_identity_is_stable_within_one_server_run_and_is_never_cached() {
         .await
         .unwrap();
     assert_eq!(first, again, "two reads of one server run must agree");
-    assert_eq!(
-        first, other,
-        "one process is one run, whatever is serving it"
-    );
+    // The run is the process's; the instance is each database's own, and these
+    // two routers keep two.
+    for key in ["version", "process", "api"] {
+        assert_eq!(
+            first[key], other[key],
+            "one process is one run, whatever is serving it"
+        );
+    }
+    assert_ne!(first["instance"], other["instance"]);
 
-    // The documented shape, exactly: two keys, both non-empty strings.
+    // The documented shape, exactly: three non-empty strings and the API's
+    // version, which the command line checks.
     let mut keys: Vec<&str> = first
         .as_object()
         .expect("a JSON object")
         .keys()
-        .map(|k| k.as_str())
+        .map(std::string::String::as_str)
         .collect();
     keys.sort_unstable();
-    assert_eq!(keys, vec!["process", "version"]);
-    assert!(!first["process"].as_str().unwrap().is_empty());
-    assert!(!first["version"].as_str().unwrap().is_empty());
+    assert_eq!(keys, vec!["api", "instance", "process", "version"]);
+    assert_ne!(first["process"].as_str().unwrap(), "");
+    assert_ne!(first["version"].as_str().unwrap(), "");
+    assert_eq!(first["api"], 1);
 }
 
 /// The exact key set of a terminal entry on the documented thin reads, and of
@@ -3626,11 +4528,19 @@ fn keys_of(value: &serde_json::Value) -> Vec<String> {
     keys
 }
 
-/// Assert `value` is a terminal entry with exactly the pinned key set.
+/// Assert `value` is a terminal entry with exactly the pinned key set. A
+/// project or standalone terminal is a row of the agents list and also carries
+/// its place there, `list_after`, whenever it sits after an agent; an agent's
+/// own terminal never does.
 fn assert_terminal_shape(value: &serde_json::Value, where_: &str) {
+    let mut expected: Vec<&str> = TERMINAL_KEYS.to_vec();
+    if value["owner"]["kind"] != "session" && value.get("list_after").is_some() {
+        expected.push("list_after");
+        expected.sort_unstable();
+    }
     assert_eq!(
         keys_of(value),
-        TERMINAL_KEYS,
+        expected,
         "the terminal entry on {where_} does not carry the documented key set"
     );
     // The owner tag itself is part of the documented shape: an internally tagged
@@ -3696,6 +4606,8 @@ async fn thin_reads_pin_the_exact_terminal_key_set() {
     assert_terminal_shape(project_entry, "GET /api/v1/projects");
     assert_eq!(project_entry["owner"]["kind"].as_str(), Some("project"));
     assert_eq!(project_entry["owner"]["project_id"].as_str(), Some("p1"));
+    // A new project terminal sits after the last agent in the list.
+    assert_eq!(project_entry["list_after"].as_str(), Some("s1"));
 
     // The per-session read and the list must serve the SAME object for the same
     // terminal: they are two ways of asking one question, and a shape that drifts
@@ -3763,7 +4675,7 @@ async fn session_create_and_its_replay_pin_the_same_terminal_key_set() {
         "the 201 must carry a terminals array: {created_keys:?}"
     );
     assert_eq!(
-        created_body["terminals"].as_array().map(|a| a.len()),
+        created_body["terminals"].as_array().map(std::vec::Vec::len),
         Some(0),
         "a brand new session carries an empty terminals array, never a missing field"
     );

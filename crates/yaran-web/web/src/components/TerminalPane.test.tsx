@@ -5,9 +5,9 @@ import { useLayoutEffect } from "react"
 
 import { COMPOSE_SUBMIT_DELAY_MS } from "@/lib/composebar"
 import {
-  getComposeInsertSink,
-  setComposeInsertSink,
-} from "@/lib/composeInsert"
+  paneMacroTargetFor,
+  resetPaneMacroTargets,
+} from "@/lib/paneMacroTarget"
 import type { YaranState } from "@/lib/store"
 import type { AgentTabView, ConnState } from "@/lib/types"
 import { notifyPtyOwner, resetPtyOwnerEpochs } from "@/lib/ptyOwnership"
@@ -35,6 +35,10 @@ import {
   resetPaneCovers,
   usePaneCoverKnown,
 } from "@/lib/paneCover"
+
+const { Terminal: RealTerminal } =
+  await vi.importActual<typeof import("@xterm/xterm")>("@xterm/xterm")
+type RealTerminal = InstanceType<typeof RealTerminal>
 
 // TerminalPane embeds xterm.js, whose canvas rendering jsdom cannot back (see the
 // note in TerminalArea.test.tsx). So we mount the REAL TerminalPane, exercising
@@ -78,6 +82,8 @@ class TermStub {
       this.focused = true
     },
     value: "",
+    // Inline style only: xterm's own stylesheet never loads in jsdom.
+    style: {} as Record<string, string>,
   }
   // The scrollback the selection tests read words out of. `lines` is the whole
   // buffer and `viewportY` is the first line on screen, so a test can scroll
@@ -91,9 +97,9 @@ class TermStub {
   // A line as COLUMNS, not characters. A wide glyph really does take two of
   // them (the glyph, then a zero-width continuation cell), because column and
   // character index part company there and that is the whole point of the
-  // wide-glyph handling under test. The range is the one xterm's own default
-  // Unicode provider calls wide; an emoji is deliberately NOT in it (measured
-  // in `lib/termselect.xterm.test.ts`).
+  // wide-glyph handling under test. The range covers CJK and the fullwidth
+  // forms only; emoji, also wide under the pane's Unicode 11 table, are pinned
+  // against a real xterm in `lib/termselect.xterm.test.ts` instead.
   static WIDE =
     /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/
   lineCells(y: number): { chars: string; width: number }[] | undefined {
@@ -114,6 +120,8 @@ class TermStub {
     active: {
       type: "normal",
       viewportY: 0,
+      baseY: 0,
+      cursorY: 0,
       getLine: (y: number) => {
         const cells = this.lineCells(y)
         if (!cells) return undefined
@@ -150,6 +158,21 @@ class TermStub {
     registerOscHandler: () => {
       return { dispose: this.oscHandlerDispose }
     },
+  }
+  // A real, headless xterm built from the options the pane passed, standing in
+  // for the stub's Unicode handling, so the width table the pane selects is
+  // measured by xterm itself. Built on first use: most tests never ask.
+  private widthTerminal: RealTerminal | null = null
+  get widths(): RealTerminal {
+    this.widthTerminal ??= new RealTerminal({
+      allowProposedApi: this.options.allowProposedApi === true,
+      cols: this.cols,
+      rows: this.rows,
+    })
+    return this.widthTerminal
+  }
+  get unicode() {
+    return this.widths.unicode
   }
   // Real xterm hands itself to an addon through `activate`; mirroring that lets
   // FitStub re-grid the terminal the way the real FitAddon does.
@@ -272,6 +295,16 @@ class TermStub {
     }
     return out
   }
+  // Where the selection runs, as xterm reports it: the length wraps at `cols`.
+  getSelectionPosition() {
+    const sel = this.selection
+    if (!sel || sel.length <= 0) return undefined
+    const endIndex = sel.row * this.cols + sel.col + sel.length
+    return {
+      start: { x: sel.col, y: sel.row },
+      end: { x: endIndex % this.cols, y: Math.floor(endIndex / this.cols) },
+    }
+  }
   selectAll() {}
   // Counted and applied: the auto-scroll test asserts BOTH that the pane
   // scrolled and that the row the selection then resolves to moved with it.
@@ -284,6 +317,24 @@ class TermStub {
     )
   }
   scrollToBottom() {}
+  scrollToLine(line: number) {
+    this.buffer.active.viewportY = line
+  }
+  // The selection drag's anchor and viewport hold. The stub never streams
+  // output, so a marker never moves here (how they follow a real buffer is
+  // pinned against a real xterm in `lib/termselect.xterm.test.ts`); it is
+  // placed the way xterm places one, relative to the cursor's row.
+  registerMarker(cursorYOffset = 0) {
+    const b = this.buffer.active
+    return {
+      line: b.baseY + b.cursorY + cursorYOffset,
+      isDisposed: false,
+      dispose() {},
+    }
+  }
+  onWriteParsed() {
+    return { dispose() {} }
+  }
   clearSelection() {
     this.selection = null
   }
@@ -343,6 +394,10 @@ class FakePtySocket {
   // class grew with it. Answering `true` means "it went on the wire", which is
   // what starts the heartbeat's answer deadline.
   sendBeat = vi.fn(() => true)
+  // A pane coming on screen and going off it, which carry no beat.
+  sendShown = vi.fn(() => true)
+  sendUnviewed = vi.fn(() => true)
+  onScreen: () => boolean = () => true
   onBeat: (n: number) => void = () => {}
   dropForRetry = vi.fn()
   resumeNow = vi.fn()
@@ -409,6 +464,7 @@ vi.mock("sonner", () => ({
     info: (...args: unknown[]) => void toastCalls.push(args[0]),
     warning: vi.fn(),
     error: (...args: unknown[]) => toastError(...args),
+    getToasts: () => [],
   }),
 }))
 // What reached the clipboard. The real helper needs `navigator.clipboard` or
@@ -447,19 +503,6 @@ vi.mock("@/lib/ptySocket", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ptySocket")>()
   return { ...actual, PtySocket: FakePtySocket }
 })
-// The one-time way-back hint, spied at its raiser: what the pane is answerable
-// for is the QUESTION it hands down (would this flip leave anything under the
-// terminal), and the answer is a toast nothing else here has any business
-// raising. Everything else in the module stays real, the setter included.
-const hideTerminalKeysHint = vi.fn()
-vi.mock("@/lib/typingSurface", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/typingSurface")>()
-  return {
-    ...actual,
-    hideTerminalKeysHint: (...a: unknown[]) => hideTerminalKeysHint(...a),
-  }
-})
-
 let mockState: YaranState
 // The pane's theater seam, spied so the ownership-transition rule can be
 // observed without a store and a localStorage behind it.
@@ -482,7 +525,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
 // Stub browser globals BEFORE the store module evaluates (it touches
 // localStorage at import time, pulled in transitively by TerminalPane).
 installStubs()
-const { TerminalPane } = await import("./TerminalPane")
+const { TerminalPane, TerminalStack } = await import("./TerminalPane")
 // The compose drafts live in the real store, which is module state outliving one
 // test, so each test starts from a clean map. Imported here rather than at the
 // top of the file because the store touches `localStorage` at import time and
@@ -584,9 +627,9 @@ function installStubs() {
   )
 }
 
-// An agent tab's failed socket holds its picture for `HANDOFF_GRACE_MS` in case
-// a promotion is about to take the pane away, so a test about the box waits that
-// window out. A terminal has no such hold and never needs this.
+// A failed socket holds its picture for `HANDOFF_GRACE_MS` in case the pane is
+// about to go (a promotion, a closed terminal, a shell that exited), so a test
+// about the box waits that window out.
 async function passHandoffGrace(): Promise<void> {
   const past = HANDOFF_GRACE_MS + 50
   if (vi.isFakeTimers()) {
@@ -625,9 +668,9 @@ beforeEach(() => {
   // The `pty.owner` epoch high-water marks are module-global; reset so a handover
   // in one test is never dropped as "stale" by a prior test's epoch.
   resetPtyOwnerEpochs()
-  // The compose-insert sink is module-global too; a pane left registered by a
-  // prior test must never satisfy this test's assertions.
-  setComposeInsertSink(null)
+  // The macro targets are module-global too; a pane left registered by a prior
+  // test must never satisfy this test's assertions.
+  resetPaneMacroTargets()
 })
 
 afterEach(() => {
@@ -803,6 +846,45 @@ describe("TerminalPane seeds its ownership verdict from the connected frame", ()
       // if anybody else holds the pty by then.
       expect(pty.sendResize).toHaveBeenCalledWith(24, 80, true, "conn-a")
     } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe("TerminalPane self-succession from a page hidden since it armed", () => {
+  // The handshake arms the succession while the page is in front; the page is
+  // hidden before the first resize goes out. A hidden page claims nothing, so
+  // the flagged frame never leaves and the pane stays a watcher.
+  it("drops the succession and sends no flagged frame", () => {
+    vi.useFakeTimers()
+    try {
+      render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+      const pty = last()
+      act(() => pty.onOpen())
+      act(() => pty.onConnected("conn-a", null))
+      act(() => {
+        vi.advanceTimersByTime(400)
+      })
+      act(() => pty.onReconnecting())
+      pty.sendResize.mockClear()
+      act(() => {
+        pty.onOpen()
+        pty.onConnected("conn-b", "conn-a")
+      })
+      Object.defineProperty(document, "visibilityState", {
+        value: "hidden",
+        configurable: true,
+      })
+      act(() => pty.bytesCb?.(new Uint8Array([0x61])))
+      act(() => {
+        vi.advanceTimersByTime(400)
+      })
+      expect(pty.sendResize.mock.calls.filter((call) => call[2] === true)).toEqual([])
+    } finally {
+      Object.defineProperty(document, "visibilityState", {
+        value: "visible",
+        configurable: true,
+      })
       vi.useRealTimers()
     }
   })
@@ -1485,14 +1567,12 @@ describe("TerminalPane terminal lifecycle resources", () => {
   })
 
   it("disposes its terminal resources and stops page events at unmount", async () => {
-    const { getActivePtySocket } = await import("@/lib/ptySocket")
     const mounted = render(
       <TerminalPane kind="agent" id="s1" sessionId="s1" />,
     )
     const pty = last()
     const term = TermStub.instances.at(-1)!
 
-    expect(getActivePtySocket()).toBe(pty)
     expect(term.resizeListeners.length).toBeGreaterThan(0)
     mounted.unmount()
 
@@ -1501,7 +1581,6 @@ describe("TerminalPane terminal lifecycle resources", () => {
     expect(term.oscHandlerDispose).toHaveBeenCalledTimes(1)
     expect(disposeAgentNotifications).toHaveBeenCalledTimes(1)
     expect(term.resizeListeners).toEqual([])
-    expect(getActivePtySocket()).toBeNull()
 
     window.dispatchEvent(new Event("pageshow"))
     window.dispatchEvent(new Event("freeze"))
@@ -1644,27 +1723,12 @@ describe("TerminalPane macro trigger", () => {
     expect(screen.queryByTestId("macro-popover")).toBeNull()
   })
 
-  it("registers its typing surface so the header's picker can return focus to it", async () => {
-    // Without this, closing the header picker hands focus back to the trigger
-    // and the Enter that was meant to submit the macro re-opens the menu, and the
-    // exact bug the pane's old `finalFocus` prop existed to prevent.
-    const { getTerminalFocusElement, peekTerminalFocusTarget } = await import(
-      "@/lib/terminalFocus"
-    )
-    // Deliberately no assertion that the slot starts empty: it is module-global
-    // state shared by every test in this file, so a pane a neighbouring test
-    // left mounted would make that assertion order-dependent. What matters is
-    // that THIS pane claims the slot and gives it back.
-    const view = render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(peekTerminalFocusTarget()).not.toBeNull()
-    expect(getTerminalFocusElement()).toBe(TermStub.instances.at(-1)!.textarea)
-    view.unmount()
-    expect(peekTerminalFocusTarget()).toBeNull()
-  })
-
-  it("does not let an older pane's cleanup retire the newer focus target", async () => {
-    const { getTerminalFocusElement } = await import("@/lib/terminalFocus")
+  it("publishes its own typing surface under its own pty id", () => {
+    // The header's picker returns focus here after a pick, so the Enter that
+    // submits the macro reaches this pane rather than re-opening the menu, and
+    // with two panes mounted each answers for itself, never the last mounted.
     const first = render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    const firstTextarea = TermStub.instances.at(-1)!.textarea
     const second = render(
       <TerminalPane
         kind="terminal"
@@ -1674,12 +1738,13 @@ describe("TerminalPane macro trigger", () => {
     )
     const secondTextarea = TermStub.instances.at(-1)!.textarea
 
-    expect(getTerminalFocusElement()).toBe(secondTextarea)
-    first.unmount()
-    expect(getTerminalFocusElement()).toBe(secondTextarea)
+    expect(paneMacroTargetFor("s1")?.typingSurface()).toBe(firstTextarea)
+    expect(paneMacroTargetFor("t1")?.typingSurface()).toBe(secondTextarea)
 
+    first.unmount()
+    expect(paneMacroTargetFor("s1")).toBeNull()
+    expect(paneMacroTargetFor("t1")?.typingSurface()).toBe(secondTextarea)
     second.unmount()
-    expect(getTerminalFocusElement()).toBeNull()
   })
 })
 
@@ -2009,6 +2074,9 @@ describe("TerminalPane accessory keys preserve the keyboard state", () => {
 // to the PTY. The sink exists exactly while the bar is rendered: desktop, a
 // disabled preference, and a non-owner viewer all leave it unregistered, which
 // is what keeps today's direct-to-PTY path for those cases.
+// The compose draft a picked macro lands in, as this pane publishes it.
+const composeSink = () => paneMacroTargetFor("s1")?.compose ?? null
+
 describe("TerminalPane compose macro insert sink", () => {
   const desktopWidth = window.innerWidth
   // `goMobile` now means "the phone SHELL is up AND touch is the primary
@@ -2041,16 +2109,22 @@ describe("TerminalPane compose macro insert sink", () => {
   it("registers the sink while the compose bar is rendered (mobile owner)", () => {
     goMobile()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    const sink = getComposeInsertSink()
+    const sink = composeSink()
     expect(sink).not.toBeNull()
     // The sink's focus target is the compose textarea itself (the macro
     // popover hands it to Base UI as the close-focus target).
     expect(sink?.target()).toBe(composeTextarea())
   })
 
+  it("publishes the compose box as its typing surface while the bar is up", () => {
+    goMobile()
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    expect(paneMacroTargetFor("s1")?.typingSurface()).toBe(composeTextarea())
+  })
+
   it("does not register the sink on desktop", () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(getComposeInsertSink()).toBeNull()
+    expect(composeSink()).toBeNull()
   })
 
   it("does not register the sink when the ui.compose_bar preference is off", () => {
@@ -2060,7 +2134,7 @@ describe("TerminalPane compose macro insert sink", () => {
       "never"
     mockState = state
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(getComposeInsertSink()).toBeNull()
+    expect(composeSink()).toBeNull()
   })
 
   it("retires the sink when a foreign device takes over, restores it on reclaim", () => {
@@ -2068,14 +2142,14 @@ describe("TerminalPane compose macro insert sink", () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     const pty = last()
     act(() => pty.onConnected("conn-me"))
-    expect(getComposeInsertSink()).not.toBeNull()
+    expect(composeSink()).not.toBeNull()
     // Demoted to a read-only viewer: the compose bar unmounts, so a picked
     // macro must fall back to the (owner-gated) PTY path, not a hidden draft.
     act(() => notifyPtyOwner("s1", "conn-other", undefined, undefined))
-    expect(getComposeInsertSink()).toBeNull()
+    expect(composeSink()).toBeNull()
     // Our own claim echo restores ownership, the bar, and the sink.
     act(() => notifyPtyOwner("s1", "conn-me", undefined, undefined))
-    expect(getComposeInsertSink()).not.toBeNull()
+    expect(composeSink()).not.toBeNull()
   })
 
   it("retires the sink on unmount", () => {
@@ -2083,9 +2157,9 @@ describe("TerminalPane compose macro insert sink", () => {
     const { unmount } = render(
       <TerminalPane kind="agent" id="s1" sessionId="s1" />,
     )
-    expect(getComposeInsertSink()).not.toBeNull()
+    expect(composeSink()).not.toBeNull()
     unmount()
-    expect(getComposeInsertSink()).toBeNull()
+    expect(composeSink()).toBeNull()
   })
 
   it("insert lands the text in the draft at the caret and writes NOTHING to the PTY", () => {
@@ -2094,7 +2168,7 @@ describe("TerminalPane compose macro insert sink", () => {
     const pty = last()
     fireEvent.change(composeTextarea(), { target: { value: "hello world" } })
     composeTextarea().setSelectionRange(5, 5)
-    act(() => getComposeInsertSink()?.insert(" brave"))
+    act(() => composeSink()?.insert(" brave"))
     expect(composeTextarea().value).toBe("hello brave world")
     // The caret sits after the inserted text, ready to keep editing.
     expect(composeTextarea().selectionStart).toBe(11)
@@ -2106,7 +2180,7 @@ describe("TerminalPane compose macro insert sink", () => {
     goMobile()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     const pty = last()
-    act(() => getComposeInsertSink()?.insert("first\nsecond\nthird"))
+    act(() => composeSink()?.insert("first\nsecond\nthird"))
     // Real newlines in the DRAFT: the Send path owns the wire transform
     // (newline-without-submit keystrokes plus the lone submitting CR).
     expect(composeTextarea().value).toBe("first\nsecond\nthird")
@@ -2118,22 +2192,37 @@ describe("TerminalPane compose macro insert sink", () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     composeTextarea().blur()
     expect(document.activeElement).not.toBe(composeTextarea())
-    act(() => getComposeInsertSink()?.insert("run the tests"))
+    act(() => composeSink()?.insert("run the tests"))
     expect(document.activeElement).toBe(composeTextarea())
   })
 })
 
-// Desktop wheel scrolling: one wheel notch moves 3 lines of local scrollback,
-// via xterm's scrollSensitivity option (the installed xterm 6 Viewport feeds it
-// to its scrollable element as mouseWheelScrollSensitivity for LOCAL scrolling
-// only; the wheel-report path to a mouse-tracking app sends one report per
-// wheel event regardless, so forwarding stays 1:1 per tick).
-describe("TerminalPane wheel scroll speed", () => {
-  it("constructs the terminal with scrollSensitivity 3", () => {
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+describe.each([
+  { kind: "agent" as const, id: "s1" },
+  { kind: "terminal" as const, id: "t1" },
+])("the terminal a $kind pane constructs", ({ kind, id }) => {
+  // Desktop wheel scrolling: one wheel notch moves 3 lines of local scrollback,
+  // via xterm's scrollSensitivity option (the installed xterm 6 Viewport feeds
+  // it to its scrollable element as mouseWheelScrollSensitivity for LOCAL
+  // scrolling only; the wheel-report path to a mouse-tracking app sends one
+  // report per wheel event regardless, so forwarding stays 1:1 per tick).
+  it("has scrollSensitivity 3", () => {
+    render(<TerminalPane {...paneProps(kind, id)} />)
     const term = TermStub.instances.at(-1)
     if (!term) throw new Error("no terminal constructed")
     expect(term.options.scrollSensitivity).toBe(3)
+  })
+
+  // The server's terminal model counts U+2705 as two cells; a browser counting
+  // it as one draws every later character of the row one cell left of where
+  // the program put it.
+  it("counts an emoji as two cells, with the Unicode 11 width table", async () => {
+    render(<TerminalPane {...paneProps(kind, id)} />)
+    const term = TermStub.instances.at(-1)
+    if (!term) throw new Error("no terminal constructed")
+    expect(term.unicode.activeVersion).toBe("11")
+    await new Promise<void>((resolve) => term.widths.write("✅X", resolve))
+    expect(term.widths.buffer.active.cursorX).toBe(3)
   })
 })
 
@@ -2443,12 +2532,10 @@ describe("TerminalPane mobile accessory-bar preference", () => {
   })
 })
 
-// THE INPUT ⋯ MENU AND ITS THREE ANCHORS. It replaced a button that existed
-// only while something was hidden, which is why the hidden-bars dead end kept
-// coming back: a way back is not the same as a way there. The menu renders in
-// EVERY bar state, at the leading edge of the bottom-most input row that
-// exists, and exactly one instance of it is ever on screen.
-describe("TerminalPane input menu anchors", () => {
+// NOTHING HANGS OFF THE INPUT ROWS. The input's controls live in the top menu's
+// Input group and, on a phone, in the action cluster, so the rows under the
+// terminal carry the message box and the terminal keys and nothing else.
+describe("TerminalPane has no menu under the terminal", () => {
   const desktopWidth = window.innerWidth
   // `goMobile` means "the phone SHELL is up AND touch is the primary pointer".
   // Those are two different signals since the compose bar moved off the width
@@ -2475,22 +2562,14 @@ describe("TerminalPane input menu anchors", () => {
     mod.setTypingSurface(null)
   })
 
-  const triggers = () => screen.queryAllByRole("button", { name: "Input options" })
-  const openMenu = () => fireEvent.click(triggers()[0]!)
-
-  it("renders in the compose row while both bars are visible", () => {
-    // The old restore button was ABSENT in this state, which is the whole bug:
-    // nothing on screen led to the hide/show controls from the terminal.
+  it("leaves the compose row to the box and Send", () => {
     goMobile()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(triggers()).toHaveLength(1)
-    // In the compose row, opposite Send, not in the key rows above it.
-    expect(
-      triggers()[0]!.closest("div")!.querySelector('[aria-label="Send"]'),
-    ).toBeTruthy()
+    const row = screen.getByRole("button", { name: "Send" }).parentElement!
+    expect(row.querySelectorAll("button")).toHaveLength(1)
   })
 
-  it("renders in the accessory bar's key row when the message box is off", () => {
+  it("leaves the key row to the keys when the message box is off", () => {
     goMobile()
     const state = makeState()
     ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
@@ -2498,33 +2577,14 @@ describe("TerminalPane input menu anchors", () => {
     mockState = state
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
-    expect(triggers()).toHaveLength(1)
-    // Beside the keys, in row one: Esc is its neighbour.
-    const row = triggers()[0]!.closest("div")!.parentElement!
-    expect(row.querySelector('[aria-label="Esc"]')).toBeTruthy()
+    const row = screen.getByRole("button", { name: "Esc" }).parentElement!
+    expect(
+      Array.from(row.querySelectorAll("button")).map((b) =>
+        b.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Esc", "Tab", "Ctrl", "Alt", "Insert newline"])
   })
 
-  // THE DUPLICATE STATE. The keys are up and the message box is off. The old
-  // fallback row's condition ("compose off AND something hidden") was true here
-  // at the same time as the accessory anchor, so this exact state would have
-  // shipped TWO menus.
-  it("renders exactly one menu with the keys up and the box off", () => {
-    goMobile()
-    const state = makeState()
-    ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
-      "never"
-    mockState = state
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(triggers()).toHaveLength(1)
-    // And it is the accessory bar's, not a second minimal row's.
-    const row = triggers()[0]!.closest("div")!.parentElement!
-    expect(row.querySelector('[aria-label="Esc"]')).toBeTruthy()
-  })
-
-  // NO MINIMAL ROW ANY MORE. It existed so the menu could be reached in every
-  // bar state; that guarantee belongs to the top menu now, which is on screen
-  // whatever the pane is doing, and a bordered strip under a terminal nobody is
-  // typing into was chrome for its own sake.
   it("renders nothing at all when neither bar is up", () => {
     goMobile()
     const state = makeState()
@@ -2537,46 +2597,6 @@ describe("TerminalPane input menu anchors", () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Esc" })).toBeNull()
-    expect(triggers()).toHaveLength(0)
-  })
-
-  it("carries the keys Show item, writing that one field", () => {
-    goMobile()
-    const state = makeState()
-    ;(
-      state.bootstrap as unknown as { mobile_accessory_bar?: boolean }
-    ).mobile_accessory_bar = false
-    mockState = state
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    openMenu()
-    // The menu names what the item does, in the direction it will move the
-    // bar. It is the only bar this menu can move: theater mode owns the
-    // phone's chrome, so there is nothing here for the top bar.
-    expect(screen.queryByText(/top bar/i)).toBeNull()
-    fireEvent.click(screen.getByText("Show terminal keys"))
-    const fetchSpy = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "/api/v1/config/settings",
-      expect.objectContaining({
-        method: "PATCH",
-        // `quiet: true` asks the server to skip its "Settings updated."
-        // status: the keys visibly returning is the feedback.
-        body: JSON.stringify({
-          ui: { mobile_accessory_bar: true },
-          quiet: true,
-        }),
-      }),
-    )
-  })
-
-  it("offers the typing-surface switch as the action it performs", () => {
-    goMobile()
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    openMenu()
-    // The message box is up, so the switch is the way OUT of it. It writes
-    // through the one `switchTypingSurface` every entry point shares.
-    fireEvent.click(screen.getByText("Type directly in the terminal"))
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
   })
 })
 
@@ -3440,24 +3460,27 @@ describe("TerminalPane typing surfaces follow the pointer, not the layout", () =
     pointerStub = stubCoarsePointer(false)
     const view = render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     const terminalPane = screen.getByTestId("terminal-container")
-      .parentElement!.parentElement!
+      .closest(".group")!
     const column = view.container.firstElementChild
 
-    expect(terminalPane.parentElement).toBe(column)
+    // The terminal sits in the stack's box (the one the overlay layer covers),
+    // which shares the column with the input rows.
+    expect(terminalPane.parentElement?.parentElement).toBe(column)
     expect(column?.className).toContain("flex-col")
     expect(composeUp()).toBe(false)
     expect(accessoryUp()).toBe(false)
-    expect(screen.queryByRole("button", { name: "Input options" })).toBeNull()
   })
 
   it("puts the terminal pane and touch rows under one column on a coarse desktop", () => {
     pointerStub = stubCoarsePointer(true)
     const view = render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     const terminalPane = screen.getByTestId("terminal-container")
-      .parentElement!.parentElement!
+      .closest(".group")!
     const column = view.container.firstElementChild
 
-    expect(terminalPane.parentElement).toBe(column)
+    // The terminal sits in the stack's box (the one the overlay layer covers),
+    // which shares the column with the input rows.
+    expect(terminalPane.parentElement?.parentElement).toBe(column)
     expect(column?.className).toContain("flex-col")
     expect(terminalPane.className).toContain("flex-1")
     expect(composeUp()).toBe(true)
@@ -3554,12 +3577,11 @@ describe("TerminalPane inactive cursor style", () => {
     expect(term.options.cursorInactiveStyle).toBe("block")
 
     // Direct typing: xterm gets focus again, so the convention comes back.
-    fireEvent.click(screen.getByRole("button", { name: "Input options" }))
-    fireEvent.click(screen.getByText("Type directly in the terminal"))
+    const surface = await import("@/lib/typingSurface")
+    act(() => surface.switchTypingSurface("direct"))
     expect(TermStub.instances.at(-1)).toBe(term)
     expect(term.options.cursorInactiveStyle).toBe("outline")
 
-    const surface = await import("@/lib/typingSurface")
     act(() => surface.setTypingSurface("compose"))
     expect(term.options.cursorInactiveStyle).toBe("block")
     surface.setTypingSurface(null)
@@ -3610,27 +3632,20 @@ describe("TerminalPane compose placeholder follows the surface", () => {
   })
 })
 
-// THE WAY BACK TRAVELS WITH THE KEYS. `ui.mobile_accessory_bar` is a
-// SERVER-SIDE preference, so hiding it from a phone hides the keys on the
-// tablet too; if the way back stayed gated on the mobile LAYOUT, that tablet
-// got the desktop shell with no keys and no way to ask for them back. The input
-// ⋯ therefore follows the same predicate that mounts the bars.
-describe("TerminalPane input menu follows the touch surfaces", () => {
+// WHAT THE PANE PUBLISHES for the top menu's Input group, which is the one home
+// of the surface switch and (on a computer) the keys row. The pointer is a
+// DEFAULT, not a gate: the switch is on offer wherever `compose_bar` is `auto`,
+// and the keys wherever a key row belongs on this device, shown or hidden.
+describe("TerminalPane publishes its input group", () => {
   let pointerStub: MatchMediaStub | null = null
 
-  const setWidth = (value: number) =>
-    Object.defineProperty(window, "innerWidth", { value, configurable: true })
-
   beforeEach(async () => {
-    setWidth(1200)
-    // A stored choice would offer the surface switch on its own (that is the
-    // point of the wider gate, and there is a case for it below); start every
-    // case here with the decision back in the pointer's hands.
+    // A stored choice would decide the surface on its own; start every case with
+    // the decision back in the pointer's hands.
     const mod = await import("@/lib/typingSurface")
     mod.setTypingSurface(null)
   })
   afterEach(async () => {
-    setWidth(1200)
     pointerStub?.restore()
     pointerStub = null
     const mod = await import("@/lib/typingSurface")
@@ -3644,62 +3659,48 @@ describe("TerminalPane input menu follows the touch surfaces", () => {
     ).mobile_accessory_bar = false
     return state
   }
-  const trigger = () => screen.queryByRole("button", { name: "Input options" })
 
-  it("offers the menu in the DESKTOP shell on a coarse pointer", () => {
-    pointerStub = stubCoarsePointer(true)
-    mockState = hideAccessoryBar()
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    // The dead end: keys gone, desktop layout, and before this no way back.
-    expect(screen.queryByRole("button", { name: "Esc" })).toBeNull()
-    expect(trigger()).toBeTruthy()
-  })
+  // One table: pointer x `compose_bar` mode x the device's choice x the keys
+  // preference. Each expectation is worked out from what the surfaces ARE (the
+  // box is up under `always`, never under `never`, the pointer's default under
+  // `auto`; a finger always has keys on offer, a laptop only beside the box),
+  // not from the code under test.
+  const cases = [
+    { name: "a finger, auto, nothing chosen", coarse: true, mode: "auto", choice: null, keysOn: true, want: { surfaceSwitch: true, composeSurface: true, keysToggle: true } },
+    { name: "a finger, keys hidden", coarse: true, mode: "auto", choice: null, keysOn: false, want: { surfaceSwitch: true, composeSurface: true, keysToggle: true } },
+    { name: "a finger typing directly", coarse: true, mode: "auto", choice: "direct", keysOn: true, want: { surfaceSwitch: true, composeSurface: false, keysToggle: true } },
+    { name: "a mouse, nothing chosen", coarse: false, mode: "auto", choice: null, keysOn: true, want: { surfaceSwitch: true, composeSurface: false, keysToggle: false } },
+    { name: "a mouse that asked for the box", coarse: false, mode: "auto", choice: "compose", keysOn: true, want: { surfaceSwitch: true, composeSurface: true, keysToggle: true } },
+    { name: "a finger, never", coarse: true, mode: "never", choice: null, keysOn: true, want: { surfaceSwitch: false, composeSurface: false, keysToggle: true } },
+    { name: "a mouse, never", coarse: false, mode: "never", choice: null, keysOn: true, want: { surfaceSwitch: false, composeSurface: false, keysToggle: false } },
+    { name: "a mouse, always", coarse: false, mode: "always", choice: null, keysOn: true, want: { surfaceSwitch: false, composeSurface: true, keysToggle: true } },
+    { name: "a finger, always", coarse: true, mode: "always", choice: "direct", keysOn: false, want: { surfaceSwitch: false, composeSurface: true, keysToggle: true } },
+  ] as const
+  for (const c of cases) {
+    it(`publishes ${JSON.stringify(c.want)} for ${c.name}`, async () => {
+      const surface = await import("@/lib/typingSurface")
+      const { paneInputGroupFor } = await import("@/lib/paneInputGroup")
+      pointerStub = stubCoarsePointer(c.coarse)
+      surface.setTypingSurface(c.choice)
+      const state = c.keysOn ? makeState() : hideAccessoryBar()
+      ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
+        c.mode
+      mockState = state
+      render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+      expect(paneInputGroupFor(["s1"])).toEqual(c.want)
+    })
+  }
 
-  it("brings the keys back from the menu, writing only that preference", () => {
-    pointerStub = stubCoarsePointer(true)
-    mockState = hideAccessoryBar()
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    fireEvent.click(trigger()!)
-    fireEvent.click(screen.getByText("Show terminal keys"))
-    const fetchSpy = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "/api/v1/config/settings",
-      expect.objectContaining({
-        method: "PATCH",
-        body: JSON.stringify({
-          ui: { mobile_accessory_bar: true },
-          quiet: true,
-        }),
-      }),
-    )
-  })
-
-  // With the message box off too there is no bar left, so there is no menu
-  // under the terminal either: "Show terminal keys" is published to the top
-  // menu for exactly this state, which is what keeps it from being a dead end.
-  it("leaves nothing under the terminal when the message box is off too", () => {
-    pointerStub = stubCoarsePointer(true)
-    const state = hideAccessoryBar()
-    ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
-      "never"
-    mockState = state
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
-    expect(trigger()).toBeNull()
-  })
-
-  // THE POINTER IS A DEFAULT, NOT A GATE. A fine-pointer desktop starts with
-  // neither bar, and the way in is PUBLISHED to the top menu: the switch is
-  // offered on every device under `auto`, because gating it on the surfaces it
-  // turns on left a laptop user no way to ask for them at all.
-  it("publishes the way in on a fine pointer that has chosen nothing", async () => {
+  // The dead end this must never recreate: keys hidden, desktop layout, and
+  // the keys' own toggle still published, because hiding must not take away
+  // the way to show them again.
+  it("keeps the keys toggle on offer while the keys are hidden", async () => {
     const { paneInputGroupFor } = await import("@/lib/paneInputGroup")
-    pointerStub = stubCoarsePointer(false)
+    pointerStub = stubCoarsePointer(true)
+    mockState = hideAccessoryBar()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Esc" })).toBeNull()
-    expect(trigger()).toBeNull()
-    expect(paneInputGroupFor(["s1"])?.surfaceSwitch).toBe(true)
+    expect(paneInputGroupFor(["s1"])?.keysToggle).toBe(true)
   })
 
   // THE DEFECT THIS FIXES: the press used to change nothing on a fine pointer.
@@ -3709,22 +3710,23 @@ describe("TerminalPane input menu follows the touch surfaces", () => {
     const surface = await import("@/lib/typingSurface")
     pointerStub = stubCoarsePointer(false)
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Esc" })).toBeNull()
     // What the top menu's "Use virtual input" item writes.
     act(() => surface.switchTypingSurface("compose"))
     expect(screen.getByRole("textbox", { name: "Message" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Esc" })).toBeTruthy()
   })
 
-  // AND BACK OUT AGAIN, from the same menu, whose label follows the resolved
-  // state rather than the pointer.
+  // AND BACK OUT AGAIN, whose row label follows the resolved state rather than
+  // the pointer.
   it("switches a fine pointer back to typing straight into the terminal", async () => {
     const mod = await import("@/lib/typingSurface")
     mod.setTypingSurface("compose")
     pointerStub = stubCoarsePointer(false)
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(screen.getByRole("textbox", { name: "Message" })).toBeTruthy()
-    fireEvent.click(trigger()!)
-    fireEvent.click(screen.getByText("Type directly in the terminal"))
+    act(() => mod.switchTypingSurface("direct"))
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
   })
 
@@ -3742,54 +3744,10 @@ describe("TerminalPane input menu follows the touch surfaces", () => {
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
   })
 
-  // THE SETTING STILL WINS. `never` is configuration, and the per-device switch
-  // is not offered where it could not take effect.
-  it("offers no switch under a hard never, on either pointer", () => {
-    pointerStub = stubCoarsePointer(false)
-    const state = makeState()
-    ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
-      "never"
-    mockState = state
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
-    // Nothing else belongs in the menu in this state (uploads are off here and
-    // the keys cannot apply), so the never-renders-empty rule leaves no trigger
-    // at all. The switch's absence is the point either way.
-    expect(trigger()).toBeNull()
-  })
-
-  // The other pointer, where the menu really does exist: `never` keeps the
-  // accessory keys (a soft keyboard still cannot produce a Ctrl chord), so the
-  // trigger is there and what it opens is everything BUT the switch.
-  it("offers no switch under a hard never on a coarse pointer either", () => {
-    pointerStub = stubCoarsePointer(true)
-    const state = makeState()
-    ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
-      "never"
-    mockState = state
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
-    fireEvent.click(trigger()!)
-    expect(screen.getByText("Hide terminal keys")).toBeTruthy()
-    expect(screen.queryByText("Use virtual input")).toBeNull()
-  })
-
-  it("offers no switch under a hard always, whose box is up regardless", () => {
-    pointerStub = stubCoarsePointer(false)
-    const state = makeState()
-    ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
-      "always"
-    mockState = state
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(screen.getByRole("textbox", { name: "Message" })).toBeTruthy()
-    fireEvent.click(trigger()!)
-    expect(screen.queryByText("Type directly in the terminal")).toBeNull()
-  })
-
   // A CONFIG STILL CARRYING THE RETIRED `ui.mobile_top_bar` MUST CHANGE
   // NOTHING. It hid the phone's chrome once; theater mode does that now, and a
   // value left in a config file (or published by an older server) must not put
-  // an unexplained extra row under a terminal or an item back in the menu.
+  // an unexplained extra row under a terminal.
   it("ignores a stored top-bar preference entirely", () => {
     pointerStub = stubCoarsePointer(true)
     const state = makeState()
@@ -3799,11 +3757,6 @@ describe("TerminalPane input menu follows the touch surfaces", () => {
     mockState = state
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(screen.getByRole("button", { name: "Esc" })).toBeTruthy()
-    expect(
-      screen.queryAllByRole("button", { name: "Input options" }),
-    ).toHaveLength(1)
-    fireEvent.click(trigger()!)
-    expect(screen.queryByText(/top bar/i)).toBeNull()
   })
 })
 
@@ -3812,7 +3765,7 @@ describe("TerminalPane input menu follows the touch surfaces", () => {
 // the flap are on screen outside theater, and in theater the floating pill
 // carries the items. The row it used to get existed only for the retired
 // top-bar preference, which was the one thing a viewer could still act on.
-describe("TerminalPane input menu for a non-owner", () => {
+describe("TerminalPane input group for a non-owner", () => {
   const desktopWidth = window.innerWidth
   let pointerStub: MatchMediaStub | null = null
 
@@ -3853,12 +3806,13 @@ describe("TerminalPane input menu for a non-owner", () => {
     })
   }
 
-  it("gets no typing surfaces and no input row", () => {
+  it("gets no typing surfaces, no input row and publishes no input group", async () => {
+    const { paneInputGroupFor } = await import("@/lib/paneInputGroup")
     renderViewer(makeState())
+    expect(paneInputGroupFor(["s1"])).toBeNull()
     // No typing surfaces for a viewer, per the tenet.
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Esc" })).toBeNull()
-    expect(screen.queryByRole("button", { name: "Input options" })).toBeNull()
   })
 
   it("gets none even with a stored top-bar preference on the bootstrap", () => {
@@ -3868,7 +3822,6 @@ describe("TerminalPane input menu for a non-owner", () => {
       state.bootstrap as unknown as { mobile_top_bar?: boolean }
     ).mobile_top_bar = false
     renderViewer(state)
-    expect(screen.queryByRole("button", { name: "Input options" })).toBeNull()
   })
 })
 
@@ -3890,57 +3843,43 @@ describe("TerminalPane typing-surface toggle", () => {
 
   const composeUp = () =>
     screen.queryByRole("textbox", { name: "Message" }) !== null
-  // THE SWITCH LIVES IN THE INPUT `⋯`, and nowhere else on these rows: the key
-  // row carries terminal keys only. A menu row is a sentence, so the item names
-  // the direction rather than the state it is in.
-  const flipSurface = () => {
-    const label = composeUp()
-      ? "Type directly in the terminal"
-      : "Use virtual input"
-    fireEvent.click(screen.getByRole("button", { name: "Input options" }))
-    fireEvent.click(screen.getByText(label))
+  // THE SWITCH LIVES IN THE TOP MENU'S INPUT GROUP, and nowhere on these rows:
+  // the key row carries terminal keys only. This writes what that row writes.
+  const flipSurface = async () => {
+    const surface = await import("@/lib/typingSurface")
+    act(() => surface.switchTypingSurface(composeUp() ? "direct" : "compose"))
   }
 
-  it("flips the surface from the input menu, both ways", () => {
+  it("flips the surface through the one helper, both ways", async () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(composeUp()).toBe(true)
-    flipSurface()
+    await flipSurface()
     expect(composeUp()).toBe(false)
-    flipSurface()
+    await flipSurface()
     expect(composeUp()).toBe(true)
   })
 
   // THE BOX GOES, THE KEYS STAY. They are independent surfaces answering
   // different questions, and keys with no box is a real way to work: the finger
-  // holds the virtual Ctrl and the physical keyboard types the letter. The
-  // bottom `⋯` hangs off whichever row is left, so the way back stays down
-  // there and the top menu does not offer a second copy of it.
+  // holds the virtual Ctrl and the physical keyboard types the letter.
   it("keeps the terminal keys when the message box goes", async () => {
     const { paneInputGroupFor } = await import("@/lib/paneInputGroup")
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    flipSurface()
+    await flipSurface()
     expect(composeUp()).toBe(false)
     expect(screen.getByRole("button", { name: "Esc" })).toBeTruthy()
-    fireEvent.click(screen.getByRole("button", { name: "Input options" }))
-    expect(screen.getByText("Use virtual input")).toBeTruthy()
-    expect(paneInputGroupFor(["s1"])?.surfaceSwitch).toBe(false)
+    // The way back is published whatever is left under the terminal.
+    expect(paneInputGroupFor(["s1"])?.surfaceSwitch).toBe(true)
   })
 
   // AND ALL FOUR STATES ARE REACHABLE, through the two independent switches:
-  // the typing-surface choice and the terminal-keys preference.
-  //
-  // EVERY ONE OF THEM HAS A WAY BACK, and exactly ONE home for it. The rows are
-  // what can go away; the switch that brings them back cannot, so it lives in
-  // the bottom `⋯` while any row is up and in the surface's top menu once the
-  // last one goes. A state with neither home is a dead end and a state with
-  // both is two menus that can disagree, so the pair is pinned state by state
-  // rather than only at the extremes.
-  it("reaches every combination of the two rows, each with one way back", async () => {
+  // the typing-surface choice and the terminal-keys preference. EVERY ONE OF
+  // THEM HAS ITS WAY BACK in the top menu's group, because the rows are what
+  // can go away and the switches that bring them back cannot go with them.
+  it("reaches every combination of the two rows, each with its way back", async () => {
     const surface = await import("@/lib/typingSurface")
     const { paneInputGroupFor } = await import("@/lib/paneInputGroup")
     const keysUp = () => screen.queryByRole("button", { name: "Esc" }) !== null
-    const bottomMenu = () =>
-      screen.queryByRole("button", { name: "Input options" }) !== null
     const show = (composeChoice: "compose" | "direct", keys: boolean) => {
       cleanup()
       surface.setTypingSurface(composeChoice)
@@ -3950,73 +3889,50 @@ describe("TerminalPane typing-surface toggle", () => {
       ).mobile_accessory_bar = keys
       mockState = state
       render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+      const published = paneInputGroupFor(["s1"])
       return {
         box: composeUp(),
         keys: keysUp(),
-        bottom: bottomMenu(),
-        top: paneInputGroupFor(["s1"])?.surfaceSwitch ?? false,
+        switchBack: published?.surfaceSwitch ?? false,
+        keysBack: published?.keysToggle ?? false,
       }
     }
-    expect(show("compose", true)).toEqual({
-      box: true,
-      keys: true,
-      bottom: true,
-      top: false,
-    })
-    expect(show("compose", false)).toEqual({
-      box: true,
-      keys: false,
-      bottom: true,
-      top: false,
-    })
+    const back = { switchBack: true, keysBack: true }
+    expect(show("compose", true)).toEqual({ box: true, keys: true, ...back })
+    expect(show("compose", false)).toEqual({ box: true, keys: false, ...back })
     // KEYS WITHOUT THE BOX: a finger holds the virtual Ctrl while a physical
     // keyboard types the letter, which is exactly what direct typing is for.
-    // The key row is the whole bottom bar here, and it carries the `⋯`.
-    expect(show("direct", true)).toEqual({
-      box: false,
-      keys: true,
-      bottom: true,
-      top: false,
-    })
-    // Nothing under the terminal at all, so the way back is the top menu's.
-    expect(show("direct", false)).toEqual({
-      box: false,
-      keys: false,
-      bottom: false,
-      top: true,
-    })
+    expect(show("direct", true)).toEqual({ box: false, keys: true, ...back })
+    // Nothing under the terminal at all, and the way back is still published.
+    expect(show("direct", false)).toEqual({ box: false, keys: false, ...back })
   })
 
-  // THE OTHER DOOR OUT OF THE VIRTUAL INPUT, and the pane's answer about it.
-  // From direct typing the key row IS the bottom bar, so hiding it takes the
-  // last row and the `⋯` on it: the same dead end the surface switch hints
-  // about, reached by a different tap. With the message box still up, hiding
-  // the keys leaves the compose row and its `⋯`, so there is nothing to say.
-  it("says what hiding the keys would leave behind", async () => {
+  // ONE CHOICE PER DEVICE: an agent's pane and a terminal's read the same
+  // answer, and a switch made over one shows in the other.
+  it("is one choice for an agent pane and a terminal pane at once", async () => {
     const surface = await import("@/lib/typingSurface")
-    const hideKeys = () => {
-      fireEvent.click(screen.getByRole("button", { name: "Input options" }))
-      fireEvent.click(screen.getByText("Hide terminal keys"))
-    }
-    surface.setTypingSurface("direct")
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(composeUp()).toBe(false)
-    hideKeys()
-    expect(hideTerminalKeysHint).toHaveBeenCalledExactlyOnceWith(true)
-
-    cleanup()
-    hideTerminalKeysHint.mockClear()
-    surface.setTypingSurface("compose")
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(composeUp()).toBe(true)
-    hideKeys()
-    expect(hideTerminalKeysHint).toHaveBeenCalledExactlyOnceWith(false)
+    render(
+      <>
+        <TerminalPane kind="agent" id="s1" sessionId="s1" />
+        <TerminalPane
+          kind="terminal"
+          id="t1"
+          owner={{ kind: "session", sessionId: "s1" }}
+        />
+      </>,
+    )
+    const boxes = () => screen.queryAllByRole("textbox", { name: "Message" })
+    expect(boxes()).toHaveLength(2)
+    act(() => surface.switchTypingSurface("direct"))
+    expect(boxes()).toHaveLength(0)
+    act(() => surface.switchTypingSurface("compose"))
+    expect(boxes()).toHaveLength(2)
   })
 
   it("writes the choice to localStorage, so a reload does not snap back", async () => {
     const mod = await import("@/lib/typingSurface")
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    flipSurface()
+    await flipSurface()
     expect(composeUp()).toBe(false)
     // THE STORAGE, not the module's own memory: a live module variable would
     // satisfy a remount in this file and still lose the choice on a real
@@ -4028,27 +3944,15 @@ describe("TerminalPane typing-surface toggle", () => {
     expect(composeUp()).toBe(false)
   })
 
-  it("does not write the ui.compose_bar setting", () => {
+  it("does not write the ui.compose_bar setting", async () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     const calls = () =>
       (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
     const before = calls().length
-    flipSurface()
+    await flipSurface()
     for (const call of calls().slice(before)) {
       expect(String(call[0])).not.toContain("/settings")
     }
-  })
-
-  // Under always/never the SETTING decides, so an item that changed nothing
-  // must not be there at all.
-  it("is absent when the setting has already decided", () => {
-    const state = makeState()
-    ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
-      "always"
-    mockState = state
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    fireEvent.click(screen.getByRole("button", { name: "Input options" }))
-    expect(screen.queryByText("Type directly in the terminal")).toBeNull()
   })
 
   // AND THE KEY ROW CARRIES NONE OF THIS. It is terminal keys and the `⋯`,
@@ -4071,6 +3975,8 @@ describe("TerminalPane typing-surface toggle", () => {
 // at (100, 50) with 10x20 cells and an 80x24 grid, and the stub buffer's first
 // line is "git status --porcelain".
 describe("TerminalPane long-press text selection", () => {
+  const CUT_SHORT_NOTE =
+    "Nothing copied: the terminal changed while you were selecting. Try again."
   const LONG_PRESS_MS = 400
   const container = () => screen.getByTestId("terminal-container")
   const term = () => {
@@ -4130,11 +4036,35 @@ describe("TerminalPane long-press text selection", () => {
     expect(term().getSelection()).toBe("status")
   })
 
-  it("selects nothing where there is nothing, rather than the nearest word", () => {
+  it("highlights nothing on blank cells and says so on the lift", () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     // Column 60 of the first line is past the end of the text: blank cells.
     press(at(60, 0))
-    expect(term().getSelection().trim()).toBe("")
+    expect(term().hasSelection()).toBe(false)
+    lift(at(60, 0))
+    expect(toastCalls).toEqual(["Nothing to copy there: that spot is blank."])
+    expect(copied).toEqual([])
+  })
+
+  it("says the same when a drag ends with only blank cells selected", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    press(at(60, 0))
+    move(at(70, 0))
+    lift(at(70, 0))
+    expect(toastCalls).toContain("Nothing to copy there: that spot is blank.")
+  })
+
+  it("says the terminal changed, not that the spot was blank, when a resize cut the gesture short", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    press(at(6, 0))
+    // A resize mid-drag: xterm clears its own selection when the rows change.
+    act(() => {
+      term().resize(80, 23)
+      term().clearSelection()
+    })
+    lift(at(6, 0))
+    expect(toastCalls).toEqual([CUT_SHORT_NOTE])
+    expect(copied).toEqual([])
   })
 
   it("extends the selection as the finger drags forward", () => {
@@ -4295,6 +4225,7 @@ describe("TerminalPane long-press text selection", () => {
     lift(at(6, 0))
     expect(copied).toEqual(["status"])
     expect(term().getSelection()).toBe("status")
+    expect(toastCalls).not.toContain(CUT_SHORT_NOTE)
   })
 
   it("copies a ONE-character word, because a long press is deliberate", () => {
@@ -4357,20 +4288,9 @@ describe("TerminalPane long-press text selection", () => {
     press(at(2, 0))
     move(at(3, 0))
     lift(at(3, 0))
-    expect(t.getSelection()).toBe("    ")
-    expect(t.getSelection().trim()).toBe("")
-    expect(toastCalls).toEqual([])
+    // The one toast is the blank-spot notice, never the mouse hint.
+    expect(toastCalls).toEqual(["Nothing to copy there: that spot is blank."])
     expect(copied).toEqual([])
-  })
-
-  it("hands focus back when xterm's contextmenu handler grabs the textarea", () => {
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    // xterm's handler focuses its hidden textarea to prepare a native Copy,
-    // which on a phone raises the soft keyboard over the selection.
-    term().textarea.focus()
-    fireEvent.pointerDown(container(), { pointerType: "touch" })
-    fireEvent.contextMenu(container())
-    expect(term().textarea.focused).toBe(false)
   })
 
   it("leaves the textarea focused for a MOUSE right-click, which pastes", () => {
@@ -4427,6 +4347,64 @@ describe("TerminalPane long-press text selection", () => {
     }
   })
 
+  // Android follows the long press with a `contextmenu`, and xterm's own
+  // listener on its element answers it the way it answers a right click: it
+  // focuses the hidden textarea. With the message box up the pane's focus
+  // guard then redirected that focus into the box, the soft keyboard rose,
+  // the terminal lost rows, and xterm cleared the highlight on the resize.
+  it("moves no focus when Android follows the long press with a contextmenu", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
+    const pointer = stubCoarsePointer()
+    try {
+      render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+      const compose = screen.getByRole("textbox", { name: "Message" })
+      ;(compose as HTMLTextAreaElement).blur()
+      // xterm's handler, as `rightClickHandler` behaves: a real textarea in
+      // xterm's element, focused from a contextmenu listener on that element.
+      const helper = document.createElement("textarea")
+      const element = term().element as HTMLElement
+      element.appendChild(helper)
+      const xtermSawIt = vi.fn(() => helper.focus())
+      element.addEventListener("contextmenu", xtermSawIt)
+      fireEvent.pointerDown(element, { pointerType: "touch" })
+      press(at(6, 0))
+      const menu = fireEvent.contextMenu(element)
+      await act(async () => {
+        await Promise.resolve()
+      })
+      lift(at(6, 0))
+      expect(document.activeElement).not.toBe(compose)
+      expect(document.activeElement).not.toBe(helper)
+      expect(xtermSawIt).not.toHaveBeenCalled()
+      expect(menu).toBe(false)
+      expect(term().getSelection()).toBe("status")
+    } finally {
+      pointer.restore()
+    }
+  })
+
+  // Measured on Android Chrome: once the contextmenu is refused before xterm
+  // focuses anything, the browser starts its own long-press text selection
+  // and cancels the touch, so the lift never comes and nothing is copied.
+  it("refuses the browser's own text selection under a finger", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    const element = term().element as HTMLElement
+    fireEvent.pointerDown(element, { pointerType: "touch" })
+    expect(fireEvent(element, new Event("selectstart", { bubbles: true, cancelable: true }))).toBe(false)
+    fireEvent.pointerDown(element, { pointerType: "mouse" })
+    expect(fireEvent(element, new Event("selectstart", { bubbles: true, cancelable: true }))).toBe(true)
+  })
+
+  it("still lets xterm answer a MOUSE right click", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    const element = term().element as HTMLElement
+    const xtermSawIt = vi.fn()
+    element.addEventListener("contextmenu", xtermSawIt)
+    fireEvent.pointerDown(element, { pointerType: "mouse", button: 2 })
+    fireEvent.contextMenu(element)
+    expect(xtermSawIt).toHaveBeenCalled()
+  })
+
   it("abandons the gesture when the app flips buffers mid-drag", () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     press(at(6, 0))
@@ -4435,18 +4413,6 @@ describe("TerminalPane long-press text selection", () => {
     term().buffer.active.type = "alternate"
     move(at(20, 0))
     expect(term().getSelection()).toBe("status")
-  })
-
-  it("wipes the selection xterm stuffed into its hidden textarea on a touch long press", () => {
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    // Android fires `contextmenu` on a long press. xterm's OWN listener sits on
-    // `term.element`, inside this container, so it runs first and writes the
-    // selection into the hidden textarea, where it would later be delivered to
-    // the PTY as a paste.
-    term().textarea.value = "status"
-    fireEvent.pointerDown(container(), { pointerType: "touch" })
-    fireEvent.contextMenu(container())
-    expect(term().textarea.value).toBe("")
   })
 
   it("retires the context-menu paste guard when the pane unmounts", () => {
@@ -4461,6 +4427,29 @@ describe("TerminalPane long-press text selection", () => {
     fireEvent.contextMenu(detachedContainer)
 
     expect(detachedTerm.textarea.value).toBe("detached selection")
+  })
+
+  it("keeps xterm's helper textarea out of hit testing, wherever xterm moves it", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    // xterm parks its hidden textarea under the finger on every long press
+    // (its contextmenu handler), above the screen; a later press landing on
+    // an editable textarea would get the browser's text editing instead of
+    // the selection gesture.
+    expect(term().textarea.style.pointerEvents).toBe("none")
+    fireEvent.pointerDown(container(), { pointerType: "touch" })
+    expect(term().textarea.style.pointerEvents).toBe("none")
+  })
+
+  it("lets a mouse reach the helper textarea, which middle-click paste lands in", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    // On Linux xterm moves the textarea under the pointer on a middle click so
+    // the browser pastes the primary selection into it; that needs the
+    // textarea to be hit-testable for the mouse.
+    fireEvent.pointerDown(container(), { pointerType: "mouse", button: 1 })
+    expect(term().textarea.style.pointerEvents).toBe("")
+    // And a finger afterwards takes it back out of reach.
+    fireEvent.pointerDown(container(), { pointerType: "touch" })
+    expect(term().textarea.style.pointerEvents).toBe("none")
   })
 
   it("suppresses the platform callout and context menu on the terminal", () => {
@@ -4866,6 +4855,16 @@ describe("TerminalPane and theater mode", () => {
 
   const overlay = <div data-testid="pane-overlay" />
 
+  /// The box the overlay is positioned against: its layer covers the pane's own
+  /// box exactly, so the layer's parent is the area the overlay may roam.
+  const overlayBox = () => {
+    const layer = screen.getByTestId("pane-overlay").parentElement
+    expect(layer?.dataset.testid).toBe("pane-overlay-layer")
+    const box = layer?.parentElement
+    if (!box) throw new Error("the overlay has no positioning context")
+    return box
+  }
+
   it("paints an overlay over the terminal, never over the input rows", () => {
     // The bug this pins: anchored to the pane COLUMN, the floating pill landed
     // on the Send button, because the compose row and the terminal keys are
@@ -4876,8 +4875,7 @@ describe("TerminalPane and theater mode", () => {
       <TerminalPane kind="agent" id="s1" sessionId="s1" overlay={overlay} />,
     )
     const send = screen.getByRole("button", { name: "Send" })
-    const anchor = screen.getByTestId("pane-overlay").parentElement
-    if (!anchor) throw new Error("the overlay has no positioning context")
+    const anchor = overlayBox()
     expect(anchor.className).toContain("relative")
     expect(anchor.contains(screen.getByTestId("terminal-container"))).toBe(true)
     expect(anchor.contains(send)).toBe(false)
@@ -4887,9 +4885,65 @@ describe("TerminalPane and theater mode", () => {
     render(
       <TerminalPane kind="agent" id="s1" sessionId="s1" overlay={overlay} />,
     )
-    const anchor = screen.getByTestId("pane-overlay").parentElement
-    if (!anchor) throw new Error("the overlay has no positioning context")
-    expect(anchor.contains(screen.getByTestId("terminal-container"))).toBe(true)
+    expect(
+      overlayBox().contains(screen.getByTestId("terminal-container")),
+    ).toBe(true)
+  })
+
+  it("keeps the overlay out of the clip the terminal is painted in", () => {
+    // The phone's docked flap hangs one pixel above the pane, over the band's
+    // hairline, and the pill lands on the flap's exact pixels: clipped with the
+    // terminal, the pill could not cover that row and it blinked through at the
+    // handoff. The overlay's own layer is the only clip it is under.
+    goMobile()
+    render(
+      <TerminalPane kind="agent" id="s1" sessionId="s1" overlay={overlay} />,
+    )
+    const clip = screen
+      .getByTestId("terminal-container")
+      .closest(".overflow-hidden")
+    if (!clip) throw new Error("the terminal is not clipped")
+    expect(clip.contains(screen.getByTestId("pane-overlay"))).toBe(false)
+    expect(overlayBox().className).not.toContain("overflow-hidden")
+  })
+
+  it("clips the overlay's layer on every edge but the one row above the pane", () => {
+    // jsdom paints nothing, so the clip is read from the class that sets it.
+    goMobile()
+    render(
+      <TerminalPane kind="agent" id="s1" sessionId="s1" overlay={overlay} />,
+    )
+    const classes = screen.getByTestId("pane-overlay-layer").className.split(/\s+/)
+    const clip = classes.find((c) => c.startsWith("[clip-path:polygon("))
+    expect(clip, "the overlay layer has no clip-path polygon").toBeDefined()
+    const points = clip!
+      .slice("[clip-path:polygon(".length, -")]".length)
+      .split(",")
+      .map((p) => p.replace(/_/g, " "))
+    expect(
+      [points[0], points[1]],
+      "the top edge must sit 1px above the pane, or the band's hairline blinks through at the pill-to-flap handoff",
+    ).toEqual(["0 -1px", "100% -1px"])
+    expect(
+      [points[2], points[3], points.length],
+      "the right, bottom and left edges must be the pane's own, or the pill's shadow spills over the input rows and neighbouring panels",
+    ).toEqual(["100% 100%", "0 100%", 4])
+  })
+
+  it("passes presses through the overlay's layer and lets the overlay take them", () => {
+    goMobile()
+    render(
+      <TerminalPane kind="agent" id="s1" sessionId="s1" overlay={overlay} />,
+    )
+    const classes = screen.getByTestId("pane-overlay-layer").className.split(/\s+/)
+    expect(
+      classes,
+      "the layer covers the whole terminal, so without this every press on the terminal lands on the layer",
+    ).toContain("pointer-events-none")
+    expect(
+      classes,
+      "the overlay inherits the layer's pointer-events, so without this the pill stops taking presses",
+    ).toContain("*:pointer-events-auto")
   })
 
   it("says nothing about ownership on a watcher's FIRST honest handshake", () => {
@@ -4913,32 +4967,14 @@ describe("TerminalPane and theater mode", () => {
     expect(theaterOwnershipLost).toHaveBeenCalledWith("agent", "s1")
   })
 
-  // THE BOTTOM `⋯` IS INPUT-LOCAL, and that is the whole of it. It lives inside
-  // the virtual input and disappears with it, so it cannot be anybody's
-  // guaranteed way out of a mode: the exit is on the pill and in the top menu,
-  // which are on screen whatever the input is doing.
-  it("carries nothing about theater and nothing about the top bar", () => {
-    goMobile()
-    mockState = { ...makeState(), theater: true } as YaranState
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    fireEvent.click(screen.getByRole("button", { name: "Input options" }))
-    expect(screen.queryByText(/top bar/i)).toBeNull()
-    expect(screen.queryByText("Leave theater mode")).toBeNull()
-    expect(screen.queryByText("Attach a file…")).toBeNull()
-    expect(screen.getByText("Type directly in the terminal")).toBeTruthy()
-    expect(screen.getByText("Hide terminal keys")).toBeTruthy()
-  })
-
   // Theater takes the chrome away, not the typing surface: the way OUT of the
-  // virtual input still works inside the mode. The way back is the top menu's,
-  // which the pill carries here (see the input-group suite below).
+  // virtual input still works inside the mode. The switch is the pill menu's.
   it("keeps the typing-surface switch working in theater", async () => {
     const surface = await import("@/lib/typingSurface")
     goMobile()
     mockState = { ...makeState(), theater: true } as YaranState
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    fireEvent.click(screen.getByRole("button", { name: "Input options" }))
-    fireEvent.click(screen.getByText("Type directly in the terminal"))
+    act(() => surface.switchTypingSurface("direct"))
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
     // The choice is device-local and persistent by design, so hand the decision
     // back to the pointer rather than leaking it into the suites below.
@@ -4947,8 +4983,7 @@ describe("TerminalPane and theater mode", () => {
 
   // THEATER PLUS DIRECT ON A PHONE: the message box goes and the terminal keys
   // stay, because a mode about looking at the terminal must not take away the
-  // keys a soft keyboard cannot produce. The bottom `⋯` rides the surviving
-  // row, so the way back is there rather than in the pill's menu.
+  // keys a soft keyboard cannot produce.
   it("keeps the terminal keys in theater once typing goes direct", async () => {
     const surface = await import("@/lib/typingSurface")
     const { paneInputGroupFor } = await import("@/lib/paneInputGroup")
@@ -4959,13 +4994,12 @@ describe("TerminalPane and theater mode", () => {
 
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
     expect(screen.getByRole("button", { name: "Esc" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Input options" })).toBeTruthy()
-    expect(paneInputGroupFor(["s1"])?.surfaceSwitch).toBe(false)
+    expect(paneInputGroupFor(["s1"])?.surfaceSwitch).toBe(true)
     surface.setTypingSurface(null)
   })
 
   // AND WITH THE KEYS HIDDEN TOO there really is nothing under the terminal,
-  // which is the state the pill's own menu carries the way back for.
+  // which the pill's cluster and menu still carry the way back for.
   it("leaves no bottom bar in theater with the keys hidden as well", async () => {
     const surface = await import("@/lib/typingSurface")
     const { paneInputGroupFor } = await import("@/lib/paneInputGroup")
@@ -4979,8 +5013,10 @@ describe("TerminalPane and theater mode", () => {
     act(() => surface.setTypingSurface("direct"))
 
     expect(screen.queryByRole("button", { name: "Esc" })).toBeNull()
-    expect(screen.queryByRole("button", { name: "Input options" })).toBeNull()
-    expect(paneInputGroupFor(["s1"])?.surfaceSwitch).toBe(true)
+    expect(paneInputGroupFor(["s1"])).toMatchObject({
+      surfaceSwitch: true,
+      keysToggle: true,
+    })
     surface.setTypingSurface(null)
   })
 
@@ -5105,6 +5141,8 @@ describe("TerminalPane gates its floating overlay on the cover", () => {
     act(() => last().onConnected("conn-self", "conn-other"))
     expect(screen.getByText("Active on another device")).toBeTruthy()
     expect(screen.queryByTestId("pane-overlay")).toBeNull()
+    // The layer admits the row above the pane, so it must leave with the pill.
+    expect(screen.queryByTestId("pane-overlay-layer")).toBeNull()
     expect(mounted).not.toHaveBeenCalled()
   })
 
@@ -5214,9 +5252,7 @@ describe("TerminalPane publishes its cover verdict", () => {
 // WHAT THE PANE TELLS THE TOP MENU. Every surface has a menu for the pane that
 // is always reachable (the flap on a phone, the pane's own sidebar row `⋯` on a
 // computer, the floating pill in theater), and the pane publishes the INPUT
-// group for it. The rule
-// pinned here is that a control is in exactly ONE of the two menus: the bottom
-// `⋯` while the virtual input is up, the top menu once it is gone.
+// group for it, whatever is up under the terminal.
 describe("TerminalPane input group for the top menu", () => {
   let pointerStub: MatchMediaStub | null = null
   afterEach(() => {
@@ -5249,16 +5285,14 @@ describe("TerminalPane input group for the top menu", () => {
     mockState = { ...makeState(), theater: true } as YaranState
     paneWithProbe()
 
-    expect(screen.queryByRole("button", { name: "Input options" })).toBeNull()
     expect(screen.getByTestId("published").textContent).toBe("switch")
   })
 
-  it("keeps the switch out of the top menu while a bar is carrying it", () => {
+  it("publishes the switch while a bar is up too", () => {
     pointerStub = stubCoarsePointer(true)
     paneWithProbe()
 
-    expect(screen.getByRole("button", { name: "Input options" })).toBeTruthy()
-    expect(screen.getByTestId("published").textContent).toBe("quiet")
+    expect(screen.getByTestId("published").textContent).toBe("switch")
   })
 
   // THE PANE HAS ONE SHAPE, WHATEVER IS UNDER THE TERMINAL. The rows come and
@@ -5286,17 +5320,13 @@ describe("TerminalPane input group for the top menu", () => {
     surface.setTypingSurface(null)
   })
 
-  // A bar is an anchor, so the `⋯` stays in the compose row and the top menu
-  // offers no switch: two menus offering the same row is the thing being
-  // avoided.
-  it("keeps the menu in the compose row when the box is up in theater", () => {
+  it("carries no menu in the compose row when the box is up in theater", () => {
     pointerStub = stubCoarsePointer(true)
     mockState = { ...makeState(), theater: true } as YaranState
     paneWithProbe()
 
     expect(screen.getByRole("textbox", { name: "Message" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Input options" })).toBeTruthy()
-    expect(screen.getByTestId("published").textContent).toBe("quiet")
+    expect(screen.getByTestId("published").textContent).toBe("switch")
   })
 })
 
@@ -5366,6 +5396,8 @@ describe("a promoted-away slot tab hands its pane over", () => {
       ...base,
       spine: {
         ...base.spine!,
+        // No terminal of the agent's own, so its screen is the agent's tab alone.
+        terminals: [],
         sessions: [
           {
             ...session,
@@ -5384,7 +5416,12 @@ describe("a promoted-away slot tab hands its pane over", () => {
       },
       startedDormantTabs: [],
       createTabInFlight: [],
+      pendingTabOrder: {},
       pendingSlotTab: {},
+      stackLayouts: {},
+      stackTerminals: {},
+      stackTabs: {},
+      pendingTerminalOrder: null,
       theater: false,
     } as unknown as YaranState
   }
@@ -5434,5 +5471,555 @@ describe("a promoted-away slot tab hands its pane over", () => {
     expect(first.dispose).toHaveBeenCalled()
     expect(TermStub.instances.length).toBe(terminals + 1)
     expect(second.connect).toHaveBeenCalled()
+  })
+})
+
+// A terminal's socket also fails when the terminal is closed or its shell
+// exits, and the spine's update that removes the pane follows by a moment.
+describe("TerminalPane terminal socket handover", () => {
+  const owner = { kind: "session", sessionId: "s1" } as const
+
+  it("holds the Reconnect box through the grace, then paints it", async () => {
+    render(<TerminalPane kind="terminal" id="t1" owner={owner} />)
+    last().emit("failed")
+    expect(screen.queryByText("Connection lost.")).toBeNull()
+    await passHandoffGrace()
+    expect(screen.getByText("Connection lost.")).toBeTruthy()
+  })
+
+  it("stops retrying once the spine no longer lists the terminal", () => {
+    const view = render(<TerminalPane kind="terminal" id="t1" owner={owner} />)
+    const pty = last()
+    expect(pty.shouldRetry()).toBe(true)
+
+    mockState = {
+      ...mockState,
+      spine: { ...mockState.spine!, terminals: [] },
+    } as YaranState
+    view.rerender(<TerminalPane kind="terminal" id="t1" owner={owner} />)
+
+    expect(pty.shouldRetry()).toBe(false)
+  })
+
+  // A new terminal is opened on screen before the spine that names it
+  // arrives; a socket dropped in that window keeps retrying.
+  it("keeps retrying for a terminal the spine has not listed yet", () => {
+    mockState = {
+      ...mockState,
+      spine: { ...mockState.spine!, terminals: [] },
+    } as YaranState
+    render(<TerminalPane kind="terminal" id="t1" owner={owner} />)
+    expect(last().shouldRetry()).toBe(true)
+  })
+})
+
+// Where a picked macro goes is published under this pane's own pty id, so a
+// Macros control outside the pane reaches this pane and no other. Only the
+// owner gets a way to write, and the take-over card's two states (another
+// device driving, nobody driving) both disable the control.
+describe("TerminalPane publishes its macro target", () => {
+  it("an owner publishes a writer down its own socket and no card", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    const pty = last()
+    act(() => pty.onConnected("conn-me", null))
+    const target = paneMacroTargetFor("s1")
+    expect(target?.takeoverCard).toBe(false)
+    const bytes = new Uint8Array([104, 105])
+    target?.send?.(bytes)
+    expect(pty.sendInput).toHaveBeenCalledWith(bytes)
+  })
+
+  it("under 'Active on another device' it publishes the card and no writer", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    act(() => last().onConnected("conn-self", "conn-other"))
+    expect(screen.getByText("Active on another device")).toBeTruthy()
+    const target = paneMacroTargetFor("s1")
+    expect(target?.takeoverCard).toBe(true)
+    expect(target?.send).toBeNull()
+    expect(target?.compose).toBeNull()
+  })
+
+  it("under 'Running in the background' it publishes the card and no writer", () => {
+    Object.defineProperty(document, "visibilityState", {
+      value: "hidden",
+      configurable: true,
+    })
+    try {
+      render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+      act(() => last().onConnected("conn-self", null))
+      expect(screen.getByText("Running in the background")).toBeTruthy()
+      const target = paneMacroTargetFor("s1")
+      expect(target?.takeoverCard).toBe(true)
+      expect(target?.send).toBeNull()
+    } finally {
+      Object.defineProperty(document, "visibilityState", {
+        value: "visible",
+        configurable: true,
+      })
+    }
+  })
+
+  it("lifts the card and gains a writer the moment this pane becomes the owner", () => {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    act(() => last().onConnected("conn-me", "conn-other"))
+    expect(paneMacroTargetFor("s1")?.takeoverCard).toBe(true)
+    act(() => notifyPtyOwner("s1", "conn-me", undefined, undefined))
+    expect(paneMacroTargetFor("s1")?.takeoverCard).toBe(false)
+    expect(paneMacroTargetFor("s1")?.send).not.toBeNull()
+  })
+
+  it("retires its target on unmount", () => {
+    const { unmount } = render(
+      <TerminalPane kind="agent" id="s1" sessionId="s1" />,
+    )
+    expect(paneMacroTargetFor("s1")).not.toBeNull()
+    unmount()
+    expect(paneMacroTargetFor("s1")).toBeNull()
+  })
+})
+
+// AN AGENT AND ITS DOCKED TERMINAL AS ONE STACK: two live parts, each with its
+// own socket and ownership, one input area under them, and one part typing goes
+// to. The stack is in front of every terminal screen with one part today; these
+// pin what changes once it has two.
+describe("TerminalStack with two parts", () => {
+  let pointerStub: MatchMediaStub | null = null
+  afterEach(() => {
+    pointerStub?.restore()
+    pointerStub = null
+  })
+  const agent = { kind: "agent" as const, id: "s1", sessionId: "s1" }
+  const dock = {
+    kind: "terminal" as const,
+    id: "t1",
+    owner: { kind: "session" as const, session_id: "s1" },
+  }
+  const composeBox = () =>
+    screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement
+  const partBox = (index: number) =>
+    screen.getAllByTestId("terminal-container")[index].closest(".group")!
+  const ownBoth = () => {
+    // One page, one driver id, on both of its sockets.
+    for (const pty of FakePtySocket.instances) {
+      act(() => {
+        pty.onOpen()
+        pty.onConnected("seat-1", "seat-1")
+      })
+    }
+  }
+
+  it("lets only the typing target take focus after its replay", () => {
+    pointerStub = stubCoarsePointer(true)
+    render(<TerminalStack parts={[agent, dock]} />)
+    const [agentPty, dockPty] = FakePtySocket.instances
+    const dockFocus = vi.spyOn(TermStub.instances[1], "focus")
+    ownBoth()
+    act(() => dockPty.bytesCb?.(new Uint8Array([0x61])))
+    expect(document.activeElement).not.toBe(composeBox())
+    expect(dockFocus).not.toHaveBeenCalled()
+    act(() => agentPty.bytesCb?.(new Uint8Array([0x61])))
+    expect(document.activeElement).toBe(composeBox())
+  })
+
+  it("moves the one input area, the tab-stop suspension and the drafts with the target", () => {
+    pointerStub = stubCoarsePointer(true)
+    render(<TerminalStack parts={[agent, dock]} />)
+    const [agentTerm, dockTerm] = TermStub.instances
+    ownBoth()
+    expect(screen.getAllByRole("textbox", { name: "Message" })).toHaveLength(1)
+    expect(composeBox().placeholder).toBe("Write a message to the agent…")
+    expect([agentTerm.textarea.tabIndex, dockTerm.textarea.tabIndex]).toEqual([-1, 0])
+    fireEvent.change(composeBox(), { target: { value: "for the agent" } })
+
+    fireEvent.pointerDown(partBox(1))
+    expect(composeBox().placeholder).toBe("Type a command…")
+    expect(composeBox().value).toBe("")
+    expect([agentTerm.textarea.tabIndex, dockTerm.textarea.tabIndex]).toEqual([0, -1])
+    fireEvent.change(composeBox(), { target: { value: "ls" } })
+
+    fireEvent.pointerDown(partBox(0))
+    expect(composeBox().value).toBe("for the agent")
+  })
+
+  it("owns the row when its page's claim is announced before its own handshake lands", () => {
+    // The dock opens on the page's shared driver id while the row is unclaimed;
+    // the agent part claims it, and that announcement overtakes the dock's own
+    // handshake, which was snapshotted before the claim.
+    resetPtyOwnerEpochs()
+    render(<TerminalStack parts={[agent, { ...dock, onScreen: false }]} />)
+    const dockPty = FakePtySocket.instances[1]
+    act(() => dockPty.onOpen())
+    act(() => notifyPtyOwner("t1", "seat-1", 5))
+    act(() => dockPty.onConnected("seat-1", null, 4))
+    act(() => dockPty.bytesCb?.(new Uint8Array([0x61])))
+    expect(dockPty.sendResize).toHaveBeenCalled()
+    expect(screen.queryByText("Active on another device")).toBeNull()
+  })
+
+  it("lets a part off screen ask for its row back with a self-succession", () => {
+    // Its handshake names this page's own previous connection, which still
+    // holds the row: the armed, flagged claim is what goes out, hidden or not.
+    vi.useFakeTimers()
+    try {
+      render(<TerminalStack parts={[agent, { ...dock, onScreen: false }]} />)
+      const dockPty = FakePtySocket.instances[1]
+      act(() => {
+        dockPty.onOpen()
+        dockPty.onConnected("old-1", "old-1")
+      })
+      act(() => dockPty.onReconnecting())
+      dockPty.sendResize.mockClear()
+      act(() => {
+        dockPty.onOpen()
+        dockPty.onConnected("new-1", "old-1")
+      })
+      act(() => dockPty.bytesCb?.(new Uint8Array([0x61])))
+      act(() => {
+        vi.advanceTimersByTime(400)
+      })
+      expect(dockPty.sendResize).toHaveBeenCalledWith(24, 80, true, "old-1")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("sends a Send's Enter to the part the body went to after the target moved", () => {
+    vi.useFakeTimers()
+    try {
+      pointerStub = stubCoarsePointer(true)
+      render(<TerminalStack parts={[agent, dock]} />)
+      const [agentPty, dockPty] = FakePtySocket.instances
+      ownBoth()
+      fireEvent.change(composeBox(), { target: { value: "hello" } })
+      fireEvent.pointerDown(screen.getByRole("button", { name: "Send" }))
+      fireEvent.pointerDown(partBox(1))
+      expect(composeBox().placeholder).toBe("Type a command…")
+      act(() => {
+        vi.advanceTimersByTime(COMPOSE_SUBMIT_DELAY_MS)
+      })
+      const sent = agentPty.sendInput.mock.calls.map((call: unknown[]) =>
+        new TextDecoder().decode(call[0] as Uint8Array),
+      )
+      expect(sent).toEqual(["hello", "\r"])
+      expect(dockPty.sendInput).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("falls back to the part on screen when the chosen part goes off screen", () => {
+    pointerStub = stubCoarsePointer(true)
+    const { rerender } = render(<TerminalStack parts={[agent, dock]} />)
+    ownBoth()
+    fireEvent.pointerDown(partBox(1))
+    expect(composeBox().placeholder).toBe("Type a command…")
+    rerender(<TerminalStack parts={[agent, { ...dock, onScreen: false }]} />)
+    expect(composeBox().placeholder).toBe("Write a message to the agent…")
+  })
+
+  it("lands a click into the other part's terminal in the message box, now for that part", async () => {
+    pointerStub = stubCoarsePointer(true)
+    render(<TerminalStack parts={[agent, dock]} />)
+    ownBoth()
+    const dockContainer = screen.getAllByTestId("terminal-container")[1]
+    // Not the target yet: the redirect is the target part's alone.
+    await act(async () => {
+      fireEvent.focusIn(dockContainer)
+      await Promise.resolve()
+    })
+    expect(document.activeElement).not.toBe(composeBox())
+    fireEvent.pointerDown(partBox(1))
+    await act(async () => {
+      fireEvent.focusIn(dockContainer)
+      await Promise.resolve()
+    })
+    expect(document.activeElement).toBe(composeBox())
+    expect(composeBox().placeholder).toBe("Type a command…")
+  })
+
+  it("keeps a part off screen in a real box, hidden rather than shrunk", () => {
+    render(<TerminalStack parts={[agent, { ...dock, onScreen: false }]} />)
+    expect(partBox(1).className).toContain("absolute")
+    expect(partBox(1).className).toContain("inset-0")
+    expect(partBox(1).className).toContain("invisible")
+    expect(partBox(0).className).toContain("flex-1")
+  })
+
+  it("opens a part off screen as not viewed, and says when it comes on screen and leaves", () => {
+    const { rerender } = render(
+      <TerminalStack parts={[agent, { ...dock, onScreen: false }]} />,
+    )
+    const dockPty = FakePtySocket.instances[1]
+    expect(dockPty.onScreen()).toBe(false)
+    expect(FakePtySocket.instances[0].onScreen()).toBe(true)
+    rerender(<TerminalStack parts={[agent, { ...dock, onScreen: true }]} />)
+    expect(dockPty.onScreen()).toBe(true)
+    expect(dockPty.sendShown).toHaveBeenCalledTimes(1)
+    rerender(<TerminalStack parts={[agent, { ...dock, onScreen: false }]} />)
+    expect(dockPty.sendUnviewed).toHaveBeenCalledTimes(1)
+    expect(dockPty.sendShown).toHaveBeenCalledTimes(1)
+  })
+
+  it("never makes the first claim of a row from the part off screen", () => {
+    render(<TerminalStack parts={[agent, { ...dock, onScreen: false }]} />)
+    const [agentPty, dockPty] = FakePtySocket.instances
+    for (const pty of [agentPty, dockPty]) {
+      act(() => {
+        pty.onOpen()
+        pty.onConnected("seat-1", null)
+        pty.bytesCb?.(new Uint8Array([0x61]))
+      })
+    }
+    expect(agentPty.sendResize).toHaveBeenCalled()
+    expect(dockPty.sendResize).not.toHaveBeenCalled()
+    // A row nobody drives is not somebody else's: no card over the hidden part.
+    expect(screen.queryByText("Running in the background")).toBeNull()
+  })
+
+  it("gives no part focus or input rows while none of them is on screen", () => {
+    pointerStub = stubCoarsePointer(true)
+    render(
+      <TerminalStack
+        parts={[{ ...agent, onScreen: false }, { ...dock, onScreen: false }]}
+        typingTarget="s1"
+        onChooseTypingTarget={() => {}}
+      />,
+    )
+    const [agentPty, dockPty] = FakePtySocket.instances
+    ownBoth()
+    act(() => agentPty.bytesCb?.(new Uint8Array([0x61])))
+    act(() => dockPty.bytesCb?.(new Uint8Array([0x61])))
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
+  })
+
+  it("covers the whole stack with one take-over card when another device drives the row", () => {
+    render(<TerminalStack parts={[agent, dock]} />)
+    for (const pty of FakePtySocket.instances) {
+      act(() => pty.onConnected("seat-1", "seat-other"))
+    }
+    expect(screen.getAllByText("Active on another device")).toHaveLength(1)
+    expect(screen.getAllByText("Take over")).toHaveLength(1)
+    const area = screen.getByTestId("stack-cover-area")
+    expect(area.contains(screen.getByText("Take over"))).toBe(true)
+  })
+
+  it("takes a part whose own socket was lost out of the overlay's bounds", async () => {
+    // The dock part's box sits below the agent's in the stack's box.
+    const rects: Record<string, Partial<DOMRect>> = {
+      s1: { top: 100, left: 0, width: 800, height: 300 },
+      t1: { top: 400, left: 0, width: 800, height: 300 },
+    }
+    const rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const part = this.dataset.stackPart
+        const r = part ? rects[part] : { top: 100, left: 0, width: 800, height: 600 }
+        return { bottom: 0, right: 0, x: 0, y: 0, toJSON: () => ({}), ...r } as DOMRect
+      })
+    try {
+      render(
+        <TerminalStack
+          parts={[agent, dock]}
+          overlay={<div data-testid="pane-overlay" />}
+        />,
+      )
+      ownBoth()
+      const layer = () => screen.getByTestId("pane-overlay-layer")
+      expect(layer().dataset.bounds).toBe("stack")
+      FakePtySocket.instances[1].emit("failed")
+      await passHandoffGrace()
+      expect(screen.getByText("Connection lost.")).toBeTruthy()
+      expect(layer().dataset.bounds).toBe("part")
+      expect([layer().style.top, layer().style.height]).toEqual(["0px", "300px"])
+    } finally {
+      rect.mockRestore()
+    }
+  })
+
+})
+
+// The overlay layer is the stack's, and a stack of one paints it exactly where
+// the lone pane always did, for every kind of terminal screen.
+describe("the stack's overlay layer over a lone terminal", () => {
+  const overlay = <div data-testid="pane-overlay" />
+  it.each([
+    ["a project terminal", { kind: "project" as const, project_id: "p1" }],
+    ["a standalone terminal", { kind: "standalone" as const }],
+  ])("paints the overlay over %s and withholds it under the take-over card", (_name, owner) => {
+    render(<TerminalPane kind="terminal" id="t9" owner={owner} overlay={overlay} />)
+    const layer = screen.getByTestId("pane-overlay").parentElement!
+    expect(layer.dataset.testid).toBe("pane-overlay-layer")
+    expect(layer.parentElement!.contains(screen.getByTestId("terminal-container"))).toBe(true)
+    act(() => last().onConnected("conn-self", "conn-other"))
+    expect(screen.queryByTestId("pane-overlay-layer")).toBeNull()
+  })
+})
+
+const { PhoneAgentStack } = await import("./PhoneAgentStack")
+const { agentStackModel } = await import("./agentStackModel")
+
+// THE PHONE'S PILL rides the stack's one overlay layer over whichever part is
+// on screen, clipped to the stack's box plus the band's hairline above it,
+// withheld whole under a row-wide take-over card, and still there over a
+// dormant tab's card, which has no pane of its own.
+describe("the phone stack's overlay layer", () => {
+  const overlay = <div data-testid="pane-overlay" />
+  function phoneModel(over: { live?: boolean; terminals?: string[]; target?: "agent" | "dock" }) {
+    const session = {
+      id: "s1",
+      slot_tab_id: "s1",
+      provider: "claude",
+      status: over.live === false ? "detached" : "active",
+      // A dormant first tab whose last run failed keeps its card on sight.
+      tabs: [
+        {
+          id: "s1",
+          provider: "claude",
+          order: 0,
+          has_live_process: over.live !== false,
+          last_run_failed: over.live === false,
+        },
+      ],
+    } as unknown as Parameters<typeof agentStackModel>[0]["session"]
+    const terminals = (over.terminals ?? ["t1"]).map((id, i) => ({
+      id,
+      owner: { kind: "session", session_id: "s1" },
+      label: id,
+      working: false,
+      typing: false,
+      sort_order: i,
+    })) as unknown as Parameters<typeof agentStackModel>[0]["terminals"]
+    return agentStackModel({
+      target:
+        over.target === "dock"
+          ? { kind: "terminal", terminalId: "t1", owner: { kind: "session", sessionId: "s1" } }
+          : { kind: "agent", sessionId: "s1", tabId: "s1" },
+      session,
+      terminals,
+      stackLayouts: {},
+      stackTerminals: {},
+      stackTabs: {},
+      memory: { layout: null, view: null, terminal: null, tab: null },
+      startedDormantTabs: [],
+      pendingSlotTab: {},
+      endedInViewTab: null,
+      pendingTerminalOrder: null,
+      alwaysShowTabStrip: false,
+      theater: true,
+      surface: "phone",
+    })
+  }
+  const stack = (model: ReturnType<typeof phoneModel>) => (
+    <PhoneAgentStack model={model} terminalEpoch={0} overlay={overlay} />
+  )
+
+  it("covers the stack's box, clipped to it and the row above, over the part on screen", async () => {
+    render(stack(phoneModel({ target: "dock" })))
+    await act(async () => {})
+    const layer = screen.getByTestId("pane-overlay-layer")
+    expect(layer.contains(screen.getByTestId("pane-overlay"))).toBe(true)
+    expect(layer.className).toContain("[clip-path:polygon(0_-1px,100%_-1px,100%_100%,0_100%)]")
+    // The layer's box is the stack's, holding both parts' boxes, the one off
+    // screen clipped below its edge.
+    const box = layer.parentElement!
+    expect(box.contains(screen.getByTestId("stack-agent-box"))).toBe(true)
+    expect(screen.getByTestId("stack-dock-box").dataset.onScreen).toBe("true")
+  })
+
+  it("is withheld whole under the take-over card a watcher gets", async () => {
+    render(stack(phoneModel({ target: "dock" })))
+    await act(async () => {})
+    for (const pty of FakePtySocket.instances) {
+      act(() => pty.onConnected("conn-self", "conn-other"))
+    }
+    expect(screen.getAllByText("Take over")).toHaveLength(1)
+    expect(screen.queryByTestId("pane-overlay-layer")).toBeNull()
+  })
+
+  it("floats over a dormant tab's card with no pane under it", async () => {
+    render(stack(phoneModel({ live: false, terminals: [] })))
+    await act(async () => {})
+    expect(screen.getByText("Start session")).toBeTruthy()
+    const layer = screen.getByTestId("pane-overlay-layer")
+    expect(layer.contains(screen.getByTestId("pane-overlay"))).toBe(true)
+    expect(layer.parentElement!.contains(screen.getByText("Start session"))).toBe(true)
+  })
+})
+
+// THE SOFT KEYBOARD on a phone shrinks the viewport in a burst of resizes as it
+// slides up. The part on screen refits once, at the size the keyboard leaves,
+// and tells its program that size once; the part off screen keeps its own box.
+describe("a phone stack under the soft keyboard", () => {
+  let observed: (() => void)[] = []
+  beforeEach(() => {
+    vi.useFakeTimers()
+    observed = []
+    const cbs = observed
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: () => void) {
+          cbs.push(cb)
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("refits the part on screen once, at the final size", () => {
+    render(
+      <TerminalStack
+        parts={[
+          { kind: "agent", id: "s1", sessionId: "s1" },
+          {
+            kind: "terminal",
+            id: "t1",
+            owner: { kind: "session", sessionId: "s1" },
+            onScreen: false,
+          },
+        ]}
+      />,
+    )
+    const [agentPty] = FakePtySocket.instances
+    for (const pty of FakePtySocket.instances) {
+      act(() => {
+        pty.onOpen()
+        pty.onConnected("seat-1", "seat-1")
+      })
+    }
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    agentPty.sendResize.mockClear()
+    const agentTerm = TermStub.instances[0]
+    const fitted: TermStub[] = []
+    const fit = vi.spyOn(FitStub.prototype, "fit").mockImplementation(function (this: FitStub) {
+      if (this.term) fitted.push(this.term)
+    })
+    // The keyboard sliding up: a resize every frame for a quarter second.
+    for (let i = 0; i < 15; i++) {
+      act(() => {
+        for (const cb of observed) cb()
+        vi.advanceTimersByTime(16)
+      })
+    }
+    expect(agentPty.sendResize).not.toHaveBeenCalled()
+    // Where it came to rest.
+    fit.mockImplementation(function (this: FitStub) {
+      if (!this.term) return
+      fitted.push(this.term)
+      this.term.resize(80, 18)
+    })
+    act(() => {
+      vi.advanceTimersByTime(600)
+    })
+    expect(fitted.filter((t) => t === agentTerm)).toHaveLength(1)
+    expect(agentPty.sendResize).toHaveBeenCalledTimes(1)
+    expect(agentPty.sendResize).toHaveBeenCalledWith(18, 80)
   })
 })

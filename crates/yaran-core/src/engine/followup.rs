@@ -24,6 +24,7 @@
 //! for `yaran server` and the flip, which ask before they drive.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/followup.rs
 //! ├── engine
@@ -36,6 +37,7 @@
 //! Used by:
 //! engine/followup.rs
 //! └── engine
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;
@@ -46,9 +48,17 @@ use super::{Engine, EventReaction};
 /// engine or from a snapshot. One trait, so the exhaustive match in
 /// [`owner_of_reaction`] cannot drift between the live and snapshot forms.
 pub trait WebFollowupOpsView {
+    /// Whether a web pull-request lookup op with this id is pending.
     fn has_pr_lookup(&self, id: &str) -> bool;
+    /// Whether a web add-project op with this id is pending.
     fn has_add_project(&self, id: &str) -> bool;
+    /// Whether a web checkout op with this id is pending.
     fn has_checkout(&self, id: &str) -> bool;
+    /// A clone a browser asked for: one the terminal UI started is its own.
+    fn has_web_clone(&self, id: &str) -> bool;
+    /// Whether a project setting a browser asked for, with this id, is waiting
+    /// for its worker.
+    fn has_web_project_save(&self, id: &str) -> bool;
 }
 
 impl WebFollowupOpsView for Engine {
@@ -61,6 +71,15 @@ impl WebFollowupOpsView for Engine {
     fn has_checkout(&self, id: &str) -> bool {
         self.pending_web_checkout_ops.contains_key(id)
     }
+    fn has_web_clone(&self, id: &str) -> bool {
+        self.clones
+            .pending
+            .get(id)
+            .is_some_and(|pending| pending.from_web)
+    }
+    fn has_web_project_save(&self, id: &str) -> bool {
+        self.pending_web_project_saves.contains(id)
+    }
 }
 
 /// A point-in-time copy of the web pending-op ids, so an ownership verdict is
@@ -71,6 +90,8 @@ pub struct WebFollowupOps {
     pr_lookup: HashSet<String>,
     add_project: HashSet<String>,
     checkout: HashSet<String>,
+    web_clone: HashSet<String>,
+    web_project_save: HashSet<String>,
 }
 
 impl WebFollowupOps {
@@ -89,6 +110,12 @@ impl WebFollowupOpsView for WebFollowupOps {
     }
     fn has_checkout(&self, id: &str) -> bool {
         self.checkout.contains(id)
+    }
+    fn has_web_clone(&self, id: &str) -> bool {
+        self.web_clone.contains(id)
+    }
+    fn has_web_project_save(&self, id: &str) -> bool {
+        self.web_project_save.contains(id)
     }
 }
 
@@ -124,6 +151,14 @@ impl Engine {
             pr_lookup: self.pending_web_pr_lookup_ops.keys().cloned().collect(),
             add_project: self.pending_web_add_project_ops.keys().cloned().collect(),
             checkout: self.pending_web_checkout_ops.keys().cloned().collect(),
+            web_clone: self
+                .clones
+                .pending
+                .iter()
+                .filter(|(_, pending)| pending.from_web)
+                .map(|(id, _)| id.clone())
+                .collect(),
+            web_project_save: self.pending_web_project_saves.clone(),
         }
     }
 }
@@ -141,28 +176,44 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
             // prompt. Both at once is a prompt the user did not ask for on top of
             // an agent that is already being created.
             EventReaction::OpenNewAgentPromptForPr { status_op_id, .. } => {
-                owner_by_id(status_op_id, |id| ops.has_pr_lookup(id))
+                owner_by_id(status_op_id.as_deref(), |id| ops.has_pr_lookup(id))
             }
 
             // Worker 2's `git switch` landed and the project is ready to add.
             // Adding it twice is two workspace entries for one directory.
             EventReaction::AddProjectAfterBranchCheckout { status_op_id, .. }
             | EventReaction::AddProjectAfterInitialCommit { status_op_id, .. } => {
-                owner_by_id(status_op_id, |id| ops.has_add_project(id))
+                owner_by_id(status_op_id.as_deref(), |id| ops.has_add_project(id))
+            }
+
+            // A clone is ready to add as a project, and the follow-up dispatches
+            // its agent create. Twice is two projects and two agents.
+            EventReaction::AddProjectAfterClone(done) => {
+                owner_by_id(done.status_op_id.as_deref(), |id| ops.has_web_clone(id))
+            }
+
+            // A project setting saved. A browser's save is answered, mirrored
+            // into config.toml and reported by the web layer; the terminal UI
+            // running its own arm too wrote config.toml a second time and put
+            // the browser's outcome on its status line.
+            EventReaction::ProjectPersistenceOutcome(outcome) => {
+                owner_by_id(outcome.status_op_id.as_deref(), |id| {
+                    ops.has_web_project_save(id)
+                })
             }
 
             // Worker 1 inspected the default branch and the follow-up SPAWNS
             // worker 2. Two spawns are two concurrent `git switch` runs in one
             // repository.
             EventReaction::DispatchProjectDefaultBranchCheckout { status_op_id, .. } => {
-                owner_by_id(status_op_id, |id| ops.has_checkout(id))
+                owner_by_id(status_op_id.as_deref(), |id| ops.has_checkout(id))
             }
 
             // A `Multi` is applied leaf by leaf (the TUI's `apply_reaction`
             // recurses, and the web's `drive_*` follow-ups match bare variants
             // only), so routing is decided per leaf where the leaf is handled.
             // Answering for the wrapper would skip unrelated siblings.
-            EventReaction::Multi(_) => FollowupOwner::Drainer,
+            EventReaction::Multi(_)
 
             // Everything below is safe on both surfaces at once, and each arm
             // says why rather than leaning on a wildcard. Statuses and clears:
@@ -173,7 +224,7 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
             // pending map and does nothing when it is absent. That works only
             // because they resolve a keyed op the web itself opened; the routed
             // arms above start new work, so they cannot use the same trick.
-            EventReaction::Nothing
+            | EventReaction::Nothing
             | EventReaction::Status(_)
             | EventReaction::ClearStatus(_)
             // View refreshes touch only the surface that runs them.
@@ -198,8 +249,10 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
             // its own selection and message.
             | EventReaction::WorktreeRemoveSucceeded { .. }
             | EventReaction::WorktreeRemoveFailed { .. }
+            // A waiting removal re-titles the delete op's spinner, which each
+            // surface holds in its own pending map (absent on the other).
+            | EventReaction::WorktreeRemoveWaiting { .. }
             | EventReaction::FinishDeleteSessionView(_)
-            | EventReaction::DoDeleteSessionView(_)
             | EventReaction::BeginDeleteSessionView(_)
             // A create-agent branch inspection continuing. The web has no
             // follow-up for it at all (it validates and dispatches inside its own
@@ -210,9 +263,7 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
             // used to. Neither mutates what the other does.
             | EventReaction::ApplyReloadedConfig(_)
             | EventReaction::OpenConfigReloadFailedModal(_)
-            // Project persistence: the engine already performed the mutation;
-            // both arms only report and mirror it.
-            | EventReaction::ProjectPersistenceOutcome(_)
+            | EventReaction::ConfigAdopted { .. }
             // Launch/terminal dispatch views: the engine did the work, the arms
             // describe it to their own surface.
             | EventReaction::DispatchAgentLaunchView(_)
@@ -232,7 +283,8 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
             // `fanout_reaction` that only nudges browsers to refetch the
             // bootstrap document carrying `gh_available`; the terminal UI reads
             // the engine's status live, so neither arm can double anything.
-            | EventReaction::GhAvailabilityChanged { .. } => FollowupOwner::Drainer,
+            | EventReaction::GhAvailabilityChanged { .. }
+            | EventReaction::GithubFactsChanged => FollowupOwner::Drainer,
     }
 }
 
@@ -242,8 +294,8 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
 /// A missing id is `Drainer` rather than an error: the TUI paths pass `None`
 /// for operations they never keyed, and a worker that started something on its
 /// own has no originating request at all.
-fn owner_by_id(status_op_id: &Option<String>, in_web_map: impl Fn(&str) -> bool) -> FollowupOwner {
-    match status_op_id.as_deref() {
+fn owner_by_id(status_op_id: Option<&str>, in_web_map: impl Fn(&str) -> bool) -> FollowupOwner {
+    match status_op_id {
         Some(id) if in_web_map(id) => FollowupOwner::Web,
         _ => FollowupOwner::Drainer,
     }
@@ -268,6 +320,9 @@ mod tests {
                 state: "OPEN".to_string(),
                 head_ref_name: "feature/pr-42".to_string(),
                 custom_name: Some("my-agent".to_string()),
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: None,
+                project_remote: None,
             }),
             status_op_id,
         }

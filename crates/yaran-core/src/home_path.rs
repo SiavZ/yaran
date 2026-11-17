@@ -35,13 +35,11 @@ use std::path::{Path, PathBuf};
 ///
 /// This is a probe, so it is a moment in time: a directory can be removed between
 /// the check and the spawn. It is not a guarantee.
-pub fn dir_is_usable(path: &Path) -> bool {
+pub(crate) fn dir_is_usable(path: &Path) -> bool {
     if path.as_os_str().is_empty() {
         return false;
     }
-    std::fs::metadata(path.join("."))
-        .map(|meta| meta.is_dir())
-        .unwrap_or(false)
+    std::fs::metadata(path.join(".")).is_ok_and(|meta| meta.is_dir())
 }
 
 /// The directory a standalone terminal opens in, given the resolved home.
@@ -61,7 +59,7 @@ pub fn dir_is_usable(path: &Path) -> bool {
 /// This chooses a DIRECTORY; it does not retry a failed spawn. A missing shell or
 /// a bad `[terminal] command` is a configuration problem the user needs to see,
 /// and retrying it at `/` would bury it.
-pub fn standalone_terminal_dir_from(home: Option<PathBuf>) -> PathBuf {
+pub(crate) fn standalone_terminal_dir_from(home: Option<PathBuf>) -> PathBuf {
     match home {
         Some(home) if dir_is_usable(&home) => home,
         _ => PathBuf::from("/"),
@@ -78,7 +76,7 @@ pub fn standalone_terminal_dir() -> PathBuf {
 /// `path` written for a human, with the home directory collapsed to `~`, given
 /// the resolved home. The home directory itself is exactly `~`; a path beneath
 /// it is `~/code`; anything else (including every path when home cannot be
-/// resolved) is returned verbatim.
+/// resolved, or is `/`) is returned verbatim.
 ///
 /// This is the standalone terminal's second sidebar line, so it is also what the
 /// sidebar search matches. It ellipsizes from the right like every other left
@@ -88,8 +86,9 @@ pub fn standalone_terminal_dir() -> PathBuf {
 /// same collapse as `$HOME/...` for config.toml. That one is machine-portable
 /// desired state that gets expanded again on load; this one is display text
 /// nothing ever parses back.
-pub fn shorten_home_from(path: &Path, home: Option<&Path>) -> String {
-    let Some(home) = home else {
+pub(crate) fn shorten_home_from(path: &Path, home: Option<&Path>) -> String {
+    // A home of `/` holds every path, so collapsing it says nothing.
+    let Some(home) = home.filter(|home| home.parent().is_some()) else {
         return path.to_string_lossy().into_owned();
     };
     match path.strip_prefix(home) {
@@ -222,13 +221,14 @@ mod tests {
 
     #[test]
     fn a_home_without_search_permission_falls_back_to_the_root() {
+        use std::os::unix::fs::PermissionsExt;
+
         // Root bypasses the permission bits entirely (CAP_DAC_OVERRIDE), so this
         // case cannot be built there; skipping beats asserting the opposite of
         // what an ordinary user sees.
         if rustix::process::geteuid().is_root() {
             return;
         }
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("home");
         std::fs::create_dir(&dir).expect("create dir");
@@ -286,5 +286,15 @@ mod tests {
     fn an_unresolvable_home_leaves_the_path_alone() {
         assert_eq!(shorten_home_from(Path::new("/"), None), "/");
         assert_eq!(shorten_home_from(Path::new("/home/ada"), None), "/home/ada");
+    }
+
+    /// A home of `/` would turn every absolute path into one under `~`.
+    #[test]
+    fn a_root_home_leaves_the_path_alone() {
+        assert_eq!(
+            shorten_home_from(Path::new("/usr/lib"), Some(Path::new("/"))),
+            "/usr/lib"
+        );
+        assert_eq!(shorten_home_from(Path::new("/"), Some(Path::new("/"))), "/");
     }
 }

@@ -17,7 +17,8 @@
  * ├── @yaran/mobile-shell:src/screens/machines/states/Empty.tsx
  * ├── web:src/components/AgentNotFound.tsx
  * ├── web:src/components/ChangedFiles.tsx
- * └── web:src/components/FlatAgentList.tsx
+ * ├── web:src/components/FlatAgentList.tsx
+ * └── web:src/components/RouteNotFoundScreen.tsx
  * <module-headers:end>
  */
 import { cva, type VariantProps } from "class-variance-authority"

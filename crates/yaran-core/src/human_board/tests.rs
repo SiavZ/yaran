@@ -1,9 +1,10 @@
 //! Unit tests for the human board's card model, persistence and reply rules.
 //!
 //! Exercises store updates in temporary files and the pure card/reply behavior.
-//! - Threaded watcher cases live in the watcher_tests child module.
+//! - Threaded watcher cases live in the `watcher_tests` child module.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! human_board/tests.rs
 //! ├── human_board
@@ -14,6 +15,7 @@
 //! human_board/tests.rs
 //! ├── human_board
 //! └── human_board::tests::watcher_tests
+//! ```
 //! <module-headers:end>
 
 use std::fs;
@@ -75,16 +77,16 @@ fn the_board_order_puts_what_waits_on_a_person_before_the_news() {
 fn posting_numbers_cards_from_one_and_never_reuses_a_number() {
     let mut board = Board::default();
     assert_eq!(
-        board.post(card(CardKind::Task, None, "a"), at(0)).unwrap(),
+        board.post(&card(CardKind::Task, None, "a"), at(0)).unwrap(),
         PostOutcome::Added(CardId::plain(1))
     );
     assert_eq!(
-        board.post(card(CardKind::Info, None, "b"), at(1)).unwrap(),
+        board.post(&card(CardKind::Info, None, "b"), at(1)).unwrap(),
         PostOutcome::Added(CardId::plain(2))
     );
     board.cards.retain(|c| c.id != 2);
     assert_eq!(
-        board.post(card(CardKind::Info, None, "c"), at(2)).unwrap(),
+        board.post(&card(CardKind::Info, None, "c"), at(2)).unwrap(),
         PostOutcome::Added(CardId::plain(3)),
         "a dropped card's number is not handed out again"
     );
@@ -94,16 +96,16 @@ fn posting_numbers_cards_from_one_and_never_reuses_a_number() {
 fn an_open_card_is_unique_per_ticket_and_kind() {
     let mut board = Board::default();
     board
-        .post(card(CardKind::Validate, Some("#4812"), "check it"), at(0))
+        .post(&card(CardKind::Validate, Some("#4812"), "check it"), at(0))
         .unwrap();
     // Same ticket, other kind: a second card.
     board
-        .post(card(CardKind::Info, Some("4812"), "merged"), at(1))
+        .post(&card(CardKind::Info, Some("4812"), "merged"), at(1))
         .unwrap();
     // Same ticket and kind: the first card is rewritten, not duplicated.
     let outcome = board
         .post(
-            card(CardKind::Validate, Some("4812"), "check it again"),
+            &card(CardKind::Validate, Some("4812"), "check it again"),
             at(2),
         )
         .unwrap();
@@ -117,7 +119,7 @@ fn an_open_card_is_unique_per_ticket_and_kind() {
     // Once resolved, the same ticket and kind starts a fresh card.
     board.resolve(1, Some("human"), None, at(3)).unwrap();
     let outcome = board
-        .post(card(CardKind::Validate, Some("4812"), "regressed"), at(4))
+        .post(&card(CardKind::Validate, Some("4812"), "regressed"), at(4))
         .unwrap();
     assert_eq!(outcome, PostOutcome::Added(CardId::plain(3)));
 }
@@ -128,7 +130,7 @@ fn card_text_is_sanitized_flattened_and_bounded() {
     let long = "x".repeat(MAX_TITLE_CHARS + 50);
     board
         .post(
-            NewCard {
+            &NewCard {
                 kind: Some(CardKind::Task),
                 assignee: None,
                 priority: None,
@@ -168,13 +170,13 @@ fn a_post_needs_a_kind_and_a_title() {
     let mut board = Board::default();
     let mut no_kind = card(CardKind::Task, None, "x");
     no_kind.kind = None;
-    assert!(board.post(no_kind, at(0)).is_err());
+    assert!(board.post(&no_kind, at(0)).is_err());
     assert!(
         board
-            .post(card(CardKind::Task, None, " \n "), at(0))
+            .post(&card(CardKind::Task, None, " \n "), at(0))
             .is_err()
     );
-    assert!(board.cards.is_empty());
+    assert_eq!(board.cards, Vec::<crate::human_board::Card>::new());
 }
 
 #[test]
@@ -182,18 +184,18 @@ fn the_board_refuses_cards_past_its_open_limit() {
     let mut board = Board::default();
     for n in 0..MAX_OPEN_CARDS {
         board
-            .post(card(CardKind::Info, None, &format!("card {n}")), at(0))
+            .post(&card(CardKind::Info, None, &format!("card {n}")), at(0))
             .unwrap();
     }
     let err = board
-        .post(card(CardKind::Info, None, "one too many"), at(1))
+        .post(&card(CardKind::Info, None, "one too many"), at(1))
         .unwrap_err();
     assert!(format!("{err}").contains("limit"), "{err}");
     // Updating an existing card is still allowed at the limit.
     board.cards[0].ticket = Some("t".to_string());
     assert!(
         board
-            .post(card(CardKind::Info, Some("t"), "updated"), at(2))
+            .post(&card(CardKind::Info, Some("t"), "updated"), at(2))
             .is_ok()
     );
 }
@@ -202,7 +204,7 @@ fn the_board_refuses_cards_past_its_open_limit() {
 fn resolve_and_reopen_round_trip() {
     let mut board = Board::default();
     board
-        .post(card(CardKind::Confirm, None, "merge?"), at(0))
+        .post(&card(CardKind::Confirm, None, "merge?"), at(0))
         .unwrap();
     assert!(board.resolve(1, Some("human"), Some("yes"), at(5)).unwrap());
     assert!(!board.resolve(1, Some("human"), None, at(6)).unwrap());
@@ -227,19 +229,19 @@ fn resolve_and_reopen_round_trip() {
 fn open_cards_follow_the_column_order_newest_first() {
     let mut board = Board::default();
     board
-        .post(card(CardKind::Info, None, "news"), at(0))
+        .post(&card(CardKind::Info, None, "news"), at(0))
         .unwrap();
     board
-        .post(card(CardKind::Validate, None, "old check"), at(1))
+        .post(&card(CardKind::Validate, None, "old check"), at(1))
         .unwrap();
     board
-        .post(card(CardKind::Task, None, "decide"), at(2))
+        .post(&card(CardKind::Task, None, "decide"), at(2))
         .unwrap();
     board
-        .post(card(CardKind::Validate, None, "new check"), at(3))
+        .post(&card(CardKind::Validate, None, "new check"), at(3))
         .unwrap();
     board
-        .post(card(CardKind::Confirm, None, "done?"), at(4))
+        .post(&card(CardKind::Confirm, None, "done?"), at(4))
         .unwrap();
     board.resolve(5, None, None, at(5)).unwrap();
     let titles: Vec<&str> = board
@@ -255,15 +257,15 @@ fn open_cards_follow_the_column_order_newest_first() {
 #[test]
 fn prune_keeps_every_open_card_and_the_newest_history() {
     let mut board = Board::default();
-    for n in 0..(RESOLVED_HISTORY as i64 + 10) {
+    for n in 0..(i64::try_from(RESOLVED_HISTORY).unwrap() + 10) {
         board
-            .post(card(CardKind::Info, None, &format!("r{n}")), at(n))
+            .post(&card(CardKind::Info, None, &format!("r{n}")), at(n))
             .unwrap();
         let id = board.cards.last().unwrap().id.clone();
         board.resolve(id, None, None, at(n)).unwrap();
     }
     board
-        .post(card(CardKind::Task, None, "still open"), at(0))
+        .post(&card(CardKind::Task, None, "still open"), at(0))
         .unwrap();
     board.prune();
     assert_eq!(board.cards.len(), RESOLVED_HISTORY + 1);
@@ -301,7 +303,7 @@ fn the_store_round_trips_and_writes_an_owner_only_file() {
         "no file is an empty board"
     );
     let id = store
-        .update(|board| board.post(card(CardKind::Task, Some("1"), "a"), at(0)))
+        .update(|board| board.post(&card(CardKind::Task, Some("1"), "a"), at(0)))
         .unwrap()
         .id();
     let board = store.load().unwrap();
@@ -311,7 +313,7 @@ fn the_store_round_trips_and_writes_an_owner_only_file() {
     assert_eq!(mode, 0o600);
     let leftovers: Vec<_> = fs::read_dir(dir.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|name| name.contains(".tmp."))
         .collect();
@@ -323,11 +325,11 @@ fn a_failed_change_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let store = BoardStore::new(dir.path());
     store
-        .update(|board| board.post(card(CardKind::Task, None, "a"), at(0)))
+        .update(|board| board.post(&card(CardKind::Task, None, "a"), at(0)))
         .unwrap();
     let before = fs::read(store.path()).unwrap();
     let err = store.update(|board| {
-        board.post(card(CardKind::Task, None, "b"), at(1))?;
+        board.post(&card(CardKind::Task, None, "b"), at(1))?;
         board.resolve(99, None, None, at(1))
     });
     assert!(err.is_err());
@@ -343,7 +345,7 @@ fn an_unreadable_board_is_an_error_and_is_never_overwritten() {
     assert!(format!("{err:#}").contains("never overwritten"), "{err:#}");
     assert!(
         store
-            .update(|board| board.post(card(CardKind::Task, None, "a"), at(0)))
+            .update(|board| board.post(&card(CardKind::Task, None, "a"), at(0)))
             .is_err()
     );
     assert_eq!(fs::read(store.path()).unwrap(), b"{ not json");
@@ -360,7 +362,7 @@ fn a_board_from_a_newer_yaran_is_read_but_not_rewritten() {
     fs::write(store.path(), &newer).unwrap();
     assert!(store.load().is_ok());
     let err = store
-        .update(|board| board.post(card(CardKind::Task, None, "a"), at(0)))
+        .update(|board| board.post(&card(CardKind::Task, None, "a"), at(0)))
         .unwrap_err();
     assert!(format!("{err}").contains("newer yaran"), "{err}");
     assert_eq!(fs::read_to_string(store.path()).unwrap(), newer);
@@ -381,7 +383,7 @@ fn concurrent_writers_never_lose_a_card() {
                     store
                         .update(|board| {
                             board.post(
-                                card(CardKind::Info, None, &format!("w{writer} n{n}")),
+                                &card(CardKind::Info, None, &format!("w{writer} n{n}")),
                                 Utc::now(),
                             )
                         })
@@ -405,7 +407,7 @@ fn sample_card() -> Card {
     let mut board = Board::default();
     board
         .post(
-            card(CardKind::Validate, Some("mvp-7"), "Check the signup page"),
+            &card(CardKind::Validate, Some("mvp-7"), "Check the signup page"),
             at(0),
         )
         .unwrap();
@@ -470,7 +472,7 @@ fn urgent_cards_come_first_within_their_kind() {
     let mut post = |priority, title, minute| {
         let mut c = card(CardKind::Task, None, title);
         c.priority = priority;
-        board.post(c, at(minute)).unwrap();
+        board.post(&c, at(minute)).unwrap();
     };
     post(None, "plain old", 0);
     post(Some(Priority::Low), "low new", 1);
@@ -502,14 +504,14 @@ fn a_repost_keeps_the_priority_unless_it_names_one() {
     let mut board = Board::default();
     let mut first = card(CardKind::Confirm, Some("9"), "merge?");
     first.priority = Some(Priority::High);
-    board.post(first, at(0)).unwrap();
+    board.post(&first, at(0)).unwrap();
     board
-        .post(card(CardKind::Confirm, Some("9"), "merge now?"), at(1))
+        .post(&card(CardKind::Confirm, Some("9"), "merge now?"), at(1))
         .unwrap();
     assert_eq!(board.card(1).unwrap().priority, Priority::High, "kept");
     let mut lowered = card(CardKind::Confirm, Some("9"), "merge whenever");
     lowered.priority = Some(Priority::Low);
-    board.post(lowered, at(2)).unwrap();
+    board.post(&lowered, at(2)).unwrap();
     assert_eq!(board.card(1).unwrap().priority, Priority::Low);
     assert!(board.set_priority(1, Priority::Critical, at(3)).unwrap());
     assert!(!board.set_priority(1, Priority::Critical, at(4)).unwrap());
@@ -532,7 +534,7 @@ fn a_board_without_priorities_reads_as_normal_and_normal_is_not_written() {
         .update(|board| {
             let mut c = card(CardKind::Task, None, "urgent one");
             c.priority = Some(Priority::Critical);
-            board.post(c, at(0))
+            board.post(&c, at(0))
         })
         .unwrap();
     let text = fs::read_to_string(store.path()).unwrap();
@@ -557,11 +559,11 @@ fn said(from: &str, side: &str, text: &str) -> NewMessage {
 fn a_reply_joins_the_conversation_and_done_closes_the_card() {
     let mut board = Board::default();
     let id = board
-        .post(card(CardKind::Confirm, Some("7"), "Merge it?"), at(0))
+        .post(&card(CardKind::Confirm, Some("7"), "Merge it?"), at(0))
         .unwrap()
         .id();
     let first = board
-        .reply(&id, said("Alex", "Alex", "Why now?"), at(1))
+        .reply(&id, &said("Alex", "Alex", "Why now?"), at(1))
         .unwrap();
     assert_eq!(first.from, "Alex");
     assert!(board.card(&id).unwrap().is_open());
@@ -569,10 +571,10 @@ fn a_reply_joins_the_conversation_and_done_closes_the_card() {
 
     let mut answer = said("orchestrator", "Sam", "Because the fix is ready.");
     answer.done = false;
-    board.reply(&id, answer, at(2)).unwrap();
+    board.reply(&id, &answer, at(2)).unwrap();
     let mut yes = said("Alex", "Alex", "Then yes.");
     yes.done = true;
-    board.reply(&id, yes, at(3)).unwrap();
+    board.reply(&id, &yes, at(3)).unwrap();
 
     let card = board.card(&id).unwrap();
     assert!(!card.is_open());
@@ -590,27 +592,27 @@ fn a_reply_joins_the_conversation_and_done_closes_the_card() {
 fn a_reply_needs_text_a_writer_and_a_card_with_room() {
     let mut board = Board::default();
     let id = board
-        .post(card(CardKind::Task, None, "Decide"), at(0))
+        .post(&card(CardKind::Task, None, "Decide"), at(0))
         .unwrap()
         .id();
     assert!(
         board
-            .reply(&id, said("Alex", "Alex", "  \n "), at(1))
+            .reply(&id, &said("Alex", "Alex", "  \n "), at(1))
             .is_err()
     );
-    assert!(board.reply(&id, said(" ", "Alex", "hi"), at(1)).is_err());
+    assert!(board.reply(&id, &said(" ", "Alex", "hi"), at(1)).is_err());
     assert!(
         board
-            .reply(99u64, said("Alex", "Alex", "hi"), at(1))
+            .reply(99u64, &said("Alex", "Alex", "hi"), at(1))
             .is_err()
     );
     for n in 0..MAX_THREAD_MESSAGES {
         board
-            .reply(&id, said("Alex", "Alex", &format!("message {n}")), at(1))
+            .reply(&id, &said("Alex", "Alex", &format!("message {n}")), at(1))
             .unwrap();
     }
     let err = board
-        .reply(&id, said("Alex", "Alex", "one more"), at(2))
+        .reply(&id, &said("Alex", "Alex", "one more"), at(2))
         .unwrap_err();
     assert!(err.to_string().contains("new card"), "{err}");
     // Same writer, same instant: every message still has a name of its own.
@@ -623,11 +625,11 @@ fn a_reply_needs_text_a_writer_and_a_card_with_room() {
 fn two_copies_of_a_card_keep_both_conversations() {
     let mut board = Board::default();
     let id = board
-        .post(card(CardKind::Task, None, "Decide"), at(0))
+        .post(&card(CardKind::Task, None, "Decide"), at(0))
         .unwrap()
         .id();
     board
-        .reply(&id, said("Alex", "Alex", "First"), at(1))
+        .reply(&id, &said("Alex", "Alex", "First"), at(1))
         .unwrap();
     let mut ours = board.card(&id).unwrap().clone();
     let mut theirs = ours.clone();
@@ -664,16 +666,16 @@ fn a_blocking_card_waits_until_a_person_answers() {
     let mut board = Board::default();
     let mut new = card(CardKind::Confirm, None, "Can I drop the table?");
     new.blocking = Some(true);
-    let id = board.post(new, at(0)).unwrap().id();
+    let id = board.post(&new, at(0)).unwrap().id();
     assert!(board.card(&id).unwrap().waits_for_answer(&people));
     board
-        .reply(&id, said("Alex", "Alex", "Which table?"), at(1))
+        .reply(&id, &said("Alex", "Alex", "Which table?"), at(1))
         .unwrap();
     assert!(!board.card(&id).unwrap().waits_for_answer(&people));
     board
         .reply(
             &id,
-            said("orchestrator", "Sam", "The old audit table."),
+            &said("orchestrator", "Sam", "The old audit table."),
             at(2),
         )
         .unwrap();
@@ -682,7 +684,7 @@ fn a_blocking_card_waits_until_a_person_answers() {
     assert!(!board.card(&id).unwrap().waits_for_answer(&people));
     // A card that never said it blocks never waits.
     let calm = board
-        .post(card(CardKind::Task, None, "Whenever"), at(4))
+        .post(&card(CardKind::Task, None, "Whenever"), at(4))
         .unwrap()
         .id();
     assert!(!board.card(&calm).unwrap().waits_for_answer(&people));
@@ -692,10 +694,10 @@ fn a_blocking_card_waits_until_a_person_answers() {
 fn relaying_is_recorded_once_and_does_not_count_as_news() {
     let mut board = Board::default();
     let id = board
-        .post(card(CardKind::Task, None, "Decide"), at(0))
+        .post(&card(CardKind::Task, None, "Decide"), at(0))
         .unwrap()
         .id();
-    let message = board.reply(&id, said("Alex", "Alex", "B"), at(1)).unwrap();
+    let message = board.reply(&id, &said("Alex", "Alex", "B"), at(1)).unwrap();
     assert!(board.mark_relayed(&id, message.key(), at(5)).unwrap());
     assert!(!board.mark_relayed(&id, message.key(), at(6)).unwrap());
     assert!(board.mark_card_relayed(&id, at(5)).unwrap());
@@ -707,8 +709,16 @@ fn relaying_is_recorded_once_and_does_not_count_as_news() {
         at(1),
         "relaying is bookkeeping, not an edit"
     );
-    assert!(board.set_blocking(&id, true, at(7)).unwrap());
-    assert!(!board.set_blocking(&id, true, at(8)).unwrap());
+    assert!(
+        board
+            .set_blocking(&id, Blocking::HoldsPoster, at(7))
+            .unwrap()
+    );
+    assert!(
+        !board
+            .set_blocking(&id, Blocking::HoldsPoster, at(8))
+            .unwrap()
+    );
 }
 
 #[test]

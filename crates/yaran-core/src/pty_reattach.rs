@@ -46,6 +46,10 @@ use portable_pty::{MasterPty, PtySize};
 /// finds the fd closed and cannot read or write the agent at all; with it
 /// cleared, a write-then-read round trip through the inherited fd reaches the
 /// original child process.
+///
+/// # Errors
+///
+/// Fails when the descriptor's flags cannot be read or set.
 pub fn keep_open_across_exec(fd: RawFd) -> Result<()> {
     // SAFETY: `F_GETFD`/`F_SETFD` only read and write this descriptor's flags.
     // They do not transfer ownership, close it, or touch its offset, so an
@@ -68,6 +72,10 @@ pub fn keep_open_across_exec(fd: RawFd) -> Result<()> {
 ///
 /// Used once a descriptor has crossed its exec: from then on it must behave
 /// like any other master and stay out of every process spawned later.
+///
+/// # Errors
+///
+/// Fails when the descriptor's flags cannot be read or set.
 pub fn set_close_on_exec(fd: RawFd) -> Result<()> {
     // SAFETY: `F_GETFD`/`F_SETFD` only read and write this descriptor's flags.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -87,6 +95,10 @@ pub fn set_close_on_exec(fd: RawFd) -> Result<()> {
 ///
 /// Reads the kernel's answer rather than remembering what was set, so a handoff
 /// can be checked immediately before the exec it depends on.
+///
+/// # Errors
+///
+/// Fails when the descriptor's flags cannot be read, as for a closed one.
 pub fn survives_exec(fd: RawFd) -> Result<bool> {
     // SAFETY: `F_GETFD` only reads this descriptor's flags.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -120,6 +132,10 @@ impl ReattachedMaster {
     ///
     /// `fd` must be a descriptor this process owns and that nothing else will
     /// close; ownership moves into the returned value.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the descriptor is not an open terminal master.
     pub unsafe fn adopt(fd: RawFd) -> Result<Self> {
         // SAFETY: `isatty` only inspects the descriptor.
         if unsafe { libc::isatty(fd) } != 1 {
@@ -227,6 +243,8 @@ impl MasterPty for ReattachedMaster {
     fn tty_name(&self) -> Option<std::path::PathBuf> {
         // The name of the SLAVE side, which is what a tty name means here. The
         // master has no path of its own to report.
+        // SAFETY: `ptsname` only reads this descriptor; the pointer it returns
+        // is checked for null before it is read.
         let name = unsafe { libc::ptsname(self.raw_fd()) };
         if name.is_null() {
             return None;
@@ -262,8 +280,8 @@ mod tests {
         // else; the null arguments opt out of the optional name and settings.
         let rc = unsafe {
             libc::openpty(
-                &mut master,
-                &mut slave,
+                &raw mut master,
+                &raw mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -279,11 +297,11 @@ mod tests {
         // does NOT survive exec, which is why the handoff has to ask for it.
         let (fd, slave) = open_pty_pair();
         // Mirror what portable_pty does to every master it opens.
+        // SAFETY: `F_GETFD` only reads this descriptor's flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         // SAFETY: `F_SETFD` only sets this descriptor's flags.
-        unsafe {
-            let flags = libc::fcntl(fd, libc::F_GETFD);
-            assert_eq!(libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC), 0);
-        }
+        let set = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        assert_eq!(set, 0);
         assert!(
             !survives_exec(fd).unwrap(),
             "a master with FD_CLOEXEC set must be reported as not surviving exec"
@@ -295,10 +313,9 @@ mod tests {
             "after clearing the flag the master must be reported as surviving exec"
         );
         // SAFETY: nothing adopted these fds, so this scope still owns them.
-        unsafe {
-            libc::close(fd);
-            libc::close(slave);
-        }
+        unsafe { libc::close(fd) };
+        // SAFETY: as above.
+        unsafe { libc::close(slave) };
     }
 
     #[test]
@@ -342,14 +359,11 @@ mod tests {
         // leave the read waiting forever and hang the whole suite instead of
         // failing it. `O_NONBLOCK` plus a bounded poll turns that into a
         // verdict.
+        // SAFETY: `F_GETFL` only reads this descriptor's status flags.
+        let flags = unsafe { libc::fcntl(slave, libc::F_GETFL) };
         // SAFETY: `F_SETFL` only changes this descriptor's status flags.
-        unsafe {
-            let flags = libc::fcntl(slave, libc::F_GETFL);
-            assert_eq!(
-                libc::fcntl(slave, libc::F_SETFL, flags | libc::O_NONBLOCK),
-                0
-            );
-        }
+        let set = unsafe { libc::fcntl(slave, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        assert_eq!(set, 0);
         let mut buf = [0u8; 64];
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut got = String::new();
@@ -357,7 +371,7 @@ mod tests {
             // SAFETY: reads at most `buf.len()` bytes into a buffer this scope owns.
             let n = unsafe { libc::read(slave, buf.as_mut_ptr().cast(), buf.len()) };
             if n > 0 {
-                got.push_str(&String::from_utf8_lossy(&buf[..n as usize]));
+                got.push_str(&String::from_utf8_lossy(&buf[..n.unsigned_abs()]));
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -431,9 +445,8 @@ mod tests {
             "a released descriptor must still be a live fd"
         );
         // SAFETY: ownership came back out of `release`, so this scope closes it.
-        unsafe {
-            libc::close(released);
-            libc::close(slave);
-        }
+        unsafe { libc::close(released) };
+        // SAFETY: nothing adopted the slave, so this scope still owns it.
+        unsafe { libc::close(slave) };
     }
 }

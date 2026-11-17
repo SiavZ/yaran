@@ -1,6 +1,7 @@
 //! Unit tests for `MachineApi`: transport rules, body cap, revocation, write-backs.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/machine_api_tests.rs
 //! ├── cloud::machine_api
@@ -10,6 +11,7 @@
 //! Used by:
 //! cloud/machine_api_tests.rs
 //! └── cloud::machine_api
+//! ```
 //! <module-headers:end>
 
 use super::*;
@@ -97,7 +99,7 @@ fn a_late_410_for_an_older_pairing_does_not_revoke_a_newer_one() {
 
 #[test]
 fn a_signed_call_without_credentials_is_not_paired() {
-    let (_root, _paths, worker, api) = setup(|_| MockResponse::json(200, serde_json::json!({})));
+    let (_root, _paths, worker, api) = setup(|_| MockResponse::json(200, &serde_json::json!({})));
     assert_eq!(api.config(), Err(MachineApiError::NotPaired));
     assert!(worker.requests().is_empty());
 }
@@ -126,7 +128,8 @@ fn no_secret_reaches_a_log_line() {
     struct Visitor<'a>(&'a mut String);
     impl tracing::field::Visit for Visitor<'_> {
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.0.push_str(&format!(" {}={:?}", field.name(), value));
+            let _ =
+                std::fmt::Write::write_fmt(self.0, format_args!(" {}={:?}", field.name(), value));
         }
     }
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
@@ -147,7 +150,7 @@ fn no_secret_reaches_a_log_line() {
     let (_root, paths, _w, api) = setup(|req| match req.path.as_str() {
         "/v1/machine/rotate" => MockResponse::json(
             200,
-            serde_json::json!({
+            &serde_json::json!({
                 "tunnel": {"id": crate::cloud::test_support::SAMPLE_TUNNEL_ID, "token": "fresh-secret-token", "token_version": 2},
                 "rotated": true
             }),

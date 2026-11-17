@@ -43,9 +43,11 @@
         "branch_name": "feat/login",
         "source_branch": "main",
         "conversation_resumes": true,
-        "providers": [
-          "claude"
-        ]
+        "running": {
+          "follows": [
+            "claude"
+          ]
+        }
       },
       "segments": [
         "Recreate the working copy for this agent at ",
@@ -77,19 +79,26 @@
       ]
     },
     {
-      "what": "recreating a working copy under several CLIs that cannot follow the folder",
+      "what": "recreating a working copy under a CLI that follows, two that restart and one left running",
       "sentence": "recreate_confirm",
       "args": {
         "worktree_label": "/srv/worktrees/yaran/fix",
         "branch_name": "fix",
         "source_branch": "develop",
         "conversation_resumes": false,
-        "providers": [
-          "codex",
-          "opencode",
-          "claude",
-          "copilot"
-        ]
+        "running": {
+          "follows": [
+            "claude"
+          ],
+          "restartable": [
+            "codex",
+            "opencode",
+            "codex"
+          ],
+          "left_running": [
+            "copilot"
+          ]
+        }
       },
       "segments": [
         "Recreate the working copy for this agent at ",
@@ -114,20 +123,66 @@
         },
         ", and the commits that branch held are not coming back.\n\nAny code changes that were in the old directory are gone either way: this puts the directory back, not its contents. The conversation will not resume: this agent's CLI has no way to pick a conversation back up, so it starts fresh wherever it runs.\n\nA running ",
         {
-          "name": "Codex",
+          "name": "Claude",
           "quoted": false
         },
-        ", ",
+        " tab keeps working in the recreated copy by itself. A running ",
         {
-          "name": "Opencode",
+          "name": "Codex",
           "quoted": false
         },
         " or ",
         {
+          "name": "Opencode",
+          "quoted": false
+        },
+        " tab cannot follow the folder by itself; restarting it continues its conversation in the recreated copy. A running ",
+        {
           "name": "Copilot",
           "quoted": false
         },
-        " tab cannot follow the folder: stop it and start the agent again to continue in the recreated copy. A terminal still open in the old directory keeps working in a directory that is gone; close it and open one in the recreated copy."
+        " tab is left running, because restarting it would lose its conversation; if it cannot follow the folder, stop it and start it again yourself. A terminal still open in the old directory keeps working in a directory that is gone; close it and open one in the recreated copy."
+      ]
+    },
+    {
+      "what": "the recreate confirmation's checkbox restarting one tab",
+      "sentence": "recreate_restart_checkbox",
+      "args": {
+        "restartable": [
+          "codex"
+        ]
+      },
+      "segments": [
+        "Restart the ",
+        {
+          "name": "Codex",
+          "quoted": false
+        },
+        " tab so it continues in the new copy"
+      ]
+    },
+    {
+      "what": "the recreate confirmation's checkbox restarting tabs of two CLIs",
+      "sentence": "recreate_restart_checkbox",
+      "args": {
+        "restartable": [
+          "codex",
+          "opencode",
+          "codex"
+        ]
+      },
+      "segments": [
+        "Restart the ",
+        {
+          "name": "Codex",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "Opencode",
+          "quoted": false
+        },
+        " tabs so they continue in the new copy"
       ]
     },
     {
@@ -165,6 +220,119 @@
           "quoted": true
         },
         " back to its default branch, moving HEAD in the shared repository. After the checkout, new worktrees branch from the default branch."
+      ]
+    },
+    {
+      "what": "changing the base branch of a project with a recorded base",
+      "sentence": "change_base_branch_confirm",
+      "args": {
+        "project_name": "yaran",
+        "from": "main",
+        "to": "develop"
+      },
+      "segments": [
+        "This switches the source checkout for ",
+        {
+          "name": "yaran",
+          "quoted": true
+        },
+        " to ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        ", moving HEAD in the shared repository. New worktrees branch from ",
+        {
+          "name": "main",
+          "quoted": true
+        },
+        " now. After the switch, they branch from ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        "."
+      ]
+    },
+    {
+      "what": "changing the base branch to the one it already is",
+      "sentence": "change_base_branch_confirm",
+      "args": {
+        "project_name": "yaran",
+        "from": "develop",
+        "to": "develop"
+      },
+      "segments": [
+        "This switches the source checkout for ",
+        {
+          "name": "yaran",
+          "quoted": true
+        },
+        " to ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        ", moving HEAD in the shared repository. New worktrees already branch from ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        ", and still will after the switch."
+      ]
+    },
+    {
+      "what": "changing the base branch of a project with no recorded base",
+      "sentence": "change_base_branch_confirm",
+      "args": {
+        "project_name": "yaran",
+        "from": null,
+        "to": "develop"
+      },
+      "segments": [
+        "This switches the source checkout for ",
+        {
+          "name": "yaran",
+          "quoted": true
+        },
+        " to ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        ", moving HEAD in the shared repository. The project has no base branch recorded yet. After the switch, new worktrees branch from ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        "."
+      ]
+    },
+    {
+      "what": "changing the base branch of a project whose recorded base is empty",
+      "sentence": "change_base_branch_confirm",
+      "args": {
+        "project_name": "yaran",
+        "from": "",
+        "to": "develop"
+      },
+      "segments": [
+        "This switches the source checkout for ",
+        {
+          "name": "yaran",
+          "quoted": true
+        },
+        " to ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        ", moving HEAD in the shared repository. The project has no base branch recorded yet. After the switch, new worktrees branch from ",
+        {
+          "name": "develop",
+          "quoted": true
+        },
+        "."
       ]
     },
     {
@@ -343,6 +511,1385 @@
       },
       "segments": [
         "This removes this project from yaran. Worktrees on disk are kept."
+      ]
+    },
+    {
+      "what": "the line that opens the list of who a change would cut off",
+      "sentence": "attached_lead",
+      "args": {},
+      "segments": [
+        "Someone else is using this right now. Going ahead cuts them off:"
+      ]
+    },
+    {
+      "what": "a browser typing in an agent's tab from a verified address",
+      "sentence": "attached_entry",
+      "args": {
+        "device": "Chrome on macOS",
+        "surface": "browser",
+        "address": "100.64.0.2",
+        "verified": true,
+        "driving": true,
+        "target_kind": "tab",
+        "target_label": "Claude",
+        "agent_label": "feat/login"
+      },
+      "segments": [
+        {
+          "name": "Chrome on macOS",
+          "quoted": false
+        },
+        " at 100.64.0.2, typing in tab ",
+        {
+          "name": "Claude",
+          "quoted": false
+        },
+        " of agent ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "an unrecognised browser watching a project terminal from an unverified address",
+      "sentence": "attached_entry",
+      "args": {
+        "device": null,
+        "surface": "browser",
+        "address": "192.0.2.7",
+        "verified": false,
+        "driving": false,
+        "target_kind": "terminal",
+        "target_label": "Terminal 2",
+        "agent_label": null
+      },
+      "segments": [
+        "a browser at 192.0.2.7 (unverified), watching terminal ",
+        {
+          "name": "Terminal 2",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the terminal UI typing in an agent's terminal, with no address",
+      "sentence": "attached_entry",
+      "args": {
+        "device": "the yaran TUI",
+        "surface": "terminal_ui",
+        "address": null,
+        "verified": true,
+        "driving": true,
+        "target_kind": "terminal",
+        "target_label": "Terminal 1",
+        "agent_label": "feat/login"
+      },
+      "segments": [
+        {
+          "name": "the yaran TUI",
+          "quoted": false
+        },
+        ", typing in terminal ",
+        {
+          "name": "Terminal 1",
+          "quoted": false
+        },
+        " of agent ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the terminal UI with no device label of its own, named by its fixed label",
+      "sentence": "attached_entry",
+      "args": {
+        "device": null,
+        "surface": "terminal_ui",
+        "address": null,
+        "verified": true,
+        "driving": false,
+        "target_kind": "tab",
+        "target_label": "Codex",
+        "agent_label": "feat/login"
+      },
+      "segments": [
+        {
+          "name": "the yaran TUI",
+          "quoted": false
+        },
+        ", watching tab ",
+        {
+          "name": "Codex",
+          "quoted": false
+        },
+        " of agent ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the rename dialog's branch box, nothing pushed",
+      "sentence": "rename_branch_note",
+      "args": {
+        "branch": "feat/login",
+        "open_pr": null,
+        "pushed": false
+      },
+      "segments": [
+        "Renames ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        },
+        " to the new name."
+      ]
+    },
+    {
+      "what": "the rename dialog's branch box, a pushed branch",
+      "sentence": "rename_branch_note",
+      "args": {
+        "branch": "feat/login",
+        "open_pr": null,
+        "pushed": true
+      },
+      "segments": [
+        "Renames ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        },
+        " on this machine only: the pushed branch on the remote keeps the old name."
+      ]
+    },
+    {
+      "what": "the rename dialog's branch box, an open pull request",
+      "sentence": "rename_branch_note",
+      "args": {
+        "branch": "feat/login",
+        "open_pr": 42,
+        "pushed": false
+      },
+      "segments": [
+        "Renames ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        },
+        " on this machine only: pull request ",
+        {
+          "name": "#42",
+          "quoted": false
+        },
+        " stays on the old name."
+      ]
+    },
+    {
+      "what": "the rename dialog's branch box, an open pull request and a pushed branch",
+      "sentence": "rename_branch_note",
+      "args": {
+        "branch": "feat/login",
+        "open_pr": 42,
+        "pushed": true
+      },
+      "segments": [
+        "Renames ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        },
+        " on this machine only: pull request ",
+        {
+          "name": "#42",
+          "quoted": false
+        },
+        " and the pushed branch stay on the old name."
+      ]
+    },
+    {
+      "what": "offering to clone a repository no project has, for a pull request",
+      "sentence": "pr_clone_offer",
+      "args": {
+        "repository": "github.com/acme/widget",
+        "number": "3"
+      },
+      "segments": [
+        {
+          "name": "github.com/acme/widget",
+          "quoted": false
+        },
+        " isn't a yaran project yet. yaran will clone it, add it as a project, and create the agent from pull request ",
+        {
+          "name": "#3",
+          "quoted": false
+        },
+        "."
+      ]
+    },
+    {
+      "what": "offering the clone when some projects could not be checked",
+      "sentence": "pr_clone_offer_incomplete",
+      "args": {
+        "repository": "github.com/acme/widget",
+        "number": "3",
+        "summary": "1 has an address yaran could not read"
+      },
+      "segments": [
+        "yaran could not find a checked project for ",
+        {
+          "name": "github.com/acme/widget",
+          "quoted": false
+        },
+        ". yaran could not check every project (1 has an address yaran could not read), so one of them may already be a checkout of it. yaran will clone it, add it as a project, and create the agent from pull request ",
+        {
+          "name": "#3",
+          "quoted": false
+        },
+        "."
+      ]
+    },
+    {
+      "what": "offering to add a folder that is already a checkout, for a pull request",
+      "sentence": "pr_add_existing_offer",
+      "args": {
+        "folder": "/home/ada/src/widget",
+        "repository": "github.com/acme/widget",
+        "number": "3"
+      },
+      "segments": [
+        {
+          "name": "/home/ada/src/widget",
+          "quoted": false
+        },
+        " is already a checkout of ",
+        {
+          "name": "github.com/acme/widget",
+          "quoted": false
+        },
+        ". yaran will add it as a project and create the agent from pull request ",
+        {
+          "name": "#3",
+          "quoted": false
+        },
+        "."
+      ]
+    },
+    {
+      "what": "the delete dialog when git could not count one branch's unpushed commits",
+      "sentence": "unpushed_count_failure",
+      "args": {
+        "branches": [
+          "feature/x"
+        ],
+        "reason": "fatal: bad revision 'refs/heads/feature/x'"
+      },
+      "segments": [
+        "yaran could not count the unpushed commits on ",
+        {
+          "name": "feature/x",
+          "quoted": false
+        },
+        " (fatal: bad revision 'refs/heads/feature/x'); check it before deleting it."
+      ]
+    },
+    {
+      "what": "the delete dialog when git could not count a drifted agent's two branches",
+      "sentence": "unpushed_count_failure",
+      "args": {
+        "branches": [
+          "develop-next",
+          "develop"
+        ],
+        "reason": "git could not be run: No such file or directory"
+      },
+      "segments": [
+        "yaran could not count the unpushed commits on ",
+        {
+          "name": "develop-next",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "develop",
+          "quoted": false
+        },
+        " (git could not be run: No such file or directory); check them before deleting them."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog, for a folder an agent's delete left",
+      "sentence": "leftover_delete_body",
+      "args": {
+        "path": "/srv/worktrees/demo/landing-page",
+        "folder_present": true,
+        "left_by_agent": true
+      },
+      "segments": [
+        {
+          "name": "/srv/worktrees/demo/landing-page",
+          "quoted": false
+        },
+        " and everything in it will be deleted from disk. Something was still writing into it when its agent was deleted; stop it first, or the delete fails again. This cannot be undone: yaran has no trash."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog, for a folder the worktree manager's own removal left",
+      "sentence": "leftover_delete_body",
+      "args": {
+        "path": "/srv/worktrees/demo/landing-page",
+        "folder_present": true,
+        "left_by_agent": false
+      },
+      "segments": [
+        {
+          "name": "/srv/worktrees/demo/landing-page",
+          "quoted": false
+        },
+        " and everything in it will be deleted from disk. Something was still writing into it when its worktree was removed; stop it first, or the delete fails again. This cannot be undone: yaran has no trash."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog, once the folder is already gone",
+      "sentence": "leftover_delete_body",
+      "args": {
+        "path": "/srv/worktrees/demo/landing-page",
+        "folder_present": false,
+        "left_by_agent": true
+      },
+      "segments": [
+        "The left-over folder at ",
+        {
+          "name": "/srv/worktrees/demo/landing-page",
+          "quoted": false
+        },
+        " is already gone, so nothing is deleted from disk."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's branch sentence with its box ticked",
+      "sentence": "leftover_branch_fate",
+      "args": {
+        "branches": [
+          "landing-page"
+        ],
+        "delete": true,
+        "folder_present": true
+      },
+      "segments": [
+        "The branch ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " will be deleted with it, unless it has moved since the folder was left behind."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's branch sentence for two branches with its box unticked",
+      "sentence": "leftover_branch_fate",
+      "args": {
+        "branches": [
+          "landing-page",
+          "landing"
+        ],
+        "delete": false,
+        "folder_present": true
+      },
+      "segments": [
+        "The branches ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "landing",
+          "quoted": false
+        },
+        " are kept."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's branch sentence once the folder is gone",
+      "sentence": "leftover_branch_fate",
+      "args": {
+        "branches": [
+          "landing-page"
+        ],
+        "delete": true,
+        "folder_present": false
+      },
+      "segments": [
+        "The branch ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " will be deleted, unless it has moved since the folder was left behind."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's branch sentence for two branches once the folder is gone",
+      "sentence": "leftover_branch_fate",
+      "args": {
+        "branches": [
+          "landing-page",
+          "landing"
+        ],
+        "delete": true,
+        "folder_present": false
+      },
+      "segments": [
+        "The branches ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "landing",
+          "quoted": false
+        },
+        " will be deleted, unless they have moved since the folder was left behind."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's branch sentence for two branches going with the folder",
+      "sentence": "leftover_branch_fate",
+      "args": {
+        "branches": [
+          "landing-page",
+          "landing"
+        ],
+        "delete": true,
+        "folder_present": true
+      },
+      "segments": [
+        "The branches ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "landing",
+          "quoted": false
+        },
+        " will be deleted with it, unless they have moved since the folder was left behind."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's branch sentence for one branch with its box unticked",
+      "sentence": "leftover_branch_fate",
+      "args": {
+        "branches": [
+          "landing-page"
+        ],
+        "delete": false,
+        "folder_present": true
+      },
+      "segments": [
+        "The branch ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " is kept."
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's title while the folder is there",
+      "sentence": "leftover_delete_title",
+      "args": {
+        "folder_present": true,
+        "branch_count": 1
+      },
+      "segments": [
+        "Delete the left-over folder?"
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's title once the folder is gone, one branch",
+      "sentence": "leftover_delete_title",
+      "args": {
+        "folder_present": false,
+        "branch_count": 1
+      },
+      "segments": [
+        "Delete the kept branch?"
+      ]
+    },
+    {
+      "what": "the left-over folder delete dialog's title once the folder is gone, two branches",
+      "sentence": "leftover_delete_title",
+      "args": {
+        "folder_present": false,
+        "branch_count": 2
+      },
+      "segments": [
+        "Delete the kept branches?"
+      ]
+    },
+    {
+      "what": "a kept branch yaran recorded no commit for",
+      "sentence": "leftover_kept_branch",
+      "args": {
+        "name": "landing-page",
+        "why": "no_commit"
+      },
+      "segments": [
+        "The branch ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " is kept: yaran has no record of the commit it was on when the folder was left behind. Delete it yourself with ",
+        {
+          "name": "git branch -D 'landing-page'",
+          "quoted": false
+        },
+        "."
+      ]
+    },
+    {
+      "what": "a kept branch another worktree has checked out",
+      "sentence": "leftover_kept_branch",
+      "args": {
+        "name": "landing-page",
+        "why": "checked_out",
+        "path": "/srv/worktrees/demo/other"
+      },
+      "segments": [
+        "The branch ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " is kept: it is checked out in ",
+        {
+          "name": "/srv/worktrees/demo/other",
+          "quoted": false
+        },
+        ". Delete it yourself with ",
+        {
+          "name": "git branch -D 'landing-page'",
+          "quoted": false
+        },
+        " once it is not."
+      ]
+    },
+    {
+      "what": "a kept branch that moved since its folder was left behind",
+      "sentence": "leftover_kept_branch",
+      "args": {
+        "name": "landing-page",
+        "why": "moved"
+      },
+      "segments": [
+        "The branch ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " is kept: it has moved since the folder was left behind. Delete it yourself with ",
+        {
+          "name": "git branch -D 'landing-page'",
+          "quoted": false
+        },
+        "."
+      ]
+    },
+    {
+      "what": "a kept branch git could not check",
+      "sentence": "leftover_kept_branch",
+      "args": {
+        "name": "landing-page",
+        "why": "unchecked",
+        "reason": "fatal: bad object"
+      },
+      "segments": [
+        "The branch ",
+        {
+          "name": "landing-page",
+          "quoted": false
+        },
+        " is kept: git could not check it (fatal: bad object). Delete it yourself with ",
+        {
+          "name": "git branch -D 'landing-page'",
+          "quoted": false
+        },
+        "."
+      ]
+    },
+    {
+      "what": "the delete dialog's first box",
+      "sentence": "delete_current_branch_label",
+      "args": {
+        "branch": "feat/login"
+      },
+      "segments": [
+        "Also delete the branch ",
+        {
+          "name": "feat/login",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the delete dialog's second box over one branch",
+      "sentence": "delete_other_branches_label",
+      "args": {
+        "branches": [
+          "spike"
+        ]
+      },
+      "segments": [
+        "Also delete the other branch this agent was on: ",
+        {
+          "name": "spike",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the delete dialog's second box over three branches",
+      "sentence": "delete_other_branches_label",
+      "args": {
+        "branches": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "segments": [
+        "Also delete the other branches this agent was on: ",
+        {
+          "name": "a",
+          "quoted": false
+        },
+        ", ",
+        {
+          "name": "b",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "c",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the first box's warning for a branch the agent switched onto that predates it",
+      "sentence": "delete_current_branch_warning",
+      "args": {
+        "origin": "before"
+      },
+      "segments": [
+        "This branch existed before the agent."
+      ]
+    },
+    {
+      "what": "the first box's warning when git cannot say when the branch was made",
+      "sentence": "delete_current_branch_warning",
+      "args": {
+        "origin": "unknown"
+      },
+      "segments": [
+        "yaran cannot tell when this branch was made, so it may not be this agent's."
+      ]
+    },
+    {
+      "what": "the first box says nothing for a branch yaran made",
+      "sentence": "delete_current_branch_warning",
+      "args": {
+        "origin": "yaran"
+      },
+      "segments": []
+    },
+    {
+      "what": "the second box's warning over branches yaran cannot vouch for, unticked",
+      "sentence": "delete_other_branches_warning",
+      "args": {
+        "others": [
+          {
+            "name": "main-fix",
+            "origin": "before"
+          },
+          {
+            "name": "spike",
+            "origin": "after"
+          },
+          {
+            "name": "old",
+            "origin": "unknown"
+          }
+        ],
+        "ticked": false
+      },
+      "segments": [
+        {
+          "name": "main-fix",
+          "quoted": false
+        },
+        " existed before the agent. yaran did not make ",
+        {
+          "name": "spike",
+          "quoted": false
+        },
+        ", and cannot tell who did. yaran cannot tell when ",
+        {
+          "name": "old",
+          "quoted": false
+        },
+        " was made. Unticked, they stay as ordinary branches."
+      ]
+    },
+    {
+      "what": "the second box over the birth branch yaran made, ticked, says nothing",
+      "sentence": "delete_other_branches_warning",
+      "args": {
+        "others": [
+          {
+            "name": "feat",
+            "origin": "yaran"
+          }
+        ],
+        "ticked": true
+      },
+      "segments": []
+    },
+    {
+      "what": "the branch boxes while the dialog is still asking git",
+      "sentence": "delete_branches_checking",
+      "args": {},
+      "segments": [
+        "Looking for unpushed work on the branches…"
+      ]
+    },
+    {
+      "what": "the worktree box while the dialog is still asking git about its files",
+      "sentence": "delete_worktree_files_checking",
+      "args": {
+        "agent": "check-fable"
+      },
+      "segments": [
+        "Looking for uncommitted files in ",
+        {
+          "name": "check-fable",
+          "quoted": false
+        },
+        "…"
+      ]
+    },
+    {
+      "what": "one uncommitted file the worktree removal deletes",
+      "sentence": "delete_worktree_files",
+      "args": {
+        "agent": "check-fable",
+        "files": {
+          "count": 1
+        }
+      },
+      "segments": [
+        "1 file in ",
+        {
+          "name": "check-fable",
+          "quoted": false
+        },
+        " isn't committed and will be deleted."
+      ]
+    },
+    {
+      "what": "several uncommitted files the worktree removal deletes",
+      "sentence": "delete_worktree_files",
+      "args": {
+        "agent": "check-fable",
+        "files": {
+          "count": 3
+        }
+      },
+      "segments": [
+        "3 files in ",
+        {
+          "name": "check-fable",
+          "quoted": false
+        },
+        " aren't committed and will be deleted."
+      ]
+    },
+    {
+      "what": "a worktree with every file committed says nothing",
+      "sentence": "delete_worktree_files",
+      "args": {
+        "agent": "check-fable",
+        "files": {
+          "count": 0
+        }
+      },
+      "segments": []
+    },
+    {
+      "what": "the worktree's files when git could not look",
+      "sentence": "delete_worktree_files",
+      "args": {
+        "agent": "check-fable",
+        "files": {
+          "failed": "fatal: not a git repository"
+        }
+      },
+      "segments": [
+        "yaran could not look for uncommitted files in ",
+        {
+          "name": "check-fable",
+          "quoted": false
+        },
+        " (fatal: not a git repository); check it before deleting it."
+      ]
+    },
+    {
+      "what": "the branch check's answer for one branch with nothing unpushed",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "feat",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "others": [],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "No unpushed work on ",
+        {
+          "name": "feat",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the branch check's answer for two branches with nothing unpushed",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "others": [
+          "born"
+        ],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "No unpushed work on ",
+        {
+          "name": "drifted",
+          "quoted": false
+        },
+        " or ",
+        {
+          "name": "born",
+          "quoted": false
+        }
+      ]
+    },
+    {
+      "what": "the branch check's answer for three branches with nothing unpushed",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "others": [
+          "born",
+          "spike"
+        ],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "No unpushed work on any of the 3 branches"
+      ]
+    },
+    {
+      "what": "the branch check's answer for one unpushed commit",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "wip",
+        "current_lost": {
+          "count": 1,
+          "has_remote_refs": true
+        },
+        "others": [],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "1 commit on ",
+        {
+          "name": "wip",
+          "quoted": false
+        },
+        " isn't pushed anywhere"
+      ]
+    },
+    {
+      "what": "the branch check's answer for several unpushed commits on one branch",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "wip",
+        "current_lost": {
+          "count": 4,
+          "has_remote_refs": true
+        },
+        "others": [],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "4 commits on ",
+        {
+          "name": "wip",
+          "quoted": false
+        },
+        " aren't pushed anywhere"
+      ]
+    },
+    {
+      "what": "the branch check's answer naming only the branch that holds the unpushed commits",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "others": [
+          "born"
+        ],
+        "others_lost": {
+          "count": 2,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 2,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "2 commits on ",
+        {
+          "name": "born",
+          "quoted": false
+        },
+        " aren't pushed anywhere"
+      ]
+    },
+    {
+      "what": "the branch check's answer naming both branches when both hold unpushed commits",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "count": 3,
+          "has_remote_refs": true
+        },
+        "others": [
+          "born"
+        ],
+        "others_lost": {
+          "count": 2,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 5,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "5 commits on ",
+        {
+          "name": "drifted",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "born",
+          "quoted": false
+        },
+        " aren't pushed anywhere"
+      ]
+    },
+    {
+      "what": "the branch check's answer counting the branches when more than two may hold unpushed commits",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "others": [
+          "born",
+          "spike",
+          "fix"
+        ],
+        "others_lost": {
+          "count": 5,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 5,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "5 commits on 3 branches aren't pushed anywhere"
+      ]
+    },
+    {
+      "what": "the branch check's answer for commits only the two branches share",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "others": [
+          "born"
+        ],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 1,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "1 commit on ",
+        {
+          "name": "drifted",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "born",
+          "quoted": false
+        },
+        " isn't pushed anywhere"
+      ]
+    },
+    {
+      "what": "the branch check's answer with nothing to lose in a repository with no remote",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "feat",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": false
+        },
+        "others": [],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "Everything on ",
+        {
+          "name": "feat",
+          "quoted": false
+        },
+        " is also on another branch, and this repository has no remote"
+      ]
+    },
+    {
+      "what": "the branch check's answer for unpushed commits in a repository with no remote",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "wip",
+        "current_lost": {
+          "count": 1,
+          "has_remote_refs": false
+        },
+        "others": [],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "1 commit on ",
+        {
+          "name": "wip",
+          "quoted": false
+        },
+        " is on no other branch, and this repository has no remote"
+      ]
+    },
+    {
+      "what": "the branch check's answer when git could not count the commits",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "others": [
+          "born"
+        ],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "failed": "git rev-list failed"
+        }
+      },
+      "segments": [
+        "yaran could not count the unpushed commits on ",
+        {
+          "name": "drifted",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "born",
+          "quoted": false
+        },
+        " (git rev-list failed); check them before deleting them."
+      ]
+    },
+    {
+      "what": "the branch check's answer when git could not count one box of two",
+      "sentence": "delete_branches_checked",
+      "args": {
+        "current": "drifted",
+        "current_lost": {
+          "failed": "git rev-list failed"
+        },
+        "others": [
+          "born"
+        ],
+        "others_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        },
+        "both_lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "yaran could not count the unpushed commits on ",
+        {
+          "name": "drifted",
+          "quoted": false
+        },
+        " (git rev-list failed); check it before deleting it."
+      ]
+    },
+    {
+      "what": "the branch boxes when git could not be asked",
+      "sentence": "delete_branches_check_failed",
+      "args": {
+        "reason": "git could not be run"
+      },
+      "segments": [
+        "yaran could not check the branches (git could not be run), so they will be kept."
+      ]
+    },
+    {
+      "what": "the branch boxes when git could not read the branch the worktree is on",
+      "sentence": "delete_current_branch_check_failed",
+      "args": {
+        "branch": "refactor-cache",
+        "reason": "git could not read the branch"
+      },
+      "segments": [
+        "yaran could not check ",
+        {
+          "name": "refactor-cache",
+          "quoted": false
+        },
+        " (git could not read the branch), so it will be kept."
+      ]
+    },
+    {
+      "what": "the delete dialog naming the project's own branch the agent was on",
+      "sentence": "delete_protected_branches",
+      "args": {
+        "branches": [
+          "main"
+        ]
+      },
+      "segments": [
+        {
+          "name": "main",
+          "quoted": false
+        },
+        " is the project's own branch, so yaran keeps it."
+      ]
+    },
+    {
+      "what": "the delete dialog naming two of the project's own branches",
+      "sentence": "delete_protected_branches",
+      "args": {
+        "branches": [
+          "main",
+          "develop"
+        ]
+      },
+      "segments": [
+        {
+          "name": "main",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "develop",
+          "quoted": false
+        },
+        " are the project's own branches, so yaran keeps them."
+      ]
+    },
+    {
+      "what": "what deleting both ticked boxes loses",
+      "sentence": "delete_branch_loss",
+      "args": {
+        "branches": [
+          "drifted",
+          "born"
+        ],
+        "lost": {
+          "count": 3,
+          "has_remote_refs": true
+        }
+      },
+      "segments": [
+        "Deleting ",
+        {
+          "name": "drifted",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "born",
+          "quoted": false
+        },
+        " loses 3 commits that are on no remote and no branch that stays."
+      ]
+    },
+    {
+      "what": "what deleting one branch loses, one commit, no remote",
+      "sentence": "delete_branch_loss",
+      "args": {
+        "branches": [
+          "wip"
+        ],
+        "lost": {
+          "count": 1,
+          "has_remote_refs": false
+        }
+      },
+      "segments": [
+        "Deleting ",
+        {
+          "name": "wip",
+          "quoted": false
+        },
+        " loses 1 commit that is on no branch that stays, and this repository has no remote."
+      ]
+    },
+    {
+      "what": "deleting a branch that loses no commit says nothing",
+      "sentence": "delete_branch_loss",
+      "args": {
+        "branches": [
+          "feat"
+        ],
+        "lost": {
+          "count": 0,
+          "has_remote_refs": true
+        }
+      },
+      "segments": []
+    },
+    {
+      "what": "what deleting branches loses when git could not count",
+      "sentence": "delete_branch_loss",
+      "args": {
+        "branches": [
+          "a",
+          "b"
+        ],
+        "lost": {
+          "failed": "fatal: bad object"
+        }
+      },
+      "segments": [
+        "yaran could not count the unpushed commits on ",
+        {
+          "name": "a",
+          "quoted": false
+        },
+        " and ",
+        {
+          "name": "b",
+          "quoted": false
+        },
+        " (fatal: bad object); check them before deleting them."
       ]
     }
   ]

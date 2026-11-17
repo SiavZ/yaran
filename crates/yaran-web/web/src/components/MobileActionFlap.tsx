@@ -76,12 +76,17 @@ export function MobileActionFlap({
       // painted at the same time.
       className={cn(
         "absolute -top-px right-3 z-30 flex items-center gap-0.5 p-[5px]",
-        hidden && "invisible",
         // No drop shadow, deliberately: on the near-black terminal a big soft
         // shadow quantizes into one-step bands whose contours read as a squared
         // ghost box around the flap. The hairline outline is its whole edge
         // treatment.
       )}
+      // Hidden by its own opacity rather than `visibility`: visibility is
+      // inherited, and the cluster's buttons transition `all`, so each of them
+      // eased an inherited `hidden` in and stayed painted for a whole button
+      // transition beside the pill already flying away. `inert` is what
+      // `visibility` also did: no press, no focus, nothing announced.
+      inert={hidden}
       // PUBLISHED, not merely used: the detach and the arrival snap paint the
       // travelling capsule in this colour, and they read it back off this
       // element rather than assuming the strip's tone (see `peekFlapFill`).
@@ -89,6 +94,7 @@ export function MobileActionFlap({
         {
           [FLAP_FILL_VAR]:
             band === "strip" ? "var(--yaran-flap-bg)" : "var(--background)",
+          ...(hidden ? { opacity: 0 } : null),
         } as React.CSSProperties
       }
     >
@@ -143,8 +149,18 @@ function useFlapShape(ref: React.RefObject<HTMLDivElement | null>) {
     const el = ref.current
     if (!el) return
     const read = () => {
-      const width = el.offsetWidth
-      const height = el.offsetHeight
+      // The width the browser PAINTS: the box's edges snapped to device
+      // pixels, which is how the pill landing on this box paints its own. The
+      // cluster is fractional whenever it carries the changed-file count, and
+      // `offsetWidth` rounds in whole CSS pixels, so the silhouette's right side
+      // could sit half a pixel off the pill's border at the swap. The SVG's
+      // origin snaps with the box's left edge wherever the fillet and overhang
+      // span a whole number of device pixels, which every integer ratio gives.
+      const r = el.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const snap = (v: number) => Math.round(v * dpr) / dpr
+      const width = snap(r.right) - snap(r.left)
+      const height = snap(r.bottom) - snap(r.top)
       setBox((prev) =>
         prev.width === width && prev.height === height
           ? prev

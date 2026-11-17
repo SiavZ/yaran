@@ -50,66 +50,31 @@ pub fn restarted(label: &str, feature: &str) -> StatusUpdate {
 // demand tries again the next time something asks for it.
 
 /// The remedy for a worker spawned once, at startup, that nothing retries.
-pub const REMEDY_RESTART_YARAN: &str = "It stays off until you restart yaran.";
+pub(crate) const REMEDY_RESTART_YARAN: &str = "It stays off until you restart yaran.";
 
 /// The remedy for the one-shot probe behind a standalone agent's git status,
 /// which every later question about the folder starts again.
-pub const REMEDY_NEXT_LOOK_AT_AGENT: &str =
+pub(crate) const REMEDY_NEXT_LOOK_AT_AGENT: &str =
     "The next look at this agent asks again, so nothing has to be restarted.";
 
 /// The remedy for the on-demand sweep behind the changed-files list, which the
 /// next refresh starts again.
-pub const REMEDY_NEXT_CHANGED_FILES_REFRESH: &str =
+pub(crate) const REMEDY_NEXT_CHANGED_FILES_REFRESH: &str =
     "The next refresh of that list asks again, so nothing has to be restarted.";
 
 /// The remedy for the pull-request poller, which is started by a config reload
 /// and by yaran re-checking whether the GitHub CLI works.
-pub const REMEDY_PR_SYNC: &str = "yaran starts it again when you reload your config; otherwise it stays off until you restart \
+pub(crate) const REMEDY_PR_SYNC: &str = "yaran starts it again when you reload your config; otherwise it stays off until you restart \
      yaran.";
 
 /// A worker could not be started at all, so the feature behind it is off. What
 /// the user can do about that is `remedy`, which the call site chooses from the
 /// constants above because only it knows whether anything retries.
-pub fn spawn_failed(label: &str, feature: &str, error: &str, remedy: &str) -> StatusUpdate {
+pub(crate) fn spawn_failed(label: &str, feature: &str, error: &str, remedy: &str) -> StatusUpdate {
     StatusUpdate::keyed(
         key(label),
         StatusTone::Warning,
         format!("yaran could not start the background worker behind {feature}: {error}. {remedy}"),
-    )
-}
-
-/// The label the refs watcher's health is reported under.
-pub const REFS_WATCHER_LABEL: &str = "refs-watcher";
-
-/// yaran could not build the refs watcher at all, so pull request status falls
-/// back to the timer.
-///
-/// An INFO, not a warning: nothing is lost and nothing has to be done, the
-/// updates simply arrive on the poll interval instead of the moment a branch
-/// moves. Saying it anyway is what stops the slower cadence reading as a bug.
-pub fn refs_watcher_unavailable(error: &str) -> StatusUpdate {
-    StatusUpdate::keyed(
-        key(REFS_WATCHER_LABEL),
-        StatusTone::Info,
-        format!(
-            "yaran could not watch this repository's branches for changes: {error}. Pull request \
-             status still updates, on the poll interval rather than the moment a branch moves."
-        ),
-    )
-}
-
-/// One agent's branch could not be watched, and no retry will fix it, so that
-/// agent's pull request status is stuck until yaran restarts.
-pub fn refs_watcher_lost_agent(agent_label: &str) -> StatusUpdate {
-    StatusUpdate::keyed(
-        key(&format!("{REFS_WATCHER_LABEL}:{agent_label}")),
-        StatusTone::Warning,
-        crate::status_text![
-            "yaran cannot watch agent ",
-            q(agent_label),
-            " for branch changes, so its pull request \
-             status stops updating until you restart yaran. Every other agent is unaffected."
-        ],
     )
 }
 
@@ -118,7 +83,11 @@ pub fn refs_watcher_lost_agent(agent_label: &str) -> StatusUpdate {
 /// The badge on screen is right, so this is about what survives a restart
 /// rather than about what the user is looking at, and the sentence says so
 /// instead of implying the status itself is wrong.
-pub fn pr_status_not_saved(session_id: &str, agent_label: &str, error: &str) -> StatusUpdate {
+pub(crate) fn pr_status_not_saved(
+    session_id: &str,
+    agent_label: &str,
+    error: &str,
+) -> StatusUpdate {
     StatusUpdate::keyed(
         key(&format!("pr-status-write:{session_id}")),
         StatusTone::Warning,
@@ -140,7 +109,7 @@ pub fn pr_status_not_saved(session_id: &str, agent_label: &str, error: &str) -> 
 /// fails transiently all the time (an index lock held by the agent's own commit,
 /// a directory mid-rename), so a sentence per blip is noise and a streak is the
 /// signal that something is actually wrong.
-pub const WARN_AFTER_FAILURES: u32 = crate::changes_status::ERROR_WARN_THRESHOLD;
+pub(crate) const WARN_AFTER_FAILURES: u32 = crate::changes_status::ERROR_WARN_THRESHOLD;
 
 /// Consecutive panic-free iterations after which a loop worker reports its next
 /// panic out loud again.
@@ -150,16 +119,16 @@ pub const WARN_AFTER_FAILURES: u32 = crate::changes_status::ERROR_WARN_THRESHOLD
 /// already replaced that sentence and the log keeps every one of them, while a
 /// worker that ran cleanly for a streak and then broke for a different reason is
 /// news nobody has heard.
-pub const REARM_AFTER_SUCCESSES: u32 = WARN_AFTER_FAILURES;
+pub(crate) const REARM_AFTER_SUCCESSES: u32 = WARN_AFTER_FAILURES;
 
 /// Per-subject consecutive-failure counting for a poller that repeats the same
 /// question every cycle.
 ///
-/// Answers on the CROSSING only, and owes a recovery only where a warning was
+/// Answers on the CROSSING only, and owes a withdrawal only where a warning was
 /// actually shown, so a blip stays silent and a standing failure is reported
 /// once.
 #[derive(Debug, Default)]
-pub struct FailureStreaks {
+pub(crate) struct FailureStreaks {
     streaks: HashMap<String, u32>,
     warned: HashSet<String>,
 }
@@ -167,7 +136,7 @@ pub struct FailureStreaks {
 impl FailureStreaks {
     /// Record one failure. `true` exactly once, on the cycle that crosses
     /// [`WARN_AFTER_FAILURES`].
-    pub fn record_failure(&mut self, subject: &str) -> bool {
+    pub(crate) fn record_failure(&mut self, subject: &str) -> bool {
         let streak = self.streaks.entry(subject.to_string()).or_insert(0);
         *streak += 1;
         if *streak != WARN_AFTER_FAILURES {
@@ -177,37 +146,68 @@ impl FailureStreaks {
         true
     }
 
-    /// Record one success. `true` only when a warning was actually shown, so a
-    /// blip that never warned leaves no orphaned "it is back" behind it.
-    pub fn record_success(&mut self, subject: &str) -> bool {
+    /// Record one success. `true` only when a warning was actually shown and is
+    /// now owed a withdrawal; a blip that never warned has nothing to take down.
+    pub(crate) fn record_success(&mut self, subject: &str) -> bool {
         self.streaks.remove(subject);
         self.warned.remove(subject)
     }
 }
 
-/// Branch sync has failed to read git's current branch in one worktree for a
-/// whole streak, so the branch yaran shows for that agent may have drifted.
-pub fn branch_sync_stuck(worktree: &str, error: &str) -> StatusUpdate {
-    StatusUpdate::keyed(
-        key(&format!("branch-sync:{worktree}")),
-        StatusTone::Warning,
-        format!(
-            "yaran has failed {WARN_AFTER_FAILURES} times running to read the current branch in \
-             {worktree}: {error}. The branch yaran shows for that agent may be out of date until \
-             git can answer there again."
-        ),
-    )
+/// What one outcome of a streak-counting poller owes the surfaces: a warning
+/// raised on the crossing, or the withdrawal of a warning that was shown, once
+/// the trouble behind it is over.
+///
+/// A withdrawal is silent on both surfaces. The warning said what was wrong
+/// while it was wrong, and the screen working again is the news that it ended.
+#[derive(Debug, Clone)]
+pub enum PollerNotice {
+    /// Raise this warning.
+    Warn(StatusUpdate),
+    /// Take down the warning standing on this key, with nothing in its place.
+    Withdraw(String),
 }
 
-/// And the same read succeeded again, on the same key.
-pub fn branch_sync_recovered(worktree: &str) -> StatusUpdate {
+impl PollerNotice {
+    /// The reaction for a poller whose outcome the draining surface applies
+    /// directly.
+    pub fn into_reaction(self) -> crate::engine::EventReaction {
+        match self {
+            Self::Warn(status) => crate::engine::EventReaction::Status(status),
+            Self::Withdraw(key) => crate::engine::EventReaction::ClearStatus(key),
+        }
+    }
+
+    /// The worker-lane event for a poller running off the draining thread, so
+    /// whichever surface drains shows (or takes down) the same thing.
+    pub fn into_worker_event(self) -> crate::worker::WorkerEvent {
+        match self {
+            Self::Warn(status) => crate::worker::WorkerEvent::PollerStatus(status),
+            Self::Withdraw(key) => crate::worker::WorkerEvent::PollerStatusWithdrawn(key),
+        }
+    }
+}
+
+/// The keyed-status key branch sync warns on for one worktree.
+pub(crate) fn branch_sync_key(worktree: &str) -> String {
+    key(&format!("branch-sync:{worktree}"))
+}
+
+/// Branch sync has failed to read git's current branch in one worktree for a
+/// whole streak, so the branch yaran shows for that agent may have drifted.
+///
+/// git's own text is left to yaran.log, where every failure is written: it is
+/// the detail someone debugging needs and noise for everyone else.
+pub(crate) fn branch_sync_stuck(worktree: &str) -> StatusUpdate {
     StatusUpdate::keyed(
-        key(&format!("branch-sync:{worktree}")),
-        StatusTone::Info,
-        format!(
-            "yaran can read the current branch in {worktree} again, so the branch it shows for that \
-             agent is up to date."
-        ),
+        branch_sync_key(worktree),
+        StatusTone::Warning,
+        crate::status_text![
+            "yaran cannot read the current branch in the agent's folder ",
+            q(worktree),
+            ", so the branch it shows for that agent may be out of date. It keeps trying, and \
+             the details are in yaran.log."
+        ],
     )
 }
 
@@ -223,24 +223,35 @@ mod tests {
         }
         assert!(streaks.record_failure("/w"), "the crossing speaks");
         assert!(!streaks.record_failure("/w"), "and only the crossing");
-        assert!(streaks.record_success("/w"), "a warned subject recovers");
+        assert!(
+            streaks.record_success("/w"),
+            "a warned subject is withdrawn"
+        );
         assert!(!streaks.record_success("/w"), "once");
     }
 
     #[test]
-    fn a_recovery_is_owed_only_where_a_warning_was_shown() {
+    fn a_withdrawal_is_owed_only_where_a_warning_was_shown() {
         let mut streaks = FailureStreaks::default();
         streaks.record_failure("/w");
         assert!(!streaks.record_success("/w"));
     }
 
     #[test]
-    fn a_stuck_branch_read_and_its_recovery_share_the_worktrees_key() {
-        let stuck = branch_sync_stuck("/tmp/wt", "index.lock exists");
+    fn a_stuck_branch_read_names_the_folder_and_points_at_the_log() {
+        let stuck = branch_sync_stuck("/tmp/wt");
         assert_eq!(stuck.tone, StatusTone::Warning);
-        assert!(stuck.message.contains("index.lock exists"));
-        assert_eq!(stuck.key, branch_sync_recovered("/tmp/wt").key);
-        assert_ne!(stuck.key, branch_sync_recovered("/tmp/other").key);
+        assert_eq!(
+            stuck.key.as_deref(),
+            Some(branch_sync_key("/tmp/wt").as_str())
+        );
+        assert_ne!(stuck.key, branch_sync_stuck("/tmp/other").key);
+        assert_eq!(
+            stuck.message,
+            "yaran cannot read the current branch in the agent's folder \"/tmp/wt\", so the branch \
+             it shows for that agent may be out of date. It keeps trying, and the details are in \
+             yaran.log."
+        );
     }
 
     #[test]
@@ -255,23 +266,6 @@ mod tests {
             pr_status_not_saved("s2", "feat-login", "x").key,
             "one agent's failure is not another's"
         );
-    }
-
-    #[test]
-    fn a_refs_watcher_that_never_built_says_what_the_user_still_gets() {
-        let status = refs_watcher_unavailable("inotify limit reached");
-        assert_eq!(status.tone, StatusTone::Info);
-        assert!(status.message.contains("inotify limit reached"));
-        assert!(status.message.contains("Pull request status still updates"));
-    }
-
-    #[test]
-    fn one_lost_agent_is_keyed_apart_from_the_watcher_itself() {
-        let lost = refs_watcher_lost_agent("feat-login");
-        assert_eq!(lost.tone, StatusTone::Warning);
-        assert!(lost.message.contains("feat-login"));
-        assert_ne!(lost.key, refs_watcher_unavailable("x").key);
-        assert_ne!(lost.key, refs_watcher_lost_agent("other").key);
     }
 
     #[test]

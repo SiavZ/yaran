@@ -1,4 +1,4 @@
-//! Saves the `[cloud]` section into an existing `config.toml` (toml_edit, so the
+//! Saves the `[cloud]` section into an existing `config.toml` (`toml_edit`, so the
 //! user's comments survive).
 //!
 //! `config_write::apply_patches` is a hand list: a key missing here is never saved.
@@ -7,6 +7,7 @@
 //! - Pure document edit; no I/O.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/config_patch.rs
 //! ├── cloud::config
@@ -18,13 +19,14 @@
 //! cloud/config_patch.rs
 //! ├── cloud
 //! └── config_write
+//! ```
 //! <module-headers:end>
 
 use toml_edit::DocumentMut;
 
 use crate::cloud::config::CloudConfig;
 use crate::config_write::{
-    patch_table_bool, patch_table_str, patch_table_string_array, patch_table_u16, patch_table_u64,
+    patch_table_str, patch_table_string_array, patch_table_u16, patch_table_u64, patch_table_value,
 };
 
 const S: &str = "cloud";
@@ -33,7 +35,7 @@ const S: &str = "cloud";
 pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
     patch_table_str(doc, S, "mode", &cloud.mode);
     patch_table_str(doc, S, "org_url", &cloud.org_url);
-    patch_table_bool(doc, S, "push_notifications", cloud.push_notifications);
+    patch_table_value(doc, S, "push_notifications", cloud.push_notifications);
     patch_table_str(doc, S, "cloudflared_path", &cloud.cloudflared_path);
     patch_table_u16(doc, S, "metrics_port", cloud.metrics_port);
     patch_table_u64(doc, S, "grace_period_seconds", cloud.grace_period_seconds);
@@ -56,7 +58,7 @@ pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
         cloud.restart_backoff_jitter_ms,
     );
     patch_table_str(doc, S, "cloudflared_loglevel", &cloud.cloudflared_loglevel);
-    patch_table_bool(
+    patch_table_value(
         doc,
         S,
         "management_diagnostics",
@@ -100,7 +102,7 @@ pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
         "handoff_requests_per_minute",
         u64::from(cloud.handoff_requests_per_minute),
     );
-    patch_table_bool(
+    patch_table_value(
         doc,
         S,
         "close_sockets_at_access_expiry",
@@ -126,6 +128,10 @@ mod tests {
 
     #[test]
     fn every_key_round_trips_and_user_comments_survive() {
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            cloud: CloudConfig,
+        }
         let mut doc: DocumentMut = "# my notes\n[cloud]\n# keep me\nmode = \"auto\"\n"
             .parse()
             .unwrap();
@@ -158,10 +164,6 @@ mod tests {
         patch_cloud(&mut doc, &cloud);
         let text = doc.to_string();
         assert!(text.contains("# my notes") && text.contains("# keep me"));
-        #[derive(serde::Deserialize)]
-        struct Wrap {
-            cloud: CloudConfig,
-        }
         let parsed: Wrap = toml::from_str(&text).unwrap();
         assert_eq!(parsed.cloud, cloud);
     }

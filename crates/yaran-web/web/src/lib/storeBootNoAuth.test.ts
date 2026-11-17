@@ -1,18 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 // Asserts that the store boots directly into the workspace with no /api/me
-// round-trip and no login step. The server is trusted-local (no auth gate), so
-// the boot function connects the events socket and fetches bootstrap+spine
-// immediately, synchronously, at module load.
+// round-trip and no login step. After the public status check confirms no
+// password applies, boot connects the events socket and fetches bootstrap+spine.
 
 const requestedUrls: string[] = []
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   requestedUrls.push(String(url))
   return {
     ok: true,
     status: 200,
-    json: async () => ({}),
+    json: async () => String(url).includes("/api/v1/workspace")
+      ? { projects: [], sessions: [], terminals: [], sidebar: { groups: [], agentless_start: null } }
+      : {},
     text: async () => "{}",
     headers: { get: () => null },
   } as unknown as Response
@@ -49,15 +64,19 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
 describe("no-auth boot", () => {
   it("settles booted=true without any /api/me request", async () => {
     const mod = await import("./store")
-    // booted is set synchronously at module load, so no vi.waitFor needed.
-    expect(mod.getSnapshot().booted).toBe(true)
+    await vi.waitFor(() => expect(mod.getSnapshot().booted).toBe(true))
     // Boot does issue requests: without this, a boot that fetched nothing at
     // all would satisfy the "no /api/me" check below and prove nothing.
     await vi.waitFor(() => {
@@ -69,9 +88,7 @@ describe("no-auth boot", () => {
 
   it("connects the events socket at boot (no login step)", async () => {
     await import("./store")
-    // The boot() function calls eventsSocket.connect() synchronously,
-    // which constructs a WebSocket.
-    expect(FakeWebSocket.instances.length).toBeGreaterThan(0)
+    await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0))
   })
 
   it("initiates bootstrap and spine fetches at boot", async () => {

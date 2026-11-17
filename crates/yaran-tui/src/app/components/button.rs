@@ -13,6 +13,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use super::centered::centered_x;
+use super::ellipsis::ellipsize_end;
+use super::wrap_lines::display_width;
 use crate::theme::Theme;
 
 /// Standard minimum button width used across modal dialogs. Longer labels grow
@@ -21,10 +23,9 @@ pub(crate) const MIN_BUTTON_WIDTH: u16 = 16;
 
 /// Width that fits `label` between two rounded borders with one column of
 /// padding on each side, never narrower than [`MIN_BUTTON_WIDTH`]. Measured in
-/// terminal columns (the renderer's own `Line::width`), so a double-width CJK
-/// glyph or emoji counts two and a combining mark counts none.
+/// display columns, the unit the label is drawn in.
 pub(crate) fn button_width_for(label: &str) -> u16 {
-    let label_width = u16::try_from(Line::from(label).width()).unwrap_or(u16::MAX);
+    let label_width = u16::try_from(display_width(label)).unwrap_or(u16::MAX);
     MIN_BUTTON_WIDTH.max(label_width.saturating_add(4))
 }
 
@@ -37,6 +38,38 @@ pub(crate) fn shared_button_width(labels: &[&str]) -> u16 {
         .map(|label| button_width_for(label))
         .max()
         .unwrap_or(MIN_BUTTON_WIDTH)
+}
+
+/// Every modal button is three rows: the rounded ring and the label between.
+pub(crate) const BUTTON_HEIGHT: u16 = 3;
+
+/// The one gap between two buttons that share a row: two columns, the spacing
+/// most dialogs already used, so an imprecise click lands on the gap rather
+/// than on the other button.
+pub(crate) const BUTTON_GAP: u16 = 2;
+
+/// Lay out `N` buttons of one `width` side by side, [`BUTTON_GAP`] apart and
+/// centred as a group in `area` with any odd column of slack on the right,
+/// [`BUTTON_HEIGHT`] rows tall from the top of `area`. Size `width` with
+/// [`shared_button_width`] so every button in the row is the same width.
+///
+/// A row wider than `area` starts at its left edge and runs past it; the
+/// caller clips each rect to what it can show (the Confirm frame does).
+pub(crate) fn button_row<const N: usize>(area: Rect, width: u16) -> [Rect; N] {
+    let count = u16::try_from(N).unwrap_or(u16::MAX);
+    let total = width
+        .saturating_mul(count)
+        .saturating_add(BUTTON_GAP.saturating_mul(count.saturating_sub(1)));
+    let start = centered_x(area, total);
+    std::array::from_fn(|index| {
+        let index = u16::try_from(index).unwrap_or(u16::MAX);
+        Rect {
+            x: start.saturating_add(index.saturating_mul(width.saturating_add(BUTTON_GAP))),
+            y: area.y,
+            width,
+            height: BUTTON_HEIGHT,
+        }
+    })
 }
 
 /// Visual focus state of a button, mapped at render time to a border and label
@@ -71,16 +104,24 @@ pub(crate) enum ButtonPressedTarget {
     HumanBoardCardSend,
     HumanBoardCardAssign,
     HumanBoardCardAction,
+    /// The manager's delete of a folder a worktree removal left behind.
+    ConfirmDeleteLeftoverFolderCancel,
+    ConfirmDeleteLeftoverFolderConfirm,
     ConfirmDeleteTerminalCancel,
     ConfirmDeleteTerminalConfirm,
     ConfirmCloseTabCancel,
     ConfirmCloseTabConfirm,
+    ConfirmStopTabCancel,
+    ConfirmStopTabConfirm,
     ConfirmDetachAgentCancel,
     ConfirmDetachAgentConfirm,
     ConfirmRecreateWorkingCopyCancel,
     ConfirmRecreateWorkingCopyConfirm,
     ConfirmCheckoutDefaultBranchCancel,
     ConfirmCheckoutDefaultBranchConfirm,
+    ConfirmChangeBaseBranchCancel,
+    ConfirmChangeBaseBranchConfirm,
+    ProjectInfoClose,
     ConfirmDeleteProjectCancel,
     ConfirmDeleteProjectConfirm,
     ConfirmRemoveProjectCancel,
@@ -118,6 +159,7 @@ pub(crate) enum ButtonPressedTarget {
     /// project has been chosen: it hands over to the project selector and comes
     /// back in project-first mode.
     PullRequestChooseProject,
+    CloneChooseExisting,
     AgentInfoClose,
     StartupCommandLogsClose,
     /// The first-load modal's two pill buttons. Not drawn by [`Button`] (they
@@ -144,32 +186,27 @@ pub(crate) struct PressedButton {
     pub(crate) inside: bool,
 }
 
-/// Resolve the [`ButtonState`] for a given button at render time.
+/// The state a button renders in, from the one it rests in (`resting`: what
+/// keyboard focus and availability make it) and the app-wide press state (set on
+/// mouse-down, cleared on release or any keystroke). A press matching `target`
+/// with the cursor still inside the original button shows the focused look
+/// without changing keyboard focus; dragging off drops the override back to
+/// the resting state.
 ///
-/// `pressed` is the app-wide press state (set on mouse-down, cleared on release
-/// or any keystroke). A press matching `target` with the cursor still inside the
-/// original button shows the focused look without changing keyboard focus;
-/// dragging off drops the override for the caller's own `focused` signal.
-///
-/// `enabled` always wins, so a button that becomes unactivatable mid-drag does
-/// not pretend it is still armed.
+/// A disabled button always stays disabled, so one that becomes unactivatable
+/// mid-drag does not pretend it is still armed.
 pub(crate) fn button_state_for(
     target: ButtonPressedTarget,
     pressed: Option<PressedButton>,
-    focused: bool,
-    enabled: bool,
+    resting: ButtonState,
 ) -> ButtonState {
-    if !enabled {
+    if resting == ButtonState::Disabled {
         return ButtonState::Disabled;
     }
     if matches!(pressed, Some(p) if p.target == target && p.inside) {
         return ButtonState::Focused;
     }
-    if focused {
-        ButtonState::Focused
-    } else {
-        ButtonState::Normal
-    }
+    resting
 }
 
 /// Semantic intent of a button. Drives which theme color the focused
@@ -219,7 +256,7 @@ impl<'a> Button<'a> {
     /// Render into `area` using the theme's button colors: a rounded-border
     /// block 3 rows tall with the label centered on the middle row. The caller
     /// sizes `area` (see [`Button::width`]); the widget does not clip or wrap.
-    pub(crate) fn render(self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub(crate) fn render(self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let (border_color, fg) = match self.state {
             ButtonState::Focused => match self.kind {
                 ButtonKind::Confirm => (theme.button_confirm_border, theme.button_active_fg),
@@ -242,15 +279,17 @@ impl<'a> Button<'a> {
         block.render(area, frame.buffer_mut());
         // Centred through the shared helper, not `Alignment::Center`, so the odd
         // column of slack falls on the right like every other centred thing in
-        // the app. Measured in terminal columns, the unit `button_width_for`
-        // sizes the button in.
-        let label_w = u16::try_from(Line::from(self.label).width()).unwrap_or(u16::MAX);
+        // the app. Measured in display columns, the unit `button_width_for`
+        // sizes the button in; a button squeezed narrower than its label (a
+        // clipped row on a narrow screen) cuts it with the shared ellipsis.
+        let label = ellipsize_end(self.label, usize::from(inner.width));
+        let label_w = u16::try_from(display_width(&label)).unwrap_or(u16::MAX);
         let label_area = Rect {
             x: centered_x(inner, label_w),
             width: label_w.min(inner.width),
             ..inner
         };
-        Paragraph::new(Line::from(Span::styled(self.label, label_style)))
+        Paragraph::new(Line::from(Span::styled(label, label_style)))
             .alignment(Alignment::Left)
             .render(label_area, frame.buffer_mut());
     }
@@ -329,19 +368,53 @@ mod tests {
         assert_eq!(button_width_for("e\u{301}"), MIN_BUTTON_WIDTH);
     }
 
+    /// A label is measured in the columns it is drawn in: nine wide glyphs are
+    /// eighteen columns, so the button is twenty-two wide, not thirteen chars'
+    /// worth clamped up to the minimum.
+    #[test]
+    fn button_width_for_counts_display_columns() {
+        assert_eq!(button_width_for("ワークツリーを削除"), 22);
+    }
+
+    /// A button squeezed narrower than its label (a clipped row on a narrow
+    /// screen) cuts the label with the shared ellipsis inside its ring.
+    #[test]
+    fn a_squeezed_button_marks_its_cut_label() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(10, 3)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                Button::new("Delete worktree").render(frame, frame.area(), &Theme::default_dark());
+            })
+            .expect("render frame");
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..10).map(|x| buffer[(x, 1u16)].symbol()).collect();
+        assert_eq!(row, "│Delete …│");
+    }
+
     #[test]
     fn shared_button_width_picks_largest() {
         let labels = ["Cancel", "Add Anyway", "Check Out & Add"];
         assert_eq!(shared_button_width(&labels), 19);
     }
 
+    /// Two buttons of one width, the one gap apart, centred as a pair with the
+    /// odd column of slack on the right, as every centred thing in the app is.
+    #[test]
+    fn a_button_row_is_centred_with_one_gap() {
+        let [left, right] = button_row::<2>(Rect::new(10, 5, 41, 3), 16);
+        assert_eq!(left, Rect::new(13, 5, 16, BUTTON_HEIGHT));
+        assert_eq!(right, Rect::new(13 + 16 + BUTTON_GAP, 5, 16, BUTTON_HEIGHT));
+        let slack_left = left.x - 10;
+        let slack_right = 51 - right.right();
+        assert_eq!((slack_left, slack_right), (3, 4));
+    }
+
     #[test]
     fn shared_button_width_falls_back_when_empty() {
         assert_eq!(shared_button_width(&[]), MIN_BUTTON_WIDTH);
-    }
-
-    fn pressed(target: ButtonPressedTarget, inside: bool) -> Option<PressedButton> {
-        Some(PressedButton { target, inside })
     }
 
     #[test]
@@ -352,9 +425,11 @@ mod tests {
         assert_eq!(
             button_state_for(
                 ButtonPressedTarget::ConfirmKillConfirm,
-                pressed(ButtonPressedTarget::ConfirmKillConfirm, true),
-                false,
-                true,
+                Some(PressedButton {
+                    target: ButtonPressedTarget::ConfirmKillConfirm,
+                    inside: true
+                }),
+                ButtonState::Normal
             ),
             ButtonState::Focused
         );
@@ -368,18 +443,22 @@ mod tests {
         assert_eq!(
             button_state_for(
                 ButtonPressedTarget::ConfirmKillConfirm,
-                pressed(ButtonPressedTarget::ConfirmKillConfirm, false),
-                false,
-                true,
+                Some(PressedButton {
+                    target: ButtonPressedTarget::ConfirmKillConfirm,
+                    inside: false
+                }),
+                ButtonState::Normal
             ),
             ButtonState::Normal
         );
         assert_eq!(
             button_state_for(
                 ButtonPressedTarget::ConfirmKillConfirm,
-                pressed(ButtonPressedTarget::ConfirmKillConfirm, false),
-                true,
-                true,
+                Some(PressedButton {
+                    target: ButtonPressedTarget::ConfirmKillConfirm,
+                    inside: false
+                }),
+                ButtonState::Focused
             ),
             ButtonState::Focused
         );
@@ -391,24 +470,28 @@ mod tests {
         assert_eq!(
             button_state_for(
                 ButtonPressedTarget::ConfirmKillCancel,
-                pressed(ButtonPressedTarget::ConfirmKillConfirm, true),
-                false,
-                true,
+                Some(PressedButton {
+                    target: ButtonPressedTarget::ConfirmKillConfirm,
+                    inside: true
+                }),
+                ButtonState::Normal
             ),
             ButtonState::Normal
         );
     }
 
     #[test]
-    fn button_state_for_disabled_overrides_press_and_focus() {
-        // Disabled wins over both press and keyboard focus: a button that
-        // becomes unactivatable mid-drag must not pretend it is armed.
+    fn button_state_for_disabled_overrides_a_press() {
+        // A button that becomes unactivatable mid-drag must not pretend it
+        // is armed.
         assert_eq!(
             button_state_for(
                 ButtonPressedTarget::RuntimeKillSelected,
-                pressed(ButtonPressedTarget::RuntimeKillSelected, true),
-                true,
-                false,
+                Some(PressedButton {
+                    target: ButtonPressedTarget::RuntimeKillSelected,
+                    inside: true
+                }),
+                ButtonState::Disabled
             ),
             ButtonState::Disabled
         );
@@ -417,11 +500,19 @@ mod tests {
     #[test]
     fn button_state_for_no_press_uses_focus_signal() {
         assert_eq!(
-            button_state_for(ButtonPressedTarget::ConfirmQuitConfirm, None, true, true,),
+            button_state_for(
+                ButtonPressedTarget::ConfirmQuitConfirm,
+                None,
+                ButtonState::Focused
+            ),
             ButtonState::Focused
         );
         assert_eq!(
-            button_state_for(ButtonPressedTarget::ConfirmQuitConfirm, None, false, true,),
+            button_state_for(
+                ButtonPressedTarget::ConfirmQuitConfirm,
+                None,
+                ButtonState::Normal
+            ),
             ButtonState::Normal
         );
     }

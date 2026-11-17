@@ -8,6 +8,7 @@
 //! - Pure. The parsers live with the app (TS `src/uri.ts`); yaran only builds.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/uri.rs
 //! ├── cloud::protocol::handoff
@@ -21,6 +22,7 @@
 //! ├── cloud::qr
 //! ├── yaran-web::cloud_handoff_request
 //! └── yaran-web::cloud_phone_routes
+//! ```
 //! <module-headers:end>
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -30,6 +32,7 @@ use super::rules;
 
 /// The only callback a `build=dev` handoff may name.
 pub const DEV_HANDOFF_REDIRECT: &str = "yaranapp://auth/callback";
+/// The longest add-org URI a QR code carries, in characters.
 pub const ADD_ORG_MAX_CHARS: usize = 512;
 
 /// What JavaScript's `encodeURIComponent` leaves unescaped.

@@ -18,7 +18,7 @@ fn project(id: &str, name: &str) -> Project {
         leading_branch: Some("main".to_string()),
         auto_reopen_agents: None,
         startup_command: None,
-        env: Default::default(),
+        env: std::collections::BTreeMap::default(),
         current_branch: "main".to_string(),
         branch_status: yaran_core::model::ProjectBranchStatus::Unknown,
         path_missing: false,
@@ -111,6 +111,7 @@ fn labels(app: &App) -> Vec<String> {
             LeftItem::Group(g) => format!("#{}", app.left_group(*g).unwrap().name),
             LeftItem::Session(i) => app.engine.sessions[*i].id.clone(),
             LeftItem::InactiveToggle => "~inactive".to_string(),
+            LeftItem::Terminal(t) => format!("${t}"),
         })
         .collect()
 }
@@ -171,13 +172,22 @@ fn flat_mode_is_unchanged_by_the_grouped_default() {
     let (_, sessions) = real_shaped();
     let expected = build_left_items(
         &sessions,
-        app.inactive_collapsed,
+        &[],
+        if app.inactive_tail.collapsed {
+            crate::app::InactiveTail::Collapsed
+        } else {
+            crate::app::InactiveTail::Expanded
+        },
         AgentSortMode::from_config_str(&app.engine.config.ui.agent_sort),
-        &|_| false,
+        &yaran_core::flat_list::AgentRowFacts {
+            is_hot: &|_| false,
+            is_visible: &|_| true,
+            has_running_terminal: &|_| false,
+        },
         &|_| true,
     );
     assert_eq!(app.left_items(), expected.as_slice());
-    assert!(app.left_groups_cache.is_empty());
+    assert_eq!(app.left_groups_cache, Vec::<crate::app::LeftGroup>::new());
     assert!(
         app.left_items()
             .iter()
@@ -366,7 +376,7 @@ fn a_click_on_a_row_selects_that_agent() {
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: list.x + 2,
-        row: list.y + row as u16,
+        row: list.y + u16::try_from(row).unwrap_or(u16::MAX),
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(app.selected_left, 2);
@@ -415,8 +425,8 @@ fn every_agent_row_names_its_harness_in_both_styles() {
     for style in ["grouped", "flat"] {
         let mut app = grouped_app();
         app.engine.config.ui.sidebar_style = style.to_string();
-        app.inactive_collapsed = false;
-        app.inactive_collapse_overridden = true;
+        app.inactive_tail.collapsed = false;
+        app.inactive_tail.overridden = true;
         app.rebuild_left_items();
         app.left_width_pct = 40;
         let mut terminal = Terminal::new(TestBackend::new(120, 50)).expect("terminal");
@@ -555,8 +565,8 @@ fn compact_app(style: &str) -> App {
     let mut app = grouped_app();
     app.engine.config.ui.sidebar_style = style.to_string();
     app.engine.config.ui.sidebar_density = "compact".to_string();
-    app.inactive_collapsed = false;
-    app.inactive_collapse_overridden = true;
+    app.inactive_tail.collapsed = false;
+    app.inactive_tail.overridden = true;
     app.rebuild_left_items();
     app.left_width_pct = 40;
     app
@@ -641,7 +651,7 @@ fn a_narrow_project_header_keeps_its_name_over_its_count() {
     app.left_width_pct = 13;
     let buffer = draw(&mut app);
     let rows = sidebar_rows(&app, &buffer);
-    let text_width = app.mouse_layout.left_list.width as usize - 2;
+    let text_width = usize::from(app.mouse_layout.left_list.width) - 2;
     assert!(
         ("▾ Jobzy-web".len()..="▾ Jobzy-web".len() + 2).contains(&(text_width - 1))
             || text_width < 16,
@@ -689,7 +699,7 @@ fn compact_rows_name_live_states_flush_right_and_keep_them_when_narrow() {
         .iter()
         .find(|row| row.contains(&flagged))
         .unwrap_or_else(|| panic!("{flagged} missing: {rows:#?}"));
-    let text_width = app.mouse_layout.left_list.width as usize - 2;
+    let text_width = usize::from(app.mouse_layout.left_list.width) - 2;
     assert!((34..43).contains(&text_width), "test setup: {text_width}");
     assert!(line.ends_with("Needs you SHARED"), "{line:?}");
     assert!(
@@ -716,7 +726,11 @@ fn compact_heights_are_all_one_and_clicks_map_row_n_to_item_n() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut app = compact_app("grouped");
     let row_width = 40;
-    let (_, heights) = app.agent_sidebar_items(app.left_items(), true, row_width);
+    let (_, heights) = app.agent_sidebar_items(
+        app.left_items(),
+        crate::app::render::ActiveSection::Present,
+        row_width,
+    );
     assert_eq!(heights, vec![1u16; app.left_items().len()]);
     draw(&mut app);
     let map = app.mouse_layout.left_row_to_item.clone();
@@ -726,13 +740,13 @@ fn compact_heights_are_all_one_and_clicks_map_row_n_to_item_n() {
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: list.x + 2,
-            row: list.y + n as u16,
+            row: list.y + u16::try_from(n).unwrap_or(u16::MAX),
             modifiers: KeyModifiers::NONE,
         });
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
             column: list.x + 2,
-            row: list.y + n as u16,
+            row: list.y + u16::try_from(n).unwrap_or(u16::MAX),
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.selected_left, n, "click on row {n}");
@@ -745,7 +759,6 @@ fn compact_selection_tints_exactly_one_row_for_agents_and_headers() {
     for selected in [2usize, 4] {
         let mut app = compact_app("grouped");
         app.focus = FocusPane::Left;
-        app.left_section = LeftSection::Projects;
         app.selected_left = selected;
         let buffer = draw(&mut app);
         let list = app.mouse_layout.left_list;
@@ -753,7 +766,11 @@ fn compact_selection_tints_exactly_one_row_for_agents_and_headers() {
         let tinted: Vec<u16> = (list.y..list.y + list.height)
             .filter(|&y| (list.x..list.x + list.width).all(|x| buffer[(x, y)].bg == tint))
             .collect();
-        assert_eq!(tinted, vec![list.y + selected as u16], "item {selected}");
+        assert_eq!(
+            tinted,
+            vec![list.y + u16::try_from(selected).unwrap_or(u16::MAX)],
+            "item {selected}"
+        );
         // No half-cell frame edges anywhere in the list.
         for y in list.y..list.y + list.height {
             for x in list.x..list.x + list.width {
@@ -805,7 +822,11 @@ fn compact_flat_rows_name_harness_and_project_on_one_line() {
             .all(|r| !r.starts_with('├') && !r.starts_with('└'))
     );
     assert!(rows.iter().any(|r| r.starts_with("▾ Inactive (1)")));
-    let (_, heights) = app.agent_sidebar_items(app.left_items(), true, 40);
+    let (_, heights) = app.agent_sidebar_items(
+        app.left_items(),
+        crate::app::render::ActiveSection::Present,
+        40,
+    );
     assert!(heights.iter().all(|&h| h == 1));
 }
 
@@ -813,7 +834,11 @@ fn compact_flat_rows_name_harness_and_project_on_one_line() {
 fn comfortable_keeps_two_line_rows_with_spacers() {
     let mut app = compact_app("grouped");
     app.engine.config.ui.sidebar_density = "comfortable".to_string();
-    let (_, heights) = app.agent_sidebar_items(app.left_items(), true, 40);
+    let (_, heights) = app.agent_sidebar_items(
+        app.left_items(),
+        crate::app::render::ActiveSection::Present,
+        40,
+    );
     assert_eq!(heights, vec![2, 3, 3, 3, 3, 3]);
     let buffer = draw(&mut app);
     let screen = screen_text(&buffer);

@@ -1,9 +1,55 @@
+//! The domain records both surfaces share: projects, agent sessions and their
+//! tabs, providers, changed files and the runtime state around them.
+
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
 
 use crate::ids::TabIdRef;
 use crate::pty::PtyClient;
+
+/// Whether an agent should be running: what auto-reopen brings back on the
+/// next start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DesiredRunning {
+    /// It should be running.
+    Running,
+    /// It was stopped on purpose.
+    Stopped,
+}
+
+impl DesiredRunning {
+    /// Whether the agent should be running.
+    pub fn is_running(self) -> bool {
+        self == Self::Running
+    }
+}
+
+/// Whether startup auto-reopen is switched on for one agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoReopen {
+    /// Reopen it when yaran starts.
+    Enabled,
+    /// Leave it stopped when yaran starts.
+    Disabled,
+}
+
+/// How a provider launch starts its conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConversationStart {
+    /// Continue the provider's previous conversation in this directory.
+    Resume,
+    /// Start a new conversation.
+    Fresh,
+}
+
+impl ConversationStart {
+    /// Whether the launch continues the previous conversation.
+    pub fn is_resume(self) -> bool {
+        self == Self::Resume
+    }
+}
 
 /// GitHub CLI availability status.
 ///
@@ -37,55 +83,329 @@ pub enum GhStatus {
 }
 
 /// State of a GitHub pull request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum PrState {
+    /// The pull request is open and ready for review. The default, because it
+    /// is the state every pull request starts in.
+    #[default]
     Open,
+    /// The pull request is open as a draft.
+    Draft,
+    /// The pull request was merged.
     Merged,
+    /// The pull request was closed without merging.
     Closed,
 }
 
-/// Cached information about a GitHub pull request associated with a session.
-#[derive(Clone, Debug)]
-pub struct PrInfo {
-    pub number: u64,
-    pub state: PrState,
-    pub title: String,
-    pub host: String,
-    pub owner_repo: String,
-    pub url: String,
+impl PrState {
+    /// The lowercase word both surfaces print for the state.
+    #[must_use]
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Draft => "draft",
+            Self::Merged => "merged",
+            Self::Closed => "closed",
+        }
+    }
+
+    /// The state text the database and GitHub use, which has no draft: a
+    /// draft is stored as `OPEN` with a separate flag, so an older yaran reading
+    /// the row decodes it as open instead of dropping it.
+    #[must_use]
+    pub fn stored_text(&self) -> &'static str {
+        match self {
+            Self::Open | Self::Draft => "OPEN",
+            Self::Merged => "MERGED",
+            Self::Closed => "CLOSED",
+        }
+    }
 }
 
+/// Cached information about a GitHub pull request associated with a session:
+/// one answer from GitHub.
+#[derive(Clone, Debug, Default)]
+pub struct PrInfo {
+    /// The pull request's number.
+    pub number: u64,
+    /// Whether it is open, merged or closed, as GitHub reports it. Never
+    /// [`PrState::Draft`]: an open draft is `Open` with [`Self::is_draft`] set.
+    pub state: PrState,
+    /// Whether an open pull request is a draft (GraphQL `isDraft`).
+    pub is_draft: bool,
+    /// The pull request's title.
+    pub title: String,
+    /// The GitHub host it lives on.
+    pub host: String,
+    /// The repository, as `owner/name`.
+    pub owner_repo: String,
+    /// The pull request's web address.
+    pub url: String,
+    /// The branch the pull request merges from (GraphQL `headRefName`), when
+    /// the answer said.
+    pub head_branch: Option<String>,
+    /// When it was opened on GitHub, when the answer said.
+    pub gh_created_at: Option<DateTime<Utc>>,
+    /// When GitHub last changed it, when the answer said.
+    pub gh_updated_at: Option<DateTime<Utc>>,
+    /// When it was closed, when the answer said.
+    pub gh_closed_at: Option<DateTime<Utc>>,
+    /// When it was merged, when the answer said.
+    pub gh_merged_at: Option<DateTime<Utc>>,
+}
+
+/// Which pull request a row is: its host, repository and number. Two keys are
+/// equal when the host and the repository match ignoring ASCII case, because
+/// GitHub treats both case-insensitively.
+#[derive(Clone, Debug)]
+pub struct PrKey {
+    /// The GitHub host.
+    pub host: String,
+    /// The repository, as `owner/name`.
+    pub owner_repo: String,
+    /// The pull request's number.
+    pub number: u64,
+}
+
+impl PrKey {
+    /// The key for pull request `number` in `owner_repo` on `host`.
+    pub fn new(host: impl Into<String>, owner_repo: impl Into<String>, number: u64) -> Self {
+        Self {
+            host: host.into(),
+            owner_repo: owner_repo.into(),
+            number,
+        }
+    }
+}
+
+impl PartialEq for PrKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.number == other.number
+            && self.host.eq_ignore_ascii_case(&other.host)
+            && self.owner_repo.eq_ignore_ascii_case(&other.owner_repo)
+    }
+}
+
+impl Eq for PrKey {}
+
+impl std::hash::Hash for PrKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.number.hash(state);
+        self.host.to_ascii_lowercase().hash(state);
+        self.owner_repo.to_ascii_lowercase().hash(state);
+    }
+}
+
+/// An agent's pull-request preferences.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrPrefs {
+    /// How its pull requests are ordered.
+    pub sort_mode: crate::pr_list::PrSortMode,
+    /// Set when the agent had pull-request detection switched off: a pull
+    /// request opened on GitHub before this moment is kept out of sight.
+    pub hide_created_before: Option<DateTime<Utc>>,
+}
+
+/// One pull request an agent has: found by the sync on one of its branches,
+/// attached by the user, or both. A row exists while either is true.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentPr {
+    /// The GitHub host.
+    pub host: String,
+    /// The repository, as `owner/name`, in the case GitHub reported.
+    pub owner_repo: String,
+    /// The pull request's number.
+    pub number: u64,
+    /// Its state, draft included.
+    pub state: PrState,
+    /// Its title.
+    pub title: String,
+    /// Its web address.
+    pub url: String,
+    /// The branch it merges from, `None` until GitHub has said.
+    pub head_branch: Option<String>,
+    /// The sync found it on one of the agent's branches.
+    pub found: bool,
+    /// The user attached it.
+    pub attached: bool,
+    /// The user hid it.
+    pub hidden: bool,
+    /// Its place in the agent's manual order, `None` until the user arranges
+    /// the list with it present.
+    pub manual_slot: Option<u32>,
+    /// When it was opened on GitHub.
+    pub gh_created_at: Option<DateTime<Utc>>,
+    /// When GitHub last changed it.
+    pub gh_updated_at: Option<DateTime<Utc>>,
+    /// When it was closed.
+    pub gh_closed_at: Option<DateTime<Utc>>,
+    /// When it was merged.
+    pub gh_merged_at: Option<DateTime<Utc>>,
+    /// When yaran first stored it.
+    pub first_recorded_at: DateTime<Utc>,
+    /// When GitHub last answered for it.
+    pub last_refreshed_at: Option<DateTime<Utc>>,
+}
+
+impl AgentPr {
+    /// A row for a pull request the sync found, first recorded at `recorded_at`.
+    #[must_use]
+    pub fn found(info: &PrInfo, recorded_at: DateTime<Utc>) -> Self {
+        let mut row = Self {
+            host: String::new(),
+            owner_repo: String::new(),
+            number: info.number,
+            state: PrState::Open,
+            title: String::new(),
+            url: String::new(),
+            head_branch: None,
+            found: true,
+            attached: false,
+            hidden: false,
+            manual_slot: None,
+            gh_created_at: None,
+            gh_updated_at: None,
+            gh_closed_at: None,
+            gh_merged_at: None,
+            first_recorded_at: recorded_at,
+            last_refreshed_at: None,
+        };
+        row.refresh_from(info);
+        row
+    }
+
+    /// Which pull request this is.
+    #[must_use]
+    pub fn key(&self) -> PrKey {
+        PrKey::new(self.host.clone(), self.owner_repo.clone(), self.number)
+    }
+
+    /// Whether this row is the pull request `key` names.
+    #[must_use]
+    pub fn is(&self, key: &PrKey) -> bool {
+        self.number == key.number
+            && self.host.eq_ignore_ascii_case(&key.host)
+            && self.owner_repo.eq_ignore_ascii_case(&key.owner_repo)
+    }
+
+    /// Take what a fresh GitHub answer says about this pull request. What the
+    /// answer leaves out (a head branch, a time) keeps the value already known.
+    pub fn refresh_from(&mut self, info: &PrInfo) {
+        self.host.clone_from(&info.host);
+        self.owner_repo.clone_from(&info.owner_repo);
+        self.number = info.number;
+        // A draft flag on a merged or closed pull request means nothing.
+        self.state = match info.state {
+            PrState::Open if info.is_draft => PrState::Draft,
+            ref other => other.clone(),
+        };
+        self.title.clone_from(&info.title);
+        self.url.clone_from(&info.url);
+        if info.head_branch.is_some() {
+            self.head_branch.clone_from(&info.head_branch);
+        }
+        for (mine, theirs) in [
+            (&mut self.gh_created_at, info.gh_created_at),
+            (&mut self.gh_updated_at, info.gh_updated_at),
+            (&mut self.gh_closed_at, info.gh_closed_at),
+            (&mut self.gh_merged_at, info.gh_merged_at),
+        ] {
+            if theirs.is_some() {
+                *mine = theirs;
+            }
+        }
+    }
+
+    /// The row as one GitHub answer.
+    #[must_use]
+    pub fn to_info(&self) -> PrInfo {
+        PrInfo {
+            number: self.number,
+            state: match self.state {
+                PrState::Draft => PrState::Open,
+                ref other => other.clone(),
+            },
+            is_draft: self.state == PrState::Draft,
+            title: self.title.clone(),
+            host: self.host.clone(),
+            owner_repo: self.owner_repo.clone(),
+            url: self.url.clone(),
+            head_branch: self.head_branch.clone(),
+            gh_created_at: self.gh_created_at,
+            gh_updated_at: self.gh_updated_at,
+            gh_closed_at: self.gh_closed_at,
+            gh_merged_at: self.gh_merged_at,
+        }
+    }
+
+    /// The row in the shape the pull-request sync takes as what it already
+    /// knows about `session_id`.
+    #[must_use]
+    pub fn to_stored(&self, session_id: &str) -> crate::storage::StoredPr {
+        crate::storage::StoredPr {
+            session_id: session_id.to_string(),
+            pr_number: self.number,
+            host: self.host.clone(),
+            owner_repo: self.owner_repo.clone(),
+            state: self.state.stored_text().to_string(),
+            title: self.title.clone(),
+            url: self.url.clone(),
+        }
+    }
+}
+
+/// A provider's name, as configured under `[providers]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderKind(String);
 
 impl ProviderKind {
+    /// A provider of that name.
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
 
+    /// The provider's name.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    #[allow(clippy::should_implement_trait)]
+    /// A provider of that name; any text is accepted.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "an infallible parse with its own fallback, which FromStr (a fallible parse) would not express"
+    )]
     pub fn from_str(value: &str) -> Self {
         Self(value.to_string())
     }
 }
 
-#[derive(Clone, Debug)]
+/// A project as the running yaran holds it: its config, its derived git state and its row's
+/// timestamps.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Project {
+    /// The project's unique id.
     pub id: String,
+    /// The display name.
     pub name: String,
+    /// The repository's path.
     pub path: String,
+    /// The provider the project's config names, or `None` when it follows the global default.
     pub explicit_default_provider: Option<ProviderKind>,
+    /// The provider new agents in this project use: the explicit one, else the global default.
     pub default_provider: ProviderKind,
+    /// The branch new worktrees start from, when known.
     pub leading_branch: Option<String>,
+    /// Whether the project's agents come back at startup, or `None` to follow the global setting.
     pub auto_reopen_agents: Option<bool>,
+    /// The command run in each new agent worktree before the provider launches.
     pub startup_command: Option<String>,
+    /// Variables passed to the project's agent and terminal PTYs, over the global ones.
     pub env: BTreeMap<String, String>,
+    /// The branch the project's source checkout is on.
     pub current_branch: String,
+    /// Whether the source checkout is on its default branch.
     pub branch_status: ProjectBranchStatus,
+    /// Whether the project's path is gone from disk.
     pub path_missing: bool,
     /// When this project was first added, as persisted in the SQLite `projects`
     /// table. This is derived/runtime state (not portable config), surfaced so
@@ -94,21 +414,30 @@ pub struct Project {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+/// Whether a project's source checkout is on its default branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectBranchStatus {
+    /// The checkout is on its default branch, or no other branch is known to be the default.
     Leading,
+    /// The checkout is on a branch other than its default.
     NotLeading,
+    /// Not yet checked.
     Unknown,
 }
 
+/// An agent session's lifecycle state, as stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionStatus {
+    /// The agent's provider is running.
     Active,
+    /// The agent is stopped and can be reconnected.
     Detached,
+    /// The agent's provider exited on its own.
     Exited,
 }
 
 impl SessionStatus {
+    /// The stored spelling.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
@@ -117,7 +446,11 @@ impl SessionStatus {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
+    /// Parses the stored spelling; anything unrecognized reads as `Detached`.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "an infallible parse with its own fallback, which FromStr (a fallible parse) would not express"
+    )]
     pub fn from_str(value: &str) -> Self {
         match value {
             "active" => Self::Active,
@@ -169,6 +502,7 @@ pub enum BranchProvenance {
 }
 
 impl BranchProvenance {
+    /// The stored spelling.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::CreatedByYaran => "created",
@@ -189,7 +523,10 @@ impl BranchProvenance {
     /// distinct from the MIGRATION default (`'created'`, which preserves
     /// today's behavior for rows written before the column existed and whose
     /// true provenance is unknowable).
-    #[allow(clippy::should_implement_trait)]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "an infallible parse with its own fallback, which FromStr (a fallible parse) would not express"
+    )]
     pub fn from_str(value: &str) -> Self {
         match value {
             "created" => Self::CreatedByYaran,
@@ -203,30 +540,10 @@ impl BranchProvenance {
     /// answer for a caller with no dialog in front of it, and the state the
     /// delete dialogs' "also delete the branch" checkbox starts in.
     ///
-    /// It is no longer the last word. A user who ticks the box on a dialog
-    /// that named the branch and warned about it has answered the question
-    /// themselves, and [`BranchProvenance::resolve_branch_deletion`] is where
-    /// the two are folded together.
+    /// It is no longer the last word: a ticked or unticked box answers the
+    /// question for the branches it names (see [`crate::branch_history`]).
     pub fn yaran_may_delete_branch(&self) -> bool {
         matches!(self, Self::CreatedByYaran)
-    }
-
-    /// What a delete request actually does to this agent's branches, once the
-    /// user's own answer is folded into the provenance default.
-    ///
-    /// `requested` is the delete dialog's "also delete the branch" checkbox.
-    /// `None` means nobody was asked: the project-removal cascade, the create
-    /// rollback and factory reset all run with no dialog in front of them, and
-    /// they keep the provenance default exactly as they always have.
-    ///
-    /// `Some(true)` against a pre-existing branch is the ONE thing that deletes
-    /// a branch yaran did not create from an agent delete. That is deliberate:
-    /// it is the same explicit act the worktree manager's checkbox already is,
-    /// made where the user is standing rather than only in a dialog they have
-    /// to go and find. `Some(false)` against a branch yaran did create is the
-    /// mirror, and it is why the box is a real control rather than a label.
-    pub fn resolve_branch_deletion(self, requested: Option<bool>) -> bool {
-        requested.unwrap_or_else(|| self.yaran_may_delete_branch())
     }
 
     /// Why this agent's pre-existing branch is not yaran's to delete, as a
@@ -258,8 +575,8 @@ impl BranchProvenance {
     /// what it is. Names `git branch -D`, because once the worktree is gone no
     /// yaran surface can reach the branch. Shared by the TUI status line and the
     /// web toast.
-    pub fn kept_branches_note(
-        &self,
+    pub(crate) fn kept_branches_note(
+        self,
         branch_name: &str,
         initial_branch: &str,
     ) -> crate::status_text::StatusText {
@@ -306,17 +623,16 @@ pub enum BranchKeptReason {
     /// provenance default stood. Carries the provenance so the sentence can
     /// say which kind of "predates" it was.
     NotYarans(BranchProvenance),
-    /// The delete dialog offered to remove the branch and the user left the
-    /// box unticked. Reachable for a branch yaran created too, which is exactly
-    /// the case the provenance sentence cannot describe.
+    /// The person asked to keep the branch, in a delete dialog or with
+    /// `--keep-branch`, even one yaran created.
     UserDeclined,
 }
 
 impl BranchKeptReason {
     /// The sentence(s) naming every branch the removal kept, with its reason.
     /// See [`BranchProvenance::kept_branches_note`] for the drift rule.
-    pub fn kept_branches_note(
-        &self,
+    pub(crate) fn kept_branches_note(
+        self,
         branch_name: &str,
         initial_branch: &str,
     ) -> crate::status_text::StatusText {
@@ -332,7 +648,7 @@ impl BranchKeptReason {
                         q(branch_name),
                         " and ",
                         q(initial_branch),
-                        " were kept because you left the branch box unticked. Delete either \
+                        " were kept because you chose to keep them. Delete either \
                          yourself with ",
                         n(crate::git::branch_delete_command(branch_name)),
                         " or ",
@@ -343,7 +659,7 @@ impl BranchKeptReason {
                     crate::status_text![
                         "Its branch ",
                         q(branch_name),
-                        " was kept because you left the branch box unticked. Delete it yourself \
+                        " was kept because you chose to keep it. Delete it yourself \
                          with ",
                         n(crate::git::branch_delete_command(branch_name)),
                         " if you no longer need it."
@@ -354,22 +670,30 @@ impl BranchKeptReason {
     }
 }
 
+/// The lifecycle of an agent's companion terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompanionTerminalStatus {
+    /// No terminal has been started.
     NotLaunched,
+    /// The terminal's shell is running.
     Running,
+    /// The terminal's shell has exited.
     Exited,
 }
 
 impl CompanionTerminalStatus {
+    /// Whether the shell is running.
     pub fn is_running(self) -> bool {
         matches!(self, Self::Running)
     }
 }
 
+/// Which of an agent's two panes something addresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionSurface {
+    /// The provider's pane.
     Agent,
+    /// The companion terminal's pane.
     Terminal,
 }
 
@@ -385,6 +709,7 @@ pub enum AgentWorkspaceKind {
 }
 
 impl AgentWorkspaceKind {
+    /// The stored spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Managed => "managed",
@@ -404,7 +729,10 @@ impl AgentWorkspaceKind {
     /// whatever is there rather than anything trustworthy; that is the accepted
     /// cost. The arm is reachable only from a row written by a newer yaran, or one
     /// edited by hand.
-    #[allow(clippy::should_implement_trait)]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "an infallible parse with its own fallback, which FromStr (a fallible parse) would not express"
+    )]
     pub fn from_str(value: &str) -> Self {
         match value {
             "folder" => Self::Folder,
@@ -417,9 +745,13 @@ impl AgentWorkspaceKind {
 /// full git identity of the branch yaran minted or attached for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedWorkspace {
+    /// The project the working copy belongs to.
     pub project_id: String,
+    /// The project's source checkout path, when known.
     pub project_path: Option<String>,
+    /// The branch the agent's branch was created from.
     pub source_branch: String,
+    /// The branch the working copy is on now.
     pub branch_name: String,
     /// The branch this agent was created on. Immutable identity: unlike
     /// `branch_name` (which the branch-sync poller and intentional renames keep
@@ -431,6 +763,7 @@ pub struct ManagedWorkspace {
     /// agent may delete the branch. Set once at creation and never mutated (the
     /// storage layer writes it on INSERT only). See [`BranchProvenance`].
     pub branch_provenance: BranchProvenance,
+    /// The working copy's path.
     pub worktree_path: String,
 }
 
@@ -510,6 +843,7 @@ impl AgentWorkspace {
         }
     }
 
+    /// The owning project's id, or `None` for a standalone folder.
     pub fn project_id(&self) -> Option<&str> {
         match self {
             Self::Managed(managed) => Some(managed.project_id.as_str()),
@@ -521,6 +855,7 @@ impl AgentWorkspace {
         }
     }
 
+    /// The owning project's path, or `None` for a standalone folder or when unknown.
     pub fn project_path(&self) -> Option<&str> {
         match self {
             Self::Managed(managed) => managed.project_path.as_deref(),
@@ -528,6 +863,7 @@ impl AgentWorkspace {
         }
     }
 
+    /// The branch the working copy is on, or `None` for a standalone folder.
     pub fn branch_name(&self) -> Option<&str> {
         match self {
             Self::Managed(managed) => Some(managed.branch_name.as_str()),
@@ -535,6 +871,7 @@ impl AgentWorkspace {
         }
     }
 
+    /// The branch the agent's branch was created from, or `None` for a standalone folder.
     pub fn source_branch(&self) -> Option<&str> {
         match self {
             Self::Managed(managed) => Some(managed.source_branch.as_str()),
@@ -542,6 +879,7 @@ impl AgentWorkspace {
         }
     }
 
+    /// The branch the agent was created on, or `None` for a standalone folder.
     pub fn initial_branch(&self) -> Option<&str> {
         match self {
             Self::Managed(managed) => Some(managed.initial_branch.as_str()),
@@ -549,6 +887,7 @@ impl AgentWorkspace {
         }
     }
 
+    /// Where the agent's branch came from, or `None` for a standalone folder, which has no branch.
     pub fn branch_provenance(&self) -> Option<BranchProvenance> {
         match self {
             Self::Managed(managed) => Some(managed.branch_provenance),
@@ -578,7 +917,7 @@ impl AgentWorkspace {
     /// The absolute rule of the standalone agent: yaran never creates, moves or
     /// removes the user's folder. Deleting a standalone agent deletes only yaran's
     /// own record of it.
-    pub fn deletion_may_remove_directory(&self) -> bool {
+    pub(crate) fn deletion_may_remove_directory(&self) -> bool {
         match self {
             Self::Managed(_) => true,
             Self::Folder(_) => false,
@@ -660,8 +999,10 @@ pub fn is_valid_agent_handle(handle: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
 }
 
+/// An agent: its provider, its workspace, and the state yaran keeps about it.
 #[derive(Clone, Debug)]
 pub struct AgentSession {
+    /// The session's unique id.
     pub id: String,
     /// Stable, locally unique identity used for AMQ inboxes and peer routing.
     /// Assigned once, before the first insert (see
@@ -686,15 +1027,23 @@ pub struct AgentSession {
     /// `agent_tabs` row, and this names which of them currently occupies the
     /// slot. It is a generated id and is deliberately NOT the session id.
     pub slot_tab_id: String,
+    /// The provider the session-slot tab runs.
     pub provider: ProviderKind,
     /// Where this agent lives and what yaran may do there. See [`AgentWorkspace`].
     pub workspace: AgentWorkspace,
+    /// The display name the user gave the agent, if any.
     pub title: Option<String>,
+    /// The providers that have run in this session, by name.
     pub started_providers: Vec<String>,
+    /// Whether the agent should be running, so startup auto-reopen brings it back.
     pub desired_running: bool,
+    /// Whether startup auto-reopen is allowed for this agent.
     pub auto_reopen_enabled: bool,
+    /// The session's lifecycle state.
     pub status: SessionStatus,
+    /// When the agent was created.
     pub created_at: DateTime<Utc>,
+    /// When the session row last changed.
     pub updated_at: DateTime<Utc>,
     /// The tab id the user last focused on this agent, remembered so switching
     /// away and back (either surface, and across restarts) restores it. `None`
@@ -755,30 +1104,37 @@ impl AgentSession {
         self.workspace.managed_worktree()
     }
 
+    /// The standalone folder's path, or `None` for a managed working copy.
     pub fn folder_path(&self) -> Option<&str> {
         self.workspace.folder_path()
     }
 
+    /// The owning project's id, or `None` for a standalone agent.
     pub fn project_id(&self) -> Option<&str> {
         self.workspace.project_id()
     }
 
+    /// The owning project's path, or `None` for a standalone agent or when unknown.
     pub fn project_path(&self) -> Option<&str> {
         self.workspace.project_path()
     }
 
+    /// The branch the agent's working copy is on, or `None` for a standalone agent.
     pub fn branch_name(&self) -> Option<&str> {
         self.workspace.branch_name()
     }
 
+    /// The branch the agent's branch was created from, or `None` for a standalone agent.
     pub fn source_branch(&self) -> Option<&str> {
         self.workspace.source_branch()
     }
 
+    /// The branch the agent was created on, or `None` for a standalone agent.
     pub fn initial_branch(&self) -> Option<&str> {
         self.workspace.initial_branch()
     }
 
+    /// Where the agent's branch came from, or `None` for a standalone agent.
     pub fn branch_provenance(&self) -> Option<BranchProvenance> {
         self.workspace.branch_provenance()
     }
@@ -787,6 +1143,26 @@ impl AgentSession {
     /// [`AgentWorkspace::supports_branch_git`].
     pub fn supports_branch_git(&self) -> bool {
         self.workspace.supports_branch_git()
+    }
+
+    /// When the branch this agent is on was born, if yaran minted it: the
+    /// agent's creation, for an agent still on the branch yaran created for it,
+    /// whether under the name it was born with or, when an explicit rename
+    /// moved it, under `renamed_to`, the name that rename gave it.
+    /// `None` for a branch that existed before the agent (whatever its history
+    /// before then is, it is not yaran's to bound), for a branch the agent has
+    /// since drifted onto, and for a standalone agent, which has no branch.
+    pub(crate) fn branch_minted_at(&self, renamed_to: Option<&str>) -> Option<DateTime<Utc>> {
+        let managed = self.workspace.as_managed()?;
+        let minted_here = match managed.branch_provenance {
+            BranchProvenance::CreatedByYaran => true,
+            BranchProvenance::AttachedExisting
+            | BranchProvenance::Adopted
+            | BranchProvenance::Unknown => false,
+        };
+        let still_on_it = managed.branch_name == managed.initial_branch
+            || renamed_to == Some(managed.branch_name.as_str());
+        (minted_here && still_on_it).then_some(self.created_at)
     }
 
     /// The name to show for this agent: its durable title when it has one, the
@@ -805,20 +1181,20 @@ impl AgentSession {
         }
         match &self.workspace {
             AgentWorkspace::Managed(managed) => managed.branch_name.clone(),
-            AgentWorkspace::Folder(folder) => std::path::Path::new(&folder.folder_path)
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| folder.folder_path.clone()),
+            AgentWorkspace::Folder(folder) => crate::git::standalone_agent_name_from_folder(
+                std::path::Path::new(&folder.folder_path),
+            ),
         }
     }
 
+    /// Whether `provider` has run in this session.
     pub fn has_started_provider(&self, provider: &ProviderKind) -> bool {
         self.started_providers
             .iter()
             .any(|started| started == provider.as_str())
     }
 
-    pub fn mark_provider_started(&mut self, provider: &ProviderKind) -> bool {
+    pub(crate) fn mark_provider_started(&mut self, provider: &ProviderKind) -> bool {
         if self.has_started_provider(provider) {
             return false;
         }
@@ -827,7 +1203,7 @@ impl AgentSession {
     }
 
     /// The id of this agent's **session-slot tab**: its first tab. Closing that
-    /// tab hands the slot to the next tab in strip order, so this pointer moves;
+    /// tab hands the slot to the leftmost other tab, so this pointer moves;
     /// what cannot be closed is an agent's only tab.
     ///
     /// A stored pointer into `agent_tabs`, read from the
@@ -883,22 +1259,29 @@ impl AgentSession {
 /// bottom of the range is what makes that true.
 #[derive(Clone, Debug)]
 pub struct AgentTab {
+    /// The tab's unique id.
     pub id: String,
+    /// The agent session the tab belongs to.
     pub session_id: String,
+    /// The provider the tab runs.
     pub provider: ProviderKind,
+    /// The tab's position in the agent's strip, ascending. Positions are the
+    /// user's own order: a reorder rewrites all of them and a new tab takes the
+    /// next one after the highest, so the slot tab can hold any of them.
     pub sort_order: i64,
+    /// When the tab was created.
     pub created_at: DateTime<Utc>,
 }
 
-/// The one comparator that decides which extra tab comes before which, on every
+/// The one comparator that decides which tab comes before which, on every
 /// surface: `sort_order`, then `created_at`, then the id.
 ///
 /// The id is the final tiebreak so the answer is deterministic even for two tabs
-/// written in the same instant, because the engine holds its tabs in a `HashMap`
-/// whose iteration order is not. Ties are unreachable today (`sort_order` is a
-/// per-agent append-only stamp), so this is parity across the orderings rather
-/// than a fix: the TUI strip, the web strip and the promotion successor must not
-/// be able to disagree about which pill comes first.
+/// holding the same position, because the engine holds its tabs in a `HashMap`
+/// whose iteration order is not. Positions are distinct by construction, so this
+/// is parity across the orderings rather than a fix: the TUI strip, the web strip
+/// and the promotion successor must not be able to disagree about which pill
+/// comes first.
 pub(crate) fn tab_display_order(a: &AgentTab, b: &AgentTab) -> std::cmp::Ordering {
     a.sort_order
         .cmp(&b.sort_order)
@@ -906,11 +1289,28 @@ pub(crate) fn tab_display_order(a: &AgentTab, b: &AgentTab) -> std::cmp::Orderin
         .then_with(|| a.id.cmp(&b.id))
 }
 
+/// Where the slot tab sits among `extras`, which are already in
+/// [`tab_display_order`]: the index it takes in the whole strip. A tie goes to
+/// the slot tab, so the answer is deterministic even for a position the data
+/// should never repeat. Both the engine's id order and the wire's tab list place
+/// the slot tab through this, so they cannot disagree.
+pub(crate) fn slot_tab_index<T: std::borrow::Borrow<AgentTab>>(
+    extras: &[T],
+    slot_position: i64,
+) -> usize {
+    extras.partition_point(|t| t.borrow().sort_order < slot_position)
+}
+
+/// One changed path in a working copy, as git status and numstat report it.
 #[derive(Clone, Debug)]
 pub struct ChangedFile {
+    /// The git status code.
     pub status: String,
+    /// The path, relative to the working copy.
     pub path: String,
+    /// Lines added.
     pub additions: usize,
+    /// Lines removed.
     pub deletions: usize,
     /// True for a file git itself calls binary, which therefore has no line
     /// counts. Deliberately NOT the same fact as `diff_excluded`: both rows
@@ -928,6 +1328,301 @@ pub struct ChangedFile {
     /// Where a rename or copy came from, for the surfaces that have to know
     /// which OTHER directory also changed. None for every other status.
     pub renamed_from: Option<String>,
+    /// Whether this row is one file or a whole folder folded into one row.
+    pub kind: ChangedFileKind,
+}
+
+/// What one changed-files row stands for.
+///
+/// A folder is folded the way `git status` folds one by default: a directory
+/// with nothing tracked inside it is ONE row, not one row per file, because a
+/// `node_modules` of thirty thousand files listed individually buried every
+/// real change and cost the browser megabytes. The row's `path` is the
+/// directory itself with no trailing slash, so the ordinary git verbs (`add`,
+/// `reset`, delete) act on the whole folder when handed it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ChangedFileKind {
+    /// One file (or one symlink, or one submodule entry git tracks).
+    #[default]
+    File,
+    /// A folder standing for every file inside it. On the unstaged side
+    /// (status `?`) it is a directory with nothing tracked inside it, exactly
+    /// the entry `git status` itself reports. On the staged side (status `A`)
+    /// it is a directory HEAD does not have whose every staged entry is newly
+    /// added, which is what the same folder becomes once it is staged whole.
+    Directory(FolderContents),
+    /// An untracked directory that holds a repository of its own. git does not
+    /// look inside another repository, so neither does yaran: there is no file
+    /// count to give and nothing to expand, and the row says what it is.
+    NestedRepository,
+    /// An untracked directory that is a linked worktree of this SAME
+    /// repository (its `.git` is a file pointing into this repository's
+    /// `worktrees/`). git reports it like a repository of its own, but it is
+    /// not one: none of its history lives in it, and deleting the directory
+    /// would leave the repository believing the worktree still exists. yaran
+    /// does not delete it; the worktree manager removes it properly.
+    LinkedWorktree,
+}
+
+/// What a folded folder holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FolderContents {
+    /// How many files are inside, at any depth. Files only: a repository of
+    /// its own inside the folder is counted in `nested_repositories` instead.
+    pub file_count: usize,
+    /// How many repositories of their own sit inside, which git does not look
+    /// into. Deleting the folder keeps them, so the dialogs have to say so.
+    pub nested_repositories: usize,
+    /// How many linked worktrees of this same repository sit inside. git
+    /// reports them like repositories of their own, but they are not, so they
+    /// are counted and named apart; deleting or staging the folder keeps them
+    /// out just the same.
+    pub linked_worktrees: usize,
+    /// A cheap fingerprint of the files inside: their paths, sizes and
+    /// modification times, hashed. It moves when a file inside is edited, which
+    /// the count alone does not, and that is what tells a surface to look at an
+    /// expanded folder or an open buffer again. `None` when the folder holds
+    /// more files than one read is allowed to stat (see the listing's budget):
+    /// such a folder is followed by its count alone, and an edit that keeps the
+    /// count is not noticed until something else asks. That gap is accepted,
+    /// because statting a thirty-thousand-file dependency folder on every poll
+    /// is the cost folding exists to avoid. On the staged side it is taken from
+    /// the index instead, each entry's path, mode and object id, read in the
+    /// same pass that counts the folder, so a rename or a re-add inside a
+    /// staged folder moves it; an edit since staging is its own unstaged row.
+    pub fingerprint: Option<u64>,
+    /// Staged side only: how many repositories of their own inside the folder
+    /// were left untracked, because staging a folder leaves them out. They do
+    /// not keep the folder from folding, so the row has to say they are not in
+    /// the index. Always zero on the untracked side.
+    pub repositories_not_staged: usize,
+    /// Staged side only: the same, for worktrees of this repository.
+    pub worktrees_not_staged: usize,
+    /// The bare repositories inside the folder (the folder itself when it is
+    /// one), as worktree-relative paths. git lists their contents as ordinary
+    /// files, so they are counted in `file_count`, staged with the folder and
+    /// listed when it is expanded; a folder delete keeps them, so the delete
+    /// dialogs name them.
+    pub bare_repositories: Vec<String>,
+    /// How many of `file_count` sit inside those bare repositories, which a
+    /// folder delete leaves: it deletes the rest.
+    pub files_in_bare_repositories: usize,
+    /// The repositories of their own and worktrees of this repository inside
+    /// the folder (on the staged side, the ones its stage left out), as
+    /// worktree-relative paths. Nothing inside one is a change of this
+    /// repository, so a surface marking paths by this row leaves them alone.
+    pub repositories_inside: Vec<String>,
+}
+
+impl FolderContents {
+    /// How many of the folder's files a delete removes: all but those inside
+    /// bare repositories.
+    pub fn deletable_files(&self) -> usize {
+        self.file_count
+            .saturating_sub(self.files_in_bare_repositories)
+    }
+}
+
+impl ChangedFileKind {
+    /// A folder of `file_count` files with nothing else known about it.
+    pub fn directory(file_count: usize) -> Self {
+        Self::Directory(FolderContents {
+            file_count,
+            ..FolderContents::default()
+        })
+    }
+}
+
+impl ChangedFile {
+    /// True for a row that stands for a folder rather than one file.
+    pub fn is_folder(&self) -> bool {
+        match self.kind {
+            ChangedFileKind::File => false,
+            ChangedFileKind::Directory { .. }
+            | ChangedFileKind::NestedRepository
+            | ChangedFileKind::LinkedWorktree => true,
+        }
+    }
+
+    /// True for a folder row whose contents can be listed underneath it.
+    pub fn is_expandable(&self) -> bool {
+        match self.kind {
+            ChangedFileKind::Directory { .. } => true,
+            ChangedFileKind::File
+            | ChangedFileKind::NestedRepository
+            | ChangedFileKind::LinkedWorktree => false,
+        }
+    }
+
+    /// How many files this row stands for, which is what every total counts:
+    /// a folded folder of thirty thousand files is thirty thousand changed
+    /// files, not one. A nested repository is one entry, since yaran does not
+    /// look inside it.
+    pub fn file_count(&self) -> usize {
+        match self.kind {
+            ChangedFileKind::File
+            | ChangedFileKind::NestedRepository
+            | ChangedFileKind::LinkedWorktree => 1,
+            ChangedFileKind::Directory(ref contents) => contents.file_count,
+        }
+    }
+
+    /// What a folded folder holds, `None` for any other row.
+    pub fn folder_contents(&self) -> Option<&FolderContents> {
+        match &self.kind {
+            ChangedFileKind::Directory(contents) => Some(contents),
+            ChangedFileKind::File
+            | ChangedFileKind::NestedRepository
+            | ChangedFileKind::LinkedWorktree => None,
+        }
+    }
+}
+
+/// The number of changed files a list stands for, folded folders counted by
+/// what is inside them.
+pub fn total_file_count(files: &[ChangedFile]) -> usize {
+    files.iter().map(ChangedFile::file_count).sum()
+}
+
+/// The row in `files` that answers for `path`: the row with exactly that path,
+/// or else the folded folder the path sits inside. `None` when neither exists.
+///
+/// This is how an action on a file the user reached by expanding a folder is
+/// validated: the file is not a row of its own in the listing, but the folder
+/// it lives in is, and that is the proof it is a real change in this worktree.
+///
+/// "Inside" is decided on the path's text, so only a plain path can be inside
+/// anything: `node_modules/..` is the worktree root and `node_modules/../README`
+/// is a tracked file, and either one taken for a file of the folder would hand
+/// a destructive act the wrong target. See [`is_plain_relative_path`].
+pub fn listing_row_for<'a>(files: &'a [ChangedFile], path: &str) -> Option<&'a ChangedFile> {
+    if let Some(exact) = files.iter().find(|file| file.path == path) {
+        return Some(exact);
+    }
+    if !is_plain_relative_path(path) {
+        return None;
+    }
+    files.iter().find(|file| {
+        file.is_expandable()
+            && path
+                .strip_prefix(file.path.as_str())
+                .is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+    })
+}
+
+/// True when `path` is a relative path in its simplest spelling: not empty,
+/// not starting with `/`, and every `/`-separated component a real name (none
+/// empty, none `.` or `..`). This is the form git itself prints paths in, and
+/// the only form in which "is this path inside that folder" can be answered by
+/// comparing text. See [`is_plain_relative_path`] for the stricter form.
+pub fn is_lexically_normal_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+/// [`is_lexically_normal_path`], and no backslash anywhere. On the platforms
+/// yaran runs on a backslash is an ordinary name character and cannot climb out
+/// of anything, but a name that reads like a Windows traversal has no business
+/// being answered for by a folder row: the cost is that a file with a backslash
+/// in its name, inside a folded folder, is acted on through the folder rather
+/// than on its own.
+pub(crate) fn is_plain_relative_path(path: &str) -> bool {
+    is_lexically_normal_path(path) && !path.contains('\\')
+}
+
+/// `n` with a comma between every group of three digits, the form a folder
+/// row's file count is written in (`28,747 files`).
+pub fn group_thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// `count` and its noun, singular or plural, the count grouped by thousands.
+pub fn count_words(count: usize, one: &str, many: &str) -> String {
+    let noun = if count == 1 { one } else { many };
+    format!("{} {noun}", group_thousands(count))
+}
+
+/// The words a folder row's count is written in: `1 file`, `28,747 files`,
+/// `3 files and 1 nested repository`, or `nested repository` for a repository
+/// yaran does not look inside. `None` for an ordinary file row, which carries
+/// line counts instead.
+pub fn folder_count_label(file: &ChangedFile) -> Option<String> {
+    match &file.kind {
+        ChangedFileKind::File => None,
+        ChangedFileKind::Directory(contents) => Some(folder_contents_words(contents)),
+        ChangedFileKind::NestedRepository => Some("nested repository".to_string()),
+        ChangedFileKind::LinkedWorktree => Some("worktree of this repository".to_string()),
+    }
+}
+
+/// A folder's contents in words, nested repositories named only when there
+/// are some, and a staged folder's left-out repositories after a middle dot:
+/// "5 files · 1 nested repository not staged".
+pub(crate) fn folder_contents_words(contents: &FolderContents) -> String {
+    let mut words = folder_held_words(contents);
+    let mut not_staged = Vec::new();
+    if contents.repositories_not_staged > 0 {
+        not_staged.push(count_words(
+            contents.repositories_not_staged,
+            "nested repository",
+            "nested repositories",
+        ));
+    }
+    if contents.worktrees_not_staged > 0 {
+        not_staged.push(count_words(
+            contents.worktrees_not_staged,
+            "worktree of this repository",
+            "worktrees of this repository",
+        ));
+    }
+    if !not_staged.is_empty() {
+        let _ = write!(words, " \u{b7} {} not staged", join_words(&not_staged));
+    }
+    words
+}
+
+fn folder_held_words(contents: &FolderContents) -> String {
+    let mut parts = Vec::new();
+    let others = contents.nested_repositories + contents.linked_worktrees;
+    if contents.file_count > 0 || others == 0 {
+        parts.push(count_words(contents.file_count, "file", "files"));
+    }
+    if contents.nested_repositories > 0 {
+        parts.push(count_words(
+            contents.nested_repositories,
+            "nested repository",
+            "nested repositories",
+        ));
+    }
+    if contents.linked_worktrees > 0 {
+        parts.push(count_words(
+            contents.linked_worktrees,
+            "worktree of this repository",
+            "worktrees of this repository",
+        ));
+    }
+    join_words(&parts)
+}
+
+/// `a`, `a and b`, `a, b and c`.
+pub fn join_words(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [only] => only.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
 }
 
 /// Who a companion terminal belongs to. A terminal is owned by exactly one
@@ -987,8 +1682,11 @@ pub enum TerminalRoute<'a> {
 /// Produced by the exhaustive [`TerminalOwner::as_ref`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalOwnerRef<'a> {
+    /// A terminal owned by the agent session with this id.
     Session(&'a str),
+    /// A terminal owned by the project with this id.
     Project(&'a str),
+    /// A terminal that belongs to nothing.
     Standalone,
 }
 
@@ -1002,8 +1700,8 @@ impl TerminalOwner {
     /// forced through the answer rather than quietly rejecting the new kind.
     pub fn is_at_route(&self, route: TerminalRoute<'_>) -> bool {
         match (self, route) {
-            (Self::Session(owner), TerminalRoute::Session(id)) => owner == id,
-            (Self::Project(owner), TerminalRoute::Project(id)) => owner == id,
+            (Self::Session(owner), TerminalRoute::Session(id))
+            | (Self::Project(owner), TerminalRoute::Project(id)) => owner == id,
             // A standalone terminal lives at the un-nested address and nowhere
             // else, and no owned terminal is reachable there: the un-nested
             // address names no owner, so serving an owned terminal from it would
@@ -1043,7 +1741,7 @@ impl TerminalOwner {
     /// so removing a project has nothing to do with it: it ends when the user
     /// closes it or yaran shuts down. Nothing closes it automatically. The same
     /// note sits on [`Self::closed_by_session_delete`].
-    pub fn closed_by_project_removal(&self, project_id: &str) -> bool {
+    pub(crate) fn closed_by_project_removal(&self, project_id: &str) -> bool {
         match self {
             Self::Project(owner) => owner == project_id,
             Self::Session(_) | Self::Standalone => false,
@@ -1052,7 +1750,6 @@ impl TerminalOwner {
 
     /// Presentation: borrow the owner for naming/projection. Exhaustive, so a
     /// new kind must decide how it is presented before this compiles.
-    #[allow(clippy::should_implement_trait)]
     pub fn as_ref(&self) -> TerminalOwnerRef<'_> {
         match self {
             Self::Session(id) => TerminalOwnerRef::Session(id),
@@ -1136,10 +1833,16 @@ mod terminal_owner_tests {
     }
 }
 
+/// A running terminal: its owner, its display label and its PTY.
+#[derive(Debug)]
 pub struct CompanionTerminal {
+    /// What the terminal belongs to; it never changes after spawn.
     pub owner: TerminalOwner,
+    /// The terminal's display label.
     pub label: String,
+    /// The program running in the foreground, when one is.
     pub foreground_cmd: Option<String>,
+    /// The terminal's PTY.
     pub client: PtyClient,
     /// The manual (drag) display position of this terminal within the flat
     /// Terminals section, ascending. Stamped at spawn from a monotonic engine
@@ -1153,6 +1856,131 @@ pub struct CompanionTerminal {
     /// compute the same "recently created" order over terminals and agents.
     /// RUNTIME ONLY (memory-only, like the terminal itself).
     pub created_at: DateTime<Utc>,
+    /// A project or standalone terminal's manual place in the agents list:
+    /// right after this agent in the stored agent order, first when `None`.
+    /// RUNTIME ONLY, so the stored agent order never names a terminal and a
+    /// restart forgets it along with the terminal. An agent's own terminals
+    /// are not list rows and leave it `None`.
+    pub list_after: Option<String>,
+}
+
+#[cfg(test)]
+mod changed_file_kind_tests {
+    use super::*;
+
+    fn row(path: &str, kind: ChangedFileKind) -> ChangedFile {
+        ChangedFile {
+            status: "?".to_string(),
+            path: path.to_string(),
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            renamed_from: None,
+            kind,
+        }
+    }
+
+    #[test]
+    fn totals_count_the_files_inside_a_folded_folder() {
+        let files = vec![
+            row("notes.md", ChangedFileKind::File),
+            row("node_modules", ChangedFileKind::directory(28_747)),
+            row("vendor/other", ChangedFileKind::NestedRepository),
+        ];
+        assert_eq!(total_file_count(&files), 1 + 28_747 + 1);
+    }
+
+    #[test]
+    fn a_file_inside_a_folded_folder_is_answered_for_by_the_folder() {
+        let files = vec![
+            row("node_modules", ChangedFileKind::directory(2)),
+            row("node", ChangedFileKind::File),
+        ];
+        let found = listing_row_for(&files, "node_modules/pkg/index.js").map(|f| f.path.as_str());
+        assert_eq!(found, Some("node_modules"));
+        assert_eq!(
+            listing_row_for(&files, "node").map(|f| f.path.as_str()),
+            Some("node")
+        );
+        // A sibling that merely shares the prefix is not inside the folder.
+        assert!(listing_row_for(&files, "node_modules2/x.js").is_none());
+        assert!(listing_row_for(&files, "node_modules/").is_none());
+    }
+
+    #[test]
+    fn a_nested_repository_answers_for_nothing_inside_it() {
+        let files = vec![row("vendor/lib", ChangedFileKind::NestedRepository)];
+        assert!(listing_row_for(&files, "vendor/lib/src/main.rs").is_none());
+        assert!(listing_row_for(&files, "vendor/lib").is_some());
+    }
+
+    #[test]
+    fn counts_are_grouped_by_thousands() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(28_747), "28,747");
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn a_folder_row_names_its_count_in_words() {
+        let one = row("a", ChangedFileKind::directory(1));
+        let many = row("b", ChangedFileKind::directory(28_747));
+        let nested = row("c", ChangedFileKind::NestedRepository);
+        let file = row("d", ChangedFileKind::File);
+        assert_eq!(folder_count_label(&one).as_deref(), Some("1 file"));
+        assert_eq!(folder_count_label(&many).as_deref(), Some("28,747 files"));
+        assert_eq!(
+            folder_count_label(&nested).as_deref(),
+            Some("nested repository")
+        );
+        assert_eq!(folder_count_label(&file), None);
+        let mixed = row(
+            "e",
+            ChangedFileKind::Directory(FolderContents {
+                file_count: 3,
+                nested_repositories: 1,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            folder_count_label(&mixed).as_deref(),
+            Some("3 files and 1 nested repository")
+        );
+        let only_nested = row(
+            "f",
+            ChangedFileKind::Directory(FolderContents {
+                file_count: 0,
+                nested_repositories: 2,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            folder_count_label(&only_nested).as_deref(),
+            Some("2 nested repositories")
+        );
+        let staged = |repositories_not_staged, worktrees_not_staged| {
+            row(
+                "g",
+                ChangedFileKind::Directory(FolderContents {
+                    file_count: 5,
+                    repositories_not_staged,
+                    worktrees_not_staged,
+                    ..Default::default()
+                }),
+            )
+        };
+        assert_eq!(
+            folder_count_label(&staged(1, 0)).as_deref(),
+            Some("5 files \u{b7} 1 nested repository not staged")
+        );
+        assert_eq!(
+            folder_count_label(&staged(0, 2)).as_deref(),
+            Some("5 files \u{b7} 2 worktrees of this repository not staged")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1201,6 +2029,62 @@ mod tests {
         assert!(is_valid_agent_handle(&"a".repeat(AGENT_HANDLE_MAX_LEN)));
     }
 
+    #[test]
+    fn a_pull_request_key_ignores_the_case_of_its_host_and_repository() {
+        let lower = PrKey::new("github.com", "ada/widget", 77);
+        let mixed = PrKey::new("GitHub.com", "Ada/Widget", 77);
+        assert_eq!(lower, mixed);
+        let mut set = std::collections::HashSet::new();
+        set.insert(lower);
+        assert!(set.contains(&mixed), "equal keys hash alike");
+        assert_ne!(
+            PrKey::new("github.com", "ada/widget", 77),
+            PrKey::new("github.com", "ada/gadget", 77),
+            "the same number in another repository is another pull request"
+        );
+        assert_ne!(
+            PrKey::new("github.com", "ada/widget", 77),
+            PrKey::new("github.example.com", "ada/widget", 77)
+        );
+    }
+
+    #[test]
+    fn an_open_draft_answer_becomes_a_draft_row_and_back() {
+        let info = PrInfo {
+            number: 5,
+            state: PrState::Open,
+            is_draft: true,
+            title: "Sketch".to_string(),
+            host: "github.com".to_string(),
+            owner_repo: "ada/widget".to_string(),
+            url: "https://github.com/ada/widget/pull/5".to_string(),
+            ..PrInfo::default()
+        };
+        let recorded = Utc::now();
+        let row = AgentPr::found(&info, recorded);
+        assert_eq!(row.state, PrState::Draft);
+        assert!(row.found && !row.attached && !row.hidden);
+        assert_eq!(row.first_recorded_at, recorded);
+        let stored = row.to_stored("s1");
+        assert_eq!(stored.state, "OPEN", "a draft is stored as open");
+        let back = row.to_info();
+        assert_eq!(back.state, PrState::Open);
+        assert!(back.is_draft);
+        let merged = AgentPr::found(
+            &PrInfo {
+                state: PrState::Merged,
+                is_draft: true,
+                ..info
+            },
+            recorded,
+        );
+        assert_eq!(
+            merged.state,
+            PrState::Merged,
+            "only an open pull request can be a draft"
+        );
+    }
+
     fn session_with_focus(last_focused_tab: Option<&str>) -> AgentSession {
         let now = Utc::now();
         AgentSession {
@@ -1229,7 +2113,7 @@ mod tests {
             status: SessionStatus::Active,
             created_at: now,
             updated_at: now,
-            last_focused_tab: last_focused_tab.map(|s| s.to_string()),
+            last_focused_tab: last_focused_tab.map(std::string::ToString::to_string),
         }
     }
 
@@ -1257,54 +2141,13 @@ mod tests {
         );
     }
 
-    /// The delete dialogs' checkbox starts in the provenance default, and the
-    /// callers with no dialog behind them keep it.
-    #[test]
-    fn unanswered_branch_deletion_follows_the_provenance() {
-        for provenance in [
-            BranchProvenance::CreatedByYaran,
-            BranchProvenance::AttachedExisting,
-            BranchProvenance::Adopted,
-            BranchProvenance::Unknown,
-        ] {
-            assert_eq!(
-                provenance.resolve_branch_deletion(None),
-                provenance.yaran_may_delete_branch(),
-                "an unasked delete must behave exactly as it did before the checkbox existed, \
-                 for {provenance:?}"
-            );
-        }
-    }
-
-    /// The checkbox is a real control in both directions: it can spare a branch
-    /// yaran created, and it is the only thing that removes one yaran did not.
-    #[test]
-    fn an_answered_branch_deletion_wins_over_the_provenance() {
-        assert!(!BranchProvenance::CreatedByYaran.resolve_branch_deletion(Some(false)));
-        assert!(BranchProvenance::CreatedByYaran.resolve_branch_deletion(Some(true)));
-        for provenance in [
-            BranchProvenance::AttachedExisting,
-            BranchProvenance::Adopted,
-            BranchProvenance::Unknown,
-        ] {
-            assert!(
-                !provenance.resolve_branch_deletion(Some(false)),
-                "{provenance:?} unticked keeps the branch"
-            );
-            assert!(
-                provenance.resolve_branch_deletion(Some(true)),
-                "{provenance:?} ticked is the explicit override the dialog exists to offer"
-            );
-        }
-    }
-
     /// "Not yaran's branch" and "you said no" are different sentences, and the
     /// second one must be available for a branch yaran DID create.
     #[test]
     fn a_declined_branch_deletion_says_so_rather_than_blaming_the_provenance() {
         let declined = BranchKeptReason::UserDeclined.kept_branches_note("feature", "feature");
         assert!(
-            declined.contains("you left the branch box unticked"),
+            declined.contains("was kept because you chose to keep it"),
             "got {declined:?}"
         );
         assert!(
@@ -1374,12 +2217,15 @@ mod tests {
             ("/home/someone/notes/", "notes"),
             // A trailing "." is not a name of its own.
             ("/home/someone/notes/.", "notes"),
+            // The folder's name is converted into a valid agent name, the same
+            // one creation gives an agent nobody named.
+            ("/home/someone/My Notes", "My-Notes"),
             // A path whose last component is ".." has no name at all, so the
-            // label falls back to the whole path rather than the word "..".
-            ("/home/someone/notes/..", "/home/someone/notes/.."),
+            // label is the fixed fallback rather than the word "..".
+            ("/home/someone/notes/..", "standalone-agent"),
             // Nor has the root, nor the empty string.
-            ("/", "/"),
-            ("", ""),
+            ("/", "standalone-agent"),
+            ("", "standalone-agent"),
         ] {
             assert_eq!(
                 folder_session(None, path).display_label(),

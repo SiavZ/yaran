@@ -72,7 +72,7 @@ pub const HEADLINE_CHARS: usize = 120;
 /// when one ends early enough, else whole words and an ellipsis), and the
 /// whole title moves to the top of the detail. `None` when no title is left.
 pub fn fit_title(title: &str, detail: Option<String>) -> Option<(String, Option<String>)> {
-    let full = clean(title, MAX_DETAIL_CHARS, false)?;
+    let full = clean_line(title, MAX_DETAIL_CHARS)?;
     if full.chars().count() <= MAX_TITLE_CHARS {
         return Some((full, detail));
     }
@@ -83,28 +83,21 @@ pub fn fit_title(title: &str, detail: Option<String>) -> Option<(String, Option<
         .filter_map(|mark| window.find(mark).map(|at| (at, *mark)))
         .filter(|(at, _)| window[..*at].chars().count() >= 20)
         .min_by_key(|(at, _)| *at);
-    let headline = match clause {
-        Some((at, mark)) => {
-            let keep = if mark.starts_with('?') || mark.starts_with('!') {
-                1
-            } else {
-                0
-            };
-            window[..at + keep].trim_end().to_string()
-        }
-        None => {
-            let cut = window
-                .rfind(' ')
-                .filter(|at| *at > 20)
-                .unwrap_or(window.len());
-            format!("{}\u{2026}", window[..cut].trim_end())
-        }
+    let headline = if let Some((at, mark)) = clause {
+        let keep = usize::from(mark.starts_with('?') || mark.starts_with('!'));
+        window[..at + keep].trim_end().to_string()
+    } else {
+        let cut = window
+            .rfind(' ')
+            .filter(|at| *at > 20)
+            .unwrap_or(window.len());
+        format!("{}\u{2026}", window[..cut].trim_end())
     };
     let detail = match detail {
         Some(detail) => format!("{full}\n\n{detail}"),
         None => full,
     };
-    Some((headline, clean(&detail, MAX_DETAIL_CHARS, true)))
+    Some((headline, clean_text(&detail, MAX_DETAIL_CHARS)))
 }
 /// Longest detail kept, in characters. The detail is read in the card view.
 pub const MAX_DETAIL_CHARS: usize = 8_000;
@@ -256,6 +249,10 @@ impl Priority {
         matches!(self, Priority::Critical | Priority::High)
     }
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if hands the field over by reference"
+    )]
     fn is_normal(&self) -> bool {
         *self == Priority::Normal
     }
@@ -285,12 +282,22 @@ impl std::fmt::Display for CardKind {
     }
 }
 
+/// Whether a card holds up the agent that posted it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocking {
+    /// The poster cannot carry on until a person answers.
+    HoldsPoster,
+    /// The poster carries on; the card is for when somebody has a moment.
+    DoesNotHold,
+}
+
 /// One card on the board.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Card {
     /// The card's id, unique on the board. A board that is not shared never
     /// hands a number out twice.
     pub id: CardId,
+    /// What kind of help the card asks for.
     pub kind: CardKind,
     /// How urgent it is. Absent from the file for the ordinary queue, so a
     /// board written before priorities existed reads back unchanged.
@@ -304,17 +311,22 @@ pub struct Card {
     /// unique per (ticket, kind, assignee): posting again updates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<String>,
+    /// The card's one-line ask.
     pub title: String,
+    /// What the poster said beyond the title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// Who posted it: an agent handle, or whatever `--from` said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// When it was posted.
     pub created_at: DateTime<Utc>,
+    /// When it last changed.
     pub updated_at: DateTime<Utc>,
     /// Set while the card is resolved; cleared again by a reopen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<DateTime<Utc>>,
+    /// Who resolved it, while it is resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by: Option<String>,
     /// What the resolver said about it, if anything.
@@ -348,6 +360,7 @@ pub struct Card {
 /// answer to one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
+    /// When it was written.
     pub at: DateTime<Utc>,
     /// Who wrote it: a person's name, or an agent's handle.
     pub from: String,
@@ -355,6 +368,7 @@ pub struct Message {
     /// message from another side is the one this side relays and marks unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side: Option<String>,
+    /// What it says.
     pub text: String,
     /// The writer marked the card done with this message.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -381,14 +395,18 @@ impl Message {
 /// A message to add to a card's conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NewMessage {
+    /// Who writes it: a person's name, or an agent's handle.
     pub from: String,
+    /// The person whose yaran it is written on (`[board] me` there).
     pub side: Option<String>,
+    /// What it says.
     pub text: String,
     /// Mark the card done with it.
     pub done: bool,
 }
 
 impl Card {
+    /// Whether the card still waits for an answer.
     pub fn is_open(&self) -> bool {
         self.resolved_at.is_none()
     }
@@ -401,21 +419,18 @@ impl Card {
     pub fn absorb_conversation(&mut self, other: &Card) -> bool {
         let mut changed = false;
         for theirs in &other.thread {
-            match self
+            if let Some(ours) = self
                 .thread
                 .iter_mut()
                 .find(|ours| ours.key() == theirs.key())
             {
-                Some(ours) => {
-                    if ours.relayed_at.is_none() && theirs.relayed_at.is_some() {
-                        ours.relayed_at = theirs.relayed_at;
-                        changed = true;
-                    }
-                }
-                None => {
-                    self.thread.push(theirs.clone());
+                if ours.relayed_at.is_none() && theirs.relayed_at.is_some() {
+                    ours.relayed_at = theirs.relayed_at;
                     changed = true;
                 }
+            } else {
+                self.thread.push(theirs.clone());
+                changed = true;
             }
         }
         if self.relayed_at.is_none() && other.relayed_at.is_some() {
@@ -471,12 +486,14 @@ impl Card {
 /// The whole board document.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Board {
+    /// The board file's format version.
     #[serde(default)]
     pub version: u32,
     /// The number the next new unprefixed card gets. Only a board document
     /// keeps it; a folder board numbers from the highest id it holds.
     #[serde(default)]
     pub next_id: u64,
+    /// Every card, open and resolved.
     #[serde(default)]
     pub cards: Vec<Card>,
     /// What this machine puts in front of the numbers it hands out (see
@@ -514,15 +531,20 @@ pub fn same_person(a: &str, b: &str) -> bool {
 /// A card to post, before it has a number.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NewCard {
+    /// What kind of help it asks for; absent means a question.
     pub kind: Option<CardKind>,
     /// Whose queue it goes in; `None` is nobody's in particular.
     pub assignee: Option<String>,
     /// `None` keeps an updated card's priority and gives a new card the
     /// ordinary one.
     pub priority: Option<Priority>,
+    /// The ticket it is about, which makes posting again update it.
     pub ticket: Option<String>,
+    /// The card's one-line ask.
     pub title: String,
+    /// What the poster says beyond the title.
     pub detail: Option<String>,
+    /// Who posts it.
     pub from: Option<String>,
     /// `Some` sets whether the card holds up its poster; `None` keeps an
     /// updated card's flag and leaves a new card not blocking.
@@ -542,6 +564,7 @@ pub enum PostOutcome {
 }
 
 impl PostOutcome {
+    /// The card the post made or updated.
     pub fn id(&self) -> CardId {
         match self {
             PostOutcome::Added(id) | PostOutcome::Updated(id) => id.clone(),
@@ -549,15 +572,28 @@ impl PostOutcome {
     }
 }
 
-/// Clean one piece of agent-supplied text: strip control bytes, trim, bound
-/// the length on a character boundary. `None` when nothing is left.
-fn clean(value: &str, max_chars: usize, keep_newlines: bool) -> Option<String> {
+/// Clean one line of agent-supplied text (a title, a name): whitespace runs,
+/// newlines included, become one space. See [`clean`].
+fn clean_line(value: &str, max_chars: usize) -> Option<String> {
     let sanitized = crate::sanitize::for_terminal(value);
-    let flattened = if keep_newlines {
-        sanitized.replace('\t', "    ")
-    } else {
-        sanitized.split_whitespace().collect::<Vec<_>>().join(" ")
-    };
+    clean(
+        &sanitized.split_whitespace().collect::<Vec<_>>().join(" "),
+        max_chars,
+    )
+}
+
+/// Clean agent-supplied prose that keeps its lines (a detail, a message):
+/// tabs become four spaces. See [`clean`].
+fn clean_text(value: &str, max_chars: usize) -> Option<String> {
+    clean(
+        &crate::sanitize::for_terminal(value).replace('\t', "    "),
+        max_chars,
+    )
+}
+
+/// Trim already-sanitized text and bound its length on a character boundary.
+/// `None` when nothing is left.
+fn clean(flattened: &str, max_chars: usize) -> Option<String> {
     let trimmed = flattened.trim();
     if trimmed.is_empty() {
         return None;
@@ -573,7 +609,7 @@ fn clean(value: &str, max_chars: usize, keep_newlines: bool) -> Option<String> {
 /// A ticket reference as stored: cleaned, and without a leading `#` so `#4812`
 /// and `4812` name the same ticket.
 pub fn normalize_ticket(value: &str) -> Option<String> {
-    let cleaned = clean(value, MAX_TICKET_CHARS, false)?;
+    let cleaned = clean_line(value, MAX_TICKET_CHARS)?;
     let bare = cleaned.trim_start_matches('#').trim();
     (!bare.is_empty()).then(|| bare.to_string())
 }
@@ -581,14 +617,18 @@ pub fn normalize_ticket(value: &str) -> Option<String> {
 impl Board {
     /// Post a card, or update the open card with the same ticket, kind and
     /// assignee. A new card is numbered behind the board's [`Board::prefix`].
-    pub fn post(&mut self, card: NewCard, now: DateTime<Utc>) -> Result<PostOutcome> {
+    ///
+    /// # Errors
+    ///
+    /// Fails when the title is empty after cleaning, or the board is at its limit of open cards.
+    pub fn post(&mut self, card: &NewCard, now: DateTime<Utc>) -> Result<PostOutcome> {
         let Some(kind) = card.kind else {
             bail!("a card needs a kind: one of task, validate, confirm, info");
         };
         let detail = card
             .detail
             .as_deref()
-            .and_then(|detail| clean(detail, MAX_DETAIL_CHARS, true));
+            .and_then(|detail| clean_text(detail, MAX_DETAIL_CHARS));
         let Some((title, detail)) = fit_title(&card.title, detail) else {
             bail!("a card needs a title");
         };
@@ -596,11 +636,11 @@ impl Board {
         let from = card
             .from
             .as_deref()
-            .and_then(|from| clean(from, MAX_FROM_CHARS, false));
+            .and_then(|from| clean_line(from, MAX_FROM_CHARS));
         let assignee = card
             .assignee
             .as_deref()
-            .and_then(|assignee| clean(assignee, MAX_FROM_CHARS, false));
+            .and_then(|assignee| clean_line(assignee, MAX_FROM_CHARS));
 
         if let Some(ticket) = ticket.as_deref()
             && let Some(existing) = self.cards.iter_mut().find(|c| {
@@ -629,7 +669,7 @@ impl Board {
         if open >= MAX_OPEN_CARDS {
             bail!(
                 "the board already has {open} open cards, its limit; resolve some \
-                 (`yaran board resolve`) before posting more"
+                 (\"yaran board resolve\") before posting more"
             );
         }
         let id = self.next_card_id();
@@ -653,7 +693,7 @@ impl Board {
             origin: card
                 .origin
                 .as_deref()
-                .and_then(|origin| clean(origin, MAX_FROM_CHARS, false)),
+                .and_then(|origin| clean_line(origin, MAX_FROM_CHARS)),
             assigned_by: None,
             blocking: card.blocking.unwrap_or(false),
             relayed_at: None,
@@ -683,6 +723,7 @@ impl Board {
         CardId::new(&self.prefix, (highest + 1).max(floor).max(1))
     }
 
+    /// The card with `id`, open or resolved.
     pub fn card(&self, id: impl Into<CardId>) -> Option<&Card> {
         let id = id.into();
         self.cards.iter().find(|c| c.id == id)
@@ -700,6 +741,10 @@ impl Board {
     /// for a bare number, this machine's card with that number, and failing
     /// that the one card of any prefix that has it. Two cards sharing the
     /// number is an error naming both, never a guess.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card, or more than one, matches `query`.
     pub fn find(&self, query: &str) -> Result<CardId> {
         let Some(wanted) = CardId::parse(query) else {
             bail!("{query:?} is not a card number");
@@ -735,6 +780,10 @@ impl Board {
 
     /// Resolve one card. Resolving a card that is already resolved changes
     /// nothing and says so (`Ok(false)`); an unknown id is an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn resolve(
         &mut self,
         id: impl Into<CardId>,
@@ -747,8 +796,8 @@ impl Board {
             return Ok(false);
         }
         card.resolved_at = Some(now);
-        card.resolved_by = by.and_then(|by| clean(by, MAX_FROM_CHARS, false));
-        card.resolution = note.and_then(|note| clean(note, MAX_NOTE_CHARS, true));
+        card.resolved_by = by.and_then(|by| clean_line(by, MAX_FROM_CHARS));
+        card.resolution = note.and_then(|note| clean_text(note, MAX_NOTE_CHARS));
         card.updated_at = now;
         Ok(true)
     }
@@ -785,6 +834,10 @@ impl Board {
 
     /// Change a card's priority. `Ok(false)` when it already had it; an
     /// unknown id is an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn set_priority(
         &mut self,
         id: impl Into<CardId>,
@@ -803,6 +856,10 @@ impl Board {
     /// Put a card in `assignee`'s queue, or in nobody's in particular with
     /// `None`. `Ok(false)` when it already was there; an unknown id is an
     /// error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn assign(
         &mut self,
         id: impl Into<CardId>,
@@ -810,8 +867,8 @@ impl Board {
         by: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<bool> {
-        let assignee = assignee.and_then(|assignee| clean(assignee, MAX_FROM_CHARS, false));
-        let by = by.and_then(|by| clean(by, MAX_FROM_CHARS, false));
+        let assignee = assignee.and_then(|assignee| clean_line(assignee, MAX_FROM_CHARS));
+        let by = by.and_then(|by| clean_line(by, MAX_FROM_CHARS));
         let card = self.card_mut(id)?;
         if same_assignee(card.assignee.as_deref(), assignee.as_deref()) {
             return Ok(false);
@@ -824,6 +881,10 @@ impl Board {
 
     /// Put a resolved card back on the board. Reopening an open card changes
     /// nothing (`Ok(false)`); an unknown id is an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn reopen(&mut self, id: impl Into<CardId>, now: DateTime<Utc>) -> Result<bool> {
         let card = self.card_mut(id)?;
         if card.is_open() {
@@ -840,22 +901,26 @@ impl Board {
     /// when `message.done` says so (a card that is already done stays done).
     /// Returns the stored message. An empty message, an unknown id and a full
     /// conversation are errors.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id, or the message is empty after cleaning.
     pub fn reply(
         &mut self,
         id: impl Into<CardId>,
-        message: NewMessage,
+        message: &NewMessage,
         now: DateTime<Utc>,
     ) -> Result<Message> {
-        let Some(text) = clean(&message.text, MAX_MESSAGE_CHARS, true) else {
+        let Some(text) = clean_text(&message.text, MAX_MESSAGE_CHARS) else {
             bail!("a reply needs some text");
         };
-        let Some(from) = clean(&message.from, MAX_FROM_CHARS, false) else {
+        let Some(from) = clean_line(&message.from, MAX_FROM_CHARS) else {
             bail!("a reply needs to say who wrote it");
         };
         let side = message
             .side
             .as_deref()
-            .and_then(|side| clean(side, MAX_FROM_CHARS, false));
+            .and_then(|side| clean_line(side, MAX_FROM_CHARS));
         let card = self.card_mut(id)?;
         if card.thread.len() >= MAX_THREAD_MESSAGES {
             bail!(
@@ -884,7 +949,7 @@ impl Board {
         if message.done && card.is_open() {
             card.resolved_at = Some(now);
             card.resolved_by = Some(stored.from.clone());
-            card.resolution = clean(&stored.text, MAX_NOTE_CHARS, true);
+            card.resolution = clean_text(&stored.text, MAX_NOTE_CHARS);
         }
         card.updated_at = now;
         Ok(stored)
@@ -892,13 +957,18 @@ impl Board {
 
     /// Say whether a card holds up its poster. `Ok(false)` when it already
     /// said so; an unknown id is an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn set_blocking(
         &mut self,
         id: impl Into<CardId>,
-        blocking: bool,
+        blocking: Blocking,
         now: DateTime<Utc>,
     ) -> Result<bool> {
         let card = self.card_mut(id)?;
+        let blocking = blocking == Blocking::HoldsPoster;
         if card.blocking == blocking {
             return Ok(false);
         }
@@ -910,6 +980,10 @@ impl Board {
     /// Record that the message `key` names on card `id` was passed to its
     /// agent. `Ok(false)` when it already was, or the message is gone. The
     /// card's update time does not move: relaying is bookkeeping, not news.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn mark_relayed(
         &mut self,
         id: impl Into<CardId>,
@@ -928,6 +1002,10 @@ impl Board {
 
     /// Record that card `id` itself was passed to an agent. `Ok(false)` when
     /// it already was.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn mark_card_relayed(&mut self, id: impl Into<CardId>, now: DateTime<Utc>) -> Result<bool> {
         let card = self.card_mut(id)?;
         if card.relayed_at.is_some() {
@@ -1111,7 +1189,7 @@ pub fn render_reply(template: &str, card: &Card, reply: &str) -> String {
     if template.is_empty() {
         return reply.to_string();
     }
-    let title = clean(&card.title, REPLY_TITLE_CHARS, false).unwrap_or_default();
+    let title = clean_line(&card.title, REPLY_TITLE_CHARS).unwrap_or_default();
     let rendered = template
         .replace("{card}", &card.label())
         .replace("{ticket}", card.ticket.as_deref().unwrap_or(""))

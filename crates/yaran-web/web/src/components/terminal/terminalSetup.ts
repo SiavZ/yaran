@@ -1,5 +1,6 @@
 import type { RefObject } from "react"
 import { FitAddon } from "@xterm/addon-fit"
+import { Unicode11Addon } from "@xterm/addon-unicode11"
 import { Terminal } from "@xterm/xterm"
 
 import { registerAgentNotifications } from "@/lib/agentNotifications"
@@ -17,6 +18,7 @@ import {
   xtermScrollbarWidth,
 } from "./constants"
 import { createLinkPress, type LinkPress } from "./linkPress"
+import type { OwnershipVerdict } from "./channels"
 import type { LiveSettings } from "./liveValues"
 import type { ResizeCoordinator } from "./resizeCoordinator"
 import { attachWebglRenderer } from "./webglRenderer"
@@ -41,6 +43,7 @@ type CreateTerminalSetupOptions = {
   host: HTMLDivElement
   id: string
   live: LiveSettings
+  ownership: OwnershipVerdict
 }
 
 function resolveTerminalBackground(): string {
@@ -68,7 +71,7 @@ function resolveTerminalBackground(): string {
 export function createTerminalSetup(
   options: CreateTerminalSetupOptions,
 ): TerminalSetup {
-  const { host, id, live } = options
+  const { host, id, live, ownership } = options
   const background = resolveTerminalBackground()
   host.style.background = background
 
@@ -92,7 +95,17 @@ export function createTerminalSetup(
     theme: { background },
     macOptionClickForcesSelection: true,
     linkHandler: links.linkHandler,
+    // `term.unicode` is a proposed API; reading or setting it throws without this.
+    allowProposedApi: true,
   })
+  // Count cell widths the way the server's terminal model does. xterm's built-in
+  // table is Unicode 6, which makes an emoji such as U+2705 one cell where the
+  // PTY's own emulator (and the program writing to it) count two, so every
+  // later character of the row lands one cell left, and the server's replay of
+  // a soft-wrapped row comes out one cell short and pulls the next row's first
+  // character up into it.
+  term.loadAddon(new Unicode11Addon())
+  term.unicode.activeVersion = "11"
   links.setTerminal(term)
   suppressViewerReports(term)
 
@@ -101,6 +114,7 @@ export function createTerminalSetup(
     title: () => live.current.notifyTitle,
     clipboardMode: () => live.current.clipboardPassthrough,
     tag: () => `yaran-agent-${id}`,
+    ownsInput: () => ownership.read(),
   })
   const disposeOsc8Gate = term.parser.registerOscHandler(
     8,
@@ -147,6 +161,9 @@ export function openTerminal(options: OpenTerminalOptions): Disposable {
     term.textarea.setAttribute("autocorrect", "off")
     term.textarea.setAttribute("autocapitalize", "off")
     term.textarea.setAttribute("spellcheck", "false")
+    // Out of the pointer's reach until a mouse press hands it back; the pane's
+    // paste guards own the switch and say why (`registerPasteGuards`).
+    term.textarea.style.pointerEvents = "none"
   }
   // BEFORE the first fit, so the grid is measured against the renderer that
   // will actually paint it. Null on every browser the ladder in

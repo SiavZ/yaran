@@ -18,6 +18,7 @@
 //! `cfg(windows)` branch here.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! file_modes.rs
 //! └── logger
@@ -25,17 +26,24 @@
 //!
 //! Used by:
 //! file_modes.rs
+//! ├── client::remotes
 //! ├── cloud::cloudflared::acquire
 //! ├── cloud::cloudflared::command
 //! ├── cloud::credentials
 //! ├── cloud::paths
 //! ├── config
 //! ├── config_write
+//! ├── control_socket
 //! ├── crate
 //! ├── logger
 //! ├── private_file
 //! ├── purge
-//! └── storage
+//! ├── storage
+//! ├── web_sessions
+//! ├── yaran-tui
+//! ├── yaran-tui::cli
+//! └── yaran[bin yaran]
+//! ```
 //! <module-headers:end>
 
 use std::fs;
@@ -44,7 +52,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// A file yaran writes for itself: owner read/write, `0600`.
-pub const PRIVATE_FILE_MODE: u32 = 0o600;
+pub(crate) const PRIVATE_FILE_MODE: u32 = 0o600;
 
 /// A directory yaran owns: owner read/write/search, `0700`. Search permission is
 /// the load-bearing bit, since it is what another user needs to reach anything
@@ -79,7 +87,7 @@ const GROUP_AND_OTHER: u32 = 0o077;
 /// between them is still followed. Undefended: yaran is single-tenant and this is
 /// the user's own config directory, so the case needs an attacker who already
 /// has the access the mode protects.
-pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
+pub(crate) fn restrict_to_owner(path: &Path) -> io::Result<()> {
     // `symlink_metadata` does NOT follow, which is the whole point; for a
     // non-symlink it answers exactly what `metadata` would.
     let meta = match fs::symlink_metadata(path) {
@@ -101,6 +109,12 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
         return Ok(());
     }
     fs::set_permissions(path, fs::Permissions::from_mode(tightened))
+}
+
+/// Set a socket yaran just bound, with the umask's mode, to [`PRIVATE_FILE_MODE`]
+/// exactly; unlike the tightening above, a failure is returned.
+pub(crate) fn make_socket_private(path: &Path) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_FILE_MODE))
 }
 
 /// Tighten `path` if it can be tightened, and warn rather than fail if it
@@ -134,6 +148,10 @@ pub fn restrict_to_owner_best_effort(path: &Path, what: &str) {
 /// Creation is fatal; the tightening is not. A directory that already exists
 /// and works must not become a startup failure because its mode could not be
 /// changed.
+///
+/// # Errors
+///
+/// Fails when the directory cannot be created; a mode that cannot be tightened is only a warning.
 pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
     restrict_to_owner_best_effort(path, "directory");

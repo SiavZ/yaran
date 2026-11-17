@@ -48,6 +48,7 @@ pub fn is_stale(worktree: &Path, days: u32) -> bool {
 /// A startup relaunch waiting for a throttle slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueuedStartupLaunch {
+    /// The agent to relaunch.
     pub session_id: String,
 }
 
@@ -68,6 +69,7 @@ pub struct StartupLaunchQueue {
 }
 
 impl StartupLaunchQueue {
+    /// Queue a launch, once per agent.
     pub fn enqueue(&mut self, launch: QueuedStartupLaunch) {
         if !self
             .pending
@@ -78,10 +80,12 @@ impl StartupLaunchQueue {
         }
     }
 
+    /// Whether nothing is queued or in flight.
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty() && self.in_flight.is_empty()
     }
 
+    /// How many launches still wait for a slot.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }
@@ -91,10 +95,12 @@ impl StartupLaunchQueue {
         self.held = true;
     }
 
+    /// Let the queued launches go again after [`Self::hold`].
     pub fn release(&mut self) {
         self.held = false;
     }
 
+    /// Whether [`Self::hold`] is in force.
     pub fn is_held(&self) -> bool {
         self.held
     }
@@ -170,6 +176,11 @@ fn acquire(inner: &Arc<(Mutex<usize>, Condvar)>) -> Permit {
 /// `cfg.stagger_ms` milliseconds have elapsed since the previous dispatch
 /// AND a permit is available. Returns once every spawned worker has
 /// finished (joined).
+///
+/// # Panics
+///
+/// Panics when a worker thread cannot be spawned or the permit lock is
+/// poisoned.
 pub fn run_scheduler<T, F>(jobs: Vec<T>, cfg: &AutoResumeConfig, spawn_one: F)
 where
     T: Send + 'static,
@@ -192,7 +203,7 @@ where
         if let Some(prev) = last_dispatch {
             let elapsed = prev.elapsed();
             if elapsed < stagger {
-                thread::sleep(stagger - elapsed);
+                thread::sleep(stagger.saturating_sub(elapsed));
             }
         }
         let permit = acquire(&permits);

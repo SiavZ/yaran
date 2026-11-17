@@ -33,6 +33,7 @@ use crate::config::YaranPaths;
 use crate::git;
 use crate::model::{AgentSession, Project};
 use crate::worker::ProjectWorktreeEntry;
+use crate::worktree_ops::{WorktreeOps, describe_holders};
 
 /// One row of the worktree manager: a managed worktree of a project, and
 /// everything both surfaces need to render and decide.
@@ -54,13 +55,26 @@ pub struct ManagedWorktree {
     /// The agent holding this worktree, when one does. `Some` means the row is
     /// listed but not removable.
     pub attached_session_id: Option<String>,
+    /// A removal of this worktree has already begun: the agent that owned it
+    /// was just deleted and its processes are still exiting, or git is
+    /// removing it now. Listed, labelled "being removed", and not removable a
+    /// second time.
+    pub being_removed: bool,
+    /// What, other than the agent that holds it, is using the folder: an
+    /// agent being created in it, something yaran started still running there
+    /// (a deleted agent's CLI still stopping, a terminal), or a standalone
+    /// agent working in it. Listed, labelled with this, and not removable
+    /// until it has gone. The holding agent itself is never this (see
+    /// [`in_use_by`]).
+    pub busy: Option<String>,
 }
 
 impl ManagedWorktree {
-    /// Whether the manager may remove this worktree. An agent holding it is the
-    /// one reason it may not.
+    /// Whether the manager may remove this worktree: no agent holds it, none
+    /// is being created in it, nothing yaran started is still running in it, and
+    /// no removal of it has begun.
     pub fn is_removable(&self) -> bool {
-        self.attached_session_id.is_none()
+        self.attached_session_id.is_none() && !self.being_removed && self.busy.is_none()
     }
 }
 
@@ -70,7 +84,7 @@ impl ManagedWorktree {
 /// lives. Dirtiness is not knowable from a classification, so it comes back
 /// `false` here and is filled in by [`list_manageable_worktrees`], which is
 /// allowed to shell to git.
-pub fn manageable_worktrees(entries: Vec<ProjectWorktreeEntry>) -> Vec<ManagedWorktree> {
+pub(crate) fn manageable_worktrees(entries: Vec<ProjectWorktreeEntry>) -> Vec<ManagedWorktree> {
     entries
         .into_iter()
         .filter(|entry| entry.is_managed_by_yaran && !entry.is_project_checkout)
@@ -80,6 +94,8 @@ pub fn manageable_worktrees(entries: Vec<ProjectWorktreeEntry>) -> Vec<ManagedWo
             branch: entry.branch,
             dirty: false,
             attached_session_id: entry.existing_session_id,
+            being_removed: false,
+            busy: None,
         })
         .collect()
 }
@@ -92,10 +108,63 @@ pub fn manageable_worktrees(entries: Vec<ProjectWorktreeEntry>) -> Vec<ManagedWo
 /// git lock) degrades to "clean" rather than failing the whole listing: the
 /// manager is still useful without the warning, and every confirmation says the
 /// removal is forced anyway.
+///
+/// # Errors
+///
+/// Fails with git's reason when the project's worktrees cannot be listed.
 pub fn list_manageable_worktrees(
     project: &Project,
     paths: &YaranPaths,
     sessions: &[AgentSession],
+    ops: &WorktreeOps,
+) -> Result<Vec<ManagedWorktree>, String> {
+    list_manageable_worktrees_with_busy(project, paths, sessions, ops, &[])
+}
+
+/// Something occupying a folder, as the manager's listing is told it (see
+/// [`crate::engine::Engine::busy_folders`]): where, why, and the agent it
+/// belongs to, when it is an agent's own (its record, or its own tab running
+/// there).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BusyFolder {
+    /// The occupied folder.
+    pub folder: PathBuf,
+    /// What is occupying it.
+    pub reason: String,
+    /// The agent it belongs to, when it is an agent's own.
+    pub agent_id: Option<String>,
+}
+
+/// What `entry` is in use by, other than the agent that holds it: the agent
+/// that owns a worktree is not something else using it (its row reads "held
+/// by an agent", and removing it is refused for that reason), so `busy` is
+/// kept for any other occupant, alongside the holding agent when there is
+/// one. Pure.
+pub(crate) fn in_use_by(
+    entry_path: &Path,
+    holder: Option<&str>,
+    busy: &[BusyFolder],
+) -> Option<String> {
+    busy.iter()
+        .filter(|occupant| holder.is_none() || occupant.agent_id.as_deref() != holder)
+        .find(|occupant| crate::worktree_ops::folder_contains(entry_path, &occupant.folder))
+        .map(|occupant| occupant.reason.clone())
+}
+
+/// [`list_manageable_worktrees`], marking as busy each folder in `busy` (what
+/// yaran still runs there, from [`crate::engine::Engine::busy_folders`]) and each
+/// folder an agent is being created in, so a row the manager would refuse to
+/// remove is never offered as removable.
+///
+/// # Errors
+///
+/// Fails with git's reason when the project's worktrees cannot be listed.
+pub fn list_manageable_worktrees_with_busy(
+    project: &Project,
+    paths: &YaranPaths,
+    sessions: &[AgentSession],
+    ops: &WorktreeOps,
+    busy: &[BusyFolder],
 ) -> Result<Vec<ManagedWorktree>, String> {
     let worktrees = git::list_worktrees(Path::new(&project.path)).map_err(|e| format!("{e:#}"))?;
     let classified =
@@ -103,6 +172,18 @@ pub fn list_manageable_worktrees(
     Ok(manageable_worktrees(classified)
         .into_iter()
         .map(|mut entry| {
+            // Asked of the registry, not of the sessions: an agent whose delete
+            // is still in its grace period has no record left, so a session
+            // snapshot would offer its folder as free.
+            entry.being_removed = ops.is_being_removed(&entry.path);
+            entry.busy = if ops
+                .holders(&entry.path)
+                .contains(&crate::worktree_ops::WorktreeOpKind::CreateAgent)
+            {
+                Some("an agent is being created in it".to_string())
+            } else {
+                in_use_by(&entry.path, entry.attached_session_id.as_deref(), busy)
+            };
             entry.dirty = git::worktree_is_dirty(&entry.path).unwrap_or(false);
             entry
         })
@@ -122,7 +203,9 @@ pub enum RemovalResolution {
     /// Removable; carries the canonical path git knows it by and the branch it
     /// is on (`None` when detached, which is nothing to delete).
     Removable {
+        /// The canonical path git knows the worktree by.
         path: PathBuf,
+        /// The branch it is on, or `None` when detached.
         branch: Option<String>,
     },
 }
@@ -148,12 +231,21 @@ pub fn resolve_removal(entries: Vec<ProjectWorktreeEntry>, requested: &Path) -> 
     }
 }
 
+/// Whether a worktree removal also deletes the branch it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchRemoval {
+    /// Delete the branch too.
+    Delete,
+    /// Keep the branch.
+    Keep,
+}
+
 /// Which branch, if any, a removal should delete. Pure, and the whole rule:
 /// the caller's request AND a branch to act on. A detached worktree sends
 /// nothing regardless of what was asked.
-pub fn branch_to_delete(delete_branch: bool, branch: Option<&str>) -> Option<&str> {
-    match (delete_branch, branch) {
-        (true, Some(branch)) => Some(branch),
+pub fn branch_to_delete(removal: BranchRemoval, branch: Option<&str>) -> Option<&str> {
+    match (removal, branch) {
+        (BranchRemoval::Delete, Some(branch)) => Some(branch),
         _ => None,
     }
 }
@@ -162,7 +254,9 @@ pub fn branch_to_delete(delete_branch: bool, branch: Option<&str>) -> Option<&st
 /// all.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchOutcome {
+    /// The branch's name.
     pub name: String,
+    /// What became of it.
     pub deletion: git::BranchDeletion,
 }
 
@@ -171,10 +265,25 @@ pub struct BranchOutcome {
 /// attempted, so no caller may claim one either way.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemovalOutcome {
+    /// Not a manageable worktree of this project; nothing was done.
     NotManaged,
+    /// An agent holds it; nothing was done.
     Attached,
+    /// A removal of this worktree has already begun (its agent was just
+    /// deleted); nothing was done a second time.
+    BeingRemoved,
+    /// Something yaran started is still running in the folder (a deleted
+    /// agent's CLI still stopping, a terminal); nothing was removed. Carries
+    /// what it is.
+    Busy {
+        /// What is still running there.
+        reason: String,
+    },
+    /// The worktree was removed.
     Removed {
+        /// The path it was removed from.
         path: PathBuf,
+        /// What happened to its branch, or `None` when no deletion was attempted.
         branch: Option<BranchOutcome>,
     },
 }
@@ -186,48 +295,307 @@ pub enum RemovalOutcome {
 /// worktree overlaps any of them, see `git::guard_whole_workspace_removal`.
 ///
 /// Shells to git, so run it off the UI thread and off the async reactor.
+///
+/// # Errors
+///
+/// Fails with the reason when the worktrees cannot be listed or the removal fails.
 pub fn remove_managed_worktree(
     project: &Project,
     paths: &YaranPaths,
     sessions: &[AgentSession],
     requested: &Path,
-    delete_branch: bool,
+    branch_removal: BranchRemoval,
     protected: &[PathBuf],
 ) -> Result<RemovalOutcome, String> {
+    remove_managed_worktree_once(
+        project,
+        paths,
+        sessions,
+        requested,
+        branch_removal,
+        protected,
+    )
+    .map_err(|e| format!("{e:#}"))
+}
+
+/// [`remove_managed_worktree`], one git attempt, its error kept typed so a
+/// caller can tell a failure worth one more try (after another look).
+fn remove_managed_worktree_once(
+    project: &Project,
+    paths: &YaranPaths,
+    sessions: &[AgentSession],
+    requested: &Path,
+    branch_removal: BranchRemoval,
+    protected: &[PathBuf],
+) -> anyhow::Result<RemovalOutcome> {
     let repo_path = PathBuf::from(&project.path);
-    let worktrees = git::list_worktrees(&repo_path).map_err(|e| format!("{e:#}"))?;
+    let worktrees = git::list_worktrees(&repo_path)?;
     let classified =
         crate::project_browser::classify_project_worktrees(project, paths, sessions, worktrees);
     match resolve_removal(classified, requested) {
         RemovalResolution::NotManaged => Ok(RemovalOutcome::NotManaged),
         RemovalResolution::Attached => Ok(RemovalOutcome::Attached),
         RemovalResolution::Removable { path, branch } => {
-            match branch_to_delete(delete_branch, branch.as_deref()) {
+            if let Some(branch) = branch_to_delete(branch_removal, branch.as_deref()) {
                 // The user asked for the branch too. `remove_worktree` deletes
                 // the branch the worktree is on; there is no second, drifted
                 // branch here, because a worktree with no agent has no record of
                 // what it was born on.
-                Some(branch) => {
-                    let removed = git::remove_worktree(&repo_path, &path, branch, None, protected)
-                        .map_err(|e| format!("{e:#}"))?;
-                    Ok(RemovalOutcome::Removed {
-                        path,
-                        branch: Some(BranchOutcome {
-                            name: branch.to_string(),
-                            deletion: removed.branch,
-                        }),
-                    })
-                }
+                let removed = git::remove_worktree(&repo_path, &path, branch, None, protected)?;
+                Ok(RemovalOutcome::Removed {
+                    path,
+                    branch: Some(BranchOutcome {
+                        name: branch.to_string(),
+                        deletion: removed.branch,
+                    }),
+                })
+            } else {
                 // Either the request did not ask, or the worktree is detached
                 // and there is no branch to delete. Worktree only.
-                None => {
-                    git::remove_worktree_keep_branch(&repo_path, &path, protected)
-                        .map_err(|e| format!("{e:#}"))?;
-                    Ok(RemovalOutcome::Removed { path, branch: None })
-                }
+                git::remove_worktree_keep_branch(&repo_path, &path, protected)?;
+                Ok(RemovalOutcome::Removed { path, branch: None })
             }
         }
     }
+}
+
+/// What git's listing of `project`'s worktrees makes of `requested`.
+fn classify_requested_removal(
+    project: &Project,
+    paths: &YaranPaths,
+    requested: &Path,
+) -> Result<RemovalResolution, String> {
+    git::list_worktrees(Path::new(&project.path))
+        .map_err(|e| format!("{e:#}"))
+        .map(|worktrees| {
+            resolve_removal(
+                crate::project_browser::classify_project_worktrees(project, paths, &[], worktrees),
+                requested,
+            )
+        })
+}
+
+/// The answer a removal gives at once for a classification it cannot act on, or
+/// `None` when the worktree is removable.
+fn removal_refusal(
+    classified: Result<RemovalResolution, String>,
+) -> Option<Result<RemovalOutcome, String>> {
+    match classified {
+        Ok(RemovalResolution::Removable { .. }) => None,
+        Ok(RemovalResolution::NotManaged) => Some(Ok(RemovalOutcome::NotManaged)),
+        Ok(RemovalResolution::Attached) => Some(Ok(RemovalOutcome::Attached)),
+        Err(message) => Some(Err(message)),
+    }
+}
+
+/// End what yaran started in the folder `requested` and left behind (a closed
+/// terminal's job, a deleted agent's server), refusing when a standalone agent's
+/// processes run there, since those are never ended.
+fn end_processes_left_in(
+    registry: &crate::process_sessions::AgentProcessRegistry,
+    processes: &crate::engine::RemovalProcesses,
+    requested: &str,
+) -> Result<(), String> {
+    // A standalone agent's processes are never ended; while any run here
+    // the folder is kept, before anything else is ended.
+    if let Some(message) = crate::engine::standalone_processes_keep(registry, requested)
+        .or_else(|| crate::engine::cwd_keeps(registry, requested, processes))
+    {
+        return Err(message);
+    }
+    crate::engine::end_agent_processes_before_removal(processes, registry, requested)
+}
+
+/// A removal the engine admitted: decided against the LIVE sessions and the
+/// registry at the moment of the request, and already announced, so nothing new
+/// starts in the folder from here on. [`Self::run`] does the slow part on a
+/// worker thread.
+#[derive(Debug)]
+pub struct AdmittedRemoval {
+    /// The registry the removal claims the folder in, once git's own listing
+    /// has confirmed it is one of the project's worktrees: nothing is claimed
+    /// before that.
+    pub(crate) ops: WorktreeOps,
+    pub(crate) project: Project,
+    pub(crate) paths: YaranPaths,
+    pub(crate) requested: PathBuf,
+    pub(crate) delete_branch: bool,
+    pub(crate) wait: std::time::Duration,
+    /// Every process session yaran registered as started in the folder, ended
+    /// before git runs, and the registry for the last look after the wait.
+    pub(crate) processes: crate::engine::RemovalProcesses,
+    pub(crate) registry: crate::process_sessions::AgentProcessRegistry,
+    /// Every registered project's configured path, as the engine had them
+    /// when it admitted the removal. Resolved on the worker; the removal is
+    /// refused if the worktree is, contains or sits inside one
+    /// (`git::guard_whole_workspace_removal`), and refused outright when the
+    /// inventory cannot be read, rather than removing half-guarded.
+    pub(crate) project_paths: Vec<String>,
+}
+
+impl AdmittedRemoval {
+    /// What the removal will wait for before it runs, if anything: the busy
+    /// sentence names it.
+    pub fn waiting_for(&self) -> Option<String> {
+        let holders = self.ops.holders(&self.requested);
+        (!holders.is_empty()).then(|| describe_holders(&holders))
+    }
+
+    /// Wait (bounded) for the operations still running in the worktree, then
+    /// classify and remove it. Shells to git and blocks: worker threads only.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the reason when operations in the worktree do not finish in time, its processes
+    /// cannot be ended, or the removal fails.
+    pub fn run(self) -> Result<RemovalOutcome, String> {
+        let Self {
+            ops,
+            project,
+            paths,
+            requested,
+            delete_branch,
+            wait,
+            processes,
+            registry,
+            project_paths,
+        } = self;
+        let protected = git::registered_project_paths(project_paths.iter().map(String::as_str))
+            .map_err(|e| format!("{e:#}"))?;
+        // Classified FIRST, against git's own listing: a path that is not a
+        // worktree yaran manages for this project (the project checkout, a home
+        // folder, `/`) is refused here, before anything is waited for or
+        // ended, and the claim is withdrawn by finishing it.
+        // Only which worktrees are yaran's: who occupies one is never decided by
+        // matching paths, but by the occupancy rule below.
+        let classified = classify_requested_removal(&project, &paths, &requested);
+        // Refused before anything is claimed: a path that is not a listed
+        // worktree root of this project (a folder inside one, the checkout,
+        // a home folder) never reads "being removed", not even briefly.
+        // The worktree git reports (canonical), never the spelling the
+        // request came in by: a request through a link to the worktree claims
+        // and waits on the worktree git will remove.
+        let worktree = match &classified {
+            Ok(RemovalResolution::Removable { path, .. }) => path.clone(),
+            _ => requested.clone(),
+        };
+        if let Some(refused) = removal_refusal(classified) {
+            return refused;
+        }
+        let lease = match ops.announce_removal(&worktree) {
+            crate::worktree_ops::RemovalClaim::Lead(lease) => lease,
+            crate::worktree_ops::RemovalClaim::Join(_) => return Ok(RemovalOutcome::BeingRemoved),
+        };
+        // Re-validated under the claim, now that nothing new can start in the
+        // folder: the listing, and the one occupancy rule (containment, never
+        // path equality) over the agents and projects as the session database
+        // has them NOW, an agent still being created there included. An
+        // agent created or attached, or a project added, after admission has
+        // its row written before it lets go of the folder.
+        let reclassified = classify_requested_removal(&project, &paths, &requested);
+        let refused =
+            removal_refusal(reclassified).or_else(|| {
+                match crate::engine::stored_occupant(&paths.sessions_db_path, &ops, &worktree, None)
+                {
+                    Ok(None) => None,
+                    Ok(Some(occupant)) => Some(Ok(occupant.manager_outcome())),
+                    Err(message) => Some(Err(message)),
+                }
+            });
+        if let Some(refused) = refused {
+            // Dropping the lease unfinished withdraws the claim.
+            drop(lease);
+            return refused;
+        }
+        if let Err(still) = lease.wait_for_holders(wait) {
+            let message = crate::engine::removal::removal_wait_expired_message(
+                &worktree,
+                wait,
+                &describe_holders(&still),
+            );
+            lease.finish(Err(message.clone()));
+            return Err(message);
+        }
+        // What yaran started in the folder and left behind (a closed
+        // terminal's job, a deleted agent's server) is ended first, and the
+        // folder is looked at once more under the claim, the same as an agent
+        // delete's removal does.
+        let requested_text = worktree.to_string_lossy().into_owned();
+        if let Err(message) = end_processes_left_in(&registry, &processes, &requested_text) {
+            lease.finish(Err(message.clone()));
+            return Err(message);
+        }
+        let look = || {
+            crate::engine::wait_then_last_look(
+                &lease,
+                &requested_text,
+                wait,
+                |_| {},
+                &[&registry],
+                || {
+                    crate::engine::occupant_after_wait(
+                        &lease,
+                        &registry,
+                        &registry,
+                        &processes,
+                        Some((&paths.sessions_db_path, None)),
+                    )
+                },
+            )
+        };
+        let outcome = crate::engine::remove_after_last_look(look, || {
+            remove_managed_worktree_once(
+                &project,
+                &paths,
+                &[],
+                &worktree,
+                if delete_branch {
+                    BranchRemoval::Delete
+                } else {
+                    BranchRemoval::Keep
+                },
+                &protected,
+            )
+            .map_err(|err| {
+                crate::leftover_folders::record_if_leftover(
+                    &paths.sessions_db_path,
+                    Path::new(&project.path),
+                    &project.id,
+                    None,
+                    err,
+                )
+            })
+        });
+        lease.finish(lease_outcome(&outcome));
+        outcome
+    }
+}
+
+/// What a manager removal tells the removals that joined it.
+fn lease_outcome(outcome: &Result<RemovalOutcome, String>) -> crate::worktree_ops::RemovalResult {
+    match outcome {
+        Ok(RemovalOutcome::Removed {
+            branch: Some(branch),
+            ..
+        }) => Ok(crate::engine::RemovedBranches::Deleted(git::RemoveResult {
+            branch: branch.deletion.clone(),
+            initial_branch: None,
+        })),
+        Ok(_) => Ok(crate::engine::RemovedBranches::Kept(
+            crate::model::BranchKeptReason::UserDeclined,
+        )),
+        Err(message) => Err(message.clone()),
+    }
+}
+
+/// What the engine answered a manager removal request with.
+#[derive(Debug)]
+pub enum RemovalAdmission {
+    /// Refused at once, against live state: an agent holds it, one is being
+    /// created on it, or its removal has already begun.
+    Refused(RemovalOutcome),
+    /// Admitted: the removal goes ahead.
+    Admitted(Box<AdmittedRemoval>),
 }
 
 /// What a surface says after a successful removal, derived from what actually
@@ -236,6 +604,7 @@ pub fn remove_managed_worktree(
 /// branch is gone" come apart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovalReport {
+    /// The sentence reporting the removal.
     pub message: crate::status_text::StatusText,
     /// A branch git refused to delete is a warning, not a success: the worktree
     /// went and the branch did not.
@@ -316,7 +685,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Leading,
             path_missing: false,
@@ -328,6 +697,7 @@ mod tests {
             sessions_db_path: root.join("sessions.sqlite"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("lock"),
+            socket_path: root.join("yaran.sock"),
         };
         (project, paths)
     }
@@ -496,14 +866,17 @@ mod tests {
 
     #[test]
     fn a_branch_is_deleted_only_when_asked_for_and_present() {
-        assert_eq!(branch_to_delete(true, Some("free")), Some("free"));
-        assert_eq!(branch_to_delete(false, Some("free")), None);
         assert_eq!(
-            branch_to_delete(true, None),
+            branch_to_delete(BranchRemoval::Delete, Some("free")),
+            Some("free")
+        );
+        assert_eq!(branch_to_delete(BranchRemoval::Keep, Some("free")), None);
+        assert_eq!(
+            branch_to_delete(BranchRemoval::Delete, None),
             None,
             "a detached worktree sends nothing however the checkbox was left"
         );
-        assert_eq!(branch_to_delete(false, None), None);
+        assert_eq!(branch_to_delete(BranchRemoval::Keep, None), None);
     }
 
     fn git_in(dir: &Path, args: &[&str]) {
@@ -567,7 +940,8 @@ mod tests {
         let (project, paths, worktree) = real_repo(root.path());
         let repo = PathBuf::from(&project.path);
         let outcome =
-            remove_managed_worktree(&project, &paths, &[], &worktree, false, &[]).unwrap();
+            remove_managed_worktree(&project, &paths, &[], &worktree, BranchRemoval::Keep, &[])
+                .unwrap();
         assert!(matches!(
             outcome,
             RemovalOutcome::Removed { branch: None, .. }
@@ -581,7 +955,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (project, paths, worktree) = real_repo(root.path());
         let repo = PathBuf::from(&project.path);
-        let outcome = remove_managed_worktree(&project, &paths, &[], &worktree, true, &[]).unwrap();
+        let outcome =
+            remove_managed_worktree(&project, &paths, &[], &worktree, BranchRemoval::Delete, &[])
+                .unwrap();
         let RemovalOutcome::Removed {
             branch: Some(branch),
             ..
@@ -600,8 +976,15 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (project, paths, worktree) = real_repo(root.path());
         let sessions = vec![session(&worktree)];
-        let outcome =
-            remove_managed_worktree(&project, &paths, &sessions, &worktree, true, &[]).unwrap();
+        let outcome = remove_managed_worktree(
+            &project,
+            &paths,
+            &sessions,
+            &worktree,
+            BranchRemoval::Delete,
+            &[],
+        )
+        .unwrap();
         assert_eq!(outcome, RemovalOutcome::Attached);
         assert!(worktree.exists(), "the attached worktree must survive");
         assert!(branch_exists(Path::new(&project.path), "free"));

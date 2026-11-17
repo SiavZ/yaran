@@ -2,152 +2,181 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
-const openNewAgentPicker = vi.fn()
-const openAddProject = vi.fn()
-const openCreateAgentFromPr = vi.fn()
-const createStandaloneTerminal = vi.fn()
-// The corner reads gh availability and the project count from the live store;
-// tests flip these. `projects: null` stands for a spine that has not arrived.
-let ghAvailable = true
-let projects: { id: string }[] | null = [{ id: "p1" }]
+// Every store action an entry can reach, as spies: the corner must run the
+// shared creation lists' own actions, never a copy of them.
+const { calls, spy, state } = vi.hoisted(() => {
+  const calls: string[] = []
+  const spy =
+    (name: string) =>
+    (...args: unknown[]) =>
+      void calls.push(
+        args.length ? `${name}(${args.map(String).join(", ")})` : name,
+      )
+  return { calls, spy, state: { current: {} as Record<string, unknown> } }
+})
 vi.mock("@/lib/store", () => ({
-  openNewAgentPicker: (intent: string) => openNewAgentPicker(intent),
-  openAddProject: () => openAddProject(),
-  openCreateAgentFromPr: (projectId: string | null) =>
-    openCreateAgentFromPr(projectId),
-  createStandaloneTerminal: () => createStandaloneTerminal(),
-  openAddProjectForInit: vi.fn(),
-  useYaran: () => ({
-    bootstrap: { gh_available: ghAvailable },
-    spine: projects === null ? null : { projects },
-  }),
+  useYaranSelector: (select: (s: unknown) => unknown) => select(state.current),
+  openAgentTerminalPicker: spy("openAgentTerminalPicker"),
+  createStandaloneTerminal: spy("createStandaloneTerminal"),
+  openNewAgentPicker: spy("openNewAgentPicker"),
+  openCreateAgentFromPr: spy("openCreateAgentFromPr"),
+  openStandaloneAgentPicker: spy("openStandaloneAgentPicker"),
+  openAddProject: spy("openAddProject"),
+  openAddProjectForInit: spy("openAddProjectForInit"),
+  openCloneProject: spy("openCloneProject"),
 }))
 
 import { LauncherCorner } from "@/components/LauncherCorner"
 
-const overflow = () =>
-  screen.getByRole("button", { name: /^more ways to create$/i })
-
-const openMenu = async () => {
-  fireEvent.click(overflow())
-  await screen.findByRole("menu")
+function seed({ projects = 1, sessions = 1 } = {}) {
+  state.current = {
+    bootstrap: { gh_available: true },
+    spine: {
+      projects: Array.from({ length: projects }, (_, i) => ({ id: `p${i}` })),
+      sessions: Array.from({ length: sessions }, (_, i) => ({ id: `s${i}` })),
+    },
+  }
 }
 
+const settle = () => new Promise((r) => setTimeout(r, 40))
+
+async function openMenu() {
+  fireEvent.click(screen.getByRole("button", { name: "More ways to start" }))
+  await screen.findByRole("menu")
+  await settle()
+}
+
+// A menu entry by the title it shows above its sentence.
+const entry = (title: string) =>
+  screen
+    .getAllByRole("menuitem")
+    .find((item) => item.querySelector("[data-entry-title]")?.textContent === title)
+
+// What a holder's own `[&...]:utility` arbitrary variants apply to an element,
+// as the browser would read them: each variant becomes its selector, rooted at
+// the holder, and applies wherever that selector matches.
+function appliedVariants(holder: Element, element: Element) {
+  const applied: string[] = []
+  for (const token of holder.className.split(/\s+/)) {
+    const rule = /^\[(&.+)\]:([\w-]+)$/.exec(token)
+    if (!rule) continue
+    const selector = rule[1].replace(/&/g, ":scope").replace(/_/g, " ")
+    if (Array.from(holder.querySelectorAll(selector)).includes(element)) {
+      applied.push(rule[2])
+    }
+  }
+  return applied
+}
+
+const squaredCorners = (element: Element) =>
+  appliedVariants(element.closest('[data-slot="button-group"]')!, element).filter(
+    (utility) => /^rounded-[lr]-none$/.test(utility),
+  )
+
 beforeEach(() => {
-  ghAvailable = true
-  projects = [{ id: "p1" }]
-  vi.clearAllMocks()
+  calls.length = 0
+  seed()
 })
 afterEach(() => cleanup())
 
-describe("LauncherCorner verb", () => {
-  it("is New agent while a project exists, and opens the picker", () => {
+describe("LauncherCorner", () => {
+  it("opens the New agent project picker from its main half", () => {
     render(<LauncherCorner />)
-    fireEvent.click(screen.getByRole("button", { name: /^new agent$/i }))
-    expect(openNewAgentPicker).toHaveBeenCalledWith("new")
-    expect(openAddProject).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "New agent…" }))
+    expect(calls).toEqual(["openNewAgentPicker(new)"])
   })
 
-  it("flips to Add project on a confirmed-empty workspace, and opens that picker", () => {
-    projects = []
+  it("names its menu half and says it opens a menu", () => {
     render(<LauncherCorner />)
-    expect(screen.queryByRole("button", { name: /^new agent$/i })).toBeNull()
-    fireEvent.click(screen.getByRole("button", { name: /^add project$/i }))
-    expect(openAddProject).toHaveBeenCalledOnce()
-    expect(openNewAgentPicker).not.toHaveBeenCalled()
+    const more = screen.getByRole("button", { name: "More ways to start" })
+    expect(more.getAttribute("aria-haspopup")).toBe("menu")
   })
 
-  // The no-flash rule: an unloaded spine is not a zero, so a populated
-  // workspace never renders "Add project" for the frame before its spine lands.
-  it("stays New agent while the spine has not arrived", () => {
-    projects = null
+  it.each([
+    ["New agent from PR…", "Start an agent on a GitHub pull request's branch.", "openCreateAgentFromPr(null)"],
+    ["New agent from existing worktree…", "Use a copy of a project already on disk, on its branch.", "openNewAgentPicker(from_worktree)"],
+    ["New standalone agent…", "Run an agent in any folder, no project or git needed.", "openStandaloneAgentPicker"],
+    ["New terminal for an agent…", "Open a command line in an agent's copy of the code.", "openAgentTerminalPicker"],
+    ["New standalone terminal", "Opens right away, in your home folder.", "createStandaloneTerminal"],
+    ["Add project…", "Point yaran at a git repository on this computer.", "openAddProject"],
+    ["Clone a repository…", "Download a repository, then add it as a project.", "openCloneProject"],
+    ["Initialize a repository…", "Turn a folder into a new git repository and project.", "openAddProjectForInit"],
+  ])("lists %s with its sentence and runs the shared action", async (title, sentence, action) => {
     render(<LauncherCorner />)
-    expect(screen.getByRole("button", { name: /^new agent$/i })).toBeTruthy()
+    await openMenu()
+    const item = entry(title)!
+    expect(item.textContent).toBe(title + sentence)
+    fireEvent.click(item)
+    expect(calls).toEqual([action])
   })
 
-  it("keeps the same ⋯ in both verb states", async () => {
+  it("groups the entries under Agents, Terminals and Projects, without the main half's", async () => {
     render(<LauncherCorner />)
     await openMenu()
-    const withProject = screen.getAllByRole("menuitem").map((i) => i.textContent)
-    cleanup()
-
-    projects = []
-    render(<LauncherCorner />)
-    await openMenu()
-    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(
-      withProject,
-    )
-    // The plain-agent row stays filtered out even here: the menu is constant by
-    // design, so the flipped state duplicates "Add project…" rather than
-    // reshuffling rows under the cursor.
-    expect(screen.queryByText("New agent…")).toBeNull()
-    expect(screen.getByText("Add project…")).toBeTruthy()
-  })
-})
-
-describe("LauncherCorner overflow", () => {
-  it("offers every other way to create, under the three group labels", async () => {
-    render(<LauncherCorner />)
-    await openMenu()
-    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual([
-      "New agent from PR…",
-      "New agent from existing worktree…",
-      "New standalone agent…",
-      "New standalone terminal in your home folder",
-      "Add project…",
-      "Initialize a repository…",
-    ])
-    for (const label of ["Agents", "Terminals", "Projects"]) {
-      expect(screen.getByText(label)).toBeTruthy()
-    }
-    // The verb beside it IS the plain agent; offering it twice would be a menu
-    // row that does what the button next to it does.
-    expect(screen.queryByText("New agent…")).toBeNull()
+    expect(
+      Array.from(document.querySelectorAll('[data-slot="dropdown-menu-label"]')).map(
+        (label) => label.textContent,
+      ),
+    ).toEqual(["Agents", "Terminals", "Projects"])
+    expect(entry("New agent…")).toBeUndefined()
+    expect(screen.getAllByRole("menuitem")).toHaveLength(8)
   })
 
-  it("routes the menu entries to their store actions", async () => {
+  it("disables what needs a project on a confirmed-empty workspace, as the dialog does", async () => {
+    seed({ projects: 0, sessions: 0 })
     render(<LauncherCorner />)
     await openMenu()
-    fireEvent.click(screen.getByText("New standalone terminal in your home folder"))
-    expect(createStandaloneTerminal).toHaveBeenCalledOnce()
-
-    await openMenu()
-    fireEvent.click(screen.getByText("New agent from existing worktree…"))
-    expect(openNewAgentPicker).toHaveBeenCalledWith("from_worktree")
-
-    await openMenu()
-    fireEvent.click(screen.getByText("New agent from PR…"))
-    expect(openCreateAgentFromPr).toHaveBeenCalledWith(null)
-
-    await openMenu()
-    fireEvent.click(screen.getByText("Add project…"))
-    expect(openAddProject).toHaveBeenCalledOnce()
+    const disabled = (title: string) =>
+      entry(title)!.getAttribute("aria-disabled") === "true"
+    expect(disabled("New agent from PR…")).toBe(true)
+    expect(disabled("New agent from existing worktree…")).toBe(true)
+    expect(disabled("New terminal for an agent…")).toBe(true)
+    expect(disabled("New standalone agent…")).toBe(false)
+    expect(disabled("New standalone terminal")).toBe(false)
+    expect(disabled("Add project…")).toBe(false)
+    expect(
+      screen.getByText("Add a project first, then start agents on it."),
+    ).toBeTruthy()
   })
-})
 
-// The size-token contract the two controls share: one height token, the touch
-// floor only where a finger is the pointer, and a square ⋯ on desktop that
-// still clears 44px on touch.
-describe("LauncherCorner sizing", () => {
-  it("gives the verb and the ⋯ one height and the phone floor", () => {
+  it("leaves the from-PR entry out where gh is not available", async () => {
+    state.current = { ...state.current, bootstrap: { gh_available: false } }
     render(<LauncherCorner />)
-    const verb = screen.getByRole("button", { name: /^new agent$/i })
-    const trigger = overflow()
-    for (const el of [verb, trigger]) {
-      expect(el.className).toContain("h-7")
-      expect(el.className).toContain("max-md:min-h-11")
-    }
-    expect(trigger.className).toContain("min-w-7")
-    expect(trigger.className).toContain("max-md:min-w-11")
+    await openMenu()
+    expect(entry("New agent from PR…")).toBeUndefined()
   })
+  // The sidebar footer and the phone hub's bottom bar, whose menu is a sheet.
+  describe.each([
+    ["a computer", 1024],
+    ["a phone", 390],
+  ])("on %s", (_, width) => {
+    const desktopWidth = window.innerWidth
+    beforeEach(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width })
+    })
+    afterEach(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: desktopWidth })
+    })
 
-  // Two separate rounded buttons with a gap, not a seam-joined group: the seam
-  // (and its base-ui focus-guard rounding hack) died with the split buttons.
-  it("renders two gapped buttons rather than a button group", () => {
-    const { container } = render(<LauncherCorner />)
-    expect(container.querySelector('[data-slot="button-group"]')).toBeNull()
-    const row = container.firstElementChild as HTMLElement
-    expect(row.className).toContain("gap-2")
-    expect(row.querySelectorAll("button")).toHaveLength(2)
+    it("keeps the menu half's outer corners round, with its menu closed and open", async () => {
+      render(<LauncherCorner />)
+      const more = screen.getByRole("button", { name: "More ways to start" })
+      const main = screen.getByRole("button", { name: "New agent…" })
+      expect(squaredCorners(more)).toEqual(["rounded-l-none"])
+      expect(squaredCorners(main)).toEqual(["rounded-r-none"])
+      await openMenu()
+      expect(squaredCorners(more)).toEqual(["rounded-l-none"])
+      expect(squaredCorners(main)).toEqual(["rounded-r-none"])
+    })
+
+    it("points its menu half's chevron down while closed and up while open", async () => {
+      render(<LauncherCorner />)
+      const more = screen.getByRole("button", { name: "More ways to start" })
+      const chevron = more.querySelector("svg")!
+      const rotated = () => appliedVariants(more, chevron).includes("rotate-180")
+      expect(rotated()).toBe(false)
+      await openMenu()
+      expect(rotated()).toBe(true)
+    })
   })
 })

@@ -12,10 +12,10 @@ pub const DOCS: &str = "https://github.com/SiavZ/yaran/tree/main/website/docs";
 
 /// `owner/repo`, shared by release API requests. Keep the public URL constants
 /// below aligned with this slug; the tests verify that relationship.
-pub const REPO_SLUG: &str = "SiavZ/yaran";
+pub(crate) const REPO_SLUG: &str = "SiavZ/yaran";
 
 /// The source repository.
-pub const REPO: &str = "https://github.com/SiavZ/yaran";
+pub(crate) const REPO: &str = "https://github.com/SiavZ/yaran";
 
 /// The releases index. Also the fallback destination when there is no release
 /// matching the running version (a dev build, or a tag GitHub has not published

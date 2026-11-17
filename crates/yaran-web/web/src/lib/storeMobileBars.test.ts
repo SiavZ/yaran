@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
 import type { Bootstrap } from "./bootstrapApi"
 
 // Sonner is mocked so the toast policy is assertable: a successful bar write
@@ -13,9 +14,18 @@ const toastMock = Object.assign(vi.fn(), {
   warning: vi.fn(),
   loading: vi.fn(),
   dismiss: vi.fn(),
+  getToasts: vi.fn(() => []),
   custom: vi.fn(),
 })
 vi.mock("sonner", () => ({ toast: toastMock }))
+
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`. This is a dynamic import because the sonner mock above
+// reads `toastMock`, which a hoisted static import would run before.
+await import("./store")
 
 // Mirror the storeChangesPane test harness: the store module reads
 // location/localStorage, registers listeners, and fires a bootstrap fetch on
@@ -53,6 +63,13 @@ function makeBootstrap(accessoryBar: boolean): Bootstrap {
 let bootstrapBody: Bootstrap = makeBootstrap(true)
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/bootstrap")) {
     return {
@@ -107,7 +124,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -167,8 +189,9 @@ describe("terminal-keys bar visibility", () => {
     )
   })
 
-  // Restoring is the same write as hiding: the input ⋯ menu's item names the
-  // direction it will move the bar in and writes the same field either way.
+  // Restoring is the same write as hiding: the top menu's row and the phone's
+  // cluster button name the direction they will move the bar in and write the
+  // same field either way.
   it("restores the bar through the same write that hid it", async () => {
     const mod = await loadStore()
     await mod.setAccessoryBarVisibility(false)
@@ -243,6 +266,7 @@ describe("terminal-keys bar visibility", () => {
     // sonner's own bare 4000ms.
     expect(toastMock.error).toHaveBeenCalledWith("disk full", {
       duration: 24000,
+      description: expect.anything(),
     })
   })
 

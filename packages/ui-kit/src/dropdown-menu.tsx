@@ -11,6 +11,7 @@
  * src/dropdown-menu.tsx
  * ├── src/cn.ts
  * ├── src/popupSheet.ts
+ * ├── src/use-back-dismiss.ts
  * └── src/use-mobile.ts
  * External: @base-ui/react, lucide-react, react
  *
@@ -24,24 +25,28 @@
  * ├── web:src/components/AgentTabsStrip.tsx
  * ├── web:src/components/AppMenu.tsx
  * ├── web:src/components/ChangedFiles.tsx
- * ├── web:src/components/CreationOverflowMenuItems.test.tsx
- * ├── web:src/components/CreationOverflowMenuItems.tsx
+ * ├── web:src/components/DockStrip.tsx
  * ├── web:src/components/EditorBody.tsx
+ * ├── web:src/components/EditorStatusBar.tsx
  * ├── web:src/components/FlatAgentList.tsx
- * ├── web:src/components/InputMenu.tsx
  * ├── web:src/components/InputMenuItems.tsx
  * ├── web:src/components/LauncherCorner.tsx
- * ├── web:src/components/NewAgentPickerDialog.tsx
+ * ├── web:src/components/MobileShell.tsx
  * ├── web:src/components/PaneInputGroup.tsx
+ * ├── web:src/components/PaneMenu.test.tsx
  * ├── web:src/components/PaneMenu.tsx
+ * ├── web:src/components/PrBanner.tsx
+ * ├── web:src/components/PrListMenu.tsx
+ * ├── web:src/components/ProjectList.test.tsx
+ * ├── web:src/components/ProjectList.tsx
  * ├── web:src/components/ProjectMenuItems.test.tsx
  * ├── web:src/components/ProjectMenuItems.tsx
- * ├── web:src/components/Sidebar.tsx
+ * ├── web:src/components/PullRequestsDialog.tsx
  * ├── web:src/components/TerminalActionsMenu.test.tsx
  * ├── web:src/components/TerminalActionsMenu.tsx
  * ├── web:src/components/TheaterPill.tsx
  * ├── web:src/components/WorktreesDialog.tsx
- * └── web:src/components/inputWayBack.test.tsx
+ * └── web:src/hooks/use-theater.test.tsx
  * <module-headers:end>
  */
 "use client"
@@ -51,6 +56,7 @@ import { Menu as MenuPrimitive } from "@base-ui/react/menu"
 
 import { cn } from "./cn"
 import { useIsMobile } from "./use-mobile"
+import { useBackDismiss } from "./use-back-dismiss"
 import {
   SHEET_BACKDROP_CLASS,
   SHEET_POPUP_CLASS,
@@ -65,8 +71,26 @@ import { ChevronRightIcon, ChevronLeftIcon, CheckIcon } from "lucide-react"
 // and only the presentation swaps: the base-ui Root, Trigger, Popup and Item
 // machinery is the same in both.
 
+// An open menu closes on the browser's Back, the way Escape closes it
+// (`useBackDismiss`). Its submenus are part of it and close with it.
+//
+// On a computer the menu is non-modal: a modal menu puts an invisible backdrop
+// over the page, so the click that closes it never reaches what it was aimed at
+// (the terminal) and focus snaps back to the trigger, where Enter reopens the
+// menu instead of reaching the agent. The phone sheet keeps the modal default,
+// since its own backdrop is what a tap outside lands on. A caller's explicit
+// `modal` wins.
 function DropdownMenu({ ...props }: MenuPrimitive.Root.Props) {
-  return <MenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+  const back = useBackDismiss(props)
+  const isMobile = useIsMobile()
+  return (
+    <MenuPrimitive.Root
+      data-slot="dropdown-menu"
+      modal={isMobile ? undefined : false}
+      {...props}
+      {...back}
+    />
+  )
 }
 
 function DropdownMenuPortal({ ...props }: MenuPrimitive.Portal.Props) {

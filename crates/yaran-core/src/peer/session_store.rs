@@ -32,6 +32,10 @@ const STORE_ID_LOCK: &str = ".store-id.lock";
 /// first use. AMQ owner markers name `(store_id, session_id)`, so two Yaran
 /// homes sharing one AMQ root can never claim each other's inboxes. The lock
 /// covers the first write and every reader, so nobody sees a partial id.
+///
+/// # Errors
+///
+/// Fails when the home directory, the lock or the id file cannot be used.
 pub fn load_or_create_store_id(yaran_home: &Path) -> Result<String> {
     fs::create_dir_all(yaran_home)
         .with_context(|| format!("failed to create {}", yaran_home.display()))?;
@@ -130,7 +134,7 @@ fn launch_env_with_root(
     amq_root: Option<&Path>,
 ) -> Result<Vec<(String, String)>> {
     let store_id = load_or_create_store_id(&paths.root)?;
-    let mut peer = peer_session(session, session.agent_handle().to_string(), false);
+    let mut peer = peer_session(session, session.agent_handle().to_string());
     // The engine has already opened and migrated this database; a launch only
     // reads handles and may swap one, so it must not rerun the migration. A
     // database that was never migrated (no engine yet) has no rows to read.
@@ -159,15 +163,12 @@ fn launch_env_with_root(
     if let Some(root) = amq_root {
         // With a shared root the inbox is reserved up front, so the handle the
         // provider is told is one this session provably owns.
-        let used = rows
-            .as_ref()
-            .map(|(_, rows)| {
-                rows.iter()
-                    .filter(|row| row.id != session.id)
-                    .map(|row| row.agent_handle().to_string())
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let used = rows.as_ref().map_or_default(|(_, rows)| {
+            rows.iter()
+                .filter(|row| row.id != session.id)
+                .map(|row| row.agent_handle().to_string())
+                .collect::<HashSet<_>>()
+        });
         let owned = super::amq::claim_handle_at_root(root, &store_id, &peer, &used)?;
         if owned != peer.agent_handle {
             if stored && let Some((store, _)) = &rows {
@@ -185,8 +186,9 @@ fn launch_env_with_root(
     Ok(env)
 }
 
-/// Project an upstream session into what the router needs.
-pub fn peer_session(session: &AgentSession, agent_handle: String, deleted: bool) -> PeerSession {
+/// Project an upstream session into what the router needs; a soft-deleted
+/// row reads as a tombstone.
+pub fn peer_session(session: &AgentSession, agent_handle: String) -> PeerSession {
     PeerSession {
         id: session.id.clone(),
         provider: session.provider.as_str().to_string(),
@@ -195,12 +197,16 @@ pub fn peer_session(session: &AgentSession, agent_handle: String, deleted: bool)
         title: session.title.clone(),
         agent_handle,
         shared_workspace: session.shared_workspace(),
-        deleted,
+        deleted: session.is_deleted(),
         exited: matches!(session.status, SessionStatus::Exited),
     }
 }
 
 /// Open this `YARAN_HOME`'s session store as a [`PeerStore`].
+///
+/// # Errors
+///
+/// Fails when the session database cannot be opened.
 pub fn open(paths: &YaranPaths) -> Result<SqlitePeerStore> {
     let store = SessionStore::open(&paths.sessions_db_path)
         .with_context(|| format!("failed to open {}", paths.sessions_db_path.display()))?;
@@ -208,12 +214,17 @@ pub fn open(paths: &YaranPaths) -> Result<SqlitePeerStore> {
 }
 
 /// Upstream's [`SessionStore`] seen through the [`PeerStore`] seam.
+#[derive(Debug)]
 pub struct SqlitePeerStore {
     store: SessionStore,
 }
 
 impl SqlitePeerStore {
     /// Live (non-deleted) sessions only.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be read.
     pub fn load_sessions(&self) -> Result<Vec<PeerSession>> {
         Ok(self
             .load_sessions_including_deleted()?
@@ -229,7 +240,7 @@ impl PeerStore for SqlitePeerStore {
             .store
             .load_sessions_including_deleted()?
             .iter()
-            .map(|row| peer_session(row, row.agent_handle().to_string(), row.is_deleted()))
+            .map(|row| peer_session(row, row.agent_handle().to_string()))
             .collect())
     }
 
@@ -326,8 +337,7 @@ fn write_private_atomic(path: &Path, body: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().to_string());
     let tmp = dir.join(format!(
         ".{name}.tmp.{}.{}",
         std::process::id(),
@@ -393,6 +403,7 @@ mod tests {
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         }
     }

@@ -14,6 +14,7 @@
 //!   end must not report the login as cancelled).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/login_session.rs
 //! ├── cloud::login
@@ -29,6 +30,7 @@
 //! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-tui::app::cloud_tests
 //! └── yaran-web::cloud_routes
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -40,16 +42,24 @@ use crate::cloud::login::{LoginIo, LoginOutcome, LoginParams, LoginStep, run_log
 /// What the authorize step shows: the URL to open and the fingerprint to compare.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizeInfo {
+    /// The approval address to open.
     pub url: String,
+    /// The machine key's fingerprint, which the confirm page shows too.
     pub fingerprint: String,
+    /// The organization being joined.
     pub org_name: String,
+    /// The name the machine asks for.
     pub machine_name: String,
 }
 
+/// What a running login reports to its surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginEvent {
+    /// The approval address is ready.
     Authorize(AuthorizeInfo),
+    /// The login moved on a step.
     Step(LoginStep),
+    /// The login ended.
     Finished(LoginOutcome),
 }
 
@@ -58,7 +68,7 @@ const CANCELLED: u8 = 1;
 const COMMITTED: u8 = 2;
 
 /// Controls one running login.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LoginHandle {
     paste: Sender<String>,
     state: Arc<AtomicU8>,
@@ -82,6 +92,7 @@ impl LoginHandle {
         }
     }
 
+    /// Whether the login was cancelled.
     pub fn is_cancelled(&self) -> bool {
         self.state.load(Ordering::SeqCst) == CANCELLED
     }
@@ -138,6 +149,10 @@ impl LoginIo for ThreadIo {
 }
 
 /// Start a login on a new thread.
+///
+/// # Panics
+///
+/// Panics when the operating system refuses to start the login's thread.
 pub fn spawn_login(
     params: LoginParams,
     on_event: impl FnMut(LoginEvent) + Send + 'static,
@@ -178,7 +193,7 @@ mod tests {
         let worker = MockWorker::start(|_| {
             MockResponse::json(
                 200,
-                serde_json::json!({
+                &serde_json::json!({
                     "service": "yaran-cloud", "protocol": {"min": 1, "max": 1}, "setup": "closed",
                     "org": {"name": "Example Org", "url": SAMPLE_ORG},
                     "access": {"team_domain": "team.cloudflareaccess.com"}, "worker": {"version": "1.0.0"},
@@ -201,9 +216,8 @@ mod tests {
             },
         );
         let authorize = loop {
-            match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-                LoginEvent::Authorize(a) => break a,
-                _ => continue,
+            if let LoginEvent::Authorize(a) = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                break a;
             }
         };
         assert!(authorize.url.contains("/v1/pair/authorize?"));

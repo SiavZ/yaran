@@ -22,9 +22,23 @@
 //! border color: accenting it too would make it the same hue as the peer mark and
 //! flatten the composition.
 
-use super::*;
+use super::{App, PromptState};
+use crate::logger;
+use crate::numeric::u32_to_u16_wrapping;
+use crate::theme::Theme;
+use anyhow::Result;
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::prelude::{Color, Modifier, Style};
+use ratatui::symbols::border;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, mpsc};
+use std::thread;
+use yaran_core::worker::WorkerEvent;
 
-use crate::app::components::render_scroll_marker;
+use crate::app::components::{Hint, modal_hint_line, render_scroll_view};
 use crate::app::render::centered_rect_exact;
 use yaran_core::release_notes::ReleaseNotes;
 use yaran_core::welcome_screen::WelcomeScreen;
@@ -166,22 +180,30 @@ pub(crate) struct FirstLoadPrompt {
     pub(crate) mark_seen: bool,
 }
 
+/// Whether closing a first-load screen records that it was seen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SeenNote {
+    /// It records it, so the screen does not come back by itself.
+    Write,
+    /// It records nothing (a screen opened from the palette).
+    Skip,
+}
 impl FirstLoadPrompt {
-    pub(crate) fn welcome(screen: WelcomeScreen, mark_seen: bool) -> Self {
+    pub(crate) fn welcome(screen: WelcomeScreen, seen: SeenNote) -> Self {
         Self {
             screen: FirstLoadScreen::Welcome(screen),
             scroll: 0,
             focus: FirstLoadButton::Primary,
-            mark_seen,
+            mark_seen: seen == SeenNote::Write,
         }
     }
 
-    pub(crate) fn whats_new(notes: ReleaseNotes, mark_seen: bool) -> Self {
+    pub(crate) fn whats_new(notes: ReleaseNotes, seen: SeenNote) -> Self {
         Self {
             screen: FirstLoadScreen::WhatsNew(Box::new(notes)),
             scroll: 0,
             focus: FirstLoadButton::Primary,
-            mark_seen,
+            mark_seen: seen == SeenNote::Write,
         }
     }
 
@@ -256,11 +278,13 @@ pub(crate) enum FirstLoadAction {
 pub(crate) fn button_action(prompt: &FirstLoadPrompt) -> FirstLoadAction {
     match (&prompt.screen, prompt.focus) {
         (FirstLoadScreen::Welcome(_), FirstLoadButton::Primary) => FirstLoadAction::AddProject,
-        (FirstLoadScreen::Welcome(_), FirstLoadButton::Secondary) => FirstLoadAction::Dismiss,
+        (
+            FirstLoadScreen::Welcome(_) | FirstLoadScreen::WhatsNew(_),
+            FirstLoadButton::Secondary,
+        ) => FirstLoadAction::Dismiss,
         (FirstLoadScreen::WhatsNew(_), FirstLoadButton::Primary) => {
             FirstLoadAction::OpenUrl(prompt.link())
         }
-        (FirstLoadScreen::WhatsNew(_), FirstLoadButton::Secondary) => FirstLoadAction::Dismiss,
     }
 }
 
@@ -315,7 +339,7 @@ pub(crate) fn welcome_lines(
     width: u16,
     colors: &FirstLoadColors,
 ) -> Vec<Line<'static>> {
-    let w = width.saturating_sub(1) as usize;
+    let w = usize::from(width.saturating_sub(1));
     // The tagline WRAPS. The gallery renders it as one unwrapped span, which
     // silently clips it at the prose column's edge (the tagline is 71 columns and
     // the prose column at the 90-column target is 50). The approved intent is a
@@ -378,7 +402,7 @@ pub(crate) fn whats_new_lines(
     width: u16,
     colors: &FirstLoadColors,
 ) -> Vec<Line<'static>> {
-    let w = width.saturating_sub(1) as usize;
+    let w = usize::from(width.saturating_sub(1));
     let mut lines = Vec::new();
     if !notes.headline.trim().is_empty() {
         // Wrapped for the same reason as the welcome tagline: a release headline
@@ -507,8 +531,8 @@ pub(crate) fn button_row(
     if let Some(link) = link {
         let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
         let link_len = link.chars().count();
-        if used + 2 + link_len <= width as usize {
-            let pad = width as usize - used - link_len;
+        if used + 2 + link_len <= usize::from(width) {
+            let pad = usize::from(width) - used - link_len;
             spans.push(Span::raw(" ".repeat(pad)));
             spans.push(Span::styled(
                 link.to_string(),
@@ -570,7 +594,7 @@ pub(crate) struct FirstLoadRender {
 /// `Action::CloseOverlay`; the binding is looked up by the caller, which has the
 /// `RuntimeBindings` this function deliberately does not take.
 pub(crate) fn render_modal(
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
     area: Rect,
     prompt: &FirstLoadPrompt,
     theme: &Theme,
@@ -584,12 +608,11 @@ pub(crate) fn render_modal(
     //
     // The bottom title is the house Report-modal hint (Agent Info's idiom): both
     // screens say how to leave, on the border row, so the frame costs no rows.
-    let mut hint = vec![Span::raw(" ")];
-    hint.extend(theme.key_badge_default(close_key));
-    hint.push(Span::styled(
-        " close",
-        Style::default().fg(theme.hint_desc_fg),
-    ));
+    let hint = modal_hint_line(
+        theme,
+        &[Hint::key(close_key, "close").pinned()],
+        area.width.saturating_sub(2),
+    );
     let block = Block::default()
         .title(Line::from(Span::styled(
             prompt.title(),
@@ -597,7 +620,7 @@ pub(crate) fn render_modal(
                 .fg(colors.accent)
                 .add_modifier(Modifier::BOLD),
         )))
-        .title_bottom(Line::from(hint))
+        .title_bottom(hint)
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
         .border_style(Style::default().fg(theme.overlay_border))
@@ -619,7 +642,7 @@ pub(crate) fn render_modal(
 
         let peer_mark_rows = u16::try_from(PEER_MARK.len()).unwrap_or(u16::MAX);
         let top = art_col.height.saturating_sub(peer_mark_rows) / 2;
-        let art: Vec<Line> = std::iter::repeat_n(Line::from(""), top as usize)
+        let art: Vec<Line<'_>> = std::iter::repeat_n(Line::from(""), usize::from(top))
             .chain(PEER_MARK.iter().map(|row| {
                 Line::from(Span::styled(
                     format!(" {row}"),
@@ -629,7 +652,7 @@ pub(crate) fn render_modal(
             .collect();
         Paragraph::new(art).render(art_col, frame.buffer_mut());
 
-        let rule: Vec<Line> = (0..rule_col.height)
+        let rule: Vec<Line<'_>> = (0..rule_col.height)
             .map(|_| Line::from(Span::styled(" │ ", Style::default().fg(colors.rule))))
             .collect();
         Paragraph::new(rule).render(rule_col, frame.buffer_mut());
@@ -649,10 +672,20 @@ pub(crate) fn render_modal(
 
     let lines = content_lines(prompt, content.width, &colors);
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    render_scrollable(frame, area, content, lines, prompt.scroll, &colors);
+    // The shared scroll view: the content pane plus the one-cell indicator in
+    // the modal's border column. These two screens are what it was taken from,
+    // and the pickers wear the same one.
+    render_scroll_view(
+        frame,
+        area,
+        content,
+        lines,
+        usize::from(prompt.scroll),
+        theme,
+    );
 
     Paragraph::new(Line::from(Span::styled(
-        "─".repeat(sep.width as usize),
+        "─".repeat(usize::from(sep.width)),
         Style::default().fg(colors.rule),
     )))
     .render(sep, frame.buffer_mut());
@@ -675,30 +708,6 @@ pub(crate) fn render_modal(
         content_height: content.height,
         content_lines: total,
     }
-}
-
-/// The scrollable content pane, plus the shared one-cell direction marker in the
-/// modal's border column (see [`crate::app::components::scroll_marker`], which
-/// owns the geometry and the glyph table for every scrollable surface) when
-/// there is more to see.
-///
-/// `outer` is the modal, `area` the content pane inside its border ring.
-fn render_scrollable(
-    frame: &mut Frame,
-    outer: Rect,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    scroll: u16,
-    colors: &FirstLoadColors,
-) {
-    let total = lines.len();
-    let visible = area.height as usize;
-    let max_scroll = total.saturating_sub(visible);
-    let offset = (scroll as usize).min(max_scroll);
-    let slice: Vec<Line> = lines.into_iter().skip(offset).take(visible).collect();
-    Paragraph::new(slice).render(area, frame.buffer_mut());
-
-    render_scroll_marker(frame, outer, area, offset, visible, total, colors.accent);
 }
 
 // ---------------------------------------------------------------------------
@@ -804,8 +813,10 @@ impl App {
         let plan = yaran_core::first_load::plan(
             last_seen.as_deref(),
             yaran_core::display_version(),
-            self.engine.config.ui.disable_automated_welcome_screen,
-            self.engine.config.ui.disable_release_notes,
+            yaran_core::first_load::AutomaticScreens {
+                disable_welcome: self.engine.config.ui.disable_automated_welcome_screen,
+                disable_release_notes: self.engine.config.ui.disable_release_notes,
+            },
         );
         self.apply_first_load_plan(plan);
     }
@@ -819,8 +830,14 @@ impl App {
                 // DISMISSAL, per the core contract.
                 let screen =
                     yaran_core::welcome_screen::welcome_screen(&self.engine.paths.config_path);
-                self.prompt =
-                    PromptState::FirstLoad(FirstLoadPrompt::welcome(screen, plan.mark_seen));
+                self.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(
+                    screen,
+                    if plan.mark_seen {
+                        SeenNote::Write
+                    } else {
+                        SeenNote::Skip
+                    },
+                ));
             }
             yaran_core::first_load::FirstLoad::WhatsNew => {
                 // The notes BLOCK, so they are fetched on a worker; the plan is
@@ -920,7 +937,14 @@ impl App {
             plan,
             yaran_core::first_load::NotesOutcome::Fetched,
         );
-        self.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(*notes, plan.mark_seen));
+        self.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(
+            *notes,
+            if plan.mark_seen {
+                SeenNote::Write
+            } else {
+                SeenNote::Skip
+            },
+        ));
         self.mark_frame_dirty();
     }
 
@@ -967,7 +991,11 @@ impl App {
                     (yaran_core::first_load::FirstLoad::WhatsNew, Ok(notes)) => {
                         self.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(
                             notes,
-                            plan.mark_seen,
+                            if plan.mark_seen {
+                                SeenNote::Write
+                            } else {
+                                SeenNote::Skip
+                            },
                         ));
                     }
                     _ => {
@@ -987,7 +1015,8 @@ impl App {
                 // upgrade's notes. On a failure there is nothing to do here: the
                 // worker's keyed final already carries the reason.
                 if let Ok(notes) = fetched.result {
-                    self.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(notes, false));
+                    self.prompt =
+                        PromptState::FirstLoad(FirstLoadPrompt::whats_new(notes, SeenNote::Skip));
                 }
             }
         }
@@ -996,17 +1025,16 @@ impl App {
     /// The `show-welcome-screen` palette command. Works even when
     /// `disable_automated_welcome_screen` is set: the flag suppresses only what
     /// yaran does on its own.
-    pub(crate) fn show_welcome_screen_command(&mut self) -> Result<()> {
+    pub(crate) fn show_welcome_screen_command(&mut self) {
         let screen = yaran_core::welcome_screen::welcome_screen(&self.engine.paths.config_path);
-        self.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(screen, false));
-        Ok(())
+        self.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(screen, SeenNote::Skip));
     }
 
     /// The `show-release-notes` palette command. Works even when
     /// `disable_release_notes` is set, and may fetch, because the user asked for
     /// it. `load_release_notes` already routes a real version to its own tag and
     /// a development build to the newest release.
-    pub(crate) fn show_release_notes_command(&mut self) -> Result<()> {
+    pub(crate) fn show_release_notes_command(&mut self) {
         if self.notes_fetch_rx.is_some() {
             // The running fetch may have been dispatched as AUTOMATIC, whose
             // failure branch is silent. Tell it that someone is waiting, so a
@@ -1018,10 +1046,9 @@ impl App {
             self.set_info(
                 "Already loading the Yaran release notes from GitHub. They will open when they arrive.",
             );
-            return Ok(());
+            return;
         }
         self.spawn_release_notes_fetch(NotesFetchPurpose::Explicit);
-        Ok(())
     }
 
     /// Dismiss the first-load modal, honoring the stamp-on-dismissal contract.
@@ -1053,9 +1080,7 @@ impl App {
         self.dismiss_first_load_prompt();
         match action {
             FirstLoadAction::AddProject => {
-                if let Err(err) = self.open_project_browser() {
-                    self.set_error(format!("Could not open the project browser: {err:#}"));
-                }
+                self.open_project_browser();
             }
             FirstLoadAction::OpenUrl(url) => {
                 let success = format!("Opened {url} in your default browser.");
@@ -1084,9 +1109,13 @@ impl App {
             .saturating_sub(self.last_first_load_height.max(1));
         if let PromptState::FirstLoad(prompt) = &mut self.prompt {
             let next = if delta >= 0 {
-                prompt.scroll.saturating_add(delta as u16)
+                prompt
+                    .scroll
+                    .saturating_add(u32_to_u16_wrapping(delta.unsigned_abs()))
             } else {
-                prompt.scroll.saturating_sub(delta.unsigned_abs() as u16)
+                prompt
+                    .scroll
+                    .saturating_sub(u32_to_u16_wrapping(delta.unsigned_abs()))
             };
             prompt.scroll = next.min(max);
         }
@@ -1103,9 +1132,16 @@ mod tests {
     use super::*;
     use crate::app::components::scroll_marker_rect;
     use crate::app::test_support::{default_bindings, test_app};
+    use crate::app::text_input::TextInput;
+    use crate::app::{OverlayMouseLayout, first_load};
+    use crate::keybindings::Action;
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use yaran_core::first_load::{FirstLoad, FirstLoadPlan, NotesOutcome};
 
     fn sample_notes() -> ReleaseNotes {
@@ -1150,7 +1186,7 @@ mod tests {
             .buffer()
             .content
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect()
     }
 
@@ -1213,7 +1249,7 @@ mod tests {
         for row in PEER_MARK {
             assert_eq!(
                 crate::app::components::wrap_lines::display_width(row),
-                ART_WIDTH as usize,
+                usize::from(ART_WIDTH),
                 "every peer mark row must be exactly {ART_WIDTH} columns: {row}"
             );
         }
@@ -1236,25 +1272,25 @@ mod tests {
     #[test]
     fn each_screen_has_exactly_two_buttons_with_the_agreed_labels() {
         assert_eq!(
-            FirstLoadPrompt::welcome(sample_welcome(), false).buttons(),
+            FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Skip).buttons(),
             ["Add a project", "Close"]
         );
         assert_eq!(
-            FirstLoadPrompt::whats_new(sample_notes(), false).buttons(),
+            FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Skip).buttons(),
             ["Open full notes", "Close"]
         );
     }
 
     #[test]
     fn the_whats_new_title_names_the_version_the_user_is_on() {
-        let prompt = FirstLoadPrompt::whats_new(sample_notes(), false);
+        let prompt = FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Skip);
         assert!(prompt.title().contains("v0.7.0"), "{}", prompt.title());
         // A release payload with no tag falls back to the running build rather
         // than showing a blank version.
         let mut untagged = sample_notes();
         untagged.version = "  ".to_string();
         assert!(
-            FirstLoadPrompt::whats_new(untagged, false)
+            FirstLoadPrompt::whats_new(untagged, SeenNote::Skip)
                 .title()
                 .contains(yaran_core::display_version())
         );
@@ -1263,25 +1299,25 @@ mod tests {
     #[test]
     fn the_welcome_links_to_the_website_and_the_notes_link_to_their_own_release() {
         assert_eq!(
-            FirstLoadPrompt::welcome(sample_welcome(), false).link(),
+            FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Skip).link(),
             yaran_core::urls::WEBSITE
         );
         assert_eq!(
-            FirstLoadPrompt::whats_new(sample_notes(), false).link(),
+            FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Skip).link(),
             "https://github.com/patrickdappollonio/dux/releases/tag/v0.7.0"
         );
         // A release with no link falls back to the releases index, never "".
         let mut linkless = sample_notes();
         linkless.html_url = String::new();
         assert_eq!(
-            FirstLoadPrompt::whats_new(linkless, false).link(),
+            FirstLoadPrompt::whats_new(linkless, SeenNote::Skip).link(),
             yaran_core::urls::RELEASES
         );
     }
 
     #[test]
     fn the_focused_button_decides_what_activation_does() {
-        let mut welcome = FirstLoadPrompt::welcome(sample_welcome(), false);
+        let mut welcome = FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Skip);
         assert_eq!(button_action(&welcome), FirstLoadAction::AddProject);
         welcome.focus = FirstLoadButton::Secondary;
         assert_eq!(
@@ -1292,7 +1328,7 @@ mod tests {
              visible way out at all"
         );
 
-        let mut whats_new = FirstLoadPrompt::whats_new(sample_notes(), false);
+        let mut whats_new = FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Skip);
         assert_eq!(
             button_action(&whats_new),
             FirstLoadAction::OpenUrl(
@@ -1328,7 +1364,7 @@ mod tests {
     #[test]
     fn the_welcome_button_row_shows_its_address_only_when_it_fits() {
         let colors = colors();
-        let labels = FirstLoadPrompt::welcome(sample_welcome(), false).buttons();
+        let labels = FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Skip).buttons();
         let wide = button_row(
             labels,
             FirstLoadButton::Primary,
@@ -1362,14 +1398,14 @@ mod tests {
     #[test]
     fn the_whats_new_button_row_renders_no_url_at_any_width() {
         let colors = colors();
-        let prompt = FirstLoadPrompt::whats_new(sample_notes(), false);
+        let prompt = FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Skip);
         assert_eq!(
             prompt.footer_link(),
             None,
             "the what's-new screen must publish no footer address"
         );
         assert_eq!(
-            FirstLoadPrompt::welcome(sample_welcome(), false)
+            FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Skip)
                 .footer_link()
                 .as_deref(),
             Some(yaran_core::urls::WEBSITE),
@@ -1573,7 +1609,7 @@ mod tests {
 
         let welcome = sample_welcome();
         assert!(
-            welcome.tagline.chars().count() > prose_cols as usize,
+            welcome.tagline.chars().count() > usize::from(prose_cols),
             "only meaningful while the tagline overflows the column"
         );
         let lines = welcome_lines(&welcome, prose_cols, &colors);
@@ -1596,10 +1632,10 @@ mod tests {
         let notes = sample_notes();
         let notes_lines = whats_new_lines(&notes, prose_cols, &colors);
         for group in [&lines, &notes_lines] {
-            for line in group.iter() {
+            for line in group {
                 let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
                 assert!(
-                    width <= prose_cols as usize,
+                    width <= usize::from(prose_cols),
                     "line is wider than its column and would be clipped: {line:?}"
                 );
             }
@@ -1645,7 +1681,8 @@ mod tests {
     #[test]
     fn the_welcome_modal_paints_the_peer_mark_both_buttons_and_the_prose() {
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), true));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Write));
         let rendered = render_prompt_to_string(&mut app, 120, 40);
         assert!(rendered.contains("Welcome to Yaran"), "title missing");
         assert!(rendered.contains('⣿'), "the peer_mark must be painted");
@@ -1661,7 +1698,8 @@ mod tests {
     #[test]
     fn the_whats_new_modal_paints_its_headline_features_and_buttons() {
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(sample_notes(), true));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Write));
         let rendered = render_prompt_to_string(&mut app, 120, 40);
         assert!(
             rendered.contains("What's new in Yaran v0.7.0"),
@@ -1684,7 +1722,8 @@ mod tests {
     #[test]
     fn the_welcome_secondary_button_leaves_the_screen() {
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), false));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Skip));
         if let PromptState::FirstLoad(prompt) = &mut app.prompt {
             prompt.focus = FirstLoadButton::Secondary;
         }
@@ -1702,8 +1741,8 @@ mod tests {
         assert!(!close_key.is_empty(), "the close binding must have a label");
 
         for prompt in [
-            FirstLoadPrompt::welcome(sample_welcome(), false),
-            FirstLoadPrompt::whats_new(sample_notes(), false),
+            FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Skip),
+            FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Skip),
         ] {
             let mut app = test_app(default_bindings());
             app.prompt = PromptState::FirstLoad(prompt);
@@ -1718,7 +1757,8 @@ mod tests {
     #[test]
     fn a_narrow_terminal_drops_the_peer_mark_instead_of_squeezing_the_prose() {
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), true));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Write));
         // 60 columns of terminal leaves under 68 columns of inner width.
         let rendered = render_prompt_to_string(&mut app, 60, 30);
         assert!(
@@ -1738,7 +1778,8 @@ mod tests {
     #[test]
     fn rendering_records_the_button_geometry_for_the_mouse() {
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), true));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Write));
         let _ = render_prompt_to_string(&mut app, 120, 40);
         match app.overlay_layout.active {
             OverlayMouseLayout::FirstLoad {
@@ -1756,7 +1797,8 @@ mod tests {
     #[test]
     fn rendering_records_the_scroll_extent_so_keys_can_clamp() {
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), true));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Write));
         let _ = render_prompt_to_string(&mut app, 120, 40);
         assert!(app.last_first_load_height > 0);
         assert!(app.last_first_load_lines > 0);
@@ -1827,7 +1869,7 @@ mod tests {
     #[test]
     fn an_explicitly_opened_screen_never_stamps() {
         let mut app = test_app(default_bindings());
-        app.show_welcome_screen_command().expect("open welcome");
+        app.show_welcome_screen_command();
         app.dismiss_first_load_prompt();
         assert_eq!(
             app.engine.session_store.last_seen_version().unwrap(),
@@ -2016,7 +2058,7 @@ mod tests {
         // which is silent. A user who asks while it is running must still be told
         // when it fails: the escalation flag is shared with the running thread.
         let flag = Arc::new(AtomicBool::new(false));
-        let op = notes_status_op(NotesFetchPurpose::Automatic, flag.clone());
+        let op = notes_status_op(NotesFetchPurpose::Automatic, Arc::clone(&flag));
         flag.store(true, Ordering::SeqCst);
         let resolved = op.resolve(&Err(yaran_core::release_notes::FetchError::Transient(
             anyhow::anyhow!("connection refused"),
@@ -2026,7 +2068,9 @@ mod tests {
                 assert_eq!(tone, yaran_core::statusline::StatusTone::Error);
                 assert!(text.contains("connection refused"), "{text}");
             }
-            other => panic!("an escalated failure must surface an error, got {other:?}"),
+            other @ yaran_core::engine::Final::Clear => {
+                panic!("an escalated failure must surface an error, got {other:?}")
+            }
         }
     }
 
@@ -2050,7 +2094,7 @@ mod tests {
         // Stand in for a fetch in flight: a channel whose sender is still alive.
         let (tx, rx) = mpsc::channel::<NotesFetched>();
         app.notes_fetch_rx = Some(rx);
-        app.show_release_notes_command().expect("command runs");
+        app.show_release_notes_command();
         assert!(
             app.notes_fetch_explicit_request.load(Ordering::SeqCst),
             "the running fetch must learn that someone is now waiting on it"
@@ -2139,7 +2183,7 @@ mod tests {
         notes.sections = vec![long.clone(); 4];
 
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(notes, true));
+        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(notes, SeenNote::Write));
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
@@ -2196,7 +2240,8 @@ mod tests {
 
     fn app_with_welcome() -> App {
         let mut app = test_app(default_bindings());
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), true));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::welcome(sample_welcome(), SeenNote::Write));
         app
     }
 
@@ -2326,7 +2371,7 @@ mod tests {
     #[test]
     fn space_on_the_secondary_button_of_the_whats_new_screen_just_closes_it() {
         let mut app = test_app(default_bindings());
-        let mut prompt = FirstLoadPrompt::whats_new(sample_notes(), true);
+        let mut prompt = FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Write);
         prompt.focus = FirstLoadButton::Secondary;
         app.prompt = PromptState::FirstLoad(prompt);
         app.handle_key(key(KeyCode::Char(' '))).expect("space");
@@ -2391,7 +2436,8 @@ mod tests {
         let mut app = test_app(default_bindings());
         // The what's-new screen's secondary button is a plain dismiss, which makes
         // the assertion about the click alone rather than about a browser launch.
-        app.prompt = PromptState::FirstLoad(FirstLoadPrompt::whats_new(sample_notes(), true));
+        app.prompt =
+            PromptState::FirstLoad(FirstLoadPrompt::whats_new(sample_notes(), SeenNote::Write));
         let _ = render_prompt_to_string(&mut app, 120, 40);
         let OverlayMouseLayout::FirstLoad {
             secondary_button, ..

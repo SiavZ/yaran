@@ -43,12 +43,14 @@ pub const WATCH_SUPPRESS_AFTER_INJECT: Duration = Duration::from_secs(10);
 
 /// All AMQ runtime state the engine owns. `Default` is the idle state; the
 /// watcher is only started by [`Engine::start_amq`].
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct AmqRuntime {
     /// Per-session settings, loaded from `agent_sessions.session_settings`
     /// at construction and restore. Absent means `SessionSettings::default()`.
     pub session_settings: HashMap<String, SessionSettings>,
+    /// The inject queue being watched, once started.
     pub queue_dir: Option<PathBuf>,
+    /// The file watcher on the queue, kept alive while it runs.
     pub watcher: Option<Arc<Mutex<notify::RecommendedWatcher>>>,
     /// Set on [`Engine::stop_amq`]; the poll loop exits on it (3d520748).
     pub shutdown: Arc<AtomicBool>,
@@ -57,13 +59,21 @@ pub struct AmqRuntime {
     /// thread is gone. `spawn_loop_worker` hands back no `JoinHandle`, and
     /// this is how [`Engine::quiesce_amq_for_exec`] still gets a bounded join.
     pub poll_alive: Arc<()>,
+    /// Whether [`Engine::start_amq`] has run.
     pub started: bool,
+    /// Claimed messages waiting for delivery, per receiver.
     pub pending: HashMap<String, VecDeque<QueuedMessage>>,
+    /// Until when deliveries wait for agents to come up after a start.
     pub startup_grace_until: Option<Instant>,
+    /// Per receiver, until when the next delivery waits after the last one.
     pub cooldown_until: HashMap<String, Instant>,
+    /// Per receiver, when a held delivery was last warned about.
     pub last_warned: HashMap<String, Instant>,
+    /// Per receiver, when its oldest waiting message arrived.
     pub first_pending_at: HashMap<String, Instant>,
+    /// Receivers already warned that a message waited too long.
     pub timeout_warned: HashSet<String>,
+    /// Per receiver, when a held delivery was last logged.
     pub last_held_logged: HashMap<String, Instant>,
     /// Last operator keystroke per SESSION. Upstream's `pty_input` keeps
     /// only a 1.25 s typing window and is cleared with the tab, so it cannot
@@ -85,12 +95,22 @@ pub struct AmqRuntime {
     pub pending_enters: HashMap<String, Instant>,
 }
 
+/// What a settings save does to the agent's title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TitleEdit {
+    /// Leave it as it is.
+    Keep,
+    /// Set it; `None` (or a blank one) clears it.
+    Set(Option<String>),
+}
+
 /// A surface's view of which agent the operator is typing into right now.
 /// The TUI passes its focused session when input goes to the agent; the web
 /// passes `None` (nobody is focused in the fork's sense), so only the
 /// keystroke timestamps gate delivery there.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AmqFocus<'a> {
+    /// The agent the operator is typing into, when there is one.
     pub focused_session: Option<&'a str>,
     /// The session the unrouted fallback delivers to.
     pub selected_session: Option<&'a str>,
@@ -135,9 +155,7 @@ impl Engine {
 
     /// Context mode for `session_id`.
     pub fn session_mode(&self, session_id: &str) -> ContextMode {
-        self.session_settings(session_id)
-            .map(|s| s.mode)
-            .unwrap_or_default()
+        self.session_settings(session_id).map_or_default(|s| s.mode)
     }
 
     /// Re-read every session's settings from SQLite. Called at engine
@@ -159,7 +177,7 @@ impl Engine {
         &mut self,
         session_id: &str,
         settings: SessionSettings,
-        title: Option<Option<String>>,
+        title: TitleEdit,
     ) -> anyhow::Result<EventReaction> {
         let Some(index) = self.sessions.iter().position(|s| s.id == session_id) else {
             return Ok(EventReaction::Status(StatusUpdate::error(
@@ -168,7 +186,11 @@ impl Engine {
         };
         let settings = normalize_settings(settings);
         let previous = self.session_settings_or_default(session_id);
-        let new_title = title.map(|t| t.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        // A blank title is no title.
+        let new_title = match title {
+            TitleEdit::Keep => None,
+            TitleEdit::Set(t) => Some(t.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())),
+        };
         let title_changed = new_title
             .as_ref()
             .is_some_and(|t| *t != self.sessions[index].title);
@@ -208,15 +230,25 @@ impl Engine {
         let needs_respawn = previous.yolo_permissions != settings.yolo_permissions
             || previous.verify_envelope_override != settings.verify_envelope_override
             || system_prompt_changed;
-        let summary = build_session_settings_save_summary(
-            previous.mode != settings.mode,
-            title_changed,
-            previous.auto_clear_on_task_done != settings.auto_clear_on_task_done,
-            previous.auto_compact_on_compact != settings.auto_compact_on_compact
-                || previous.compact_instructions_path != settings.compact_instructions_path,
-            system_prompt_changed,
-            needs_respawn,
-        );
+        let changed: Vec<SettingsChange> = [
+            (title_changed, SettingsChange::Title),
+            (previous.mode != settings.mode, SettingsChange::Mode),
+            (
+                previous.auto_clear_on_task_done != settings.auto_clear_on_task_done,
+                SettingsChange::AutoClear,
+            ),
+            (
+                previous.auto_compact_on_compact != settings.auto_compact_on_compact
+                    || previous.compact_instructions_path != settings.compact_instructions_path,
+                SettingsChange::AutoCompact,
+            ),
+            (system_prompt_changed, SettingsChange::SystemPrompt),
+            (needs_respawn, SettingsChange::SpawnTime),
+        ]
+        .into_iter()
+        .filter_map(|(changed, change)| changed.then_some(change))
+        .collect();
+        let summary = build_session_settings_save_summary(&changed);
         Ok(EventReaction::Multi(vec![
             EventReaction::RebuildLeftItems,
             EventReaction::Status(if needs_respawn {
@@ -373,6 +405,10 @@ impl Engine {
     /// Start the inject-queue watcher. Idempotent (the flip hands a live
     /// engine to the other surface, which calls this again). Never fatal:
     /// yaran must come up when `$HOME` is unwritable or notify fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the watcher's lock was poisoned by a panic while held.
     pub fn start_amq(&mut self) {
         if self.amq.started {
             return;
@@ -424,16 +460,19 @@ impl Engine {
                 remedy: crate::poller_status::REMEDY_RESTART_YARAN.into(),
             },
             move |tx| {
-                // Owned by the closure, so it drops exactly when the thread
-                // returns: the liveness signal `quiesce_amq_for_exec` waits on.
-                let _alive = &alive;
+                // Naming `alive` here moves it into the closure, so it drops
+                // exactly when the thread returns: the liveness signal
+                // `quiesce_amq_for_exec` waits on.
+                std::hint::black_box(&alive);
                 // Sleep in short slices so `stop_amq` is honoured promptly.
                 let mut slept = Duration::ZERO;
                 while slept < interval {
                     if shutdown.load(Ordering::Relaxed) {
                         return LoopControl::Break;
                     }
-                    let slice = (interval - slept).min(Duration::from_millis(50));
+                    let slice = interval
+                        .saturating_sub(slept)
+                        .min(Duration::from_millis(50));
                     std::thread::sleep(slice);
                     slept += slice;
                 }
@@ -557,6 +596,10 @@ impl Engine {
     /// Claim new `.msg` files onto the in-memory pending queue, under the
     /// per-scan, per-receiver and total budgets, round-robin across receivers
     /// (867b4357).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the claim walks budgets, receivers and rejections in one pass so none is double counted"
+    )]
     pub(crate) fn drain_amq_inject_queue(&mut self) -> EventReaction {
         let Some(queue_dir) = self.amq.queue_dir.clone() else {
             return EventReaction::Nothing;
@@ -640,9 +683,10 @@ impl Engine {
                 Err(rejection) => {
                     // Quarantine so startup recovery does not reclaim and
                     // re-reject the same payload forever (b0c52c34).
-                    let where_to = queue::quarantine_rejected(&inflight)
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|e| format!("quarantine failed: {e}"));
+                    let where_to = queue::quarantine_rejected(&inflight).map_or_else(
+                        |e| format!("quarantine failed: {e}"),
+                        |p| p.display().to_string(),
+                    );
                     crate::logger::warn(&format!(
                         "amq: rejected after claim, quarantined to {where_to}: {}",
                         rejection.human()
@@ -674,6 +718,10 @@ impl Engine {
         reaction_from(out)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every delivery gate is checked in order for one receiver at a time"
+    )]
     fn tick_amq_inject(&mut self, focus: AmqFocus<'_>, out: &mut Vec<EventReaction>) {
         if !self.config.amq.inject.enabled || self.amq.pending.is_empty() {
             return;
@@ -956,8 +1004,7 @@ impl Engine {
         let depth = queue.map_or(0, VecDeque::len);
         let preview = queue
             .and_then(VecDeque::front)
-            .map(|h| queue::preview(&h.body, 80))
-            .unwrap_or_default();
+            .map_or_default(|h| queue::preview(&h.body, 80));
         let marker = match reason {
             HoldReason::BusyMarker(m) => format!(" marker={m:?}"),
             _ => String::new(),
@@ -1072,6 +1119,10 @@ impl Engine {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the watchdog decides the nudge and the checkpoint for every orchestrator in one pass"
+    )]
     fn tick_orchestrator_watchdog(&mut self, focus: AmqFocus<'_>) {
         let ocfg = self.config.amq.orchestrator.clone();
         if !ocfg.enabled || ocfg.poll_interval_secs == 0 {
@@ -1248,7 +1299,11 @@ impl Engine {
                     &s.id,
                     s.project_id(),
                     self.session_mode(&s.id),
-                    self.session_is_live(s),
+                    if self.session_is_live(s) {
+                        orch::PeerLiveness::Live
+                    } else {
+                        orch::PeerLiveness::NotRunning
+                    },
                     orchestrator_id,
                     project,
                 )
@@ -1267,37 +1322,45 @@ impl Engine {
 
 /// Status line summary for a settings save (fork
 /// `build_session_settings_save_summary`).
-pub fn build_session_settings_save_summary(
-    mode_changed: bool,
-    title_changed: bool,
-    auto_clear_changed: bool,
-    auto_compact_changed: bool,
-    system_prompt_changed: bool,
-    needs_respawn: bool,
-) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    if title_changed {
-        parts.push("title");
-    }
-    if mode_changed {
-        parts.push("context mode");
-    }
-    if auto_clear_changed {
-        parts.push("auto-clear");
-    }
-    if auto_compact_changed {
-        parts.push("auto-compact");
-    }
-    if system_prompt_changed {
-        parts.push("system prompt");
-    }
-    if needs_respawn {
-        parts.push("spawn-time settings");
-    }
-    if parts.is_empty() {
+pub fn build_session_settings_save_summary(changed: &[SettingsChange]) -> String {
+    let mut changed = changed.to_vec();
+    changed.sort();
+    changed.dedup();
+    if changed.is_empty() {
         "Session settings saved (no changes).".to_string()
     } else {
+        let parts: Vec<&str> = changed.iter().map(|change| change.words()).collect();
         format!("Session settings saved: {}.", parts.join(", "))
+    }
+}
+
+/// One kind of change a settings save reports, in the order it reports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SettingsChange {
+    /// The agent's title.
+    Title,
+    /// Its context mode.
+    Mode,
+    /// Auto-clear after a finished task.
+    AutoClear,
+    /// Auto-compact, or the instructions it compacts with.
+    AutoCompact,
+    /// The system prompt.
+    SystemPrompt,
+    /// Anything that applies only at the next spawn.
+    SpawnTime,
+}
+
+impl SettingsChange {
+    fn words(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Mode => "context mode",
+            Self::AutoClear => "auto-clear",
+            Self::AutoCompact => "auto-compact",
+            Self::SystemPrompt => "system prompt",
+            Self::SpawnTime => "spawn-time settings",
+        }
     }
 }
 
@@ -1566,23 +1629,29 @@ mod tests {
     #[test]
     fn build_session_settings_save_summary_lists_changed_knobs() {
         assert_eq!(
-            build_session_settings_save_summary(false, false, false, false, false, false),
+            build_session_settings_save_summary(&[]),
             "Session settings saved (no changes)."
         );
         assert_eq!(
-            build_session_settings_save_summary(false, true, false, false, false, false),
+            build_session_settings_save_summary(&[SettingsChange::Title]),
             "Session settings saved: title."
         );
         assert_eq!(
-            build_session_settings_save_summary(true, false, true, false, false, false),
+            build_session_settings_save_summary(&[SettingsChange::AutoClear, SettingsChange::Mode]),
             "Session settings saved: context mode, auto-clear."
         );
         assert_eq!(
-            build_session_settings_save_summary(false, false, true, true, false, false),
+            build_session_settings_save_summary(&[
+                SettingsChange::AutoClear,
+                SettingsChange::AutoCompact
+            ]),
             "Session settings saved: auto-clear, auto-compact."
         );
         assert_eq!(
-            build_session_settings_save_summary(false, false, false, false, true, true),
+            build_session_settings_save_summary(&[
+                SettingsChange::SpawnTime,
+                SettingsChange::SystemPrompt
+            ]),
             "Session settings saved: system prompt, spawn-time settings."
         );
     }

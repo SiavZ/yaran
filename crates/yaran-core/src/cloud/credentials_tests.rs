@@ -1,6 +1,7 @@
 //! Tests for the credentials store (round trip, modes, refusals, D24 consent key).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/credentials_tests.rs
 //! ├── cloud::credentials
@@ -10,6 +11,7 @@
 //! Used by:
 //! cloud/credentials_tests.rs
 //! └── cloud::credentials
+//! ```
 //! <module-headers:end>
 
 use super::*;

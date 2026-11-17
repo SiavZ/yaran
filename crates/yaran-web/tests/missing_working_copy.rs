@@ -84,16 +84,17 @@ async fn boot_with_repo() -> (
     let root = tmp.path().to_path_buf();
 
     let repo = root.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&repo).expect("create the test directory");
     run_git(&repo, &["init", "-q", "-b", "main", "."]);
     run_git(&repo, &["config", "user.email", "t@example.com"]);
     run_git(&repo, &["config", "user.name", "t"]);
-    std::fs::write(repo.join("seed.txt"), "seed\n").unwrap();
+    std::fs::write(repo.join("seed.txt"), "seed\n").expect("write the test file");
     run_git(&repo, &["add", "seed.txt"]);
     run_git(&repo, &["commit", "-qm", "init"]);
 
     let worktree = root.join("worktrees").join("repo").join("feat");
-    std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(worktree.parent().expect("the worktree path has a parent"))
+        .expect("create the test directory");
     yaran_core::git::add_worktree_new_branch_at(&repo, &worktree, "feat", Some("main"))
         .expect("the agent's working copy");
 
@@ -102,10 +103,11 @@ async fn boot_with_repo() -> (
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -115,33 +117,44 @@ async fn boot_with_repo() -> (
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session(
                 "s1",
                 worktree.to_string_lossy().as_ref(),
                 "feat",
             ))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     yaran_core::test_provider::defuse_config(&mut engine.config);
     let (handle, _join) = spawn_engine_thread(engine);
     let app = build_app(handle, axum::Router::new(), RouterParams::plain_http());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp, worktree, repo)
+}
+
+/// What the agent's directory is expected to hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkingCopy {
+    /// Nothing: the directory is gone.
+    Missing,
+    /// The working copy.
+    Present,
 }
 
 /// Poll until the server has noticed what is at the agent's directory.
@@ -149,7 +162,8 @@ async fn boot_with_repo() -> (
 /// Asking for the agent's changes is what refreshes the classification, exactly
 /// as an open changes panel does; the answer runs off the engine thread, so the
 /// first ask reports the previous verdict by design.
-async fn wait_for_missing(addr: SocketAddr, missing: bool) -> serde_json::Value {
+async fn wait_for_missing(addr: SocketAddr, copy: WorkingCopy) -> serde_json::Value {
+    let missing = copy == WorkingCopy::Missing;
     let client = reqwest::Client::new();
     for _ in 0..100 {
         let _ = client
@@ -160,10 +174,10 @@ async fn wait_for_missing(addr: SocketAddr, missing: bool) -> serde_json::Value 
             .get(format!("http://{addr}/api/v1/sessions"))
             .send()
             .await
-            .unwrap()
+            .expect("send the request")
             .json()
             .await
-            .unwrap();
+            .expect("the response body is JSON");
         let workspace = body[0]["workspace"].clone();
         if workspace["worktree_missing"] == serde_json::Value::Bool(missing) {
             return workspace;
@@ -208,7 +222,7 @@ async fn a_deleted_working_copy_answers_with_its_own_verdict() {
     // The agent removes its own working copy from inside it.
     std::fs::remove_dir_all(&worktree).unwrap();
 
-    let workspace = wait_for_missing(addr, true).await;
+    let workspace = wait_for_missing(addr, WorkingCopy::Missing).await;
     let reason = workspace["quiet_reason"].as_str().unwrap_or_default();
     // User-facing sentences print paths through `shorten_home`, so a temp dir
     // under $HOME (a developer machine with TMPDIR in the home tree) shows as
@@ -243,8 +257,8 @@ async fn a_deleted_working_copy_answers_with_its_own_verdict() {
             "a directory that is gone is no git error"
         );
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert!(body["staged"].as_array().unwrap().is_empty());
-        assert!(body["unstaged"].as_array().unwrap().is_empty());
+        assert_eq!(body["staged"], serde_json::json!([]));
+        assert_eq!(body["unstaged"], serde_json::json!([]));
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
@@ -305,7 +319,9 @@ where
                 continue;
             };
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                sink.lock().unwrap().push(value);
+                sink.lock()
+                    .expect("the frames lock is not poisoned")
+                    .push(value);
             }
         }
     });
@@ -319,7 +335,7 @@ async fn recreating_the_working_copy_puts_it_back_at_the_same_path() {
     let (addr, _tmp, worktree) = boot().await;
     let client = reqwest::Client::new();
     std::fs::remove_dir_all(&worktree).unwrap();
-    wait_for_missing(addr, true).await;
+    wait_for_missing(addr, WorkingCopy::Missing).await;
 
     let resp = client
         .post(format!(
@@ -341,7 +357,7 @@ async fn recreating_the_working_copy_puts_it_back_at_the_same_path() {
         "the working copy is back at {}",
         worktree.display()
     );
-    wait_for_missing(addr, false).await;
+    wait_for_missing(addr, WorkingCopy::Present).await;
 }
 
 /// An id with nothing to recreate is refused in a sentence rather than acted on:
@@ -395,7 +411,7 @@ async fn the_editor_refuses_a_directory_that_is_gone_in_the_same_sentence() {
     assert_eq!(resp.status(), 200);
 
     std::fs::remove_dir_all(&worktree).unwrap();
-    wait_for_missing(addr, true).await;
+    wait_for_missing(addr, WorkingCopy::Missing).await;
 
     let resp = client
         .post(format!("http://{addr}/api/v1/sessions/s1/files/list"))
@@ -438,7 +454,7 @@ async fn recreating_one_working_copy_leaves_an_unreachable_sibling_alone() {
 
     std::fs::remove_dir_all(&worktree).unwrap();
     std::fs::rename(&sibling, &stashed).expect("the sibling's mount goes away");
-    wait_for_missing(addr, true).await;
+    wait_for_missing(addr, WorkingCopy::Missing).await;
 
     let resp = client
         .post(format!(
@@ -448,7 +464,7 @@ async fn recreating_one_working_copy_leaves_an_unreachable_sibling_alone() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    wait_for_missing(addr, false).await;
+    wait_for_missing(addr, WorkingCopy::Present).await;
 
     std::fs::rename(&stashed, &sibling).expect("the sibling's mount comes back");
     let listed = yaran_core::test_git::fixture_git()

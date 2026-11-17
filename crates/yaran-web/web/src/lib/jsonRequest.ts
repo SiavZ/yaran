@@ -1,3 +1,5 @@
+import { apiFetch, rethrowAuthInterruption } from "./apiFetch"
+import { AttachedError, attachedBlockers } from "./attached"
 import { getConnectionId } from "./connection"
 import { describeErrorBody, isHtmlBody } from "./httpBody"
 import { accessSession } from "./native/accessSession"
@@ -21,6 +23,9 @@ async function responseError(
   createError: RequestErrorFactory,
 ): Promise<Error> {
   const detail = (await response.text().catch(() => "")).trim()
+  // Every guarded route refuses with the same `attached` body, read here once.
+  const blockers = attachedBlockers(response.status, parseJson(detail))
+  if (blockers !== null) return new AttachedError(blockers)
   const contentType = response.headers.get("content-type") ?? ""
   // A login page or an Access refusal: ask whether the sign-in is what failed.
   if (
@@ -34,6 +39,14 @@ async function responseError(
     describeErrorBody(response.status, contentType, detail) ??
     `request failed (${response.status})`
   return createError(message, response.status, detail)
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
 }
 
 // 204 and an empty body are `undefined`, which every `request<void>` caller relies
@@ -87,13 +100,14 @@ export function createJsonRequest(
     let response: Response
     try {
       if (mapSerializationErrors) payload = serializeJsonBody(body)
-      response = await fetch(path, {
+      response = await apiFetch(path, {
         method,
         credentials: "same-origin",
         headers,
         body: payload,
       })
-    } catch {
+    } catch (e) {
+      rethrowAuthInterruption(e)
       accessSession.noteRequestTrouble()
       throw createError("Could not reach the server.", 0, "")
     }

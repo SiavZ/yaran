@@ -11,6 +11,7 @@
 //! - Blocking I/O: call from a worker or CLI thread, never the UI thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! private_file.rs
 //! ├── file_modes
@@ -24,6 +25,7 @@
 //! ├── crate
 //! ├── human_board::store
 //! └── human_board::tests::watcher_tests
+//! ```
 //! <module-headers:end>
 
 use std::fs::{self, File, OpenOptions};
@@ -36,6 +38,10 @@ use anyhow::{Context, Result};
 use crate::file_modes::PRIVATE_FILE_MODE;
 
 /// Replace `path` with `body` as an owner-only (`0600`) file.
+///
+/// # Errors
+///
+/// Fails when the temporary file cannot be written or renamed into place.
 pub fn write_private_atomic(path: &Path, body: &[u8]) -> Result<()> {
     write_atomic(path, body, Some(PRIVATE_FILE_MODE))
 }
@@ -44,12 +50,15 @@ pub fn write_private_atomic(path: &Path, body: &[u8]) -> Result<()> {
 /// `mode` is the new file's permission bits; `None` leaves them to the umask.
 /// The temporary file is hidden (a leading dot), so a notes app or a folder
 /// watcher that happens to look mid-write does not take it for a real file.
+///
+/// # Errors
+///
+/// Fails when the temporary file cannot be written or renamed into place.
 pub fn write_atomic(path: &Path, body: &[u8], mode: Option<u32>) -> Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     let tmp = dir.join(format!(
         ".{name}.tmp.{}.{}",
         std::process::id(),
@@ -90,6 +99,10 @@ pub fn write_atomic(path: &Path, body: &[u8], mode: Option<u32>) -> Result<()> {
 
 /// Open (creating, `0600`) and exclusively `flock` `lock_path`. The lock is held
 /// until the returned file is dropped.
+///
+/// # Errors
+///
+/// Fails when the lock file cannot be created, opened or locked.
 pub fn lock_exclusive(lock_path: &Path) -> Result<File> {
     use rustix::fs::{FlockOperation, flock};
     if let Some(parent) = lock_path.parent() {
@@ -110,6 +123,10 @@ pub fn lock_exclusive(lock_path: &Path) -> Result<File> {
 }
 
 /// Run `work` while holding the exclusive lock on `lock_path`.
+///
+/// # Errors
+///
+/// Fails when the lock cannot be taken, or with `work`'s own error.
 pub fn with_exclusive_lock<T>(lock_path: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
     let _lock = lock_exclusive(lock_path)?;
     work()
@@ -150,7 +167,7 @@ mod tests {
         assert!(write_private_atomic(&occupied, b"x").is_err());
         let leftovers: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
             .collect();
         assert!(leftovers.is_empty());

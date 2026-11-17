@@ -9,9 +9,13 @@ vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
   return {
     ...actual,
-    useYaran: () => mockState,
+    // Every state here is a partial; the stack's per-agent maps and the tabs
+    // being created start empty.
+    useYaran: () => ({ stackTabs: {}, createTabInFlight: [], ...mockState }),
     setChangesPaneVisibility: vi.fn(),
     showChangesPane: vi.fn(),
+    addTab: vi.fn(),
+    createTerminal: vi.fn(),
   }
 })
 
@@ -32,6 +36,7 @@ function installBootStubs() {
 }
 installBootStubs()
 const { InsetHeader } = await import("./InsetHeader")
+const store = await import("@/lib/store")
 const { registerPaneInputGroup, resetPaneInputGroups } = await import(
   "@/lib/paneInputGroup"
 )
@@ -216,7 +221,7 @@ describe("InsetHeader agent chips", () => {
     ] as never
     mockState = withTerminals
     render(<InsetHeader />)
-    expect(chipValue("terminal")).toBe("2")
+    expect(chipValue("terminal")).toBe("2 terminals")
   })
 
   it("wires every chip to a hover label", () => {
@@ -470,7 +475,7 @@ describe("InsetHeader project terminal chips", () => {
 })
 
 describe("InsetHeader session terminal chips", () => {
-  it("keeps the owning agent's fields and hands the primary slot to the terminal", () => {
+  it("names the agent's row while a terminal of its dock has focus", () => {
     const base = stateFor("main", "main")
     mockState = {
       ...base,
@@ -494,17 +499,39 @@ describe("InsetHeader session terminal chips", () => {
       },
     } as unknown as YaranState
     render(<InsetHeader />)
-    // One terminal glyph, not two: the focused terminal's chip replaces the
-    // agent's count rather than sitting beside it.
+    // The header is the row's, so it reads exactly as it does with the agent
+    // focused: the agent first among equals, and its terminal count.
     expect(chipKindsInOrder()).toEqual([
       "project",
       "agent",
       "terminal",
       "assistant",
     ])
-    expect(chipValue("terminal")).toBe("Terminal 1")
-    expect(chip("terminal")!.className).not.toContain("shrink-[9999]")
-    expect(chip("agent")!.className).toContain("shrink-[9999]")
+    expect(chipValue("terminal")).toBe("1 terminal")
+    expect(chip("agent")!.className).not.toContain("shrink-[9999]")
+  })
+})
+
+describe("InsetHeader assistant chip over a dock terminal", () => {
+  it("names the provider of the tab the stack keeps on top after a reload", () => {
+    const base = stateFor("main", "main")
+    const session = base.spine!.sessions[0]
+    session.tabs = [
+      ...session.tabs,
+      { ...session.tabs[0], id: "s1-t2", provider: "codex", order: 1 },
+    ]
+    mockState = {
+      ...base,
+      selectedTarget: { kind: "terminal", terminalId: "t1", owner: { kind: "session", sessionId: "s1" } },
+      spine: {
+        ...base.spine,
+        terminals: [{ id: "t1", owner: { kind: "session", session_id: "s1" }, label: "Terminal 1" }],
+      },
+    } as unknown as YaranState
+    // This page has not shown a tab yet; the device remembers the extra one.
+    localStorage.setItem("yaran:stack:s1", JSON.stringify({ tab: "s1-t2" }))
+    render(<InsetHeader />)
+    expect(chipValue("assistant")).toBe("codex")
   })
 })
 
@@ -850,5 +877,75 @@ describe("InsetHeader geometry", () => {
     const controls = screen.getByRole("button", { name: /^settings$/i })
       .parentElement!
     expect(controls.className).toContain("shrink-0")
+  })
+})
+
+describe("InsetHeader new tab button", () => {
+  const newTab = () => screen.queryByRole("button", { name: "New tab…" })
+
+  it("leads the pane's cluster on an agent pane: New tab…, Theater, Macros, ⋯", () => {
+    mockState = stateFor("main", "main")
+    render(<InsetHeader />)
+    const order = [
+      newTab()!,
+      screen.getByRole("button", { name: /theater/i }),
+      screen.getByRole("button", { name: /run a macro/i }),
+      screen.getByRole("button", { name: /session actions/i }),
+    ]
+    for (let i = 1; i < order.length; i++) {
+      expect(
+        order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+    }
+    // One outline family at one height token with Theater and Macros.
+    for (const control of order.slice(0, 3)) {
+      expect(control.className).toContain("h-8")
+      expect(control.className).toContain("border-border")
+    }
+  })
+
+  it("opens the agent's add dialog, which adds a tab or a terminal", async () => {
+    mockState = stateFor("main", "main")
+    render(<InsetHeader />)
+    fireEvent.click(newTab()!)
+    const dialog = await screen.findByRole("dialog")
+    // The provider is named as a chip, never in quotes.
+    expect(dialog.querySelector("code")?.textContent).toBe("claude")
+    fireEvent.click(screen.getByText("New agent tab"))
+    expect(store.addTab).toHaveBeenCalledWith("s1")
+
+    fireEvent.click(newTab()!)
+    fireEvent.click(await screen.findByText("New terminal"))
+    expect(store.createTerminal).toHaveBeenCalledWith("s1")
+  })
+
+  it("stays on the agent's pane while a terminal of its dock has focus", () => {
+    const base = stateFor("main", "main")
+    mockState = {
+      ...base,
+      selectedTarget: { kind: "terminal", terminalId: "t1", owner: { kind: "session", sessionId: "s1" } },
+      spine: {
+        ...base.spine,
+        terminals: [{ id: "t1", owner: { kind: "session", session_id: "s1" }, label: "Terminal 1" }],
+      },
+    } as unknown as YaranState
+    render(<InsetHeader />)
+    expect(newTab()).not.toBeNull()
+  })
+
+  it("is absent on a project terminal's pane, which has no agent to add a tab to", () => {
+    mockState = {
+      selectedSessionId: null,
+      changesPanePercent: 26,
+      selectedTarget: { kind: "terminal", terminalId: "pt-1", owner: { kind: "project", projectId: "p1" } },
+      spine: {
+        projects: [{ id: "p1", name: "Repo" }],
+        sessions: [],
+        terminals: [{ id: "pt-1", owner: { kind: "project", project_id: "p1" }, label: "Terminal 2" }],
+      },
+    } as unknown as YaranState
+    render(<InsetHeader />)
+    expect(screen.getByRole("button", { name: /theater/i })).toBeTruthy()
+    expect(newTab()).toBeNull()
   })
 })

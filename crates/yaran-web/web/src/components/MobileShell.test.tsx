@@ -38,6 +38,9 @@ vi.mock("@/lib/store", async (importOriginal) => {
   return {
     ...actual,
     useYaran: () => mockState,
+    // The Changes screen's pane subscribes selectively; these tests render one
+    // state each, so reading it straight through is enough.
+    useYaranSelector: <T,>(select: (state: YaranState) => T): T => select(mockState),
     addTab: addTabMock,
     navigateUp: navigateUpMock,
     openDeleteTerminal: openDeleteTerminalMock,
@@ -53,6 +56,35 @@ vi.mock("@/components/LazyTerminalPane", () => ({
   LazyTerminalPane: (props: { overlay?: React.ReactNode }) => (
     <div data-testid="terminal-pane-stub">{props.overlay}</div>
   ),
+  // An agent's screen is its stack: each part a stand-in naming its pty and
+  // whether it is on screen, laid out by the screen's own arrangement.
+  LazyTerminalStack: (props: {
+    parts: { slot?: string; instance?: string; id: string; kind: string; onScreen?: boolean }[]
+    overlay?: React.ReactNode
+    typingTarget?: string | null
+    arrange?: (parts: Record<string, React.ReactNode>, target: string | null) => React.ReactNode
+  }) => {
+    const rendered: Record<string, React.ReactNode> = {}
+    for (const part of props.parts) {
+      rendered[part.slot ?? part.id] = (
+        <div
+          // Keyed as the real stack keys its parts, so a new instance is a
+          // remount here too.
+          key={`${part.slot ?? ""}:${part.instance ?? ""}`}
+          data-testid="terminal-part-stub"
+          data-id={part.id}
+          data-kind={part.kind}
+          data-on-screen={String(part.onScreen !== false)}
+        />
+      )
+    }
+    return (
+      <div data-testid="terminal-pane-stub" data-typing={props.typingTarget ?? ""}>
+        {props.arrange ? props.arrange(rendered, props.typingTarget ?? null) : Object.values(rendered)}
+        {props.overlay}
+      </div>
+    )
+  },
 }))
 
 // jsdom lacks localStorage/fetch/matchMedia as globals; the real store boots on
@@ -121,7 +153,17 @@ function makeState(overrides: Partial<YaranState> = {}): YaranState {
     bootstrap: { title: "yaran #1", yaran_version: "v9.9.9" },
     selectedTarget: null,
     createTabInFlight: [],
+    pendingTabOrder: {},
     mobileScreen: "home",
+    theater: false,
+    terminalEpoch: 0,
+    startedDormantTabs: [],
+    pendingSlotTab: {},
+    endedInViewTab: null,
+    stackLayouts: {},
+    stackTerminals: {},
+    stackTabs: {},
+    pendingTerminalOrder: null,
     ...overrides,
   } as unknown as YaranState
 }
@@ -177,6 +219,16 @@ function makeSessionSpine(tabCount: number): YaranState["spine"] {
 
 beforeEach(() => {
   installBootStubs()
+  // The Changes screen's list windows itself against its viewport's size,
+  // which it watches with a ResizeObserver jsdom does not ship.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
   addTabMock.mockClear()
   navigateUpMock.mockClear()
   openDeleteTerminalMock.mockClear()
@@ -762,6 +814,26 @@ describe("MobileShell dormant first tab", () => {
     render(<MobileShell />)
     expect(screen.getByText("Start session")).toBeTruthy()
   })
+
+  it("keeps the card, starting nothing, once the agent's last terminal has ended under it", () => {
+    // The store holds the first tab resting when its last terminal ends; the
+    // phone reads that hold as the computer does.
+    const state = dormantState(false)
+    state.endedInViewTab = "s1"
+    mockState = state
+    render(<MobileShell />)
+    expect(screen.getByText("Start session")).toBeTruthy()
+  })
+
+  it("shows the card, starting nothing, while one of the agent's terminals runs", () => {
+    const state = dormantState(false)
+    ;(state.spine as unknown as { terminals: unknown[] }).terminals = [
+      { id: "t1", owner: { kind: "session", session_id: "s1" }, label: "Terminal 1" },
+    ]
+    mockState = state
+    render(<MobileShell />)
+    expect(screen.getByText("Start session")).toBeTruthy()
+  })
 })
 
 // The in-app Back chevrons and the not-found screen's way out are UP controls,
@@ -1103,28 +1175,28 @@ describe("MobileShell quick toggles in the terminal-screen ⋯ menu", () => {
     } as unknown as Partial<YaranState>)
   }
 
-  it("offers Hide terminal keys on the terminal screen, and nothing for the top bar", () => {
+  it("offers Hide terminal keys as a button in the flap, never as a menu row, and nothing for the top bar", () => {
     mockState = terminalState()
     registerPaneInputGroup("s1", { surfaceSwitch: false, keysToggle: true })
     render(<MobileShell />)
+    expect(screen.getByLabelText("Hide terminal keys")).toBeTruthy()
     fireEvent.click(screen.getByLabelText("Session actions"))
-    expect(screen.getByText("Hide terminal keys")).toBeTruthy()
+    expect(screen.queryByText("Hide terminal keys")).toBeNull()
     // Theater mode is the one way to hide the phone's chrome, so this menu
     // carries no second flow for it.
     expect(screen.queryByText("Hide top bar")).toBeNull()
   })
 
-  // NEVER INERT, and never DOUBLED: the pane publishes the keys row only while
-  // it has no bottom bar of its own carrying it, so a menu whose pane says
-  // nothing offers nothing. The item used to render on a fine-pointer laptop
-  // and do nothing at all when pressed.
+  // NEVER INERT: the pane publishes the keys row only where a key row is on
+  // offer for this device, so a flap whose pane says nothing has no button. The
+  // control used to render on a fine-pointer laptop and do nothing when pressed.
   it("drops the keys toggle when the pane does not offer it", () => {
     media.set(COARSE_POINTER_QUERY, false)
     mockState = terminalState()
     registerPaneInputGroup("s1", { surfaceSwitch: false, keysToggle: false })
     render(<MobileShell />)
+    expect(screen.queryByLabelText("Hide terminal keys")).toBeNull()
     fireEvent.click(screen.getByLabelText("Session actions"))
-    expect(screen.queryByText("Hide terminal keys")).toBeNull()
     // The rest of the menu is still there, so this is a dropped ITEM rather
     // than a menu that failed to open.
     expect(screen.getByText("New agent tab…")).toBeTruthy()
@@ -1141,16 +1213,14 @@ describe("MobileShell quick toggles in the terminal-screen ⋯ menu", () => {
     })
     registerPaneInputGroup("s1", { surfaceSwitch: false, keysToggle: true })
     render(<MobileShell />)
-    fireEvent.click(screen.getByLabelText("Session actions"))
-    expect(screen.getByText("Show terminal keys")).toBeTruthy()
+    expect(screen.getByLabelText("Show terminal keys")).toBeTruthy()
   })
 
   it("tapping Hide terminal keys persists through the generic settings PATCH", () => {
     mockState = terminalState()
     registerPaneInputGroup("s1", { surfaceSwitch: false, keysToggle: true })
     render(<MobileShell />)
-    fireEvent.click(screen.getByLabelText("Session actions"))
-    fireEvent.click(screen.getByText("Hide terminal keys"))
+    fireEvent.click(screen.getByLabelText("Hide terminal keys"))
     const fetchSpy = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     expect(fetchSpy).toHaveBeenCalledWith(
       "/api/v1/config/settings",
@@ -1188,11 +1258,11 @@ describe("MobileShell quick toggles in the terminal-screen ⋯ menu", () => {
     // than every sibling item in the same open menu. Measured against a bar
     // toggle, which is a plain shared item and therefore the reference height.
     mockState = terminalState()
-    registerPaneInputGroup("s1", { surfaceSwitch: false, keysToggle: true })
+    registerPaneInputGroup("s1", { surfaceSwitch: true, keysToggle: false })
     render(<MobileShell />)
     fireEvent.click(screen.getByLabelText("Session actions"))
     const item = screen
-      .getByText("Hide terminal keys")
+      .getByText("Use virtual input")
       .closest('[role="menuitem"]')!
     const subTriggers = [
       screen.getByText("New agent tab…").closest('[role="menuitem"]')!,
@@ -1331,29 +1401,41 @@ describe("MobileShell agentless terminal screen ⋯ menu", () => {
     expect(screen.getByLabelText("Terminal actions")).toBeTruthy()
   })
 
-  it("offers the keys quick toggle, exactly as the agent screen words it", () => {
+  it("offers the keys toggle in the flap, exactly as the agent screen words it", () => {
     mockState = projectTerminalState()
     registerPaneInputGroup("pt-1", { surfaceSwitch: false, keysToggle: true })
     render(<MobileShell />)
+    expect(screen.getByLabelText("Hide terminal keys")).toBeTruthy()
     fireEvent.click(screen.getByLabelText("Terminal actions"))
-    expect(screen.getByText("Hide terminal keys")).toBeTruthy()
     expect(screen.queryByText("Hide top bar")).toBeNull()
+  })
+
+  // The bottom `⋯` is gone, so the switch has no home but the terminal's own
+  // flap menu, and it is there on a terminal screen as on an agent's.
+  it("carries the typing-surface switch in the terminal's own flap menu", () => {
+    mockState = projectTerminalState()
+    registerPaneInputGroup("pt-1", {
+      surfaceSwitch: true,
+      composeSurface: true,
+      keysToggle: false,
+    })
+    render(<MobileShell />)
+    fireEvent.click(screen.getByLabelText("Terminal actions"))
+    expect(screen.getByText("Type directly in the terminal")).toBeTruthy()
   })
 
   it("labels flip to Show when the keys bar is already hidden", () => {
     mockState = projectTerminalState({ mobile_accessory_bar: false })
     registerPaneInputGroup("pt-1", { surfaceSwitch: false, keysToggle: true })
     render(<MobileShell />)
-    fireEvent.click(screen.getByLabelText("Terminal actions"))
-    expect(screen.getByText("Show terminal keys")).toBeTruthy()
+    expect(screen.getByLabelText("Show terminal keys")).toBeTruthy()
   })
 
   it("tapping Hide terminal keys persists through the generic settings PATCH", () => {
     mockState = projectTerminalState()
     registerPaneInputGroup("pt-1", { surfaceSwitch: false, keysToggle: true })
     render(<MobileShell />)
-    fireEvent.click(screen.getByLabelText("Terminal actions"))
-    fireEvent.click(screen.getByText("Hide terminal keys"))
+    fireEvent.click(screen.getByLabelText("Hide terminal keys"))
     const fetchSpy = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     expect(fetchSpy).toHaveBeenCalledWith(
       "/api/v1/config/settings",
@@ -1427,8 +1509,11 @@ describe("MobileShell agent header identity", () => {
   it("does not grow the header: same h-11, tight leading, and the name truncates", () => {
     mockState = agentHeaderState()
     render(<MobileShell />)
-    const header = screen.getByLabelText("Back").closest("header")
+    const back = screen.getByLabelText("Back")
+    const header = back.closest("header")
     expect(header?.className).toContain("h-11")
+    // Back keeps the 40px touch floor inside the 44px header.
+    expect(back.className).toMatch(/(?:^|\s)h-10(?:\s|$)/)
     const name = screen.getByText("main")
     const laneTwo = screen.getByText("Repo").closest("div")
     // 14px + 11px at leading-tight is about 31px, inside the 44px header, and
@@ -1617,7 +1702,7 @@ describe("MobileShell agent header PR chip", () => {
   it("keeps the state coloring and the same one-tap open", () => {
     mockState = prState(openPr)
     render(<MobileShell />)
-    expect(chip().className).toContain("text-green-500")
+    expect(chip().className).toContain("text-yaran-pr-open")
     expect(chip().getAttribute("href")).toBe("https://github.com/o/r/pull/123")
     expect(chip().getAttribute("target")).toBe("_blank")
     expect(chip().getAttribute("rel")).toBe("noopener noreferrer")
@@ -1626,17 +1711,39 @@ describe("MobileShell agent header PR chip", () => {
   it("keeps the state coloring for a merged and a closed pull request", () => {
     mockState = prState({ ...openPr, state: "merged" })
     render(<MobileShell />)
-    expect(chip().className).toContain("text-purple-400")
+    expect(chip().className).toContain("text-yaran-pr-merged")
     cleanup()
     mockState = prState({ ...openPr, state: "closed" })
     render(<MobileShell />)
-    expect(chip().className).toContain("text-red-400")
+    expect(chip().className).toContain("text-yaran-pr-closed")
   })
 
   it("speaks the whole sentence to a screen reader", () => {
     mockState = prState(openPr)
     render(<MobileShell />)
     expect(chip().getAttribute("aria-label")).toBe("Pull request #123, open")
+  })
+
+  it("with several pull requests reads +n and opens the list as a sheet instead of a link", async () => {
+    mockState = prState(openPr)
+    const sessions = (
+      mockState.spine as unknown as { sessions: Record<string, unknown>[] }
+    ).sessions
+    sessions[0].prs = [
+      openPr,
+      { ...openPr, number: 77, url: "https://github.com/o/r/pull/77" },
+      { ...openPr, number: 415, state: "merged", url: "https://github.com/o/r/pull/415" },
+    ]
+    render(<MobileShell />)
+    const button = chip()
+    expect(button.textContent).toBe("#123 +2")
+    expect(button.getAttribute("href")).toBeNull()
+    expect(button.className).toContain("text-yaran-pr-open")
+    expect(button.className).toMatch(/(?:^|\s)min-w-10(?:\s|$)/)
+    await act(async () => {
+      fireEvent.click(button)
+    })
+    expect(screen.getByText("3 pull requests on this agent")).toBeTruthy()
   })
 
   // WIDTH BUDGET. jsdom has no layout engine, so this is arithmetic over the
@@ -1755,28 +1862,18 @@ describe("MobileShell agent header lanes", () => {
 })
 
 // The hub's bottom bar renders the SAME launcher corner as the desktop sidebar
-// footer, so the verb flip and the sizing are inherited rather than repeated
-// here. This pins that the bar carries that one component: the verb, its ⋯, and
-// nothing else that could drift back into a second control.
+// footer: the split button's two halves and nothing beside them.
 describe("MobileShell hub bottom bar", () => {
-  it("carries the launcher corner: one verb, one ⋯, at one height", () => {
+  it("carries the launcher corner's split button", () => {
     mockState = makeState({ spine: makeSessionSpine(1) })
     render(<MobileShell />)
-    const overflow = screen.getByLabelText("More ways to create")
-    const corner = overflow.parentElement as HTMLElement
-    const controls = Array.from(corner.querySelectorAll("button"))
-    expect(controls).toHaveLength(2)
-    for (const control of controls) {
-      expect(control.className, control.textContent ?? "").toContain("h-7")
-      expect(control.className, control.textContent ?? "").toContain(
-        "max-md:min-h-11",
-      )
-    }
+    const corner = screen.getByRole("button", { name: "New agent…" })
+      .parentElement as HTMLElement
     expect(
-      controls.map((c) => c.textContent?.trim()).filter(Boolean),
-    ).toEqual(["New agent"])
-    // There is no second split button.
-    expect(screen.queryByLabelText("More ways to add a project")).toBeNull()
+      Array.from(corner.querySelectorAll("button")).map(
+        (b) => b.getAttribute("aria-label") ?? b.textContent,
+      ),
+    ).toEqual(["New agent…", "More ways to start"])
   })
 })
 
@@ -1806,5 +1903,136 @@ describe("MobileShell changes screen", () => {
 
     const stage = screen.getByRole("button", { name: "Stage 1" })
     expect(stage.textContent).toContain("Stage 1")
+  })
+})
+
+// A PHONE SHOWS AN AGENT OR ITS TERMINALS, NEVER BOTH. Both stay mounted, the
+// one out of sight clipped in a box of the same size, so flipping between them
+// reattaches nothing; only the shown part's strip is drawn, and the switch in
+// the flap is the way across.
+describe("MobileShell one part of an agent at a time", () => {
+  const desktopWidth = window.innerWidth
+  beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true })
+  })
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: desktopWidth, configurable: true })
+  })
+
+  const dock = { kind: "terminal", terminalId: "t1", owner: { kind: "session", sessionId: "s1" } } as const
+  function partsState(
+    target: YaranState["selectedTarget"],
+    opts: { tabs?: number; terminals?: string[]; stopped?: boolean } = {},
+  ): YaranState {
+    const spine = makeSessionSpine(opts.tabs ?? 1) as unknown as {
+      sessions: { status: string; tabs: { has_live_process: boolean }[] }[]
+      terminals: unknown[]
+    }
+    if (opts.stopped) {
+      spine.sessions[0].status = "detached"
+      for (const t of spine.sessions[0].tabs) t.has_live_process = false
+    }
+    spine.terminals = (opts.terminals ?? ["t1"]).map((id, i) => ({
+      id,
+      owner: { kind: "session", session_id: "s1" },
+      label: id,
+      working: false,
+      typing: false,
+      sort_order: i,
+    }))
+    return makeState({
+      spine: spine as unknown as YaranState["spine"],
+      bootstrap: { title: "yaran", yaran_version: "v1", available_providers: ["claude"] },
+      selectedTarget: target,
+      selectedSessionId: "s1",
+      mobileScreen: "terminal",
+      changes: { sessionId: "s1", phase: "loaded", staged: [], unstaged: [] },
+    } as unknown as Partial<YaranState>)
+  }
+  const part = (id: string) =>
+    screen.getAllByTestId("terminal-part-stub").find((el) => el.dataset.id === id)
+
+  it("puts the agent on screen and keeps its terminal mounted out of sight", () => {
+    mockState = partsState({ kind: "agent", sessionId: "s1", tabId: "s1" })
+    render(<MobileShell />)
+    expect(part("s1")?.dataset.onScreen).toBe("true")
+    expect(part("t1")?.dataset.onScreen).toBe("false")
+    expect(screen.getByTestId("stack-dock-box").dataset.onScreen).toBe("false")
+    expect(screen.getByTestId("terminal-pane-stub").dataset.typing).toBe("s1")
+  })
+
+  it("flips to the terminal without remounting either part, so only what shows changes", () => {
+    mockState = partsState({ kind: "agent", sessionId: "s1", tabId: "s1" })
+    const view = render(<MobileShell />)
+    const agentPart = part("s1")
+    const dockPart = part("t1")
+    mockState = partsState(dock)
+    view.rerender(<MobileShell />)
+    // The same elements: the terminal coming on screen is what sends `shown`.
+    expect(part("s1")).toBe(agentPart)
+    expect(part("t1")).toBe(dockPart)
+    expect(part("t1")?.dataset.onScreen).toBe("true")
+    expect(part("s1")?.dataset.onScreen).toBe("false")
+    expect(screen.getByTestId("terminal-pane-stub").dataset.typing).toBe("t1")
+  })
+
+  it("opens nothing of a stopped agent while its terminals show", () => {
+    mockState = partsState(dock, { stopped: true })
+    render(<MobileShell />)
+    expect(part("s1")).toBeUndefined()
+    expect(part("t1")?.dataset.onScreen).toBe("true")
+    expect(screen.queryByText("Start session")).toBeNull()
+  })
+
+  it("draws only the shown part's strip, and both only with two of either", () => {
+    mockState = partsState({ kind: "agent", sessionId: "s1", tabId: "s1" }, { terminals: ["t1", "t2"] })
+    const view = render(<MobileShell />)
+    expect(screen.getByLabelText("New tab")).toBeTruthy()
+    expect(screen.queryByTestId("dock-strip")).toBeNull()
+    view.unmount()
+    mockState = partsState(dock, { terminals: ["t1", "t2"] })
+    render(<MobileShell />)
+    expect(screen.getByTestId("dock-strip")).toBeTruthy()
+    expect(screen.queryByLabelText("New tab")).toBeNull()
+    // A phone has no layout to change.
+    expect(screen.queryByLabelText("Maximize terminal")).toBeNull()
+  })
+
+  it("draws no strip for a lone tab beside a lone terminal, and no floating +", () => {
+    mockState = partsState(dock)
+    render(<MobileShell />)
+    expect(screen.queryByTestId("dock-strip")).toBeNull()
+    expect(screen.queryByLabelText("New tab")).toBeNull()
+    expect(screen.queryByTestId("stack-layout-pill")).toBeNull()
+    // Nor the computer header's New tab…: the flap's menu is the phone's way.
+    expect(screen.queryByRole("button", { name: "New tab…" })).toBeNull()
+  })
+
+  it("offers another tab and another terminal from the flap's menu", async () => {
+    mockState = partsState(dock)
+    render(<MobileShell />)
+    fireEvent.click(screen.getByLabelText("Session actions"))
+    expect(await screen.findByText("New agent tab…")).toBeTruthy()
+    expect(screen.getByText("New terminal in the worktree")).toBeTruthy()
+  })
+
+  it("carries the switch on the agent's screen and none on an agentless terminal's", () => {
+    mockState = partsState(dock)
+    const view = render(<MobileShell />)
+    expect(screen.getByTestId("pane-part-switch").getAttribute("aria-label")).toBe(
+      "Show the agent",
+    )
+    view.unmount()
+    mockState = makeState({
+      spine: {
+        ...(makeSessionSpine(1) as object),
+        terminals: [{ id: "x1", owner: { kind: "standalone", cwd_label: "~" }, label: "x1" }],
+      } as unknown as YaranState["spine"],
+      selectedTarget: { kind: "terminal", terminalId: "x1", owner: { kind: "standalone" } },
+      mobileScreen: "terminal",
+    } as unknown as Partial<YaranState>)
+    render(<MobileShell />)
+    expect(screen.getByTestId("mobile-action-flap")).toBeTruthy()
+    expect(screen.queryByTestId("pane-part-switch")).toBeNull()
   })
 })

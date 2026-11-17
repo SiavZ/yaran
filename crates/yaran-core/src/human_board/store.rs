@@ -16,6 +16,7 @@
 //! file.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! human_board/store.rs
 //! ├── human_board
@@ -29,6 +30,7 @@
 //! ├── human_board
 //! ├── human_board::seen
 //! └── human_board::sync
+//! ```
 //! <module-headers:end>
 
 use std::fs::{self, File};
@@ -100,12 +102,14 @@ impl BoardStore {
         matches!(self.backend, Backend::Folder(_))
     }
 
+    /// The card-id prefix this board hands out.
     pub fn prefix(&self) -> &str {
         &self.prefix
     }
 
     /// The private board document of the same yaran home: where a board
     /// lived before it moved to a folder, for `yaran board import`.
+    #[must_use]
     pub fn private_document(&self) -> BoardStore {
         BoardStore::new(self.home())
     }
@@ -121,18 +125,26 @@ impl BoardStore {
     /// unreadable document is an error naming the file. An unreadable note in
     /// a folder is not: it is listed in [`Board::problems`] and the rest of
     /// the board loads.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the board cannot be read or parsed.
     pub fn load(&self) -> Result<Board> {
         let mut board = match &self.backend {
             Backend::Document(path) => load_document(path)?,
             Backend::Folder(dir) => load_folder(dir)?,
         };
-        board.prefix = self.prefix.clone();
+        board.prefix.clone_from(&self.prefix);
         Ok(board)
     }
 
     /// Change the board under the writers' lock: read it, let `change` edit it,
     /// prune the history, and write it back atomically. Nothing is written when
     /// `change` fails.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the lock, the read or the write fails, or `change` does.
     pub fn update<T>(&self, change: impl FnOnce(&mut Board) -> Result<T>) -> Result<T> {
         let _lock = self.lock()?;
         let before = self.load()?;
@@ -158,6 +170,10 @@ impl BoardStore {
     /// Run `work` while holding the writers' lock, so no writer on this machine
     /// changes the board meanwhile. What a sync holds while it commits or
     /// merges the folder.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the lock cannot be taken, or `work` does.
     pub fn with_lock<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
         let _lock = self.lock()?;
         work()
@@ -202,7 +218,11 @@ fn write_document(path: &Path, board: &Board) -> Result<()> {
 
 /// Whether `name` is a note the folder board reads: a visible `.md` file.
 fn is_note_name(name: &str) -> bool {
-    !name.starts_with('.') && name.ends_with(".md") && name.len() > ".md".len()
+    !name.starts_with('.')
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        && name.len() > ".md".len()
 }
 
 fn load_folder(dir: &Path) -> Result<Board> {
@@ -215,7 +235,7 @@ fn load_folder(dir: &Path) -> Result<Board> {
         }
     };
     let mut names: Vec<String> = entries
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| is_note_name(name))
         .collect();
@@ -257,16 +277,14 @@ fn load_folder(dir: &Path) -> Result<Board> {
         };
         let modified = meta
             .modified()
-            .map(DateTime::<Utc>::from)
-            .unwrap_or_else(|_| Utc::now());
+            .map_or_else(|_| Utc::now(), DateTime::<Utc>::from);
         match markdown::parse(&text, stem, modified) {
             Ok(None) => {}
             Ok(Some(card)) => {
                 if let Some(first) = board.files.get(&card.id) {
                     let first = first
                         .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                        .map_or_default(|n| n.to_string_lossy().into_owned());
                     board.problems.push(format!(
                         "{name} and {first} are both card #{}; {name} was left out",
                         card.id
@@ -338,6 +356,7 @@ fn write_atomic(path: &Path, body: &[u8], mode: Option<u32>) -> Result<()> {
 /// hands a surface.
 #[derive(Clone, Debug)]
 pub struct BoardSnapshot {
+    /// The board, or why it could not be read.
     pub board: Result<Board, String>,
 }
 
@@ -373,7 +392,7 @@ fn fingerprint(store: &BoardStore) -> Fingerprint {
         Backend::Document(path) => Fingerprint::Document(stamp(path)),
         Backend::Folder(dir) => Fingerprint::Folder(fs::read_dir(dir).ok().map(|entries| {
             let mut notes: Vec<(String, FileStamp)> = entries
-                .filter_map(|entry| entry.ok())
+                .filter_map(std::result::Result::ok)
                 .filter_map(|entry| {
                     let name = entry.file_name().into_string().ok()?;
                     if !is_note_name(&name) {
@@ -396,12 +415,18 @@ fn fingerprint(store: &BoardStore) -> Fingerprint {
 /// one directory listing plus a `stat` per note for a folder. It stops once
 /// this handle is dropped (at its next look), so a surface that switches the
 /// board off simply drops its watcher.
+#[derive(Debug)]
 pub struct BoardWatcher {
     rx: mpsc::Receiver<BoardSnapshot>,
     stop: Arc<AtomicBool>,
 }
 
 impl BoardWatcher {
+    /// Start watching `store`, looking every `every`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the watcher's thread cannot be started.
     pub fn spawn(store: BoardStore, every: Duration) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -485,8 +510,8 @@ mod tests {
     fn a_folder_board_keeps_one_note_per_card_under_its_prefix() {
         let (_home, store) = folder();
         assert!(store.load().unwrap().cards.is_empty(), "no folder is empty");
-        let first = store.update(|b| b.post(task("one"), at(0))).unwrap().id();
-        let second = store.update(|b| b.post(task("two"), at(1))).unwrap().id();
+        let first = store.update(|b| b.post(&task("one"), at(0))).unwrap().id();
+        let second = store.update(|b| b.post(&task("two"), at(1))).unwrap().id();
         assert_eq!(first, CardId::new("G", 1));
         assert_eq!(second, CardId::new("G", 2));
         assert_eq!(notes(&store), ["G-1.md", "G-2.md"]);
@@ -508,8 +533,8 @@ mod tests {
     #[test]
     fn a_change_rewrites_only_the_cards_it_touched() {
         let (_home, store) = folder();
-        store.update(|b| b.post(task("one"), at(0))).unwrap();
-        store.update(|b| b.post(task("two"), at(1))).unwrap();
+        store.update(|b| b.post(&task("one"), at(0))).unwrap();
+        store.update(|b| b.post(&task("two"), at(1))).unwrap();
         // A person edits the first note by hand, in their own style.
         let hand = "---\nkind: task\ntitle: one, edited by hand\n---\n";
         fs::write(store.path().join("G-1.md"), hand).unwrap();
@@ -537,11 +562,11 @@ mod tests {
         fs::write(store.path().join("README.md"), "# The board\n").unwrap();
         fs::write(store.path().join("notes.txt"), "not a note").unwrap();
         let board = store.load().unwrap();
-        assert!(board.cards.is_empty());
+        assert_eq!(board.cards, Vec::<crate::human_board::Card>::new());
         assert_eq!(board.problems.len(), 1, "{:?}", board.problems);
         assert!(board.problems[0].contains("G-7.md"), "{:?}", board.problems);
 
-        let id = store.update(|b| b.post(task("new"), at(0))).unwrap().id();
+        let id = store.update(|b| b.post(&task("new"), at(0))).unwrap().id();
         assert_eq!(
             id,
             CardId::new("G", 8),
@@ -578,11 +603,11 @@ mod tests {
     #[test]
     fn a_pruned_card_takes_its_note_with_it() {
         let (_home, store) = folder();
-        for n in 0..(super::super::RESOLVED_HISTORY + 1) {
+        for n in 0..=super::super::RESOLVED_HISTORY {
             store
                 .update(|b| {
-                    let id = b.post(task(&format!("r{n}")), at(0))?.id();
-                    b.resolve(id, None, None, at((n % 60) as u32))
+                    let id = b.post(&task(&format!("r{n}")), at(0))?.id();
+                    b.resolve(id, None, None, at(u32::try_from(n % 60).unwrap()))
                 })
                 .unwrap();
         }
@@ -596,7 +621,10 @@ mod tests {
         let outside = home.path().join("outside.md");
         fs::write(&outside, "---\nkind: task\ntitle: from outside\n---\n").unwrap();
         std::os::unix::fs::symlink(&outside, store.path().join("G-1.md")).unwrap();
-        assert!(store.load().unwrap().cards.is_empty());
+        assert_eq!(
+            store.load().unwrap().cards,
+            Vec::<crate::human_board::Card>::new()
+        );
     }
 
     #[test]
@@ -606,16 +634,11 @@ mod tests {
         fs::create_dir_all(store.path()).unwrap();
         let watcher = BoardWatcher::spawn(store.clone(), Duration::from_millis(10)).unwrap();
         let wait = Duration::from_secs(5);
-        assert!(
-            watcher
-                .next_within(wait)
-                .unwrap()
-                .board
-                .unwrap()
-                .cards
-                .is_empty()
+        assert_eq!(
+            watcher.next_within(wait).unwrap().board.unwrap().cards,
+            Vec::<crate::human_board::Card>::new()
         );
-        store.update(|b| b.post(task("a"), at(0))).unwrap();
+        store.update(|b| b.post(&task("a"), at(0))).unwrap();
         assert_eq!(
             watcher
                 .next_within(wait)

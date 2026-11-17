@@ -8,10 +8,10 @@ import { cn } from "@yaran/ui-kit/cn"
 // rather than red, because the socket auto-retries before declaring failure, and
 // red is reserved for "gave up, needs your action".
 const CONN: Record<ConnState, { dot: string; label: string }> = {
-  open: { dot: "bg-green-500", label: "Connected" },
-  connecting: { dot: "bg-amber-500", label: "Connecting" },
-  closed: { dot: "bg-amber-500", label: "Reconnecting…" },
-  failed: { dot: "bg-red-500", label: "Connection failed" },
+  open: { dot: "bg-yaran-success", label: "Connected" },
+  connecting: { dot: "bg-yaran-connecting", label: "Connecting" },
+  closed: { dot: "bg-yaran-connecting", label: "Reconnecting…" },
+  failed: { dot: "bg-yaran-error", label: "Connection failed" },
 }
 
 // A passive status dot: the state comes from the store, the label rides an

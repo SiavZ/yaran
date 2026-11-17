@@ -1,10 +1,10 @@
 //! Opt-in repro: a double-click on a jcode agent row must open it the same way
 //! as any other harness. Real yaran binary, real jcode (offline replay, no model
-//! call), isolated YARAN_HOME and AMQ root under the artifacts directory.
+//! call), isolated `YARAN_HOME` and AMQ root under the artifacts directory.
 //!
-//! Environment: YARAN_ACCEPTANCE_JCODE, YARAN_ACCEPTANCE_SESSION,
-//! YARAN_ACCEPTANCE_ARTIFACTS, optional YARAN_ACCEPTANCE_YARAN (see
-//! jcode_mouse_acceptance.rs).
+//! Environment: `YARAN_ACCEPTANCE_JCODE`, `YARAN_ACCEPTANCE_SESSION`,
+//! `YARAN_ACCEPTANCE_ARTIFACTS`, optional `YARAN_ACCEPTANCE_YARAN` (see
+//! `jcode_mouse_acceptance.rs`).
 //! Run: `cargo test -p yaran --test jcode_doubleclick_acceptance -- --ignored --nocapture`.
 
 use std::{fs, path::Path, process::Command, thread, time::Duration};
@@ -18,9 +18,9 @@ use yaran_core::storage::SessionStore;
 
 fn screen(pty: &PtyClient) -> String {
     let snapshot = pty.snapshot();
-    let mut lines = vec![String::new(); snapshot.rows as usize];
+    let mut lines = vec![String::new(); usize::from(snapshot.rows)];
     for cell in snapshot.cells {
-        lines[cell.row as usize].push_str(&cell.symbol);
+        lines[usize::from(cell.row)].push_str(&cell.symbol);
     }
     lines.join("\n")
 }
@@ -40,7 +40,7 @@ fn row_of(pty: &PtyClient, needle: &str) -> Option<u16> {
     screen(pty)
         .lines()
         .position(|l| l.contains(needle))
-        .map(|r| r as u16)
+        .map(|r| u16::try_from(r).expect("a screen row fits u16"))
 }
 
 fn session(id: &str, title: &str, provider: &str, folder: &Path) -> AgentSession {
@@ -68,6 +68,10 @@ fn session(id: &str, title: &str, provider: &str, folder: &Path) -> AgentSession
 
 #[test]
 #[ignore = "requires an installed jcode and a saved session for offline replay"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real jcode session driven end to end, each step asserted where it happens"
+)]
 fn double_click_opens_jcode_like_any_other_harness() {
     let session_json = std::env::var("YARAN_ACCEPTANCE_SESSION").expect("saved session path");
     let jcode = std::env::var("YARAN_ACCEPTANCE_JCODE").expect("jcode binary path");
@@ -294,7 +298,8 @@ fn double_click_opens_jcode_like_any_other_harness() {
 fn pane_double_click(pty: &PtyClient) -> bool {
     // Middle of the agent pane: column 80, row 20 (1-based SGR).
     for _ in 0..2 {
-        pty.write_bytes(b"\x1b[<0;80;20M\x1b[<0;80;20m").unwrap();
+        pty.write_bytes(b"\x1b[<0;80;20M\x1b[<0;80;20m")
+            .expect("the test fixture");
         thread::sleep(Duration::from_millis(60));
     }
     thread::sleep(Duration::from_secs(2));

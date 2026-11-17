@@ -6,22 +6,32 @@
 // Uses:
 // src/components/AppMenuSheet.test.tsx
 // ├── src/components/AppMenuSheet.tsx
-// └── src/lib/appMenu.ts
+// ├── src/lib/appMenu.ts
+// ├── src/lib/authApi.ts
+// ├── src/lib/authGate.ts
+// ├── src/lib/store.ts
+// └── src/test/browserHistory.ts
 // External: @testing-library/react, vitest
 //
 // Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
 // <module-headers:end>
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+
+import { installBrowserHistory } from "@/test/browserHistory"
 
 const openCustomizeWebapp = vi.fn()
 const sortAgents = vi.fn()
 const openNewAgentPicker = vi.fn()
 const openAddProjectForInit = vi.fn()
+const openCloneProject = vi.fn()
 const createStandaloneTerminal = vi.fn()
 // The renderer reads gh availability from the live bootstrap; tests flip this.
 let ghAvailable = true
-vi.mock("@/lib/store", () => ({
+vi.mock("@/lib/store", async (importOriginal) => ({
+  // The real store underneath, because the browser's Back reaches the sheet
+  // through it.
+  ...(await importOriginal<typeof import("@/lib/store")>()),
   openCustomizeWebapp: () => openCustomizeWebapp(),
   openConfigEditor: vi.fn(),
   openMacrosDialog: vi.fn(),
@@ -33,6 +43,7 @@ vi.mock("@/lib/store", () => ({
   sortAgents: (by: string) => sortAgents(by),
   openAddProject: vi.fn(),
   openAddProjectForInit: () => openAddProjectForInit(),
+  openCloneProject: () => openCloneProject(),
   openCreateAgentFromPr: vi.fn(),
   openNewAgentPicker: (intent: string) => openNewAgentPicker(intent),
   createStandaloneTerminal: () => createStandaloneTerminal(),
@@ -40,12 +51,25 @@ vi.mock("@/lib/store", () => ({
     bootstrap: { gh_available: ghAvailable, github_integration: true },
   }),
 }))
+// The sign-in state the menu reads to offer Sign out; tests flip it.
+let authPhase: import("@/lib/authGate").AuthPhase = { kind: "open", status: null }
+vi.mock("@/lib/authGate", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/authGate")>()
+  return { ...actual, useAuthPhase: () => authPhase }
+})
 vi.mock("@/lib/configApi", () => ({
   configApi: { reload: () => Promise.resolve() },
 }))
 
-import { AppMenuSheet } from "@/components/AppMenuSheet"
-import { appMenuModel, findSubmenu } from "@/lib/appMenu"
+// A history the store gives the sheet an entry in, installed before the store
+// loads, so Back reaches the sheet the way the browser delivers it.
+const browser = installBrowserHistory()
+vi.stubGlobal(
+  "fetch",
+  vi.fn(() => Promise.reject(new Error("offline test"))),
+)
+const { AppMenuSheet } = await import("@/components/AppMenuSheet")
+const { appMenuModel, findSubmenu } = await import("@/lib/appMenu")
 
 const settle = () => new Promise((r) => setTimeout(r, 40))
 
@@ -65,7 +89,7 @@ describe("AppMenuSheet", () => {
   // sheet's root list must match the desktop menu's top level exactly.
   it("renders the same top-level titles as the desktop menu", () => {
     render(<Harness />)
-    const expected = appMenuModel({ ghAvailable: true, githubIntegrationEnabled: true, nativeShell: false, phonePairing: false })
+    const expected = appMenuModel({ ghAvailable: true, githubIntegrationEnabled: true, nativeShell: false, phonePairing: false, canSignOut: false })
       .filter((e) => e.kind !== "separator")
       .map((e) => (e.kind === "separator" ? "" : e.title))
     const rendered = screen.getAllByRole("menuitem").map((e) => e.textContent)
@@ -114,7 +138,7 @@ describe("AppMenuSheet", () => {
     render(<Harness />)
     fireEvent.click(screen.getByText("Sort agents by"))
     await settle()
-    const sub = findSubmenu(appMenuModel({ ghAvailable: true, githubIntegrationEnabled: true, nativeShell: false, phonePairing: false }), "sort-agents")!
+    const sub = findSubmenu(appMenuModel({ ghAvailable: true, githubIntegrationEnabled: true, nativeShell: false, phonePairing: false, canSignOut: false }), "sort-agents")!
     expect(screen.getAllByText(sub.title).length).toBeGreaterThan(0)
     expect(screen.getByText("Recently updated")).toBeTruthy()
   })
@@ -150,6 +174,19 @@ describe("AppMenuSheet", () => {
     }
   })
 
+  it("closes on the browser's Back without running anything", async () => {
+    const onOpenChange = vi.fn()
+    const before = browser.index
+    render(<AppMenuSheet open onOpenChange={onOpenChange} />)
+    await waitFor(() => {
+      expect(browser.index).toBe(before + 1)
+    })
+    act(() => browser.back())
+    expect(onOpenChange).toHaveBeenCalledOnce()
+    expect(onOpenChange.mock.calls[0][0]).toBe(false)
+    expect(openCustomizeWebapp).not.toHaveBeenCalled()
+  })
+
   it("runs the item action and closes the sheet", () => {
     const onOpenChange = vi.fn()
     render(<AppMenuSheet open onOpenChange={onOpenChange} />)
@@ -159,7 +196,7 @@ describe("AppMenuSheet", () => {
   })
 
   // The mobile twin of AppMenu.test.tsx's creation-submenu checks: the sheet
-  // drills into the same shared lists the launcher corner's ⋯ menu renders.
+  // drills into the same shared lists the launcher's New dialog reads.
   it("drills into New and routes a variant to its store action", async () => {
     const onOpenChange = vi.fn()
     render(<AppMenuSheet open onOpenChange={onOpenChange} />)
@@ -264,10 +301,11 @@ describe("AppMenuSheet", () => {
     expect(document.activeElement).toBe(rows.at(-1))
     fireEvent.keyDown(document.activeElement!, { key: "Home" })
     expect(document.activeElement).toBe(rows[0])
+    // The first row starting with the letter: "Projects…" sits above "Preferences…".
     fireEvent.keyDown(rows[0], { key: "p" })
-    const preferences = screen.getByText("Preferences…").closest("button")!
-    expect(document.activeElement).toBe(preferences)
-    expect(rows.filter((row) => row.tabIndex === 0)).toEqual([preferences])
+    const projects = screen.getByText("Projects…").closest("button")!
+    expect(document.activeElement).toBe(projects)
+    expect(rows.filter((row) => row.tabIndex === 0)).toEqual([projects])
   })
 
   it("focuses a drilled menu and restores its parent row on both ways back", async () => {
@@ -300,5 +338,28 @@ describe("AppMenuSheet", () => {
     for (const row of screen.getAllByRole("menuitem")) {
       expect(row.querySelector("svg"), row.textContent ?? "").toBeTruthy()
     }
+  })
+})
+
+describe("Sign out in this menu", () => {
+  afterEach(() => {
+    authPhase = { kind: "open", status: null }
+  })
+
+  it("is offered to a page signed in with a password", async () => {
+    const { normalizeAuthStatus } = await import("@/lib/authApi")
+    authPhase = {
+      kind: "open",
+      status: normalizeAuthStatus({ password_set: true, signed_in: true }),
+    }
+    render(<Harness />)
+    await settle()
+    expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy()
+  })
+
+  it("is absent where there is no session to end", async () => {
+    render(<Harness />)
+    await settle()
+    expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull()
   })
 })

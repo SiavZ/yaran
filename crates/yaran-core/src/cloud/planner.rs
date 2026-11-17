@@ -8,6 +8,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/planner.rs
 //! └── cloud::leg_identity
@@ -17,6 +18,7 @@
 //! cloud/planner.rs
 //! ├── cloud
 //! └── yaran-web::cloud_loop
+//! ```
 //! <module-headers:end>
 
 use super::leg_identity::CloudMode;
@@ -24,22 +26,31 @@ use super::leg_identity::CloudMode;
 /// What the credentials say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pairing {
+    /// There is no pairing.
     Unpaired,
+    /// The control plane says the pairing is revoked.
     Revoked,
+    /// The machine is paired.
     Paired,
 }
 
 /// Why the leg should not run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
+    /// `[cloud] mode` is off.
     ModeOff,
+    /// The machine is not paired.
     NotPaired,
+    /// The pairing is revoked.
     Revoked,
 }
 
+/// Whether the leg should run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Desired {
+    /// It should.
     Run,
+    /// It should not, and why.
     Stop(StopReason),
 }
 
@@ -55,21 +66,42 @@ pub fn desired_leg(mode: CloudMode, pairing: Pairing) -> Desired {
     }
 }
 
+/// One step the serve loop takes on the leg.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloudStep {
+    /// Stop the running leg.
     StopLeg,
+    /// Start a leg.
     StartLeg,
 }
 
-/// The steps from `running` to `desired`. `restart` asks for a fresh child even when one
-/// runs (new credentials or changed `[cloud]` keys).
-pub fn plan_cloud_change(running: bool, desired: Desired, restart: bool) -> Vec<CloudStep> {
-    match (running, desired) {
-        (true, Desired::Run) if restart => vec![CloudStep::StopLeg, CloudStep::StartLeg],
-        (true, Desired::Run) => vec![],
-        (false, Desired::Run) => vec![CloudStep::StartLeg],
-        (true, Desired::Stop(_)) => vec![CloudStep::StopLeg],
-        (false, Desired::Stop(_)) => vec![],
+/// Whether a leg runs now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegNow {
+    /// One runs.
+    Running,
+    /// None does.
+    Stopped,
+}
+
+/// Whether a running leg is kept or replaced by a fresh child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refresh {
+    /// Keep it.
+    Keep,
+    /// Replace it: new credentials or changed `[cloud]` keys.
+    Restart,
+}
+
+/// The steps from `now` to `desired`.
+pub fn plan_cloud_change(now: LegNow, desired: Desired, refresh: Refresh) -> Vec<CloudStep> {
+    match (now, desired) {
+        (LegNow::Running, Desired::Run) if refresh == Refresh::Restart => {
+            vec![CloudStep::StopLeg, CloudStep::StartLeg]
+        }
+        (LegNow::Running, Desired::Stop(_)) => vec![CloudStep::StopLeg],
+        (LegNow::Stopped, Desired::Run) => vec![CloudStep::StartLeg],
+        (LegNow::Running, Desired::Run) | (LegNow::Stopped, Desired::Stop(_)) => vec![],
     }
 }
 
@@ -99,16 +131,28 @@ mod tests {
         use CloudStep::*;
         let stop = Desired::Stop(StopReason::ModeOff);
         assert_eq!(
-            plan_cloud_change(false, Desired::Run, false),
+            plan_cloud_change(LegNow::Stopped, Desired::Run, Refresh::Keep),
             vec![StartLeg]
         );
-        assert_eq!(plan_cloud_change(false, Desired::Run, true), vec![StartLeg]);
-        assert_eq!(plan_cloud_change(true, Desired::Run, false), vec![]);
         assert_eq!(
-            plan_cloud_change(true, Desired::Run, true),
+            plan_cloud_change(LegNow::Stopped, Desired::Run, Refresh::Restart),
+            vec![StartLeg]
+        );
+        assert_eq!(
+            plan_cloud_change(LegNow::Running, Desired::Run, Refresh::Keep),
+            vec![]
+        );
+        assert_eq!(
+            plan_cloud_change(LegNow::Running, Desired::Run, Refresh::Restart),
             vec![StopLeg, StartLeg]
         );
-        assert_eq!(plan_cloud_change(true, stop, false), vec![StopLeg]);
-        assert_eq!(plan_cloud_change(false, stop, true), vec![]);
+        assert_eq!(
+            plan_cloud_change(LegNow::Running, stop, Refresh::Keep),
+            vec![StopLeg]
+        );
+        assert_eq!(
+            plan_cloud_change(LegNow::Stopped, stop, Refresh::Restart),
+            vec![]
+        );
     }
 }

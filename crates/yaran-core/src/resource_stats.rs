@@ -27,6 +27,7 @@ const STALE_BASELINE: Duration = Duration::from_secs(5);
 
 /// Samples CPU/RSS for yaran and a set of target process trees, holding the
 /// `sysinfo::System` across calls so CPU deltas are real. See the module docs.
+#[derive(Debug)]
 pub struct ResourceCollector {
     sys: sysinfo::System,
     /// When the last refresh happened, or `None` before the first sample. Drives
@@ -88,13 +89,17 @@ impl ResourceCollector {
     /// TUI's `~` prefix) must key the marker on this flag rather than on its own
     /// first sample: a monitor reopened inside [`STALE_BASELINE`] does not
     /// re-baseline.
-    pub fn sample(&mut self, targets: Vec<ResourceTarget>) -> (Vec<ResourceStats>, bool) {
+    pub fn sample(&mut self, targets: &[ResourceTarget]) -> (Vec<ResourceStats>, bool) {
         use sysinfo::Pid;
 
         let needs_baseline = needs_baseline(self.last_refresh, Instant::now());
         if needs_baseline {
             // Establish the "before" side of the delta, then let enough time pass
             // for sysinfo to compute a meaningful one.
+            self.refresh();
+            // On macOS sysinfo records CPU times only from a process's second
+            // refresh, so without this the baseline sample reads 0% there.
+            #[cfg(target_os = "macos")]
             self.refresh();
             std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         }
@@ -121,8 +126,9 @@ impl ResourceCollector {
         // Rows: each labeled target (agent tabs and companion terminals). The
         // target's identity is carried through verbatim so the caller can join
         // the row back to its spine entity by id.
-        for target in &targets {
-            let (cpu, rss, count, children) = aggregate_tree(sys, Pid::from_u32(target.pid));
+        let nodes = proc_nodes(sys);
+        for target in targets {
+            let (cpu, rss, count, children) = aggregate_proc_tree(&nodes, target.pid);
             rows.push(ResourceStats {
                 id: Some(target.id.clone()),
                 kind: target.kind,
@@ -226,27 +232,21 @@ fn aggregate_proc_tree(nodes: &[ProcNode], root: u32) -> (f32, u64, usize, Vec<P
     (cpu, rss, count, children)
 }
 
-/// Aggregate CPU% and RSS across a root PID and all its descendants. Thin
-/// adapter that snapshots the fields [`aggregate_proc_tree`] needs out of the
-/// live `sysinfo` table, then delegates to the pure aggregation. The `sysinfo`
-/// side is the only nondeterministic part and carries no logic of its own.
-fn aggregate_tree(
-    sys: &sysinfo::System,
-    root: sysinfo::Pid,
-) -> (f32, u64, usize, Vec<ProcessInfo>) {
-    let nodes: Vec<ProcNode> = sys
-        .processes()
+/// The fields [`aggregate_proc_tree`] needs, snapshotted once per sample out
+/// of the live `sysinfo` table. The `sysinfo` side is the only
+/// nondeterministic part and carries no logic of its own.
+fn proc_nodes(sys: &sysinfo::System) -> Vec<ProcNode> {
+    sys.processes()
         .iter()
         .map(|(pid, proc_info)| ProcNode {
             pid: pid.as_u32(),
-            parent: proc_info.parent().map(|pp| pp.as_u32()),
+            parent: proc_info.parent().map(sysinfo::Pid::as_u32),
             is_thread: proc_info.thread_kind().is_some(),
             cpu_percent: proc_info.cpu_usage(),
             rss_bytes: proc_info.memory(),
             name: proc_info.name().to_string_lossy().into_owned(),
         })
-        .collect();
-    aggregate_proc_tree(&nodes, root.as_u32())
+        .collect()
 }
 
 #[cfg(test)]
@@ -255,6 +255,14 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    /// One root's aggregate over the live table, as a sample computes it.
+    fn aggregate_tree(
+        sys: &sysinfo::System,
+        root: sysinfo::Pid,
+    ) -> (f32, u64, usize, Vec<ProcessInfo>) {
+        aggregate_proc_tree(&proc_nodes(sys), root.as_u32())
+    }
 
     /// Spin a thread burning CPU until the returned flag is set. The join handle
     /// must be awaited by the caller so the thread never outlives the test.
@@ -265,7 +273,7 @@ mod tests {
             let mut x: u64 = 0;
             while !flag.load(Ordering::Relaxed) {
                 // Opaque to the optimizer so the loop is not elided.
-                x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+                x = std::hint::black_box(x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1));
             }
         });
         (stop, handle)
@@ -280,7 +288,7 @@ mod tests {
         let (stop, handle) = burn_a_core();
 
         let mut collector = ResourceCollector::new();
-        let (first, first_was_baseline) = collector.sample(Vec::new());
+        let (first, first_was_baseline) = collector.sample(&Vec::new());
         let first_cpu = first
             .iter()
             .find(|r| r.label == "yaran (this process)")
@@ -288,7 +296,7 @@ mod tests {
             .cpu_percent;
 
         std::thread::sleep(Duration::from_millis(300));
-        let (second, second_was_baseline) = collector.sample(Vec::new());
+        let (second, second_was_baseline) = collector.sample(&Vec::new());
         let second_cpu = second
             .iter()
             .find(|r| r.label == "yaran (this process)")
@@ -323,13 +331,13 @@ mod tests {
     fn sample_reports_was_baseline_accurately() {
         let mut collector = ResourceCollector::new();
 
-        let (_, first_was_baseline) = collector.sample(Vec::new());
+        let (_, first_was_baseline) = collector.sample(&Vec::new());
         assert!(
             first_was_baseline,
             "the very first sample has no prior refresh and must baseline"
         );
 
-        let (_, second_was_baseline) = collector.sample(Vec::new());
+        let (_, second_was_baseline) = collector.sample(&Vec::new());
         assert!(
             !second_was_baseline,
             "a sample taken immediately after must not re-baseline"
@@ -337,8 +345,12 @@ mod tests {
 
         // Simulate the monitor being closed and reopened after a gap longer
         // than STALE_BASELINE, with no sampling in between.
-        collector.last_refresh = Some(Instant::now() - STALE_BASELINE - Duration::from_millis(1));
-        let (_, third_was_baseline) = collector.sample(Vec::new());
+        collector.last_refresh = Some(
+            Instant::now()
+                .checked_sub(STALE_BASELINE + Duration::from_millis(1))
+                .unwrap(),
+        );
+        let (_, third_was_baseline) = collector.sample(&Vec::new());
         assert!(
             third_was_baseline,
             "a sample after a stale gap must re-baseline"
@@ -352,18 +364,16 @@ mod tests {
         // Two burners plus the test thread; on any multi-core box this exceeds
         // 100% for the process. Skip the assertion on a single-core machine
         // rather than fail it spuriously.
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         if cores < 4 {
             return;
         }
         let burners: Vec<_> = (0..3).map(|_| burn_a_core()).collect();
 
         let mut collector = ResourceCollector::new();
-        let _ = collector.sample(Vec::new());
+        let _ = collector.sample(&Vec::new());
         std::thread::sleep(Duration::from_millis(400));
-        let (rows, _) = collector.sample(Vec::new());
+        let (rows, _) = collector.sample(&Vec::new());
         let cpu = rows
             .iter()
             .find(|r| r.label == "yaran (this process)")
@@ -401,15 +411,28 @@ mod tests {
         // Back-to-back (same instant, or a few ms later) -> retain, do NOT
         // re-baseline, so the prior reading is kept rather than zeroed.
         assert!(!needs_baseline(Some(now), now));
-        assert!(!needs_baseline(Some(now - Duration::from_millis(5)), now));
+        assert!(!needs_baseline(
+            Some(now.checked_sub(Duration::from_millis(5)).unwrap()),
+            now
+        ));
         // Recent but still within the stale window -> retain.
         assert!(!needs_baseline(
-            Some(now - (STALE_BASELINE - Duration::from_millis(1))),
+            Some(
+                now.checked_sub(
+                    STALE_BASELINE
+                        .checked_sub(Duration::from_millis(1))
+                        .unwrap()
+                )
+                .unwrap(),
+            ),
             now,
         ));
         // A gap longer than the stale window -> re-baseline.
         assert!(needs_baseline(
-            Some(now - (STALE_BASELINE + Duration::from_millis(1))),
+            Some(
+                now.checked_sub(STALE_BASELINE + Duration::from_millis(1))
+                    .unwrap()
+            ),
             now,
         ));
     }
@@ -419,7 +442,7 @@ mod tests {
     fn sysinfo_parents(sys: &sysinfo::System) -> std::collections::HashMap<u32, Option<u32>> {
         sys.processes()
             .iter()
-            .map(|(pid, p)| (pid.as_u32(), p.parent().map(|pp| pp.as_u32())))
+            .map(|(pid, p)| (pid.as_u32(), p.parent().map(sysinfo::Pid::as_u32)))
             .collect()
     }
 
@@ -501,11 +524,15 @@ mod tests {
         // live tests into a proof of thread filtering; tighten that one.
         let mut sys = System::new();
         // Establish a CPU baseline, then refresh again so cpu_usage() is real.
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_cpu().with_memory(),
-        );
+        // macOS takes two refreshes for the baseline, as in
+        // `ResourceCollector::sample`.
+        for _ in 0..if cfg!(target_os = "macos") { 2 } else { 1 } {
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            );
+        }
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
@@ -557,7 +584,7 @@ mod tests {
     fn aggregate_tree_excludes_threads_from_children() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (stop, handles) = spin_threads(4);
 
         let mut child = std::process::Command::new("sleep")
@@ -608,7 +635,7 @@ mod tests {
     fn aggregate_tree_does_not_multiply_count_thread_memory() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (stop, handles) = spin_threads(5);
 
         let mut child = std::process::Command::new("sleep")
@@ -644,7 +671,7 @@ mod tests {
         // ~1MB `sleep`, so a busy moment failed a test about thread handling.
         let real_process_sum: u64 = descendants_of(&sys, self_pid)
             .into_iter()
-            .filter_map(|pid| sys.process(pid).map(|p| p.memory()))
+            .filter_map(|pid| sys.process(pid).map(sysinfo::Process::memory))
             .sum();
 
         assert!(
@@ -696,12 +723,13 @@ mod tests {
     /// while the real bug (threads counted) blows the count past the band.
     #[test]
     fn aggregate_tree_over_a_threaded_process_excludes_threads() {
-        let _guard = CHILD_PROCESS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         // Spin many threads: if the adapter ever stopped flagging thread rows,
         // the count would jump to ~THREADS, far outside the asserted band.
         const THREADS: usize = 16;
+
+        let _guard = CHILD_PROCESS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (stop, handles) = spin_threads(THREADS);
 
         let mut child = std::process::Command::new("sleep")
@@ -749,7 +777,7 @@ mod tests {
     fn aggregate_tree_finds_real_grandchild_process() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (stop, handles) = spin_threads(2);
 
         // `sleep 3 &` backgrounds sleep as a real forked child of the `sh`
@@ -814,7 +842,7 @@ mod tests {
 
     /// Read a process's resident set size straight from the kernel, in bytes.
     /// `VmRSS` in `/proc/<pid>/status` is reported in kB and is precisely the
-    /// field `top` shows as RES and `htop` shows as M_RESIDENT, so it is the
+    /// field `top` shows as RES and `htop` shows as `M_RESIDENT`, so it is the
     /// ground truth a user comparing yaran against their system monitor is
     /// looking at.
     #[cfg(target_os = "linux")]
@@ -852,7 +880,7 @@ mod tests {
     fn per_process_rss_matches_proc_vmrss_exactly() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Guarantee the multi-threaded arm has threads to trip over instead of
         // depending on however many the test harness happens to be running.
         let (stop, handles) = spin_threads(4);
@@ -947,7 +975,7 @@ mod tests {
     fn tree_rss_matches_the_kernel_sum_over_real_processes() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (stop, handles) = spin_threads(4);
 
         let mut child = std::process::Command::new("sleep")
@@ -1035,7 +1063,7 @@ mod tests {
     fn children_breakdown_sums_to_the_parent_total() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Threads under the root, so the sum is checked against a tree that
         // has thread entries available to wrongly inflate it.
         let (stop, handles) = spin_threads(4);
@@ -1099,11 +1127,11 @@ mod tests {
     /// a multi-threaded burn is never clamped at 100.
     #[test]
     fn cpu_reads_high_for_a_burning_tree_and_near_zero_for_an_idle_one() {
+        use std::os::unix::process::CommandExt;
+
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        use std::os::unix::process::CommandExt;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Four spinning subshells under one `sh`: a real multi-process tree
         // whose aggregate must exceed 100% on a box with cores to spare.
@@ -1252,7 +1280,8 @@ mod tests {
                 Some(now.saturating_sub(*before.get(pid)?))
             })
             .sum();
-        (sys, (charged_ms as f64 / window_ms * 100.0) as f32)
+        let percent = crate::numeric::u64_to_f64(charged_ms) / window_ms * 100.0;
+        (sys, crate::numeric::f64_to_f32(percent))
     }
 
     /// A leaf target's `children` holds exactly one entry: the root itself.
@@ -1262,7 +1291,7 @@ mod tests {
     fn has_breakdown_is_false_for_a_leaf_whose_only_child_is_itself() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut child = std::process::Command::new("sleep")
             .arg("5")
@@ -1308,7 +1337,7 @@ mod tests {
     fn has_breakdown_is_true_and_root_is_marked_once_for_a_real_tree() {
         let _guard = CHILD_PROCESS_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut child = std::process::Command::new("sh")
             .arg("-c")

@@ -12,6 +12,7 @@
 //! - Binds loopback only; never a wildcard address.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/loopback.rs
 //! ├── cloud::loopback::tests
@@ -24,6 +25,7 @@
 //! ├── cloud
 //! ├── cloud::login
 //! └── cloud::loopback::tests
+//! ```
 //! <module-headers:end>
 
 use std::io::{self, Read, Write};
@@ -48,11 +50,17 @@ pub enum CallbackResult {
 /// Why a callback query was not accepted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryError {
+    /// Its `state` is not the pending login's.
     BadState,
+    /// It carries neither a code nor an error.
     Malformed,
 }
 
 /// Interpret a callback query string against the pending login's `state`.
+///
+/// # Errors
+///
+/// Fails when the query's `state` is not the pending login's, or it carries neither a code nor an error.
 pub fn callback_from_query(
     query: &str,
     expected_state: &str,
@@ -78,6 +86,10 @@ pub fn callback_from_query(
 
 /// Parse an address pasted from a browser: `http://127.0.0.1:<port>/callback?code=…&state=…`.
 /// The port must be ours, the path `/callback`, and the state must match.
+///
+/// # Errors
+///
+/// Fails when the address is not this login's loopback callback.
 pub fn parse_pasted_callback(
     pasted: &str,
     port: u16,
@@ -104,6 +116,7 @@ const PAIRED_PAGE: &str = "<!doctype html><html lang=\"en\"><head><meta charset=
 const DENIED_PAGE: &str = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Pairing not completed</title></head><body><h1>Pairing not completed</h1><p>The control plane did not approve this machine. You can close this tab; yaran shows why in the terminal.</p></body></html>";
 
 /// The loopback listener for one login.
+#[derive(Debug)]
 pub struct LoopbackListener {
     listener: TcpListener,
     port: u16,
@@ -111,6 +124,10 @@ pub struct LoopbackListener {
 
 impl LoopbackListener {
     /// Bind `127.0.0.1` on an ephemeral port.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no loopback port can be bound.
     pub fn bind() -> io::Result<Self> {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
         listener.set_nonblocking(true)?;
@@ -118,10 +135,16 @@ impl LoopbackListener {
         Ok(Self { listener, port })
     }
 
+    /// The port it listens on.
     pub fn port(&self) -> u16 {
         self.port
     }
 
+    /// The address it listens on.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the socket can no longer report its address.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }

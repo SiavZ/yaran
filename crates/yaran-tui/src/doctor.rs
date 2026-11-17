@@ -9,8 +9,10 @@
 //! read-only and counted with the same model code yaran uses. Without the script
 //! it still prints that section.
 //!
-//! Read-only on purpose, including no lock: operators run it precisely when
-//! yaran is misbehaving, often while a TUI holds the lock.
+//! Read-only on purpose. Only the process holding `dux.lock` opens
+//! `sessions.sqlite3`, so the database section takes the lock for the moment it
+//! reads and, while a running yaran holds it, says so instead of reading behind
+//! that yaran's back; the script's sections still print.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -50,12 +52,40 @@ fn discover_doctor_script(
         .find(|candidate| candidate.is_file())
 }
 
+/// What `yaran doctor` prints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DoctorFormat {
+    /// The human-readable report.
+    Text,
+    /// One JSON document (`--json`).
+    Json,
+}
+
+/// Whether the report names this machine's paths, branches and providers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Privacy {
+    /// It does.
+    Shown,
+    /// They are replaced by placeholders (`--anonymize`), so it can be pasted.
+    Anonymized,
+}
+
+/// Whether the `yaran-amq-doctor` script produced its part of the report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Script {
+    Ran,
+    Unavailable,
+}
+
 /// Entry point for `yaran doctor [--json] [--anonymize]`.
-pub fn run_doctor(paths: &YaranPaths, json: bool, anonymize: bool) -> Result<()> {
+pub(crate) fn run_doctor(paths: &YaranPaths, format: DoctorFormat, privacy: Privacy) -> Result<()> {
+    use std::io::Write as _;
+    let anonymize = privacy == Privacy::Anonymized;
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr();
     let script = resolve_doctor_script();
-    if json {
-        let mut bash_json = serde_json::json!({});
-        let mut bash_ran = false;
+    if format == DoctorFormat::Json {
+        let mut bash_json = None;
         if let Some(script) = &script {
             let mut cmd = Command::new(script);
             cmd.arg("--json");
@@ -64,68 +94,78 @@ pub fn run_doctor(paths: &YaranPaths, json: bool, anonymize: bool) -> Result<()>
             }
             match cmd.output() {
                 Ok(output) if output.status.success() => {
-                    bash_json = serde_json::from_slice(&output.stdout)
-                        .with_context(|| format!("{} emitted invalid JSON", script.display()))?;
-                    bash_ran = true;
+                    bash_json =
+                        Some(serde_json::from_slice(&output.stdout).with_context(|| {
+                            format!("{} emitted invalid JSON", script.display())
+                        })?);
                 }
-                Ok(output) => eprintln!(
-                    "warning: yaran-amq-doctor exited with {}; emitting Rust-only JSON",
-                    output.status.code().unwrap_or(-1),
-                ),
-                Err(err) => eprintln!(
-                    "warning: failed to spawn {}: {err}; emitting Rust-only JSON",
-                    script.display()
-                ),
+                Ok(output) => {
+                    let _ = writeln!(
+                        stderr,
+                        "warning: yaran-amq-doctor exited with {}; emitting Rust-only JSON",
+                        output.status.code().unwrap_or(-1),
+                    );
+                }
+                Err(err) => {
+                    let _ = writeln!(
+                        stderr,
+                        "warning: failed to spawn {}: {err}; emitting Rust-only JSON",
+                        script.display()
+                    );
+                }
             }
         }
         let snap = collect_sessions_snapshot(paths);
-        let rust_json = build_rust_section_json(paths, &snap, anonymize);
-        println!("{}", merge_doctor_json(bash_json, rust_json, bash_ran)?);
+        let rust_json = build_rust_section_json(paths, &snap, privacy);
+        writeln!(stdout, "{}", merge_doctor_json(bash_json, &rust_json)?)?;
         return Ok(());
     }
 
     // Text mode lets the script own stdout so its TTY color detection works.
-    let bash_ran = match &script {
+    let ran = match &script {
         Some(script) => {
             let mut cmd = Command::new(script);
             if anonymize {
                 cmd.arg("--anonymize");
             }
             match cmd.status() {
-                Ok(status) if status.success() => true,
+                Ok(status) if status.success() => Script::Ran,
                 Ok(status) => {
-                    eprintln!(
+                    let _ = writeln!(
+                        stderr,
                         "warning: yaran-amq-doctor exited with {}; falling back to Rust-only output",
                         status.code().unwrap_or(-1),
                     );
-                    false
+                    Script::Unavailable
                 }
                 Err(err) => {
-                    eprintln!("warning: failed to spawn {}: {err}", script.display());
-                    false
+                    let _ = writeln!(
+                        stderr,
+                        "warning: failed to spawn {}: {err}",
+                        script.display()
+                    );
+                    Script::Unavailable
                 }
             }
         }
-        None => false,
+        None => Script::Unavailable,
     };
     let snap = collect_sessions_snapshot(paths);
-    print!(
+    write!(
+        stdout,
         "{}",
-        render_rust_section_text(paths, &snap, bash_ran, anonymize)
-    );
+        render_rust_section_text(paths, &snap, ran, privacy)
+    )?;
     Ok(())
 }
 
 /// One JSON object: the script's sections plus `sessions_db_rust`, so a
 /// consumer never has to `jq -s add` two documents.
 fn merge_doctor_json(
-    mut bash: serde_json::Value,
-    rust: serde_json::Value,
-    bash_ran: bool,
+    bash: Option<serde_json::Value>,
+    rust: &serde_json::Value,
 ) -> Result<serde_json::Value> {
-    if !bash_ran {
-        bash = serde_json::json!({});
-    }
+    let mut bash = bash.unwrap_or_else(|| serde_json::json!({}));
     let bash_obj = bash
         .as_object_mut()
         .context("doctor JSON root must be an object")?;
@@ -141,38 +181,32 @@ fn merge_doctor_json(
 fn render_rust_section_text(
     paths: &YaranPaths,
     snap: &SessionsSnapshot,
-    bash_ran: bool,
-    anonymize: bool,
+    script: Script,
+    privacy: Privacy,
 ) -> String {
+    use std::fmt::Write as _;
     let mut out = String::new();
-    if !bash_ran {
+    if script == Script::Unavailable {
         out.push_str(
             "(yaran-amq-doctor unavailable or failed; emitting Rust-only diagnostics. \
              Install the yaran-amq overlay or run yaran-amq-doctor directly for the full report.)\n",
         );
     }
     out.push_str("\n== Sessions DB (Rust-side) ==\n");
-    out.push_str(&format!(
-        "{:<16} {}\n",
-        "path:",
-        doctor_db_path(paths, anonymize)
-    ));
-    out.push_str(&format!("{:<16} {}\n", "integrity:", snap.integrity));
-    out.push_str(&format!("{:<16} {}\n", "active:", snap.active));
-    out.push_str(&format!("{:<16} {}\n", "detached:", snap.detached));
-    out.push_str(&format!("{:<16} {}\n", "exited:", snap.exited));
-    out.push_str(&format!(
-        "{:<16} {}\n",
-        "orphaned:", snap.orphaned_worktrees
-    ));
-    append_orphaned_sessions_text(&mut out, snap, anonymize);
+    let _ = writeln!(out, "{:<16} {}", "path:", doctor_db_path(paths, privacy));
+    let _ = writeln!(out, "{:<16} {}", "integrity:", snap.integrity);
+    let _ = writeln!(out, "{:<16} {}", "active:", snap.active);
+    let _ = writeln!(out, "{:<16} {}", "detached:", snap.detached);
+    let _ = writeln!(out, "{:<16} {}", "exited:", snap.exited);
+    let _ = writeln!(out, "{:<16} {}", "orphaned:", snap.orphaned_worktrees);
+    append_orphaned_sessions_text(&mut out, snap, privacy);
     out
 }
 
 /// The identifying fields of orphan `index`, replaced by placeholders under
 /// `--anonymize` so a pasted report names no branch, path or provider.
-fn orphan_fields(session: &OrphanedSessionSnapshot, index: usize, anonymize: bool) -> [String; 4] {
-    if anonymize {
+fn orphan_fields(session: &OrphanedSessionSnapshot, index: usize, privacy: Privacy) -> [String; 4] {
+    if privacy == Privacy::Anonymized {
         let n = index + 1;
         [
             format!("session-{n}"),
@@ -190,7 +224,8 @@ fn orphan_fields(session: &OrphanedSessionSnapshot, index: usize, anonymize: boo
     }
 }
 
-fn append_orphaned_sessions_text(out: &mut String, snap: &SessionsSnapshot, anonymize: bool) {
+fn append_orphaned_sessions_text(out: &mut String, snap: &SessionsSnapshot, privacy: Privacy) {
+    use std::fmt::Write as _;
     if snap.orphaned_sessions.is_empty() {
         return;
     }
@@ -203,27 +238,28 @@ fn append_orphaned_sessions_text(out: &mut String, snap: &SessionsSnapshot, anon
     } else {
         shown.to_string()
     };
-    out.push_str(&format!("{:<16} {summary}\n", "orphaned_list:"));
+    let _ = writeln!(out, "{:<16} {summary}", "orphaned_list:");
     for (index, session) in snap.orphaned_sessions.iter().enumerate() {
-        let [id, provider, branch, worktree_path] = orphan_fields(session, index, anonymize);
-        out.push_str(&format!(
-            "  - id={id} provider={provider} branch={branch} state={} worktree_path={worktree_path}\n",
+        let [id, provider, branch, worktree_path] = orphan_fields(session, index, privacy);
+        let _ = writeln!(
+            out,
+            "  - id={id} provider={provider} branch={branch} state={} worktree_path={worktree_path}",
             session.state
-        ));
+        );
     }
 }
 
 fn build_rust_section_json(
     paths: &YaranPaths,
     snap: &SessionsSnapshot,
-    anonymize: bool,
+    privacy: Privacy,
 ) -> serde_json::Value {
     let orphaned_sessions: Vec<serde_json::Value> = snap
         .orphaned_sessions
         .iter()
         .enumerate()
         .map(|(index, session)| {
-            let [id, provider, branch, worktree_path] = orphan_fields(session, index, anonymize);
+            let [id, provider, branch, worktree_path] = orphan_fields(session, index, privacy);
             serde_json::json!({
                 "id": id,
                 "provider": provider,
@@ -235,7 +271,7 @@ fn build_rust_section_json(
         .collect();
     serde_json::json!({
         "sessions_db_rust": {
-            "path": doctor_db_path(paths, anonymize),
+            "path": doctor_db_path(paths, privacy),
             "integrity": snap.integrity,
             "active": snap.active,
             "detached": snap.detached,
@@ -248,8 +284,8 @@ fn build_rust_section_json(
     })
 }
 
-fn doctor_db_path(paths: &YaranPaths, anonymize: bool) -> String {
-    if anonymize {
+fn doctor_db_path(paths: &YaranPaths, privacy: Privacy) -> String {
+    if privacy == Privacy::Anonymized {
         "/YARAN/sessions.sqlite3".to_string()
     } else {
         paths.sessions_db_path.display().to_string()
@@ -292,6 +328,20 @@ fn collect_sessions_snapshot(paths: &YaranPaths) -> SessionsSnapshot {
     if !paths.sessions_db_path.exists() {
         return SessionsSnapshot::empty("absent".to_string());
     }
+    // Held only while the database is read; dropped when this returns.
+    let _lock = match yaran_core::lockfile::SingleInstanceLock::acquire(&paths.lock_path) {
+        Ok(lock) => lock,
+        Err(yaran_core::lockfile::AcquireError::AlreadyRunning { pid, .. }) => {
+            let holder = pid.map_or_else(
+                || "a running yaran".to_string(),
+                |pid| format!("the running yaran (pid {pid})"),
+            );
+            return SessionsSnapshot::empty(format!(
+                "not read: {holder} holds the session database; stop it to include this section"
+            ));
+        }
+        Err(err) => return SessionsSnapshot::empty(format!("error: {err}")),
+    };
     let store = match SessionStore::open_read_only(&paths.sessions_db_path) {
         Ok(store) => store,
         Err(err) => return SessionsSnapshot::empty(format!("error: {err:#}")),
@@ -362,6 +412,7 @@ mod tests {
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
             root: root.to_path_buf(),
+            socket_path: root.join("yaran.sock"),
         }
     }
 
@@ -404,7 +455,27 @@ mod tests {
         assert_eq!(snap.integrity, "absent");
         assert_eq!(snap.active, 0);
         assert_eq!(snap.orphaned_worktrees, 0);
-        assert!(snap.orphaned_sessions.is_empty());
+        assert_eq!(
+            snap.orphaned_sessions,
+            Vec::<crate::doctor::OrphanedSessionSnapshot>::new()
+        );
+    }
+
+    /// Only the lock holder opens the session database: while a running yaran
+    /// holds the lock, the section says so and reads nothing.
+    #[test]
+    fn doctor_snapshot_leaves_the_database_to_the_running_yaran() {
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_in(tmp.path());
+        std::fs::write(&paths.sessions_db_path, b"not a database").unwrap();
+        let _running = yaran_core::lockfile::SingleInstanceLock::acquire(&paths.lock_path).unwrap();
+        let snap = collect_sessions_snapshot(&paths);
+        assert!(
+            snap.integrity.starts_with("not read:")
+                && snap.integrity.contains("holds the session database"),
+            "{}",
+            snap.integrity
+        );
     }
 
     /// A diagnostic must not change what it diagnoses: no migration, no
@@ -446,6 +517,7 @@ mod tests {
             sessions_db_path: PathBuf::from("/secret/home/.config/yaran/sessions.sqlite3"),
             worktrees_root: PathBuf::from("/secret/home/worktrees"),
             lock_path: PathBuf::from("/secret/home/.config/yaran/yaran.lock"),
+            socket_path: PathBuf::from("/secret/home/.config/yaran/yaran.sock"),
         };
         let snap = SessionsSnapshot {
             orphaned_worktrees: 1,
@@ -459,9 +531,8 @@ mod tests {
             ..SessionsSnapshot::empty("ok".to_string())
         };
         let merged = merge_doctor_json(
-            serde_json::json!({"versions": {"yaran": "test"}}),
-            build_rust_section_json(&paths, &snap, true),
-            true,
+            Some(serde_json::json!({"versions": {"yaran": "test"}})),
+            &build_rust_section_json(&paths, &snap, Privacy::Anonymized),
         )
         .unwrap();
         let encoded = serde_json::to_string(&merged).unwrap();
@@ -482,9 +553,8 @@ mod tests {
 
         // Without the script's half the object is the Rust section alone.
         let alone = merge_doctor_json(
-            serde_json::json!({"stale": true}),
-            build_rust_section_json(&paths, &snap, false),
-            false,
+            None,
+            &build_rust_section_json(&paths, &snap, Privacy::Shown),
         )
         .unwrap();
         assert!(alone.get("stale").is_none());
@@ -528,12 +598,12 @@ mod tests {
             }]
         );
 
-        let text = render_rust_section_text(&paths, &snap, true, false);
+        let text = render_rust_section_text(&paths, &snap, Script::Ran, Privacy::Shown);
         assert!(text.contains("orphaned_list:"));
         assert!(text.contains(&format!(
             "id=x1 provider=claude branch=b-x1 state=exited worktree_path={orphan_path}"
         )));
-        let json = build_rust_section_json(&paths, &snap, false);
+        let json = build_rust_section_json(&paths, &snap, Privacy::Shown);
         assert_eq!(json["sessions_db_rust"]["orphaned_worktrees"], 1);
         assert_eq!(
             json["sessions_db_rust"]["orphaned_sessions_truncated"],
@@ -558,12 +628,12 @@ mod tests {
         let snap = collect_sessions_snapshot(&paths);
         assert_eq!(snap.orphaned_worktrees, ORPHANED_SESSIONS_LIMIT + 3);
         assert_eq!(snap.orphaned_sessions.len(), ORPHANED_SESSIONS_LIMIT);
-        let text = render_rust_section_text(&paths, &snap, true, false);
+        let text = render_rust_section_text(&paths, &snap, Script::Ran, Privacy::Shown);
         assert!(text.contains(&format!(
             "first {ORPHANED_SESSIONS_LIMIT} of {} (limit {ORPHANED_SESSIONS_LIMIT})",
             ORPHANED_SESSIONS_LIMIT + 3
         )));
-        let json = build_rust_section_json(&paths, &snap, false);
+        let json = build_rust_section_json(&paths, &snap, Privacy::Shown);
         assert_eq!(
             json["sessions_db_rust"]["orphaned_sessions_truncated"],
             true

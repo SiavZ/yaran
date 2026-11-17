@@ -47,7 +47,12 @@ pub const MAX_RULES_PER_PROVIDER: usize = 32;
 #[derive(Clone, Debug, PartialEq)]
 pub enum WatchEffect {
     /// Write `text` (optionally followed by `\r`) to the agent's PTY.
-    SendText { text: String, append_enter: bool },
+    SendText {
+        /// What to type.
+        text: String,
+        /// Whether Enter follows it.
+        append_enter: bool,
+    },
     /// Post an informational status-line message.
     StatusInfo(String),
     /// Post a warning status-line message.
@@ -161,6 +166,15 @@ pub struct WatchEngine {
     session_id: String,
     rules: Vec<RuleRuntime>,
     rng: SmallRng,
+}
+
+impl std::fmt::Debug for WatchEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchEngine")
+            .field("session_id", &self.session_id)
+            .field("rules", &self.rules.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl WatchEngine {
@@ -518,22 +532,19 @@ impl RuleRuntime {
                 let parsed = captured.as_deref().and_then(|s| {
                     crate::watch::reset_time::parse(*format, s, now, chrono::Utc::now())
                 });
-                match parsed {
-                    Some(target) => {
-                        let jitter_ms = if self.rule.backoff.jitter_ms > 0 {
-                            rng.gen_range(0..=self.rule.backoff.jitter_ms)
-                        } else {
-                            0
-                        };
-                        (target + Duration::from_millis(jitter_ms), None)
-                    }
-                    None => {
-                        let warning = format!(
-                            "watch rule \"{}\": failed to parse capture \"{}\", falling back to backoff",
-                            self.label, capture
-                        );
-                        (backoff_fire(), Some(warning))
-                    }
+                if let Some(target) = parsed {
+                    let jitter_ms = if self.rule.backoff.jitter_ms > 0 {
+                        rng.gen_range(0..=self.rule.backoff.jitter_ms)
+                    } else {
+                        0
+                    };
+                    (target + Duration::from_millis(jitter_ms), None)
+                } else {
+                    let warning = format!(
+                        "watch rule \"{}\": failed to parse capture \"{}\", falling back to backoff",
+                        self.label, capture
+                    );
+                    (backoff_fire(), Some(warning))
                 }
             }
         }
@@ -592,7 +603,10 @@ mod tests {
 
         let quiet = "working on it...";
         for _ in 0..50 {
-            assert!(engine.observe(quiet, now).is_empty());
+            assert_eq!(
+                engine.observe(quiet, now),
+                Vec::<crate::watch::engine::WatchEffect>::new()
+            );
         }
         let key = SnapshotKey::of(quiet);
         assert_eq!(engine.rules[0].count_cache, Some((key, 0)));
@@ -601,7 +615,10 @@ mod tests {
         let near = "rate limitee";
         let hit = "rate limited";
         assert_eq!(near.len(), hit.len());
-        assert!(engine.observe(near, now).is_empty());
+        assert_eq!(
+            engine.observe(near, now),
+            Vec::<crate::watch::engine::WatchEffect>::new()
+        );
         assert_eq!(engine.rules[0].count_cache.map(|(_, c)| c), Some(0));
 
         // The real hit schedules (backoff 0), and the next tick on the same
@@ -633,7 +650,7 @@ mod tests {
 
         // Just before fire_at, still pending.
         let effects = engine.observe("you are rate limited", t0 + Duration::from_millis(999));
-        assert!(effects.is_empty());
+        assert_eq!(effects, Vec::<crate::watch::engine::WatchEffect>::new());
 
         // At fire_at, sends text + status info.
         let effects = engine.observe("you are rate limited", t0 + Duration::from_millis(1_000));
@@ -684,7 +701,7 @@ mod tests {
         for attempt in 0..4_u32 {
             // Each iteration adds another occurrence so the match count
             // increases, which is what triggers Idle → Pending.
-            let snapshot = "rate ".repeat((attempt + 1) as usize);
+            let snapshot = "rate ".repeat(usize::try_from(attempt + 1).unwrap());
             engine.observe(&snapshot, now);
             let fire_at = match engine.rules[0].state {
                 RuleState::Pending { fire_at } => fire_at,
@@ -693,7 +710,7 @@ mod tests {
             // Deterministic floor: initial * 2^attempt; jitter adds at
             // most jitter_ms.
             let det = 100 * 2_u64.pow(attempt);
-            let elapsed = fire_at.duration_since(now).as_millis() as u64;
+            let elapsed = u64::try_from(fire_at.duration_since(now).as_millis()).unwrap();
             assert!(
                 (det..=det + 50).contains(&elapsed),
                 "attempt {attempt}: expected delay in [{det}, {}], got {elapsed}",
@@ -748,7 +765,7 @@ mod tests {
 
         // Subsequent ticks are silent.
         let effects = engine.observe("rate\nrate\nrate", now + Duration::from_secs(60));
-        assert!(effects.is_empty());
+        assert_eq!(effects, Vec::<crate::watch::engine::WatchEffect>::new());
     }
 
     #[test]
@@ -871,7 +888,7 @@ mod tests {
             0,
             "oversized pattern should be rejected"
         );
-        assert!(!errors.is_empty());
+        assert_ne!(errors, Vec::<std::string::String>::new());
     }
 
     #[test]
@@ -951,7 +968,7 @@ mod tests {
         };
 
         let (mut engine, errors) = WatchEngine::new("s1", &[r]);
-        assert!(errors.is_empty());
+        assert_eq!(errors, Vec::<std::string::String>::new());
         let t0 = Instant::now();
         let effects = engine.observe("limit reached | not-a-timestamp", t0);
         assert!(

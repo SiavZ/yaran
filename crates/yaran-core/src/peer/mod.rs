@@ -35,7 +35,7 @@ pub use handle::{
     AGENT_HANDLE_MAX_LEN, amq_handle, derive_agent_handle, is_valid_agent_handle,
     next_unique_agent_handle, normalize_agent_handle,
 };
-pub use router::run_peer;
+pub use router::{PeerSnapshot, routable_sessions, run_peer, sync_and_list};
 pub use session_store::{
     append_session_env, init_for_process, launch_env_for_session, load_or_create_store_id,
 };
@@ -65,10 +65,12 @@ pub struct PeerSession {
 }
 
 impl PeerSession {
+    /// The handle messages address this agent by.
     pub fn agent_handle(&self) -> &str {
         &self.agent_handle
     }
 
+    /// Whether the agent runs Claude.
     pub fn is_claude(&self) -> bool {
         self.provider == "claude"
     }
@@ -90,14 +92,26 @@ impl PeerSession {
 pub trait PeerStore {
     /// Every session this store knows, tombstones included, so a deleted row's
     /// handle is never handed to a new session.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be read.
     fn load_sessions_including_deleted(&self) -> Result<Vec<PeerSession>>;
 
     /// Insert a brand-new session with its reserved handle.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row cannot be written.
     fn persist_new_session(&self, session: &PeerSession) -> Result<()>;
 
     /// Compare-and-swap a session's handle during global deconfliction. Called
     /// only while the AMQ registry lock proves `expected` is owned by someone
     /// else and `replacement` is free.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row cannot be written or no longer holds `expected`.
     fn reassign_agent_handle_for_global_backfill(
         &self,
         id: &str,

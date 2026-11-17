@@ -33,12 +33,17 @@ use crate::logger;
 pub(crate) const OWNER_MARKER: &str = ".dux-amq-source";
 
 /// What a reconciliation pass changed in the shared registry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AmqSyncReport {
+    /// The AMQ root reconciled, when one is configured.
     pub root: Option<PathBuf>,
+    /// Agents added to the registry's config.
     pub configured_agents_added: usize,
+    /// Config entries removed because their session is gone.
     pub stale_config_agents_removed: usize,
+    /// Ownership markers written for inboxes this store owns.
     pub ownership_markers_created: usize,
+    /// Handles moved because another store already owned them.
     pub handles_deconflicted: usize,
     /// No AMQ root is configured, so nothing was touched.
     pub skipped: bool,
@@ -76,6 +81,10 @@ pub(crate) fn require_amq_root(paths: &YaranPaths) -> Result<PathBuf> {
 /// Reconcile the shared AMQ registry from this store's sessions: reserve an
 /// owned inbox for every live session, deconflict handles another store
 /// already owns, and drop config entries whose owning row is gone.
+///
+/// # Errors
+///
+/// Fails when the store identity, the session database or the registry cannot be read or written.
 pub fn sync_amq_agents(paths: &YaranPaths) -> Result<AmqSyncReport> {
     let Some(root) = optional_amq_root(paths) else {
         return Ok(AmqSyncReport {
@@ -106,8 +115,7 @@ pub fn sync_amq_agents_for_bootstrap(paths: &YaranPaths) {
                 &report
                     .root
                     .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
+                    .map_or_default(|p| p.display().to_string())
             ),
             report.configured_agents_added,
             report.stale_config_agents_removed,
@@ -197,6 +205,10 @@ impl Drop for AmqRegistryLock {
 /// Persist a new row and reserve its global AMQ identity before the provider
 /// launches. A failed reservation can leave the row for retry, but never an
 /// owner marker without its row.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be locked or written, or the session cannot be stored.
 pub fn reserve_and_persist_session(
     paths: &YaranPaths,
     store_id: &str,
@@ -229,6 +241,11 @@ fn reserve_and_persist_session_locally(
     store.persist_new_session(session)
 }
 
+/// [`reserve_and_persist_session`] against an explicit AMQ root.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be locked or written, or the session cannot be stored.
 pub fn reserve_and_persist_session_at_root(
     root: &Path,
     store_id: &str,
@@ -243,7 +260,7 @@ pub fn reserve_and_persist_session_at_root(
         .map(|row| row.agent_handle)
         .collect::<HashSet<_>>();
     let handle = claim_handle_locked(root, store_id, session, &used)?;
-    session.agent_handle = handle.clone();
+    session.agent_handle.clone_from(&handle);
     store.persist_new_session(session)?;
     ensure_owner_marker(root, &handle, &owner_for(store_id, session))?;
     register_config_handle(root, &handle)?;
@@ -347,7 +364,7 @@ pub(crate) fn reconcile_amq_root(
                 &replacement,
             )?;
             used.insert(replacement.clone());
-            sessions[index].agent_handle = replacement.clone();
+            sessions[index].agent_handle.clone_from(&replacement);
             report.handles_deconflicted += 1;
             replacement
         };
@@ -600,6 +617,10 @@ fn write_atomic(path: &Path, body: &[u8]) -> Result<()> {
 /// its inbox and exact owner marker as an ordinary-delete tombstone. Failures
 /// are logged, never propagated: a registry problem must not block deleting
 /// the agent locally.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be locked or written.
 // Called by `Engine::finish_delete_session` on a detached thread.
 pub fn tombstone_amq_session(
     paths: &YaranPaths,
@@ -621,6 +642,11 @@ pub fn tombstone_amq_session(
     Ok(())
 }
 
+/// [`tombstone_amq_session`] against an explicit AMQ root.
+///
+/// # Errors
+///
+/// Fails when the registry cannot be locked or written.
 pub fn tombstone_amq_session_at_root(
     root: &Path,
     store_id: &str,
@@ -669,6 +695,10 @@ pub fn tombstone_amq_session_at_root(
 
 /// Verify exact ownership, stop wake delivery, remove the inbox, and release
 /// a global handle. The hard-purge path is the production caller.
+///
+/// # Errors
+///
+/// Fails when the inbox cannot be removed.
 // Purge and reset call the `_at_root` form through `crate::purge_amq`.
 pub fn free_amq_handle(paths: &YaranPaths, store_id: &str, session: &PeerSession) -> Result<()> {
     let Some(root) = optional_amq_root(paths) else {
@@ -682,6 +712,10 @@ pub fn free_amq_handle(paths: &YaranPaths, store_id: &str, session: &PeerSession
 
 /// Read-only ownership classification, used by reset to inventory every
 /// handle before freeing any. Foreign and legacy registrations are preserved.
+///
+/// # Errors
+///
+/// Fails when the ownership marker cannot be read.
 pub fn amq_handle_is_exact_owner(
     paths: &YaranPaths,
     store_id: &str,
@@ -696,6 +730,11 @@ pub fn amq_handle_is_exact_owner(
     amq_handle_is_exact_owner_at_root(&root, store_id, session)
 }
 
+/// [`amq_handle_is_exact_owner`] against an explicit AMQ root.
+///
+/// # Errors
+///
+/// Fails when the ownership marker cannot be read.
 pub fn amq_handle_is_exact_owner_at_root(
     root: &Path,
     store_id: &str,
@@ -709,6 +748,11 @@ pub fn amq_handle_is_exact_owner_at_root(
     ))
 }
 
+/// [`free_amq_handle`] against an explicit AMQ root.
+///
+/// # Errors
+///
+/// Fails when the inbox cannot be removed.
 pub fn free_amq_handle_at_root(root: &Path, store_id: &str, session: &PeerSession) -> Result<()> {
     let wake_pid = {
         let _lock = AmqRegistryLock::acquire(root)?;
@@ -765,7 +809,10 @@ fn exact_owner(root: &Path, store_id: &str, session: &PeerSession) -> Result<Own
 }
 
 fn terminate_wake_pid(pid: u32, root: &Path, handle: &str) -> Result<()> {
-    let Some(rustix_pid) = rustix::process::Pid::from_raw(pid as i32) else {
+    let Some(rustix_pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
         bail!("invalid recorded AMQ wake PID {pid}");
     };
     if rustix::process::test_kill_process(rustix_pid).is_err() {

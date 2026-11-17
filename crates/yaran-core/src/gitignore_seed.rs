@@ -15,6 +15,7 @@ use anyhow::{Context, Result, anyhow};
 
 /// A directory yaran offers to ignore when it initializes a repository, plus the
 /// one-line explanatory comment written above its pattern.
+#[derive(Debug)]
 pub struct IgnoreCandidate {
     /// Directory name relative to the repo root, without a trailing slash.
     pub dir: &'static str,
@@ -24,7 +25,7 @@ pub struct IgnoreCandidate {
 
 /// Dependency and build-artifact directories only; nothing contentious (no
 /// `.idea/`, no Go `vendor/`). Extend via pull request.
-pub const STARTER_IGNORES: &[IgnoreCandidate] = &[
+pub(crate) const STARTER_IGNORES: &[IgnoreCandidate] = &[
     IgnoreCandidate {
         dir: "node_modules",
         comment: "# Installed npm/yarn/pnpm packages; recreated from the lockfile.",
@@ -100,7 +101,7 @@ pub fn matched_candidates(dir: &Path) -> Vec<&'static IgnoreCandidate> {
 /// Must run after `git init` and before the initial commit: `check-ignore`
 /// needs a repository, and an untracked `.gitignore` already filters
 /// `git status` (both measured). The seed is deliberately not committed.
-pub fn seed_gitignore(repo: &Path) -> Result<bool> {
+pub(crate) fn seed_gitignore(repo: &Path) -> Result<bool> {
     let matched = matched_candidates(repo);
     if matched.is_empty() {
         return Ok(false);
@@ -118,8 +119,7 @@ pub fn seed_gitignore(repo: &Path) -> Result<bool> {
                 .args(["check-ignore", "-q", c.dir])
                 .stdin(Stdio::null())
                 .output()
-                .map(|out| out.status.code() == Some(0))
-                .unwrap_or(false);
+                .is_ok_and(|out| out.status.code() == Some(0));
             !already_ignored
         })
         .collect();
@@ -130,8 +130,9 @@ pub fn seed_gitignore(repo: &Path) -> Result<bool> {
     // No-follow write discipline (measured hazard): an append-open FOLLOWS a
     // .gitignore symlink and writes outside the repo, even through a dangling
     // link. Probe with symlink_metadata first and refuse anything that is not
-    // a regular file or absent. The remaining probe-to-open TOCTOU window is
-    // acceptable in this single-tenant trust model.
+    // a regular file or absent; the opens themselves refuse a link that
+    // appears after the probe (`create_new` never follows one, and the append
+    // open is `O_NOFOLLOW`, read through its own handle).
     let mut file = match std::fs::symlink_metadata(&gitignore) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let mut opts = std::fs::OpenOptions::new();
@@ -144,13 +145,16 @@ pub fn seed_gitignore(repo: &Path) -> Result<bool> {
             // that predates yaran. If the existing bytes do not end in a
             // newline, write one first so the block never merges into the
             // user's last pattern.
-            let existing = std::fs::read(&gitignore)
-                .with_context(|| format!("failed to read {}", gitignore.display()))?;
+            use std::io::Read;
+            use std::os::unix::fs::OpenOptionsExt;
             let mut opts = std::fs::OpenOptions::new();
-            opts.append(true);
+            opts.read(true).append(true).custom_flags(libc::O_NOFOLLOW);
             let mut file = opts
                 .open(&gitignore)
                 .with_context(|| format!("failed to open {}", gitignore.display()))?;
+            let mut existing = Vec::new();
+            file.read_to_end(&mut existing)
+                .with_context(|| format!("failed to read {}", gitignore.display()))?;
             if !existing.is_empty() && !existing.ends_with(b"\n") {
                 file.write_all(b"\n")
                     .with_context(|| format!("failed to write {}", gitignore.display()))?;

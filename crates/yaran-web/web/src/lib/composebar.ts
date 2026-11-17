@@ -1,6 +1,6 @@
 // Pure send rules for the compose bar's Send action, and the rules deciding
 // which typing surface a pane gets. This module owns what a send looks like on
-// the wire; `ComposeBar.tsx` owns the input surface and `TerminalPane.tsx` owns
+// the wire; `ComposeBar.tsx` owns the input surface and `TerminalStack.tsx` owns
 // the PTY write.
 
 import { macroPayloadBytes } from "./macros"
@@ -213,21 +213,7 @@ export function terminalKeysApply(
 }
 
 /**
- * Would anything still be under the terminal after a switch to direct typing?
- * The one-time hint naming where the way back went fires only when nothing is,
- * since a surviving key row carries it visibly. Asked of the surface after the
- * flip, which is why the choice is pinned to `direct` rather than passed in.
- */
-export function bottomBarSurvivesDirect(
-  mode: ComposeBarMode,
-  coarsePointer: boolean,
-  keysVisible: boolean
-): boolean {
-  return keysVisible && terminalKeysApply(mode, coarsePointer, "direct")
-}
-
-/**
- * Should the input menu's typing-surface item render? Under `auto`, always, on
+ * Should the top menu's typing-surface item render? Under `auto`, always, on
  * every device, because the menu is the guaranteed way in and out of the virtual
  * input and both the key row and the compose bar can be absent. Never under
  * `always`/`never`, where the setting has decided.

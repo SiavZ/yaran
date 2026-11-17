@@ -9,6 +9,7 @@ use std::collections::HashSet;
 /// lock of their own as the `pr_sync_control` module has.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum InFlightKey {
+    /// An agent create is running; only one runs at a time.
     CreateAgent,
     /// A provider launch is in flight for this tab. Keyed by tab id, never by
     /// session id: `Engine::tab_resume_decision` asks per tab whether a
@@ -21,6 +22,7 @@ pub enum InFlightKey {
     /// `BranchRenameCompleted`). While set, the branch-sync poller must NOT
     /// classify this session's in-progress rename as external drift.
     BranchRename(String),
+    /// A pull is running in this repository path.
     Pull(String),
     /// A standalone agent's folder is being classified by
     /// `Engine::spawn_folder_repo_probe`. Bounds the probe to one at a time per
@@ -35,12 +37,13 @@ pub enum InFlightKey {
     /// by the `WorkingCopyRecreated` handler, which the worker sends whether the
     /// recreate succeeded or failed.
     RecreateWorkingCopy(String),
+    /// A resource monitor sample is running.
     ResourceStats,
     /// The Claude conversation follower's read is running. One at a time, so
     /// a slow filesystem cannot stack reads behind the next tick. Cleared by
     /// the `ClaudeLiveSessionsRead` handler.
     ClaudeSessionFollow,
-    /// A one-shot PR check (foreground/refs-watcher/exit trigger) is running for
+    /// A one-shot PR check (foreground/refs-watcher/create/exit trigger) is running for
     /// this session id. Bounds concurrent `gh` subprocesses for one session (a
     /// call can run up to `GH_CALL_TIMEOUT`, longer than the debounce). Cleared
     /// by the `PrStatusReady`/`PrCheckAborted` handlers. The set of these keys
@@ -51,7 +54,7 @@ pub enum InFlightKey {
     PrCheck(String),
     /// A manual pull-request attach is resolving for this session id, spanning
     /// the `gh` lookup and the attach that follows it. While set, this
-    /// session's other pull-request operations (detach, resume autodetection, a
+    /// session's other pull-request operations (detach, hide, show, the order, a
     /// second attach) are refused rather than left to race the attach's own
     /// writes. Marked in `Engine::dispatch_attach_pull_request` after
     /// validation and cleared in the `PullRequestResolved` attach arm, keyed on
@@ -69,14 +72,86 @@ pub enum InFlightKey {
     /// this key, which also makes init-and-commit and commit-only on one path
     /// mutually exclusive.
     InitialCommit(String),
-    /// A "check out the default branch" is running for the project whose
-    /// checkout is at this path, keyed by the project's path like `Pull`, so a
-    /// second request from either surface cannot race the first one's
-    /// `git switch` and report a false failure. Taken by
-    /// [`super::Engine::begin_default_branch_checkout`] and released at every
-    /// ending of the chain: the inspection's heuristic, failure and
-    /// already-on-default answers, and the switch's success or failure.
-    CheckoutDefaultBranch(String),
+    /// A repository is being cloned into this destination (its parent
+    /// canonicalized, plus its name), for a new project. While set, nothing
+    /// else that writes a repository into a folder may start on the same path:
+    /// [`super::Engine::mark_in_flight`] refuses an `InitialCommit` there, and
+    /// a clone is refused while either names it. Cleared by the
+    /// `RepositoryCloned` handler, which the worker sends however it ended.
+    Clone(std::path::PathBuf),
+    /// A repository is being cloned for a new agent from a pull request:
+    /// `host/owner/repo`, lowercased, with no `.git`. Held from the request
+    /// until the project exists, so two quick requests into different folders
+    /// cannot make two projects for one repository.
+    CloneRepository(String),
+    /// An operation that switches the branch of the project folder at `path`
+    /// is running: "Check out default branch", "Change base branch" or a
+    /// project "Pull project". All three run `git switch` in the same folder,
+    /// so one at a time per folder, whichever surface asked first; a second
+    /// would race the first one's switch (a pull in flight would switch the
+    /// folder straight back) and report a failure that is not one.
+    ///
+    /// `action` names the running operation so a refusal can say which one it
+    /// is waiting for. Mutual exclusion is by `path` alone: only
+    /// [`super::Engine::begin_project_folder_action`] inserts this key, and it
+    /// refuses while ANY action holds the path. Released by
+    /// [`super::Engine::end_project_folder_action`] at every ending of the
+    /// operation.
+    ProjectFolder {
+        /// The project folder.
+        path: String,
+        /// Which of the three folder operations holds it.
+        action: ProjectFolderAction,
+    },
+    /// The admission keys, one per thing a client can change, held by an
+    /// operation record from admission until it finishes ([`crate::operations`]).
+    Agent(String),
+    /// One agent tab.
+    Tab(TabId),
+    /// One terminal.
+    Terminal(String),
+    /// One project.
+    Project(String),
+    /// The `[macros]` list, as one thing.
+    MacroList,
+    /// The global `[env]` table, as one thing.
+    GlobalEnv,
+}
+
+impl InFlightKey {
+    /// The folder this operation writes a repository into, for the keys that
+    /// do: at most one of them may hold a folder at a time.
+    pub(crate) fn folder_written(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Clone(path) => Some(path),
+            Self::InitialCommit(path) => Some(std::path::Path::new(path)),
+            _ => None,
+        }
+    }
+}
+
+/// The operations that switch a project folder's branch and therefore share
+/// its [`InFlightKey::ProjectFolder`] lock.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProjectFolderAction {
+    /// "Check out default branch".
+    CheckoutDefaultBranch,
+    /// "Change base branch".
+    ChangeBaseBranch,
+    /// "Pull project", which switches the folder to its base before pulling.
+    Pull,
+}
+
+impl ProjectFolderAction {
+    /// What yaran is doing, as the refusal sentence names it:
+    /// "yaran is already {this} for project ...".
+    pub(crate) fn running_phrase(self) -> &'static str {
+        match self {
+            Self::CheckoutDefaultBranch => "checking out the default branch",
+            Self::ChangeBaseBranch => "changing the base branch",
+            Self::Pull => "pulling",
+        }
+    }
 }
 
 /// Convenience alias so call sites can spell the storage shape once.
@@ -90,10 +165,10 @@ pub struct RenameExpectation {
     /// The branch the worktree was on before the rename dispatched. A
     /// `BranchSyncReady` still reporting it means the rename has not landed
     /// yet, which is expected, so skip quietly.
-    pub old_branch: String,
+    pub(crate) old_branch: String,
     /// The branch `git branch -m` is moving to. A `BranchSyncReady` reporting
     /// it is the rename completing, which is expected, so skip quietly.
-    pub new_branch: String,
+    pub(crate) new_branch: String,
 }
 
 impl RenameExpectation {
@@ -109,7 +184,8 @@ impl RenameExpectation {
 /// each variant maps to that surface's own error string.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BranchRenameRejection {
-    /// The requested name was empty (after trimming).
+    /// The requested name was empty (after trimming) while the branch was to
+    /// be renamed too. An empty name alone is a reset, not a refusal.
     EmptyName,
     /// The requested name failed `git::is_valid_agent_name`.
     MalformedName,
@@ -118,12 +194,14 @@ pub enum BranchRenameRejection {
     /// The agent runs in the shared project checkout, whose branch is the
     /// user's own: yaran renames only its display title, never that branch.
     SharedWorkspaceBranch,
+    /// The agent's worktree is being removed, so nothing new may start in it.
+    WorktreeBeingRemoved,
 }
 
-/// The parameters a surface needs to dispatch the git branch-rename worker and
-/// to unwind on a spawn failure. The surface runs
-/// `git::rename_branch(worktree_path, old_branch, new_branch)` in its own
-/// background worker and, on a synchronous spawn failure, rolls back through
+/// The parameters the git branch-rename worker runs with, and what unwinds it
+/// on a spawn failure: `Engine::rename_agent` runs
+/// `git::rename_branch(worktree_path, old_branch, new_branch)` on a background
+/// worker and, when the worker never starts, rolls back through
 /// `Engine::revert_optimistic_rename(session_id, previous_title)`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BranchRenameDispatch {
@@ -132,12 +210,12 @@ pub struct BranchRenameDispatch {
     /// The worktree the `git branch -m` runs in.
     pub worktree_path: String,
     /// The branch name before the rename (the `git branch -m` source).
-    pub old_branch: String,
+    pub(crate) old_branch: String,
     /// The branch name to move to (the `git branch -m` target).
-    pub new_branch: String,
+    pub(crate) new_branch: String,
     /// The title the session carried before the optimistic write, so the
     /// surface (or the completion/unwind handlers) can restore it on failure.
-    pub previous_title: Option<String>,
+    pub(crate) previous_title: Option<String>,
 }
 
 /// The decision and side effects computed by `Engine::prepare_branch_rename`.
@@ -154,13 +232,27 @@ pub enum BranchRenamePlan {
     /// caller asked for title-only, or the new name already matches the current
     /// branch. `sync_branches` is true only on the title-only path, which also
     /// refreshes branch-sync state, and false for the name-equals-branch no-op.
-    TitleWritten { name: String, sync_branches: bool },
+    TitleWritten {
+        /// The name written.
+        name: String,
+        /// Whether branch-sync state is refreshed too.
+        sync_branches: bool,
+    },
+    /// The name was empty, so the custom title was removed and the label is
+    /// back to the branch name (for a standalone agent, the folder's name).
+    TitleCleared,
+    /// The name asked for is the one the agent already has and no branch is
+    /// renamed, so nothing was written; the surface says nothing changed.
+    Unchanged,
     /// The display title was updated and the expectation stashed; the surface
     /// must dispatch the git rename worker with these parameters.
     RenameBranch(BranchRenameDispatch),
     /// The target session vanished before the rename could be prepared, so the
     /// optimistic title write found nothing either. The surface stays silent.
     Noop,
+    /// The new title could not be saved, so the old one was put back and
+    /// nothing was renamed; carries the storage error to report.
+    NotSaved(String),
 }
 
 #[cfg(test)]

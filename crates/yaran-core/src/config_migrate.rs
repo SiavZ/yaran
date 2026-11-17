@@ -25,6 +25,10 @@ use crate::config_write::{ensure_table, remove_table_key_item};
 /// from the TUI's `ensure_config` (which then persists the change). Retired
 /// KEYBINDING actions are NOT handled here: they only matter to the TUI's
 /// `validate_keys`, so that pruning stays TUI-side.
+///
+/// # Errors
+///
+/// Fails when a deprecated key cannot be migrated.
 pub fn apply_load_migrations(doc: &mut DocumentMut) -> Result<bool> {
     let deprecations_changed = apply_config_deprecations(doc)?;
     let retired_changed = prune_retired_providers(doc);
@@ -73,7 +77,7 @@ fn consume_fork_schema_version(doc: &mut DocumentMut) -> bool {
         let no_base_args = codex
             .get("args")
             .and_then(Item::as_array)
-            .is_none_or(|args| args.is_empty());
+            .is_none_or(toml_edit::Array::is_empty);
         let forced_on = codex.get("forward_scroll").and_then(Item::as_bool) == Some(true);
         if stock_command && no_base_args && forced_on {
             codex.remove("forward_scroll");
@@ -101,6 +105,21 @@ fn consume_fork_schema_version(doc: &mut DocumentMut) -> bool {
     true
 }
 
+/// Log `message` once per process. The migrations run on every read of the
+/// file (each load, each save's record of what it has seen), and a deprecated
+/// key the user has not touched says the same thing every time.
+fn warn_once(message: &str) {
+    static LOGGED: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let first = LOGGED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(message.to_string());
+    if first {
+        crate::logger::warn(message);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DeprecatedConfigKey {
     section: &'static str,
@@ -108,10 +127,13 @@ struct DeprecatedConfigKey {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "today's rules only replace keys; Remove and Fail are the other actions a rule can take, and their handling stays ready for the next rule"
+)]
 enum DeprecatedConfigKeyAction {
     Replace {
-        migrate: fn(&mut DocumentMut, DeprecatedConfigKey, Item) -> Result<()>,
+        migrate: fn(&mut DocumentMut, DeprecatedConfigKey, &Item) -> Result<()>,
     },
     Remove,
     Fail {
@@ -123,6 +145,9 @@ enum DeprecatedConfigKeyAction {
 struct DeprecatedConfigKeyRule {
     old: DeprecatedConfigKey,
     action: DeprecatedConfigKeyAction,
+    /// What to write instead, said where a value carried over from it is
+    /// shown.
+    replace_with: &'static str,
 }
 
 const DEPRECATED_CONFIG_KEYS: &[DeprecatedConfigKeyRule] = &[
@@ -134,6 +159,7 @@ const DEPRECATED_CONFIG_KEYS: &[DeprecatedConfigKeyRule] = &[
         action: DeprecatedConfigKeyAction::Replace {
             migrate: migrate_prompt_for_name,
         },
+        replace_with: "defaults.enable_randomized_pet_name_by_default (its opposite)",
     },
     DeprecatedConfigKeyRule {
         old: DeprecatedConfigKey {
@@ -143,6 +169,7 @@ const DEPRECATED_CONFIG_KEYS: &[DeprecatedConfigKeyRule] = &[
         action: DeprecatedConfigKeyAction::Replace {
             migrate: migrate_server_bind,
         },
+        replace_with: "server.host and server.port",
     },
     DeprecatedConfigKeyRule {
         old: DeprecatedConfigKey {
@@ -152,8 +179,140 @@ const DEPRECATED_CONFIG_KEYS: &[DeprecatedConfigKeyRule] = &[
         action: DeprecatedConfigKeyAction::Replace {
             migrate: migrate_tailscale_enabled,
         },
+        replace_with: "server.tailscale",
     },
 ];
+
+/// Every deprecated key in `doc` the load migrations cannot carry over, each
+/// tried on its own (so one failure never hides another), as its dotted key
+/// and the sentence the migration fails with.
+pub(crate) fn load_migration_failures(doc: &DocumentMut) -> Vec<(Vec<String>, String)> {
+    DEPRECATED_CONFIG_KEYS
+        .iter()
+        .filter_map(|rule| {
+            let mut alone = doc.clone();
+            apply_config_deprecations_with(&mut alone, std::slice::from_ref(rule))
+                .err()
+                .map(|error| {
+                    (
+                        vec![rule.old.section.to_string(), rule.old.key.to_string()],
+                        format!("{error:#}"),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Whether `[section] key` is a deprecated key yaran still reads (and carries
+/// over to its replacement). The formatter's schema knows these names.
+pub(crate) fn is_deprecated_key(section: &str, key: &str) -> bool {
+    DEPRECATED_CONFIG_KEYS
+        .iter()
+        .any(|rule| rule.old.section == section && rule.old.key == key)
+}
+
+/// Migrate the one deprecated key `[section] key` in `doc`, if it is there
+/// and a migration rule carries its value: the value is written under the
+/// key that replaced it (unless `doc` already sets that one) and the
+/// deprecated key is removed. A value its rule cannot read is left as it is,
+/// for the caller to remove or keep.
+pub(crate) fn carry_over_deprecated_key(doc: &mut DocumentMut, section: &str, key: &str) {
+    let Some(rule) = DEPRECATED_CONFIG_KEYS
+        .iter()
+        .find(|rule| rule.old.section == section && rule.old.key == key)
+    else {
+        return;
+    };
+    let mut migrated = doc.clone();
+    if apply_config_deprecations_with(&mut migrated, std::slice::from_ref(rule)).is_ok() {
+        *doc = migrated;
+    }
+}
+
+/// A value the load migrations write in place of a deprecated key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CarriedOver {
+    /// The path of the setting the value lands in.
+    pub key: Vec<String>,
+    /// The deprecated key's section and name.
+    pub(crate) old_section: &'static str,
+    pub(crate) old_key: &'static str,
+    /// The deprecated key's value as the file writes it.
+    pub(crate) old_value: String,
+    /// What to write instead, for the sentence.
+    pub(crate) replace_with: &'static str,
+}
+
+/// Every value the deprecated-key migrations would write into `doc`, each
+/// rule tried on its own: a key that is absent before and present after.
+/// A migration that fails, or drops its key without carrying a value over,
+/// writes none.
+pub(crate) fn carried_over(doc: &DocumentMut) -> Vec<CarriedOver> {
+    let mut found = Vec::new();
+    for rule in DEPRECATED_CONFIG_KEYS {
+        let Some(old_value) = doc
+            .get(rule.old.section)
+            .and_then(Item::as_table_like)
+            .and_then(|table| table.get(rule.old.key))
+            .and_then(Item::as_value)
+            .map(|value| {
+                let mut value = value.clone();
+                value.decor_mut().clear();
+                value.to_string()
+            })
+        else {
+            continue;
+        };
+        let mut after = doc.clone();
+        if apply_config_deprecations_with(&mut after, std::slice::from_ref(rule)).is_err() {
+            continue;
+        }
+        let Some(table) = after.get(rule.old.section).and_then(Item::as_table_like) else {
+            continue;
+        };
+        for (key, _) in table.iter() {
+            let existed = doc
+                .get(rule.old.section)
+                .and_then(Item::as_table_like)
+                .is_some_and(|before| before.contains_key(key));
+            if !existed {
+                found.push(CarriedOver {
+                    key: vec![rule.old.section.to_string(), key.to_string()],
+                    old_section: rule.old.section,
+                    old_key: rule.old.key,
+                    old_value: old_value.clone(),
+                    replace_with: rule.replace_with,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Every retired provider's stock block in `doc` the load prunes, as its
+/// dotted key and why.
+pub(crate) fn retired_provider_prunes(doc: &DocumentMut) -> Vec<(Vec<String>, String)> {
+    let mut pruned = doc.clone();
+    let Some(before) = doc.get("providers").and_then(Item::as_table) else {
+        return Vec::new();
+    };
+    prune_retired_providers(&mut pruned);
+    let after = pruned.get("providers").and_then(Item::as_table);
+    before
+        .iter()
+        .filter(|(name, _)| after.is_none_or(|after| !after.contains_key(name)))
+        .map(|(name, _)| {
+            (
+                vec!["providers".to_string(), name.to_string()],
+                format!(
+                    "yaran no longer ships the {name} provider, and drops the untouched \
+                     [providers.{name}] block it once wrote when it loads the file (change any \
+                     value in it to keep it)"
+                ),
+            )
+        })
+        .collect()
+}
 
 fn apply_config_deprecations(doc: &mut DocumentMut) -> Result<bool> {
     apply_config_deprecations_with(doc, DEPRECATED_CONFIG_KEYS)
@@ -170,7 +329,7 @@ fn apply_config_deprecations_with(
         };
         match rule.action {
             DeprecatedConfigKeyAction::Replace { migrate } => {
-                migrate(doc, rule.old, old_item)?;
+                migrate(doc, rule.old, &old_item)?;
             }
             DeprecatedConfigKeyAction::Remove => {}
             DeprecatedConfigKeyAction::Fail { message } => {
@@ -190,7 +349,7 @@ fn apply_config_deprecations_with(
 fn migrate_prompt_for_name(
     doc: &mut DocumentMut,
     old: DeprecatedConfigKey,
-    old_item: Item,
+    old_item: &Item,
 ) -> Result<()> {
     let Some(prompt_for_name) = old_item.as_value().and_then(Value::as_bool) else {
         bail!(
@@ -217,7 +376,7 @@ fn migrate_prompt_for_name(
 fn migrate_server_bind(
     doc: &mut DocumentMut,
     old: DeprecatedConfigKey,
-    old_item: Item,
+    old_item: &Item,
 ) -> Result<()> {
     let Some(raw) = old_item.as_value().and_then(Value::as_str) else {
         bail!(
@@ -250,8 +409,17 @@ fn migrate_server_bind(
     if !table.contains_key("port") {
         table["port"] = toml_edit::value(i64::from(addr.port()));
     }
-    crate::logger::warn(&format!(
-        "[server] migrated the deprecated `bind = \"{raw}\"` to host = \"{}\" and port = {}. \
+    // Through the one value printer, at the deprecated key's path.
+    let bind = crate::config_keys::printed_value(
+        "",
+        &[old.section.to_string(), old.key.to_string()],
+        &toml::Value::String(raw.to_string()),
+        crate::config_keys::ValueForm::Line,
+    )
+    .unwrap_or_else(|| crate::config_keys::NOT_SHOWN.to_string());
+    // backtick-ok: written to yaran.log only.
+    warn_once(&format!(
+        "[server] migrated the deprecated `bind = {bind}` to host = \"{}\" and port = {}. \
          This server listens on a non-loopback address; only run it on a network you trust.",
         addr.ip(),
         addr.port()
@@ -270,10 +438,14 @@ fn migrate_server_bind(
 /// A non-boolean value is dropped silently rather than failing the load: the key
 /// no longer exists, so there is nothing to be strict about, and the new key's
 /// own default (`auto`) is a safe answer.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "its signature is the migration table's fn pointer type, which other migrations fail through"
+)]
 fn migrate_tailscale_enabled(
     doc: &mut DocumentMut,
     _old: DeprecatedConfigKey,
-    old_item: Item,
+    old_item: &Item,
 ) -> Result<()> {
     let Some(enabled) = old_item.as_value().and_then(Value::as_bool) else {
         return Ok(());
@@ -285,7 +457,7 @@ fn migrate_tailscale_enabled(
     };
     let table = ensure_table(doc, "server");
     if table.contains_key("tailscale") {
-        crate::logger::warn(&format!(
+        warn_once(&format!(
             "[server] tailscale_enabled = {enabled} is the retired boolean form of this \
              setting and your file also sets [server] tailscale, so the tailscale value is \
              what yaran uses and the boolean is being dropped. Nothing else to do."
@@ -293,7 +465,7 @@ fn migrate_tailscale_enabled(
         return Ok(());
     }
     table["tailscale"] = toml_edit::value(mode.as_str());
-    crate::logger::warn(&format!(
+    warn_once(&format!(
         "[server] tailscale_enabled = {enabled} has been replaced by the tri-state \
          tailscale = \"auto\" | \"yes\" | \"no\", and is being read as \"{}\" for this run. \
          Set [server] tailscale yourself to choose: \"auto\" binds your Tailscale address \
@@ -414,6 +586,18 @@ mod tests {
         assert_eq!(d["server"]["host"].as_str(), Some("0.0.0.0"));
         assert_eq!(d["server"]["port"].as_integer(), Some(9000));
         assert!(d.get("server").and_then(|s| s.get("bind")).is_none());
+    }
+
+    #[test]
+    fn a_migration_warns_once_however_often_it_runs() {
+        let ((), lines) = crate::logger::capture_for_test(|| {
+            for _ in 0..3 {
+                let mut d = doc("[server]\nbind = \"0.0.0.0:9417\"\n");
+                apply_load_migrations(&mut d).expect("migrate");
+            }
+        });
+        let warned = lines.iter().filter(|line| line.contains("9417")).count();
+        assert_eq!(warned, 1, "{lines:?}");
     }
 
     #[test]

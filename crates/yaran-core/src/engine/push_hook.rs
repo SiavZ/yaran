@@ -3,13 +3,14 @@
 //! `observe_push_tick` runs at the one hook every serving mode shares
 //! (`poll_agent_signals`), feeding the push-only set the same `fired` list and `engaged`
 //! predicate as the sidebar set; `observe_push_bad_exit` runs where a bad ending is
-//! recorded. Events carry ids, the agent's label, its project and a RowState token, never
+//! recorded. Events carry ids, the agent's label, its project and a `RowState` token, never
 //! terminal output. The identity a raise was sent under is remembered, so its clear
 //! collapses the same phone notification even after the tab or the agent is gone.
 //!
 //! - Runs on the engine thread; hands owned events to the emitter with `try_send`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/push_hook.rs
 //! ├── cloud::config
@@ -35,6 +36,7 @@
 //! engine/push_hook.rs
 //! ├── engine
 //! └── engine::push_hook::tests
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashMap;
@@ -53,6 +55,7 @@ use crate::cloud::push_emitter::PushEmitter;
 use crate::cloud::push_link::paired_link_factory;
 use crate::cloud::push_queue::{event_ts, new_event_id};
 use crate::config::{Config, YaranPaths};
+use crate::engine::AttentionIndicator;
 use crate::ids::{TabId, TabIdRef};
 use crate::model::AgentWorkspace;
 use crate::row_state::{RowState, agent_row_state};
@@ -63,8 +66,10 @@ use crate::worker::WorkerEvent;
 const NAME_MAX_CHARS: usize = 64;
 
 /// The engine's push state: the shadow set, the emitter, and what each raise was sent as.
+#[derive(Debug)]
 pub struct PushHook {
     edges: PushEdges,
+    /// Sends the events.
     pub emitter: PushEmitter,
     raised: HashMap<TabId, Origin>,
 }
@@ -88,6 +93,7 @@ impl PushHook {
         Self::with_emitter(PushEmitter::off())
     }
 
+    /// A hook around `emitter`.
     pub fn with_emitter(emitter: PushEmitter) -> Self {
         Self {
             edges: PushEdges::default(),
@@ -100,10 +106,10 @@ impl PushHook {
 /// The emitter's settings from config: on while `push_notifications` and mode is not `no`.
 pub(crate) fn push_settings(config: &Config) -> PushSettings {
     let cloud = &config.cloud;
-    PushSettings::new(
-        cloud.push_notifications && cloud.mode() != CloudMode::No,
-        &cloud.push,
-    )
+    PushSettings {
+        enabled: cloud.push_notifications && cloud.mode() != CloudMode::No,
+        ..PushSettings::new(&cloud.push)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +149,11 @@ impl Engine {
         let providers = &self.providers;
         let edges = self.push.edges.observe(
             fired,
-            enabled,
+            if enabled {
+                AttentionIndicator::On
+            } else {
+                AttentionIndicator::Off
+            },
             |tab| attention_engaged(viewed, typed, tab, now),
             |tab| providers.contains_key(tab),
         );
@@ -237,9 +247,11 @@ impl Engine {
         };
         state_token(agent_row_state(
             session.status,
-            self.session_is_streaming(agent_id),
-            self.session_is_typing(agent_id),
-            false,
+            crate::row_state::AgentRowFacts {
+                working: self.session_is_streaming(agent_id),
+                typing: self.session_is_typing(agent_id),
+                needs_attention: false,
+            },
         ))
     }
 }

@@ -8,8 +8,54 @@
 // Callers omit the header while it is null, and the server then broadcasts to every client.
 let connectionId: string | null = null
 
+// The last id this tab held, kept across a drop: the next events socket names it
+// (`?after=`) so the server hands the lost connection's attachments to the new one.
+let previousConnectionId: string | null = null
+
+// The most a terminal socket waits for this tab's events id, which keeps the tab out
+// of its own way when it deletes or stops what it shows; `connected` arrives far sooner.
+export const CONNECTION_ID_WAIT_MS = 1000
+
+let pendingTimer: ReturnType<typeof setTimeout> | null = null
+const waiters = new Set<() => void>()
+
 export function setConnectionId(id: string | null): void {
   connectionId = id
+  if (id !== null) {
+    previousConnectionId = id
+    settlePending()
+  }
+}
+
+/// An events socket is opening with no id yet: terminal sockets hold their
+/// open until its `connected` frame names one, or until the wait runs out.
+export function noteConnectionIdPending(): void {
+  if (connectionId !== null || pendingTimer !== null) return
+  pendingTimer = setTimeout(settlePending, CONNECTION_ID_WAIT_MS)
+}
+
+/// Whether a terminal socket should hold its open for the id right now.
+export function awaitingConnectionId(): boolean {
+  return pendingTimer !== null
+}
+
+/// Subscribe to the wait ending, either way. Returns the unsubscribe.
+export function onConnectionIdSettled(wake: () => void): () => void {
+  waiters.add(wake)
+  return () => {
+    waiters.delete(wake)
+  }
+}
+
+function settlePending(): void {
+  if (pendingTimer === null) return
+  clearTimeout(pendingTimer)
+  pendingTimer = null
+  for (const wake of [...waiters]) wake()
+}
+
+export function getPreviousConnectionId(): string | null {
+  return previousConnectionId
 }
 
 export function getConnectionId(): string | null {

@@ -10,6 +10,7 @@
 //!   running), 4 (not paired) and 5 (revoked).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cli/mod.rs
 //! ├── browser
@@ -33,6 +34,7 @@
 //! ├── cloud::cli::pair_phone
 //! ├── cloud::cli::tests
 //! └── yaran[bin yaran]
+//! ```
 //! <module-headers:end>
 
 mod args;
@@ -43,13 +45,14 @@ mod pair_phone;
 use std::io::{BufRead, Write};
 use std::time::Duration;
 
-pub use args::{CloudCommand, Verb, parse};
+pub use args::{CloudCommand, LoginArgs, LogoutArgs, RotateArgs, StatusArgs, Verb, parse};
 
 use crate::cloud::config::CloudConfig;
 use crate::cloud::machine_api::{ApiFactory, default_api_factory};
 use crate::cloud::outcome::CloudActionOutcome;
 use crate::cloud::paths::CloudPaths;
 
+/// The help text of `yaran cloud`.
 pub const CLOUD_HELP: &str = "\
 Usage: yaran cloud <command> [OPTIONS]
 
@@ -145,13 +148,17 @@ pub type BrowserOpener = Box<dyn FnMut(&str) -> Result<(), String>>;
 
 /// Everything `run_with` needs from the outside world.
 pub struct CloudDeps {
+    /// Where the cloud files live.
     pub paths: CloudPaths,
+    /// The `[cloud]` settings.
     pub config: CloudConfig,
     /// The effective `[server] port`, sent as `origin_port` at login.
     pub server_port: u16,
+    /// Builds the control-plane client.
     pub api: ApiFactory,
     /// Whether stdin is a terminal (confirms are asked only there).
     pub is_tty: bool,
+    /// Opens the approval address in a browser.
     pub open_browser: BrowserOpener,
     /// How long login waits after pairing for a running yaran to pick it up.
     pub pickup_wait: Duration,
@@ -160,7 +167,16 @@ pub struct CloudDeps {
 /// `yaran cloud ...` from the binary. Returns the process exit code.
 pub fn run_cloud(args: &[String], paths: &crate::config::YaranPaths) -> i32 {
     use std::io::IsTerminal;
-    let config = crate::config::load_config(paths);
+    // A config that does not load (a broken `[server.auth]`, unreadable TOML)
+    // is refused, not replaced by the defaults: the defaults would point the
+    // pairing at the wrong control plane and server port.
+    let config = match crate::config::load_config(paths) {
+        Ok(config) => config,
+        Err(err) => {
+            let _ = writeln!(std::io::stdout(), "yaran cloud: {err}");
+            return 1;
+        }
+    };
     let deps = CloudDeps {
         paths: CloudPaths::new(paths),
         api: default_api_factory(Duration::from_secs(
@@ -174,6 +190,16 @@ pub fn run_cloud(args: &[String], paths: &crate::config::YaranPaths) -> i32 {
     };
     let stdin: Box<dyn BufRead + Send> = Box::new(std::io::BufReader::new(std::io::stdin()));
     run_with(args, deps, stdin, &mut std::io::stdout())
+}
+
+impl std::fmt::Debug for CloudDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudDeps")
+            .field("paths", &self.paths)
+            .field("server_port", &self.server_port)
+            .field("is_tty", &self.is_tty)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The testable body of [`run_cloud`].
@@ -195,18 +221,10 @@ pub fn run_with(
             let _ = writeln!(out, "{}", help_for(verb));
             0
         }
-        CloudCommand::Login {
-            url,
-            name,
-            no_browser,
-        } => login::run(deps, url, name, no_browser, stdin, out),
-        CloudCommand::Logout { yes, local_only } => {
-            manage::logout(&deps, yes, local_only, stdin, out)
-        }
-        CloudCommand::Status { json, offline } => manage::status(&deps, json, offline, out),
-        CloudCommand::Rotate { yes, consent_key } => {
-            manage::rotate(&deps, yes, consent_key, stdin, out)
-        }
+        CloudCommand::Login(args) => login::run(deps, args, stdin, out),
+        CloudCommand::Logout(args) => manage::logout(&deps, args, stdin, out),
+        CloudCommand::Status(args) => manage::status(&deps, args, out),
+        CloudCommand::Rotate(args) => manage::rotate(&deps, args, stdin, out),
         CloudCommand::PairPhone { org } => pair_phone::run(&deps, org, out),
     }
 }
@@ -214,21 +232,18 @@ pub fn run_with(
 /// Print an outcome's sentence and return its exit code.
 fn finish(outcome: &CloudActionOutcome, out: &mut dyn Write) -> i32 {
     let _ = writeln!(out, "{}", outcome.report().message());
-    if outcome.is_failure() { 1 } else { 0 }
+    i32::from(outcome.is_failure())
 }
 
 /// Ask a yes/no question on a terminal; off a terminal `--yes` is required.
-/// `Err(code)` means stop with that exit code.
+/// The caller skips it when `--yes` was given. `Err(code)` means stop with that
+/// exit code.
 fn confirm(
     deps: &CloudDeps,
-    yes: bool,
     question: &str,
     stdin: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> Result<(), i32> {
-    if yes {
-        return Ok(());
-    }
     if !deps.is_tty {
         let _ = writeln!(
             out,

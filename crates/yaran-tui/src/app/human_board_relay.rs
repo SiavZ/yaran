@@ -148,8 +148,9 @@ impl App {
         self.human_board
             .settings
             .as_ref()
-            .map(|settings| settings.store.home())
-            .unwrap_or(self.engine.paths.root.as_path())
+            .map_or(self.engine.paths.root.as_path(), |settings| {
+                settings.store.home()
+            })
     }
 
     fn drain_seen_workers(&mut self) {
@@ -234,8 +235,7 @@ impl App {
             .human_board
             .settings
             .as_ref()
-            .map(|settings| settings.people.clone())
-            .unwrap_or_default();
+            .map_or_default(|settings| settings.people.clone());
         people.push(RESOLVED_BY.to_string());
         if let Some(me) = self.me() {
             people.push(me);

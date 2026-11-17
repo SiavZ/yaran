@@ -6,6 +6,7 @@
 //!   them pass. A stop requested mid-way answers `Requested`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_start.rs
 //! ├── cloud::cloudflared
@@ -23,6 +24,7 @@
 //! ├── cloud
 //! ├── cloud::leg
 //! └── cloud::leg_run
+//! ```
 //! <module-headers:end>
 
 use std::net::{SocketAddr, TcpStream};
@@ -39,7 +41,7 @@ use super::leg_identity::{CloudIdentity, MachineApiError, PairedMachine};
 
 /// What a successful start sequence hands the run loop.
 #[derive(Debug, Clone)]
-pub struct Prepared {
+pub(super) struct Prepared {
     pub binary: PathBuf,
     pub source: BinarySource,
     pub machine: PairedMachine,
@@ -55,7 +57,7 @@ fn stopped(stop: &AtomicBool) -> Result<(), LegStop> {
     }
 }
 
-pub fn prepare(
+pub(super) fn prepare(
     params: &LegParams,
     identity: &dyn CloudIdentity,
     stop: &AtomicBool,

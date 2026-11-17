@@ -305,15 +305,14 @@ describe("discardMany", () => {
         }),
     )
 
-    const pending = git.discardMany("s1", ["a.txt", "b.txt"])
+    const pending = git.discardMany("s1", ["a.txt", "b.txt"], {})
     // Parallel checkouts contend on index.lock, so the second request must not
     // exist until the first has answered.
     await Promise.resolve()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     releases[0]()
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // The first answer's body is read before the second request goes.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     releases[1]()
     const result = await pending
 
@@ -322,7 +321,8 @@ describe("discardMany", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/api/v1/sessions/s1/git/discard",
-      expect.objectContaining({ body: JSON.stringify({ path: "a.txt" }) }),
+      // A row with no kind of its own is confirmed as a file.
+      expect.objectContaining({ body: JSON.stringify({ path: "a.txt", kind: "file" }) }),
     )
   })
 
@@ -342,7 +342,7 @@ describe("discardMany", () => {
       headers: { get: () => null },
     } as unknown as Response)
 
-    const result = await git.discardMany("s1", ["locked.txt", "ok.txt"])
+    const result = await git.discardMany("s1", ["locked.txt", "ok.txt"], {})
     expect(result.done).toEqual(["ok.txt"])
     expect(result.failed).toEqual([
       { path: "locked.txt", message: "Unstage the file first." },

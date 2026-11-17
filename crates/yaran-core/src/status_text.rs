@@ -27,6 +27,89 @@ pub struct StatusText {
     /// `None` for a sentence that arrived as a finished string. When `Some`,
     /// `prose.plain() == message`, by construction.
     prose: Option<Prose>,
+    /// The question this sentence puts to whoever reads it, when it is one.
+    ask: Option<StatusAsk>,
+}
+
+/// A question a refusal puts to the surface that shows it, so that surface can
+/// offer the answer where the user is instead of leaving a sentence to retype
+/// the request from. The sentence still says everything in words; this is the
+/// part a surface cannot get by reading them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StatusAsk {
+    /// Creating an agent from a pull request needs a review copy the user has
+    /// not agreed to. `warned` identifies what the warning said (why the
+    /// branch could not be used, and the copy's name), and goes back with the
+    /// agreement so the server can tell the user agreed to this copy and not
+    /// to a different one made necessary since. `warning` is the warning alone,
+    /// in parts: the sentence of the status adds how to agree on the command
+    /// line, which a dialog with a checkbox under it has no use for.
+    ///
+    /// Boxed so the question costs a pointer on every status that never asks.
+    ReviewCopy(Box<ReviewCopyAsk>),
+}
+
+/// What a refusal for want of agreement to a review copy asks; see
+/// [`StatusAsk::ReviewCopy`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewCopyAsk {
+    /// What the warning said, sent back with the agreement.
+    pub warned: String,
+    /// The warning alone, in parts.
+    pub warning: Vec<ProseSegment>,
+    /// The id the asking client gave the create, so it can tell this is the
+    /// answer to that create and not to a later one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// The request came from the command line, which agrees with a flag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_flag: bool,
+    /// Set when a clone or an add made the project and stopped short of the
+    /// agent for want of this answer: the project the agent goes in, so the
+    /// surface can reopen New agent from PR for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// The pull request that create was for, set with `project_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<crate::pr_reference::PullRequestCloneTarget>,
+}
+
+/// Whether creating an agent from a pull request will need a review copy,
+/// told before the project exists or the folder is added, so a surface can put
+/// the question beside the button that would start it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ReviewCopyOutlook {
+    /// The branch can be used as it is.
+    NotNeeded,
+    /// Nothing available before the clone or the add can say. The question, if
+    /// there is one, is asked after the project exists.
+    Unknown,
+    /// A copy will be needed.
+    Needed {
+        /// Why, as the word a [`ReviewCopyAsk::warned`] begins with: `busy`,
+        /// `diverged`, `unknown` or `holder-unknown`. Agreeing with this word
+        /// covers a copy for the same reason under whatever name turns out
+        /// free.
+        reason: String,
+        /// The pull request's own branch, which is left alone.
+        branch: String,
+        /// The branch the copy would be made on.
+        copy_branch: String,
+        /// The warning, in parts.
+        warning: Vec<ProseSegment>,
+    },
+    /// A copy will be needed and every name it could take is taken, so nothing
+    /// can be done until the user types another name for the agent.
+    NoFreeName {
+        /// Why a copy is needed, as the word a [`ReviewCopyAsk::warned`] begins with.
+        reason: String,
+        /// The pull request's own branch, which is left alone.
+        branch: String,
+        /// The refusal's sentence, in parts.
+        message: Vec<ProseSegment>,
+    },
 }
 
 impl StatusText {
@@ -40,6 +123,7 @@ impl StatusText {
         Self {
             message: message.into(),
             prose: None,
+            ask: None,
         }
     }
 
@@ -60,7 +144,23 @@ impl StatusText {
             }
             agrees
         });
-        Self { message, prose }
+        Self {
+            message,
+            prose,
+            ask: None,
+        }
+    }
+
+    /// This sentence, marked as a question to put to the user.
+    #[must_use]
+    pub fn with_ask(mut self, ask: StatusAsk) -> Self {
+        self.ask = Some(ask);
+        self
+    }
+
+    /// The question this sentence puts, if it is one.
+    pub fn ask(&self) -> Option<&StatusAsk> {
+        self.ask.as_ref()
     }
 
     /// The plain spelling: what the terminal UI prints, word for word.
@@ -83,6 +183,7 @@ impl StatusText {
         (self.message, self.prose.map(Prose::into_segments))
     }
 
+    /// Whether the message is empty.
     pub fn is_empty(&self) -> bool {
         self.message.is_empty()
     }
@@ -130,8 +231,10 @@ impl StatusText {
 /// - anything else: words, or a whole [`StatusText`] or [`Prose`] spliced in.
 #[macro_export]
 macro_rules! status_text {
-    ($($part:tt)*) => {{
-        #[allow(unused_mut)]
+    () => {
+        $crate::status_text::StatusText::new()
+    };
+    ($($part:tt)+) => {{
         let mut __status_text = $crate::status_text::StatusText::new();
         $crate::__status_text_parts!(__status_text; $($part)*);
         __status_text
@@ -161,6 +264,7 @@ impl From<Prose> for StatusText {
         Self {
             message: prose.plain(),
             prose: Some(prose),
+            ask: None,
         }
     }
 }
@@ -248,12 +352,7 @@ mod tests {
         assert_eq!(status.message(), "Deleted \"featxe\" in /r");
         assert_eq!(
             status.segments().expect("built from parts"),
-            &[
-                text("Deleted "),
-                name("featxe", true),
-                text(" in "),
-                name("/r", false)
-            ]
+            &[text("Deleted "), quoted("featxe"), text(" in "), bare("/r")]
         );
     }
 
@@ -261,10 +360,17 @@ mod tests {
         ProseSegment::Text(s.to_string())
     }
 
-    fn name(s: &str, quoted: bool) -> ProseSegment {
+    fn bare(s: &str) -> ProseSegment {
         ProseSegment::Name {
             name: s.to_string(),
-            quoted,
+            quoted: false,
+        }
+    }
+
+    fn quoted(s: &str) -> ProseSegment {
+        ProseSegment::Name {
+            name: s.to_string(),
+            quoted: true,
         }
     }
 
@@ -285,9 +391,9 @@ mod tests {
             built.segments().unwrap(),
             &[
                 text("Checked out "),
-                name("main", true),
+                quoted("main"),
                 text(" for project "),
-                name("p1-name", true),
+                quoted("p1-name"),
                 text("."),
             ]
         );
@@ -299,7 +405,7 @@ mod tests {
         assert_eq!(built.message(), "Saved to /tmp/a b/c.txt.");
         assert_eq!(
             built.segments().unwrap(),
-            &[text("Saved to "), name("/tmp/a b/c.txt", false), text(".")]
+            &[text("Saved to "), bare("/tmp/a b/c.txt"), text(".")]
         );
     }
 
@@ -308,7 +414,7 @@ mod tests {
         let built = crate::status_text![q("feature"), " is gone."];
         assert_eq!(
             built.segments().unwrap(),
-            &[name("feature", true), text(" is gone.")]
+            &[quoted("feature"), text(" is gone.")]
         );
     }
 
@@ -331,9 +437,9 @@ mod tests {
             built.segments().unwrap(),
             &[
                 text("Checked out "),
-                name("main", true),
+                quoted("main"),
                 text(". New worktrees branch from "),
-                name("main", true),
+                quoted("main"),
                 text(" now."),
             ]
         );
@@ -352,7 +458,7 @@ mod tests {
         assert_eq!(built.message(), "Removed \"dev\"");
         assert_eq!(
             built.segments().unwrap(),
-            &[text("Removed "), name("dev", true)]
+            &[text("Removed "), quoted("dev")]
         );
     }
 
@@ -363,7 +469,7 @@ mod tests {
         assert_eq!(built.message(), "Stopped agent \"feat\".");
         assert_eq!(
             built.segments().unwrap(),
-            &[text("Stopped agent "), name("feat", true), text(".")]
+            &[text("Stopped agent "), quoted("feat"), text(".")]
         );
     }
 
@@ -373,7 +479,7 @@ mod tests {
         assert_eq!(built.message(), "Añadido \"rama-ñ✓\" ✓");
         assert_eq!(
             built.segments().unwrap(),
-            &[text("Añadido "), name("rama-ñ✓", true), text(" ✓")]
+            &[text("Añadido "), quoted("rama-ñ✓"), text(" ✓")]
         );
     }
 

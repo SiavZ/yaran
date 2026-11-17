@@ -16,6 +16,15 @@
 //     only when the PTY is unowned. Adding `"takeover":true` transfers ownership,
 //     and is the only frame this client sends while it knows it is not the owner.
 //   - Close = detach.
+//   - Every open names this tab's events connection as `?events=<id>`, waiting up to
+//     `CONNECTION_ID_WAIT_MS` for one, so the tab is never in its own way, and
+//     this browser as `?browser=<id>`, so a socket the server cannot link to the
+//     tab (none yet, or one it no longer knows) still counts as this browser.
+//     It names this page as `?page=<id>`, so every terminal the page has open on
+//     one row is one driver of it, and adds `viewed=0` when its pane is off
+//     screen, so opening it does not count as looking at the tab.
+//   - client to server Text = `{"shown":true}` when a pane mounted off screen
+//     comes on screen, and `{"viewed":false}` the moment one goes off screen.
 //
 // Reconnect is the shared `ReconnectingSocket` base with three PTY-specific
 // policies: a hidden page schedules nothing, because a PTY nobody is looking at
@@ -28,7 +37,13 @@
 // loop.
 
 import { assertNever } from "./assertNever"
+import { wsUrl } from "./apiBase"
+import { authPaused } from "./authGate"
+import { browserId } from "./browserId"
+import { pageSeatId } from "./pageSeat"
+import { awaitingConnectionId, getConnectionId, onConnectionIdSettled } from "./connection"
 import { ReconnectingSocket } from "./reconnectingSocket"
+import { ptyGridInBounds } from "./ptyGrid"
 import { appSocketGivenUp } from "./appSocketGiveUp"
 import {
   ACCESS_SESSION_EXPIRED_CLOSE,
@@ -44,28 +59,22 @@ import type { TerminalOwnerRef } from "./terminalOwner"
 // the application-private range, so it cannot collide with a protocol code.
 export const PROVIDER_UNAVAILABLE_CLOSE = 4001
 
-// Derive the WebSocket scheme from the page protocol: a hardcoded `ws://` would
-// be blocked as mixed content under HTTPS. Read at call time, not module load, so
-// the URL builders import safely anywhere and tests can stub `location`.
-function wsScheme(): string {
-  return location.protocol === "https:" ? "wss:" : "ws:"
-}
 
 // The agent session's slot-tab PTY socket URL: an alias for
 // `tabPtyUrl(sessionId, <that agent's slot tab>)`, which the server resolves.
 // Connecting launches or resumes the provider.
 export function agentPtyUrl(sessionId: string): string {
-  return `${wsScheme()}//${location.host}/ws/sessions/${encodeURIComponent(
+  return wsUrl(`/ws/sessions/${encodeURIComponent(
     sessionId,
-  )}/pty`
+  )}/pty`)
 }
 
 // A companion terminal's PTY socket URL, nested under its owning session so the
 // server can enforce that the terminal belongs to that session.
 export function terminalPtyUrl(sessionId: string, terminalId: string): string {
-  return `${wsScheme()}//${location.host}/ws/sessions/${encodeURIComponent(
+  return wsUrl(`/ws/sessions/${encodeURIComponent(
     sessionId,
-  )}/terminals/${encodeURIComponent(terminalId)}/pty`
+  )}/terminals/${encodeURIComponent(terminalId)}/pty`)
 }
 
 // A project terminal's PTY socket URL, nested under its owning project so the
@@ -74,18 +83,18 @@ export function projectTerminalPtyUrl(
   projectId: string,
   terminalId: string,
 ): string {
-  return `${wsScheme()}//${location.host}/ws/projects/${encodeURIComponent(
+  return wsUrl(`/ws/projects/${encodeURIComponent(
     projectId,
-  )}/terminals/${encodeURIComponent(terminalId)}/pty`
+  )}/terminals/${encodeURIComponent(terminalId)}/pty`)
 }
 
 // A standalone terminal's PTY socket URL, un-nested because it has no owner to
 // nest under. The server still refuses an owned terminal at this address, so it
 // is not a way around the nested routes' cross-owner checks.
 export function standaloneTerminalPtyUrl(terminalId: string): string {
-  return `${wsScheme()}//${location.host}/ws/terminals/${encodeURIComponent(
+  return wsUrl(`/ws/terminals/${encodeURIComponent(
     terminalId,
-  )}/pty`
+  )}/pty`)
 }
 
 // A terminal's PTY socket URL, chosen by its owner. Which route a terminal is
@@ -112,9 +121,9 @@ export function terminalSocketUrl(
 // the session-slot tab included, which `agentPtyUrl` aliases. Connecting launches
 // a dormant tab's provider, resuming or not per the server's dynamic decision.
 export function tabPtyUrl(sessionId: string, tabId: string): string {
-  return `${wsScheme()}//${location.host}/ws/sessions/${encodeURIComponent(
+  return wsUrl(`/ws/sessions/${encodeURIComponent(
     sessionId,
-  )}/tabs/${encodeURIComponent(tabId)}/pty`
+  )}/tabs/${encodeURIComponent(tabId)}/pty`)
 }
 
 interface PtyControlFrame {
@@ -152,14 +161,40 @@ export class PtySocket extends ReconnectingSocket {
     // stopped trying, which is the gate's other half.
     super(url, {
       parkWhileHidden: true,
-      canRetry: () => serverValidated() && !appSocketGivenUp(),
+      canRetry: () =>
+        serverValidated() && !appSocketGivenUp() && !awaitingConnectionId(),
       attemptBudget: () => 0,
     })
     // The gate pushes as well as blocking: a retry held by it re-arms at whatever
     // delay it had reached, and the gate opening is the moment to try.
-    this.unsubscribeGate = onServerValidated(() => {
+    const unsubscribeValidated = onServerValidated(() => {
       this.resumeNow()
     })
+    // The tab's events id arriving (or the wait for it running out) is the
+    // other moment a held open can go.
+    const unsubscribeId = onConnectionIdSettled(() => {
+      this.resumeNow()
+    })
+    this.unsubscribeGate = () => {
+      unsubscribeValidated()
+      unsubscribeId()
+    }
+  }
+
+  // Names this tab's events connection and this browser (see the protocol
+  // notes above). No events id yet, or none right now, and the socket opens as a
+  // connection of its own, still counted as this browser.
+  protected override openUrl(): string {
+    const params: string[] = []
+    const events = getConnectionId()
+    if (events !== null) params.push(`events=${encodeURIComponent(events)}`)
+    params.push(`browser=${encodeURIComponent(browserId())}`)
+    params.push(`page=${pageSeatId()}`)
+    // Read at each open, so a reconnect names the pane's visibility as it is
+    // then rather than as it was at mount.
+    if (!this.onScreen()) params.push("viewed=0")
+    const separator = this.url.includes("?") ? "&" : "?"
+    return `${this.url}${separator}${params.join("&")}`
   }
 
   // A lifecycle close (`pagehide`) keeps the gate subscription, as it keeps the
@@ -169,6 +204,10 @@ export class PtySocket extends ReconnectingSocket {
     this.unsubscribeGate()
     super.dispose()
   }
+
+  /// Whether the pane this socket feeds is on screen, read at every open. A
+  /// pane kept mounted off screen is not looking at its tab.
+  onScreen: () => boolean = () => true
 
   private bytesCb: (bytes: Uint8Array) => void = () => {}
   // This socket's server-assigned connection id, from the `connected` frame on
@@ -298,7 +337,17 @@ export class PtySocket extends ReconnectingSocket {
 
   // Nothing to resend on (re)open: the server replays this PTY's scrollback as the
   // first Binary frame after every open, so the byte feed rehydrates itself.
-  protected onSocketOpen(): void {}
+  // How many times this socket has opened. The object reconnects in place, so
+  // something that must reach the SAME connection (the delayed Enter of a
+  // compose Send) compares this rather than the object.
+  private opens = 0
+  get openSerial(): number {
+    return this.opens
+  }
+
+  protected onSocketOpen(): void {
+    this.opens += 1
+  }
 
   protected handleMessage(event: MessageEvent): void {
     if (event.data instanceof ArrayBuffer) {
@@ -406,10 +455,19 @@ export class PtySocket extends ReconnectingSocket {
   // Send PTY stdin as a Binary frame. A copy is sent so the buffer is a plain
   // `ArrayBuffer` (`WebSocket.send` rejects `ArrayBufferLike` under strict lib
   // typings) and the caller's view cannot mutate it in flight.
-  sendInput(bytes: Uint8Array): void {
+  //
+  // Nothing at all goes out while the page is signed out: the app stays
+  // mounted under the login page, and a keystroke, a resize or a "viewed" beat
+  // from a page nobody signed in to must not reach the PTY.
+  // Returns whether the bytes went on the wire, so a caller that cannot let a
+  // write vanish (a macro) can say it did not.
+  sendInput(bytes: Uint8Array): boolean {
+    if (authPaused()) return false
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(bytes.slice().buffer)
+      return true
     }
+    return false
   }
 
   // Send a resize control frame as Text. The server parses `{rows, cols}` (u16)
@@ -425,18 +483,48 @@ export class PtySocket extends ReconnectingSocket {
   // re-typed by nobody: the caller skips a size it believes is already there, so
   // a frame discarded here must be reported rather than booked as delivered and
   // never re-asserted. A take-over intent is cleared only when this returns true.
+  //
+  // A grid outside the PTY's bounds is not sent either: the server would drop
+  // it without a word, and a take-over riding on it would be spent on nothing.
   sendResize(
     rows: number,
     cols: number,
     takeover = false,
     expectedOwner?: string,
   ): boolean {
+    if (!ptyGridInBounds(rows, cols)) return false
+    // Refused, and reported as refused: the resize coordinator re-asserts the
+    // size once the page is signed in again (`authResync.ts`), through its own
+    // ownership rules.
+    if (authPaused()) return false
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       const frame = takeover
         ? expectedOwner === undefined
           ? { rows, cols, takeover: true }
           : { rows, cols, takeover: true, expected_owner: expectedOwner }
         : { rows, cols }
+      this.ws.send(JSON.stringify(frame))
+      return true
+    }
+    return false
+  }
+
+  // The pane came on screen: `{"shown":true}`, the "looking at it" a socket
+  // opening on screen is, for one already open. Sent whoever owns the pty, and
+  // never echoed.
+  sendShown(): boolean {
+    return this.sendText({ shown: true })
+  }
+
+  // The pane went off screen: `{"viewed":false}` at once, rather than leaving
+  // the server believing it is watched until the next beat.
+  sendUnviewed(): boolean {
+    return this.sendText({ viewed: false })
+  }
+
+  private sendText(frame: object): boolean {
+    if (authPaused()) return false
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame))
       return true
     }
@@ -456,24 +544,11 @@ export class PtySocket extends ReconnectingSocket {
   // Returns whether it went on the wire, so the heartbeat does not start a
   // deadline for a frame it never sent.
   sendBeat(n: number, viewed: boolean): boolean {
+    if (authPaused()) return false
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ beat: n, viewed }))
       return true
     }
     return false
   }
-}
-
-// The PTY socket the focused center pane is currently driving, or null when no
-// terminal is focused. Macro delivery is client-side, so the store needs a handle
-// to the active PTY without reaching into React. `TerminalPane` registers its
-// socket on mount and clears it on unmount.
-let activePtySocket: PtySocket | null = null
-
-export function setActivePtySocket(s: PtySocket | null): void {
-  activePtySocket = s
-}
-
-export function getActivePtySocket(): PtySocket | null {
-  return activePtySocket
 }

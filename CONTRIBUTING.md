@@ -8,7 +8,9 @@ the tenet wins.
 ## What you need
 
 - **Rust** (stable). The workspace tracks whatever `dtolnay/rust-toolchain@stable`
-  installs in CI, so a current stable toolchain is the right target.
+  installs in CI, so a current stable toolchain is the right target. The oldest
+  compiler that builds it is Rust 1.98 (`rust-version` in `Cargo.toml`); the
+  `MSRV (1.98)` CI job keeps that true, so raise the two together.
 - **Node 22.12 or newer** plus npm. The web UI is a React app that is **compiled into
   the `yaran` binary**, so a normal `cargo build` builds it. If you have no Node
   toolchain, see [Building without the web UI](#building-without-the-web-ui).
@@ -235,6 +237,70 @@ next free ID at the end. Say in the pull request description which rows you edit
 ```markdown
 - [ ] Edited my threat-model rows (IDs: T…)
 ```
+
+### Container journeys
+
+`crates/yaran-journeys` runs the real `yaran` binary in Docker and drives it the way
+a person does: HTTP with a cookie jar, the events and terminal WebSockets, a real
+Chromium, the `yaran` command line inside the container, and nginx, Caddy or a
+stand-in `tailscale` where a journey needs them.
+Each test's doc comment says what it covers as Situation, Task, Action and
+Result. They are Linux only and need Docker; a plain `cargo test` skips them.
+
+```bash
+cargo build --profile journeys --bin yaran     # the binary every container mounts
+cargo test -p yaran-journeys --features journeys -- --test-threads=2
+```
+
+The first run builds the `yaran-journeys` image from `tools/preview-env` (the
+preview's Dockerfile with its journey tools on), which takes a few minutes; later
+runs reuse it until something in that directory changes. Rebuild the binary after
+changing yaran, or the journeys run the old one.
+
+One journey, by name (any part of it):
+
+```bash
+cargo test -p yaran-journeys --features journeys -- --test-threads=2 smoke_add_a_project
+```
+
+The journeys for the web password login run only with `--features auth`. They
+were written before the feature, so until it is built they fail; that is what
+they are for. Without the feature they are listed as ignored, with the reason.
+
+Every published port binds `127.0.0.1` only, so nothing a journey starts is
+reachable from your network, and each yaran gets a Docker network of its own.
+Every container and network a run starts is labelled with that run and removed
+when its journey ends, pass, fail or timeout. Several runs can share one Docker
+daemon (two worktrees, say), and none ever touches another's:
+
+- **Ctrl-C** (SIGINT, SIGTERM, SIGQUIT): the run removes its own containers and
+  networks, then exits.
+- **A killed run** (SIGKILL, a crash): nothing can run at that moment, so its
+  containers stay until the next run on this machine, as this user, starts.
+  That run sees the dead run's heartbeat (a lock file under
+  `~/.cache/yaran-journeys/runs`, or `$XDG_CACHE_HOME`) is free and removes what
+  it left. A run another user or machine started is never swept.
+- **Journey images** are never removed by a run, because another worktree may be
+  using one.
+
+By hand, when no run is going: the containers and networks of every run, then
+the journey images no container uses that are over a day old:
+
+```bash
+docker ps -aq --filter label=yaran-journeys=1 | xargs -r docker rm -f
+docker network ls -q --filter label=yaran-journeys=1 | xargs -r docker network rm
+docker image prune -a --force --filter label=yaran-journeys=1 --filter until=24h
+```
+
+`CARGO_TARGET_DIR` is honoured when the journeys look for the binary, and a
+binary older than the sources is refused with the command that rebuilds it
+(`YARAN_JOURNEY_ALLOW_STALE=1` runs them anyway).
+
+The journeys never touch your own yaran or the preview container. The nginx, Caddy
+and base images are pinned by digest in `tools/preview-env/journey-images.env`,
+which says how to move them forward. CI runs them on every
+push in `.github/workflows/journeys.yml`, cancelling the run for an older commit
+when a newer one arrives.
 
 ## Writing a release body
 

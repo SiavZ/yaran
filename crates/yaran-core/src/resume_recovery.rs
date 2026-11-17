@@ -73,6 +73,7 @@ pub enum ProviderSessionLaunch {
 }
 
 impl ProviderSessionLaunch {
+    /// Whether this launch resumes a recorded conversation by its id.
     pub fn is_resume_id(&self) -> bool {
         matches!(self, Self::ResumeId(_))
     }
@@ -107,13 +108,17 @@ pub fn provider_resume_id_is_valid(provider: &str, id: &str) -> bool {
 
 /// Everything [`plan_resume_id`] needs, gathered by the engine so the rule
 /// itself stays a pure function a test can drive with any combination.
+#[derive(Debug)]
 pub struct ResumeIdInput<'a> {
+    /// The provider's name as config spells it.
     pub provider: &'a str,
+    /// The provider's command configuration.
     pub config: &'a ProviderCommandConfig,
     /// The id yaran recorded for this agent and provider, if any.
     pub stored_id: Option<&'a str>,
     /// Whether the agent shares its directory with other agents.
     pub shared: bool,
+    /// The directory the agent runs in.
     pub directory: &'a Path,
     /// Whether this provider has run for this agent before.
     pub started: bool,
@@ -154,7 +159,9 @@ pub fn plan_resume_id(
 }
 
 /// What a worker prepared for a fresh launch before spawning it.
+#[derive(Debug)]
 pub enum PreparedCapture {
+    /// Nothing to capture: the launch is not a fresh capture.
     None,
     /// The UUID handed to `claude --session-id`.
     Claude(String),
@@ -163,6 +170,7 @@ pub enum PreparedCapture {
 }
 
 impl PreparedCapture {
+    /// The id handed to `claude --session-id`, for a Claude capture.
     pub fn claude_session_id(&self) -> Option<&str> {
         match self {
             Self::Claude(id) => Some(id),
@@ -182,6 +190,10 @@ impl PreparedCapture {
 ///
 /// Nothing is written here: a Claude replacement id is only recorded once its
 /// launch succeeds, so a failed spawn keeps the previous (still resumable) id.
+///
+/// # Errors
+///
+/// Fails when the Codex rollout directory cannot be snapshotted.
 pub fn prepare_fresh_capture(
     launch: &ProviderSessionLaunch,
     cwd: &Path,
@@ -201,15 +213,20 @@ pub fn prepare_fresh_capture(
 
 /// The argv a launch runs with.
 ///
-/// `resume` is upstream's resume-latest flag. A targeted resume replaces the
+/// `start` is upstream's resume-latest answer. A targeted resume replaces the
 /// base args with `resume_by_id_args`; Codex also gets `-C <cwd>`, because
 /// `codex resume <id>` otherwise reopens the conversation in the directory it
 /// was recorded in, which for a moved agent is not where yaran launched it.
+///
+/// # Errors
+///
+/// Fails when a targeted resume is asked of a provider with no
+/// `resume_by_id_args`, or its arguments cannot be built.
 pub fn launch_args(
     config: &ProviderCommandConfig,
     provider: &str,
     launch: &ProviderSessionLaunch,
-    resume: bool,
+    start: crate::model::ConversationStart,
     fresh_claude_id: Option<&str>,
     cwd: &Path,
 ) -> Result<Vec<String>> {
@@ -226,7 +243,7 @@ pub fn launch_args(
         ProviderSessionLaunch::Plain
         | ProviderSessionLaunch::CaptureClaude
         | ProviderSessionLaunch::CaptureCodex => {
-            let mut args = config.interactive_args(resume);
+            let mut args = config.interactive_args(start);
             if let Some(session_id) = fresh_claude_id {
                 args.extend(["--session-id".to_string(), session_id.to_string()]);
             }
@@ -239,13 +256,21 @@ const MAX_TRANSCRIPT_FILES: usize = 100_000;
 const MAX_JSON_LINE_BYTES: usize = 16 * 1024 * 1024;
 const CODEX_PROCESS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Where the provider CLIs keep their conversation histories.
 #[derive(Clone, Debug)]
 pub struct ProviderDataRoots {
+    /// Claude's per-project transcript directory (`~/.claude/projects`).
     pub claude_projects: PathBuf,
+    /// Codex's rollout directory (`~/.codex/sessions`).
     pub codex_sessions: PathBuf,
 }
 
 impl ProviderDataRoots {
+    /// The roots under the user's home directory.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the home directory cannot be found.
     pub fn from_home() -> Result<Self> {
         let home = home::home_dir().context("home directory is unavailable")?;
         Ok(Self {
@@ -258,6 +283,7 @@ impl ProviderDataRoots {
 /// A running Claude tab whose live conversation id the engine wants checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaudeLiveSessionTarget {
+    /// The agent the tab belongs to.
     pub session_id: String,
     /// The tab's PTY child, which is the Claude process itself.
     pub pid: u32,
@@ -268,7 +294,9 @@ pub struct ClaudeLiveSessionTarget {
 /// A Claude tab that has moved to a conversation other than the recorded one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaudeLiveSession {
+    /// The agent the tab belongs to.
     pub session_id: String,
+    /// The conversation id the running Claude has moved to.
     pub live_id: String,
     /// The recorded id the comparison was made against, so the engine can
     /// skip the update when a capture changed the record in the meantime.
@@ -433,7 +461,7 @@ pub fn resolve_latest_jcode_session(
         let session_file = sessions_dir.join(format!("{id}.json"));
         match fs::metadata(&session_file) {
             Ok(meta) if meta.len() >= MIN_RESUMABLE_JCODE_SESSION_BYTES => return Some(id),
-            _ => continue,
+            _ => {}
         }
     }
     None
@@ -449,9 +477,18 @@ pub fn resolve_latest_jcode_session_from_home(worktree: &Path) -> Option<String>
     )
 }
 
+/// Serialises Codex captures per directory, so two fresh launches in one
+/// directory never claim each other's rollout.
 #[derive(Clone, Default)]
 pub struct CodexCaptureCoordinator {
     inner: Arc<(Mutex<HashMap<PathBuf, CaptureState>>, Condvar)>,
+}
+
+impl std::fmt::Debug for CodexCaptureCoordinator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexCaptureCoordinator")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -460,6 +497,8 @@ enum CaptureState {
     Blocked(String),
 }
 
+/// One fresh Codex launch's rollout capture: the snapshot taken before Codex
+/// started, released when the capture resolves, aborts or is blocked.
 pub struct CodexCapture {
     coordinator: CodexCaptureCoordinator,
     cwd: PathBuf,
@@ -491,6 +530,10 @@ impl CodexCapture {
     /// uncaptured rather than guessing. It never waits for the other capture.
     /// The fork blocked here instead, which on upstream's launch worker would
     /// hold a tab's launch until the OTHER agent's first turn.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the rollout directory cannot be read.
     pub fn begin(cwd: impl AsRef<Path>, sessions_root: &Path) -> Result<Option<Self>> {
         Self::begin_with(capture_coordinator().clone(), cwd, sessions_root)
     }
@@ -546,6 +589,11 @@ impl CodexCapture {
         }
     }
 
+    /// Wait for the new rollout this launch writes and answer its conversation id.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the rollout directory cannot be watched or read.
     pub fn wait_for_id(
         &self,
         timeout: Option<Duration>,
@@ -629,16 +677,23 @@ impl CodexCapture {
         }
     }
 
+    /// The capture found its id: let the next capture in this directory start.
     pub fn resolve(mut self) {
         release_capture(&self.coordinator, &self.cwd);
         self.active = false;
     }
 
+    /// The launch did not happen: let the next capture in this directory start.
     pub fn abort(mut self) {
         release_capture(&self.coordinator, &self.cwd);
         self.active = false;
     }
 
+    /// Refuse further captures in this directory, saying why.
+    ///
+    /// # Panics
+    ///
+    /// Panics when another capture panicked while holding the coordinator's lock.
     pub fn block(mut self, reason: &str) {
         let (state_lock, wake) = &*self.coordinator.inner;
         let mut states = state_lock.lock().expect("Codex capture mutex poisoned");
@@ -667,7 +722,12 @@ fn codex_rollout_paths_from_events(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> 
 fn is_codex_rollout_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+        .is_some_and(|name| {
+            name.starts_with("rollout-")
+                && std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+        })
 }
 
 fn parse_codex_rollout_identity(path: PathBuf) -> Option<(String, PathBuf)> {
@@ -740,20 +800,29 @@ fn release_capture(coordinator: &CodexCaptureCoordinator, cwd: &Path) {
     wake.notify_all();
 }
 
+/// A recovered conversation id for one agent's provider.
 #[derive(Clone, Debug)]
 pub struct ProviderSessionUpdate {
+    /// The agent the id belongs to.
     pub session_id: String,
+    /// The provider the conversation is in.
     pub provider: String,
+    /// The conversation id the provider resumes by.
     pub provider_session_id: String,
 }
 
+/// What a stranded-history recovery found and did.
 #[derive(Default, Debug)]
 pub struct RecoveryReport {
+    /// The ids found, to be persisted.
     pub updates: Vec<ProviderSessionUpdate>,
+    /// How many Claude artifacts were copied into an agent's current directory.
     pub copied_artifacts: usize,
+    /// What could not be recovered, in words.
     pub warnings: Vec<String>,
 }
 
+/// One agent as the recovery matches transcripts to it.
 #[derive(Clone, Debug)]
 pub struct RecoveryIdentity {
     session_id: String,
@@ -781,6 +850,10 @@ struct RecoveryMatches {
 
 /// Recover and persist in one call: [`scan_stranded_histories`] followed by
 /// [`persist_recovered_ids`]. For callers that already own the store.
+///
+/// # Errors
+///
+/// Fails when the provider directories cannot be scanned.
 pub fn recover_stranded_histories(
     sessions: &[AgentSession],
     projects: &[Project],
@@ -797,9 +870,13 @@ pub fn recover_stranded_histories(
 /// The recovery work that touches only the provider directories: scan the
 /// transcripts, match them to agents, and copy Claude artifacts into each
 /// agent's current project directory. Safe on a worker thread because it
-/// never opens the session store (every `SessionStore::open` runs migrate(),
+/// never opens the session store (every `SessionStore::open` runs `migrate()`,
 /// which must not race the engine's own writes). The ids it finds are in
 /// `report.updates` and are NOT persisted yet: see [`persist_recovered_ids`].
+///
+/// # Errors
+///
+/// Fails when the provider directories cannot be scanned.
 pub fn scan_stranded_histories(
     identities: Vec<RecoveryIdentity>,
     worktrees_root: &Path,
@@ -1086,13 +1163,16 @@ fn parse_claude_transcript(path: PathBuf) -> Option<Transcript> {
 
 fn scan_codex_rollouts(root: &Path) -> Result<Vec<Transcript>> {
     let paths = codex_rollout_paths(root)?;
-    Ok(paths.into_iter().filter_map(parse_codex_rollout).collect())
+    Ok(paths
+        .iter()
+        .filter_map(|path| parse_codex_rollout(path))
+        .collect())
 }
 
-fn parse_codex_rollout(path: PathBuf) -> Option<Transcript> {
-    let (id, cwd) = parse_codex_rollout_identity(path.clone())?;
+fn parse_codex_rollout(path: &Path) -> Option<Transcript> {
+    let (id, cwd) = parse_codex_rollout_identity(path.to_path_buf())?;
     let mut activity_ms = None;
-    let fallback_ms = visit_jsonl(&path, |_, value| {
+    let fallback_ms = visit_jsonl(path, |_, value| {
         activity_ms = activity_ms.max(json_timestamp_ms(value));
     })
     .ok()?;
@@ -1114,8 +1194,9 @@ fn visit_jsonl(path: &Path, mut visit: impl FnMut(usize, &Value)) -> Result<i64>
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(0);
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+        });
     let mut reader = BufReader::new(File::open(path)?);
     let mut line = Vec::new();
     let mut line_index = 0;
@@ -1176,6 +1257,8 @@ fn recursive_files(root: &Path, keep: impl Fn(&Path) -> bool) -> Result<Vec<Path
     Ok(files)
 }
 
+/// The directory name Claude keeps a project's transcripts under: the path
+/// with every character but ASCII letters, digits and `-` turned into `-`.
 pub fn encode_claude_project_dir(path: &Path) -> String {
     let raw = path.to_string_lossy();
     let raw = raw
@@ -1193,6 +1276,8 @@ pub fn encode_claude_project_dir(path: &Path) -> String {
         .collect()
 }
 
+/// Whether Claude has a transcript of `session_id` for `cwd`, so a resume by id
+/// can find it.
 pub fn claude_resume_target_exists(cwd: &Path, session_id: &str) -> bool {
     let Ok(roots) = ProviderDataRoots::from_home() else {
         return false;
@@ -1387,7 +1472,9 @@ mod tests {
         std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64
+            .as_millis()
+            .try_into()
+            .unwrap()
     }
 
     /// Observed live: a lane captured at launch as one id had moved on (after
@@ -1510,15 +1597,21 @@ mod tests {
                 recorded: Some(stale),
             }]
         );
-        assert!(read_claude_live_sessions(records.path(), vec![target(Some(&live_id))]).is_empty());
+        assert_eq!(
+            read_claude_live_sessions(records.path(), vec![target(Some(&live_id))]),
+            Vec::<crate::resume_recovery::ClaudeLiveSession>::new()
+        );
         let _ = child.kill();
         let _ = child.wait();
         // Gone: no process, nothing reported even though the record is still there.
-        assert!(read_claude_live_sessions(records.path(), vec![target(None)]).is_empty());
+        assert_eq!(
+            read_claude_live_sessions(records.path(), vec![target(None)]),
+            Vec::<crate::resume_recovery::ClaudeLiveSession>::new()
+        );
     }
     use crate::model::{
-        AgentWorkspace, BranchProvenance, ManagedWorkspace, ProjectBranchStatus, ProviderKind,
-        SessionStatus,
+        AgentWorkspace, BranchProvenance, ConversationStart, ManagedWorkspace, ProjectBranchStatus,
+        ProviderKind, SessionStatus,
     };
 
     fn identity(id: &str) -> RecoveryIdentity {
@@ -1633,7 +1726,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Leading,
             path_missing: false,
@@ -2009,7 +2102,7 @@ mod tests {
                 ("session_owl_99_dd", &other.to_string_lossy(), 99),
             ],
         );
-        let big = vec![b'x'; MIN_RESUMABLE_JCODE_SESSION_BYTES as usize];
+        let big = vec![b'x'; usize::try_from(MIN_RESUMABLE_JCODE_SESSION_BYTES).unwrap()];
         fs::write(sessions.join("session_ant_30_aa.json"), b"{}").unwrap();
         fs::write(sessions.join("session_bee_20_bb.json"), &big).unwrap();
         fs::write(sessions.join("session_cow_10_cc.json"), &big).unwrap();
@@ -2055,20 +2148,31 @@ mod tests {
         )
     }
 
+    /// An agent alone in its directory; [`shared`] makes it a shared one.
     fn input<'a>(
         provider: &'a str,
         config: &'a ProviderCommandConfig,
         stored_id: Option<&'a str>,
-        shared: bool,
     ) -> ResumeIdInput<'a> {
         ResumeIdInput {
             provider,
             config,
             stored_id,
-            shared,
+            shared: false,
             directory: Path::new("/tmp/shared-project"),
             started: true,
             directory_has_sibling: false,
+        }
+    }
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "it takes the input over to hand it back marked shared"
+    )]
+    fn shared(input: ResumeIdInput<'_>) -> ResumeIdInput<'_> {
+        ResumeIdInput {
+            shared: true,
+            ..input
         }
     }
 
@@ -2090,7 +2194,7 @@ mod tests {
             &config,
             "codex",
             &ProviderSessionLaunch::ResumeId(session_id.clone()),
-            false,
+            crate::model::ConversationStart::Fresh,
             None,
             cwd,
         )
@@ -2116,7 +2220,7 @@ mod tests {
             &config,
             "claude",
             &ProviderSessionLaunch::CaptureClaude,
-            false,
+            crate::model::ConversationStart::Fresh,
             Some(&session_id),
             Path::new("/tmp/shared-project"),
         )
@@ -2134,7 +2238,7 @@ mod tests {
         let native_id = "session_cactus_1788156095921_18c33bc3e9ed4d80";
         assert_eq!(
             plan_resume_id(
-                &input("jcode", &config, Some(native_id), false),
+                &input("jcode", &config, Some(native_id)),
                 never_claude,
                 no_jcode
             ),
@@ -2145,7 +2249,7 @@ mod tests {
         // `--resume`; with no metadata for the directory the launch is fresh.
         assert_eq!(
             plan_resume_id(
-                &input("jcode", &config, Some("guppy; rm -rf /"), false),
+                &input("jcode", &config, Some("guppy; rm -rf /")),
                 never_claude,
                 no_jcode
             ),
@@ -2159,7 +2263,7 @@ mod tests {
     fn jcode_resolves_latest_only_when_alone_and_started() {
         let config = stock("jcode");
         let found = |_: &Path| Some("session_bee_20_bb".to_string());
-        let mut alone = input("jcode", &config, None, false);
+        let mut alone = input("jcode", &config, None);
         assert_eq!(
             plan_resume_id(&alone, never_claude, found),
             Some("session_bee_20_bb".to_string())
@@ -2179,21 +2283,37 @@ mod tests {
         let second_id = Uuid::new_v4().to_string();
 
         let first = plan_resume_id(
-            &input("codex", &config, Some(&first_id), true),
+            &shared(input("codex", &config, Some(&first_id))),
             never_claude,
             no_jcode,
         )
         .map(ProviderSessionLaunch::ResumeId)
         .unwrap();
         let second = plan_resume_id(
-            &input("codex", &config, Some(&second_id), true),
+            &shared(input("codex", &config, Some(&second_id))),
             never_claude,
             no_jcode,
         )
         .map(ProviderSessionLaunch::ResumeId)
         .unwrap();
-        let first_argv = launch_args(&config, "codex", &first, false, None, cwd).unwrap();
-        let second_argv = launch_args(&config, "codex", &second, false, None, cwd).unwrap();
+        let first_argv = launch_args(
+            &config,
+            "codex",
+            &first,
+            ConversationStart::Fresh,
+            None,
+            cwd,
+        )
+        .unwrap();
+        let second_argv = launch_args(
+            &config,
+            "codex",
+            &second,
+            ConversationStart::Fresh,
+            None,
+            cwd,
+        )
+        .unwrap();
         assert_ne!(first_argv, second_argv);
         assert_eq!(first_argv.get(1), Some(&first_id));
         assert_eq!(second_argv.get(1), Some(&second_id));
@@ -2205,7 +2325,7 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         assert_eq!(
             plan_resume_id(
-                &input("claude", &config, Some(&id), true),
+                &shared(input("claude", &config, Some(&id))),
                 never_claude,
                 no_jcode
             ),
@@ -2213,17 +2333,13 @@ mod tests {
         );
         // The same id in an unshared directory is trusted as stored.
         assert_eq!(
-            plan_resume_id(
-                &input("claude", &config, Some(&id), false),
-                never_claude,
-                no_jcode
-            ),
+            plan_resume_id(&input("claude", &config, Some(&id)), never_claude, no_jcode),
             Some(id.clone())
         );
         // And a shared one resumes once its transcript is there.
         assert_eq!(
             plan_resume_id(
-                &input("claude", &config, Some(&id), true),
+                &shared(input("claude", &config, Some(&id))),
                 |_, _| true,
                 no_jcode
             ),
@@ -2240,7 +2356,7 @@ mod tests {
             let config = stock(provider);
             for stored_id in [None, Some("not-a-uuid")] {
                 let planned = plan_resume_id(
-                    &input(provider, &config, stored_id, true),
+                    &shared(input(provider, &config, stored_id)),
                     never_claude,
                     no_jcode,
                 );
@@ -2251,7 +2367,7 @@ mod tests {
                     &config,
                     provider,
                     &ProviderSessionLaunch::Plain,
-                    false,
+                    ConversationStart::Fresh,
                     None,
                     Path::new("/tmp/shared-project"),
                 )
@@ -2273,7 +2389,7 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         assert_eq!(
             plan_resume_id(
-                &input("opencode", &config, Some(&id), false),
+                &input("opencode", &config, Some(&id)),
                 |_, _| true,
                 no_jcode
             ),

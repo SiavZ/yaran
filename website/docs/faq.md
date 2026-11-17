@@ -6,7 +6,8 @@ order: 100
 ---
 
 Short questions, short answers. When a topic deserves more, the answer links to the
-page that covers it in full.
+page that covers it in full. Something that looks broken may already be on
+[Known issues](/docs/known-issues), with the reason and what to do.
 
 ## Installing & platforms
 
@@ -23,23 +24,34 @@ whatever accounts they need.
 ### Does yaran phone home?
 
 yaran itself sends no telemetry. It launches local CLIs in local terminals: no
-analytics, no JSON-RPC, no background uploads. The one exception is opt-in: a machine you
-pair with [Cloud Connect](/docs/cloud-connect) talks to your own org's control plane, in
-your org's Cloudflare account, and tells it when an agent needs you.
+analytics, no JSON-RPC, no background uploads of your code.
+
+A few things do reach the network, and each is yours to switch off:
+
+- **Release notes.** After an upgrade, yaran fetches the release notes for the new version
+  from GitHub, with no account or token. `[ui] disable_release_notes = true` skips the
+  request.
+- **Pull request tracking.** If you have the `gh` CLI installed and signed in, yaran calls it
+  to read pull request status. Without `gh`, those calls never happen.
+- **Cloud Connect.** Only if you pair a machine with [Cloud Connect](/docs/cloud-connect):
+  it then talks to your own org's control plane, in your org's Cloudflare account, and
+  tells it when an agent needs you. A machine you never pair makes no such request.
 
 ## Agents & providers
 
 ### Which AI tools can I use?
 
-Claude Code, Codex, OpenCode, and Copilot are wired in out of the box, and any
+Claude Code, Codex, OpenCode, Copilot, and Grok are wired in out of the box, and any
 other CLI that runs an interactive session in a terminal can be added. See
 [Custom CLI Agents](/docs/custom-agents).
 
 ### Why was the Gemini provider removed?
 
 [Google deprecated the Gemini CLI](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/),
-so yaran does not ship it as a built-in provider. A worktree still pinned to Gemini will
-not launch: switch it to a supported provider and relaunch.
+so yaran does not ship it as a built-in provider. An untouched stock `[providers.gemini]`
+block is removed from your config on load, so a worktree still pinned to Gemini will not
+launch: switch it to a supported provider and relaunch. If you wrote your own
+`[providers.gemini]` block, yaran keeps it.
 
 ### How do I add my own CLI as an agent?
 
@@ -50,7 +62,7 @@ See [Custom CLI Agents](/docs/custom-agents).
 
 No. Focusing the agent's pane is enough: what you type goes to the agent right there in
 the windowed layout, while yaran's own shortcuts (all modifier chords) keep working.
-Fullscreen is the escape hatch for when the agent needs every key verbatim, readline
+Fullscreen is the escape hatch for when the agent needs every key, readline
 shortcuts included. The in-app help overlay shows its binding.
 
 Tab is the one exception worth naming, because it moves between panes by default. If your
@@ -62,12 +74,15 @@ way.
 ### The mouse wheel or PgUp won't scroll an agent. Why?
 
 Some agents scroll their own content, Claude Code's full-screen renderer and OpenCode
-included. yaran forwards the wheel to any agent that asked for the mouse, and
-`PgUp`/`PgDn` to one that took over the whole screen, and keeps its own scrollback for
-agents that do neither. Windowed or fullscreen makes no difference. An explicit
-`forward_scroll = true`/`false` in a `[providers.<name>]` block overrides that
-detection; delete the line to return to auto-detect. See
-[Custom CLI Agents](/docs/custom-agents).
+included. yaran detects which kind you have:
+
+- **The agent asked for the mouse:** the wheel is forwarded to it.
+- **The agent took over the whole screen:** `PgUp`/`PgDn` are forwarded to it.
+- **Neither:** yaran keeps its own scrollback.
+
+Windowed or fullscreen makes no difference. An explicit `forward_scroll = true`/`false` in
+a `[providers.<name>]` block overrides that detection; delete the line to return to
+auto-detect. See [Custom CLI Agents](/docs/custom-agents).
 
 The mobile web client behaves the same by touch: over a full-screen agent, a one-finger
 drag and the on-screen `PgUp`/`PgDn` buttons forward to the agent. The web always
@@ -77,6 +92,16 @@ auto-detects, so `forward_scroll` applies to the terminal UI only.
 
 Yes, when the `gh` CLI is installed and authenticated. See
 [Creating an agent from a GitHub PR](/docs/creating-agents#creating-an-agent-from-a-github-pr).
+
+### Does yaran work with GitLab or Bitbucket?
+
+Yes for git, no for pull requests. Cloning a project, worktrees, agents, commit, push and
+pull all work with GitLab, Bitbucket or anything else git can reach. The pull request
+features (starting an agent from a pull request, the PR banner and status pill, attaching a
+pull request) go through the `gh` CLI, so they cover GitHub, GitHub Enterprise included, and
+nothing else. Hand yaran a GitLab merge request address and it refuses, naming the host. See
+[Creating an agent from a GitHub PR](/docs/creating-agents#creating-an-agent-from-a-github-pr)
+and [The PR banner](/docs/web-git#the-pr-banner).
 
 ### Do agents step on each other?
 
@@ -112,13 +137,16 @@ it is happy under `systemd`, `tmux`, or anything else that keeps a process alive
 
 ### Is there a login?
 
-No, and that is deliberate: yaran is a single-tenant, trusted-access tool.
+An optional one: a single password for a single owner, set with
+`yaran config set server.auth.password`. There are no user accounts, so everyone who signs
+in shares the one workspace. By default it is asked of everyone except the machine yaran
+runs on and your own tailnet. See [The web password](/docs/web-login).
 
 > [!WARNING]
-> There is no password, no token, and no user accounts. Anyone who can reach the port
-> gets the whole workspace, including typing into your agents. That is why it binds
-> `127.0.0.1` by default. See
-> [the trust model](/docs/server-mode#the-trust-model-stated-plainly).
+> Until you set it there is no password at all, and anyone who can reach the port gets
+> the whole workspace, including typing into your agents. That is why yaran binds
+> `127.0.0.1` by default, and why it warns loudly when it is reachable beyond this machine
+> without one. See [Who can get in](/docs/server-mode#who-can-get-in).
 
 yaran has no login of its own. If you use [Cloud Connect](/docs/cloud-connect),
 Cloudflare Access is the login for that one machine address, and yaran double-checks it.
@@ -127,20 +155,24 @@ Cloudflare Access is the login for that one machine address, and yaran double-ch
 
 Neither. There is no yaran-run service and no yaran account to make. `yaran server` is the
 same binary serving a web UI from your own machine, over your own network, and your repos
-never leave it. Your agents' own CLIs talk to whatever AI providers they always talk to;
-yaran adds no traffic of its own. [Cloud Connect](/docs/cloud-connect) is optional, and
-runs in your own organization's Cloudflare account, not in one yaran operates.
+never leave it. Your agents' own CLIs talk to whatever AI providers they always talk to.
+yaran adds no traffic for your code; the only requests it makes itself are the ones listed
+under [Does yaran phone home?](#does-yaran-phone-home). [Cloud Connect](/docs/cloud-connect)
+is optional, and runs in your own organization's Cloudflare account, not in one yaran
+operates.
 
 ### Can I run the terminal UI and the browser at the same time?
 
-Yes. Set `serve_while_tui = true` under `[server]`, or run the
-`start-background-server` palette command, and one yaran process keeps the terminal UI in
-front of you and serves the browser behind it. One device drives a given terminal at a
-time and everybody else watches.
+Yes, two ways:
 
-If you would rather hand the terminal over than keep it, the `start-web-server` palette
-command flips a running terminal UI into serving the browser, and pressing `q` there
-hands it back. Your agents keep running through every one of these transitions. See
+- **Serve behind the terminal UI.** Set `serve_while_tui = true` under `[server]`, or run
+  the `start-background-server` palette command. One yaran process keeps the terminal UI in
+  front of you and serves the browser behind it. One device drives a given terminal at a
+  time and everybody else watches.
+- **Hand the terminal over.** The `start-web-server` palette command flips a running
+  terminal UI into serving the browser, and pressing `q` there hands it back.
+
+Your agents keep running through every one of these transitions. See
 [Three ways to serve it](/docs/server-mode#three-ways-to-serve-it).
 
 > [!IMPORTANT]
@@ -150,8 +182,9 @@ hands it back. Your agents keep running through every one of these transitions. 
 ### Can I reach it from my phone?
 
 Yes. yaran binds your Tailscale address by default, so any device on your tailnet can
-open it, and you can turn that leg on or off while yaran is serving. Read [Reaching yaran over Tailscale](/docs/tailscale) first, because there is no
-login in front of the tailnet address.
+open it, and you can turn that leg on or off while yaran is serving. Read
+[Reaching yaran over Tailscale](/docs/tailscale) first: by default your tailnet is not
+asked for a password, and a shared tailnet is wider than it sounds.
 
 There is also [a phone app](/docs/mobile-apps), with push notifications, for machines
 paired through Cloud Connect.
@@ -191,6 +224,11 @@ notifications. See [Push notifications](/docs/push-notifications).
 Yes. It stores portable intent, not secrets; env values stay as `${VAR}`
 references. See
 [environment variables and portable paths](/docs/configuration#environment-variables-and-portable-paths).
+
+The one thing to think about is the web password: the file holds only its hash, never the
+password, but anyone who can read the hash can try guesses offline. Use a long, generated
+password, and keep the repository private if you can. See
+[What the password cannot do](/docs/web-login#what-the-password-cannot-do).
 
 ### How do I see what I've changed, or get the latest defaults?
 

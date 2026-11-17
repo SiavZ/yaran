@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from "react"
 
 import { Button } from "@yaran/ui-kit/button"
+import { confirmedSameYaran } from "@/lib/authGate"
 import { readBrandedStorage } from "@/lib/brandedStorage"
 
 // yaran embeds a content-hashed JS bundle in its Rust binary, so a tab left open
@@ -11,6 +12,9 @@ import { readBrandedStorage } from "@/lib/brandedStorage"
 // The first error attempts one automatic reload to pick up the new bundle,
 // guarded so a genuinely broken page cannot loop: an auto-reload only happens
 // when none did in the last RELOAD_WINDOW_MS. Otherwise the card asks the user.
+// The chunk may also be missing because something other than this yaran answers
+// at the address now, so the reload waits until the status route confirms it
+// is this yaran: a reload must never load somebody else's page into the tab.
 const RELOAD_KEY = "yaran-chunk-reload"
 const RELOAD_WINDOW_MS = 30_000
 
@@ -44,7 +48,9 @@ export class ChunkBoundary extends Component<
     // Any caught error here is almost certainly a failed dynamic import after a
     // redeploy. Auto-reload once; if we already did recently, fall through to
     // the manual card rendered below.
-    if (tryClaimReload()) location.reload()
+    void confirmedSameYaran().then((same) => {
+      if (same && tryClaimReload()) location.reload()
+    })
   }
 
   render() {

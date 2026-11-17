@@ -31,6 +31,7 @@ use super::rule::{WatchAction, WatchBackoff, WatchBudget, WatchRule, WatchRuleKi
 
 /// High finite guard for a long-running worker session.
 pub const AUTO_CLEAR_MAX_ATTEMPTS: u32 = 10_000;
+/// The built-in clear rule's label in the watch-rules list.
 pub const AUTO_CLEAR_LABEL: &str = "auto-clear after task done";
 
 /// Default sentinel the orchestrator instructs Worker-mode agents to
@@ -85,6 +86,7 @@ pub fn auto_clear_rule_for(clear_command: &str) -> WatchRule {
 
 /// High finite guard for a long-running worker session, as for auto-clear.
 pub const AUTO_COMPACT_MAX_ATTEMPTS: u32 = 10_000;
+/// The built-in compact rule's label in the watch-rules list.
 pub const AUTO_COMPACT_LABEL: &str = "auto-compact on [compact]";
 
 /// Sentinel a Worker-mode agent emits when its context should be compacted
@@ -106,15 +108,13 @@ pub const COMPACT_COMMAND: &str = "/compact";
 /// characters are dropped: an escape byte typed into a terminal is a
 /// keystroke, not text.
 pub fn compact_command_text(instructions: Option<&str>) -> String {
-    let collapsed = instructions
-        .map(|text| {
-            let printable: String = text
-                .chars()
-                .filter(|c| !c.is_control() || c.is_whitespace())
-                .collect();
-            printable.split_whitespace().collect::<Vec<_>>().join(" ")
-        })
-        .unwrap_or_default();
+    let collapsed = instructions.map_or_default(|text| {
+        let printable: String = text
+            .chars()
+            .filter(|c| !c.is_control() || c.is_whitespace())
+            .collect();
+        printable.split_whitespace().collect::<Vec<_>>().join(" ")
+    });
     if collapsed.is_empty() {
         COMPACT_COMMAND.to_string()
     } else {
@@ -132,7 +132,9 @@ pub const MAX_COMPACT_INSTRUCTIONS_BYTES: u64 = 8 * 1024;
 /// be used, the reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactCommandLoad {
+    /// The line the rule types.
     pub command: String,
+    /// Why the file could not be used, when it could not.
     pub warning: Option<String>,
 }
 
@@ -174,7 +176,7 @@ pub fn load_compact_command(raw_path: &str) -> CompactCommandLoad {
             "compact instructions file {path} cannot be read: {err}"
         ));
     }
-    if bytes.len() as u64 > MAX_COMPACT_INSTRUCTIONS_BYTES {
+    if crate::numeric::usize_to_u64(bytes.len()) > MAX_COMPACT_INSTRUCTIONS_BYTES {
         return bare(format!(
             "compact instructions file {path} is larger than {MAX_COMPACT_INSTRUCTIONS_BYTES} bytes"
         ));
@@ -230,10 +232,8 @@ pub fn auto_compact_rule_for(command_text: &str) -> WatchRule {
 /// which is the safer failure mode than typing something destructive.
 pub fn provider_clear_command(provider: &ProviderKind) -> &'static str {
     match provider.as_str() {
-        "claude" => "/clear",
         "codex" => "/new",
-        "gemini" => "/clear",
-        "opencode" => "/clear",
+        // claude, gemini, opencode and anything unknown.
         _ => "/clear",
     }
 }
@@ -277,7 +277,7 @@ mod tests {
                 assert_eq!(text, "/clear");
                 assert!(append_enter);
             }
-            _ => panic!("expected SendText action"),
+            WatchAction::WaitUntilCapture { .. } => panic!("expected SendText action"),
         }
     }
 
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn an_oversized_instructions_file_types_a_bare_compact_and_says_why() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let big = vec![b'a'; MAX_COMPACT_INSTRUCTIONS_BYTES as usize + 1];
+        let big = vec![b'a'; usize::try_from(MAX_COMPACT_INSTRUCTIONS_BYTES).unwrap() + 1];
         let path = write_instructions(tmp.path(), &big);
         let load = load_compact_command(&path);
         assert_eq!(load.command, "/compact");
@@ -409,7 +409,7 @@ mod tests {
                 assert_eq!(text, "/compact keep the card");
                 assert!(append_enter);
             }
-            _ => panic!("expected SendText action"),
+            WatchAction::WaitUntilCapture { .. } => panic!("expected SendText action"),
         }
     }
 

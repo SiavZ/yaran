@@ -78,6 +78,15 @@ async function freshen(id, seconds, fixture = "working") {
 const composeDir = path.resolve(__dirname, "..")
 let directDocker = null
 
+// The compose project is what tells this stack's container from another one's
+// (a second stack runs under its own COMPOSE_PROJECT_NAME), so the `sg` path
+// carries it into its sub-shell explicitly, and only when set, so an unset
+// project keeps compose's own default rather than an empty string.
+function projectExport() {
+  const project = process.env.COMPOSE_PROJECT_NAME
+  return project ? `export COMPOSE_PROJECT_NAME=${JSON.stringify(project)} && ` : ""
+}
+
 function containerSh(script) {
   if (directDocker === null) {
     directDocker = spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0
@@ -90,7 +99,7 @@ function containerSh(script) {
         [
           "docker",
           "-c",
-          `cd ${JSON.stringify(composeDir)} && docker compose exec -T yaran sh -euc ${JSON.stringify(script)}`,
+          `cd ${JSON.stringify(composeDir)} && ${projectExport()}docker compose exec -T yaran sh -euc ${JSON.stringify(script)}`,
         ],
         { encoding: "utf8" },
       )
@@ -155,9 +164,58 @@ async function open({ mobile = false, width, height } = {}) {
   return { browser, page, cdp, reassert, width: w, height: h }
 }
 
-async function goto(page, hash) {
+// The preview serves with no password, so every page load opens under the red
+// no-password banner. A picture of anything else must not carry it, and the
+// banner's own Dismiss is the way a person gets rid of it (for this page load
+// only, nothing is written), so that is what every load does here. The one scene
+// that is a picture of the banner asks to keep it.
+async function goto(page, hash, { keepNoPasswordBanner = false } = {}) {
   await page.goto(BASE + "/" + (hash || ""), { waitUntil: "networkidle0", timeout: 45000 })
   await sleep(1500)
+  if (keepNoPasswordBanner) return
+  const dismissed = await page.evaluate(() => {
+    const banner = document.querySelector('[data-testid="no-auth-banner"]')
+    const button =
+      banner &&
+      [...banner.querySelectorAll("button")].find((b) => /^dismiss$/i.test((b.textContent || "").trim()))
+    if (!button) return false
+    button.click()
+    return true
+  })
+  if (dismissed) await sleep(500)
+}
+
+// Give an agent exactly `count` terminals of its own, docked under it, and hand
+// back a hook that closes the ones this added. A scene that docks terminals puts
+// the agent back afterwards, or every later shot of it grows a dock.
+async function dockTerminals(sessionId, count) {
+  const own = async () =>
+    ((await get("/api/v1/workspace")).terminals || []).filter(
+      (t) => t.owner.kind === "session" && t.owner.session_id === sessionId,
+    )
+  const before = (await own()).map((t) => t.id)
+  for (let i = before.length; i < count; i++) {
+    await api("POST", `/api/v1/sessions/${sessionId}/terminals`)
+    await sleep(800)
+  }
+  const added = (await own()).map((t) => t.id).filter((id) => !before.includes(id))
+  return async () => {
+    for (const id of added) {
+      await api("DELETE", `/api/v1/sessions/${sessionId}/terminals/${id}?force_connected=true`).catch(
+        () => {},
+      )
+    }
+  }
+}
+
+// A phone reopens an agent on the part this browser last left it on, so a
+// scene that showed one of its terminals earlier leaves the next scene on it.
+// Puts the screen back on the agent through its own switch.
+async function showAgent(page) {
+  await page.evaluate(() => {
+    const toggle = document.querySelector('[data-testid="pane-part-switch"]')
+    if (toggle && /^Show the agent/.test(toggle.getAttribute("aria-label") || "")) toggle.click()
+  })
 }
 
 // A capture opens a real connection to the PTY, so it arrives as a watcher and
@@ -182,9 +240,19 @@ async function takeOver(page) {
 }
 
 // Toasts stack over the bottom of the page and are never part of a scene.
+//
+// Hidden with a stylesheet rather than removed: the toaster's list is a node
+// React owns, and once it is gone from the page React's next attempt to drop
+// it (the last toast expiring) throws a removeChild error that takes the whole
+// app down mid-journey. A rule also covers a toast raised after this call,
+// which a one-off sweep cannot, and it lasts until the page navigates.
 async function clearToasts(page) {
   await page.evaluate(() => {
-    document.querySelectorAll("[data-sonner-toaster]").forEach((n) => n.remove())
+    if (document.getElementById("screens-hide-toasts")) return
+    const style = document.createElement("style")
+    style.id = "screens-hide-toasts"
+    style.textContent = "[data-sonner-toaster] { display: none !important; }"
+    document.head.appendChild(style)
   })
   await sleep(200)
 }
@@ -451,31 +519,59 @@ async function clickBox(page, box, label) {
   await sleep(1200)
 }
 
-// The corner's filled verb, not the Agents-header "+" that shares its label.
-async function openNewAgent(page) {
-  const box = await page.evaluate(() => {
-    const b = [...document.querySelectorAll("button")].find(
-      (x) => /^\s*New agent\s*$/.test(x.textContent || "") && x.getBoundingClientRect().width > 40,
-    )
-    if (!b) return null
-    const r = b.getBoundingClientRect()
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-  })
-  await clickBox(page, box, "New agent verb")
-}
-
-// The launcher corner's grouped ellipsis, which is the constant home of every
-// other way to create something.
-async function openMoreWays(page) {
-  const box = await page.evaluate(() => {
-    const b = [...document.querySelectorAll('[aria-label="More ways to create"]')].find(
+// The visible button a selector names, as a point to click: the corner renders
+// on the sidebar and nowhere else on a computer, so the first visible one is it.
+async function visibleButton(page, selector) {
+  return page.evaluate((sel) => {
+    const b = [...document.querySelectorAll(sel)].find(
       (x) => x.getBoundingClientRect().width > 0,
     )
     if (!b) return null
     const r = b.getBoundingClientRect()
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  }, selector)
+}
+
+// The New dialog ("Start something new"), which the collapsed rail's + opens:
+// the sidebar is collapsed first. Every scene runs in a fresh browser, so the
+// collapse does not outlive the scene.
+async function openLauncher(page) {
+  const trigger = await visibleButton(page, '[data-sidebar="trigger"]')
+  await clickBox(page, trigger, "sidebar collapse toggle")
+  const plus = await visibleButton(page, 'button[aria-label="New…"]')
+  await clickBox(page, plus, "collapsed rail's New… button")
+}
+
+// The corner's ▾ half, which opens its menu of every other way to start.
+async function openLauncherMenu(page) {
+  const box = await visibleButton(page, 'button[aria-label="More ways to start"]')
+  await clickBox(page, box, "launcher corner's ▾ half")
+}
+
+// One entry of the corner's menu, by the creation list's id, so a title that is
+// the start of another one cannot pick the wrong entry.
+async function openLauncherEntry(page, rowId) {
+  await openLauncherMenu(page)
+  const box = await page.evaluate((id) => {
+    const b = document.querySelector(`[role="menu"] [data-row-id="${id}"]`)
+    if (!b) return null
+    const r = b.getBoundingClientRect()
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  }, rowId)
+  await clickBox(page, box, `launcher menu entry ${rowId}`)
+}
+
+// The corner's main half, which opens the New agent project picker.
+async function openNewAgent(page) {
+  const box = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('[data-sidebar="footer"] button')].find(
+      (x) => x.textContent === "New agent…" && x.getBoundingClientRect().width > 0,
+    )
+    if (!b) return null
+    const r = b.getBoundingClientRect()
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
   })
-  await clickBox(page, box, "More ways to create trigger")
+  await clickBox(page, box, "launcher corner's New agent… half")
 }
 
 // --- Refusal guards --------------------------------------------------------
@@ -807,7 +903,17 @@ async function paneProblem(page, floor) {
       height: Math.round(r.height),
     }
   })
-  if (!rect) return "there is no terminal on this page for the pane guard to read"
+  if (!rect) {
+    // Say what is there instead, so a refusal names the screen it met rather
+    // than only the terminal it did not find.
+    const seen = await page.evaluate(() => {
+      const flat = (value) => (value || "").replace(/\s+/g, " ").trim()
+      const pane = document.querySelector('[data-testid="terminal-pane"]')
+      const text = flat((pane || document.querySelector("main") || document.body).innerText)
+      return `${location.hash || "(no hash)"}; ${pane ? "the pane is mounted and reads" : "no pane is mounted; the page reads"} ${JSON.stringify(text.slice(0, 300))}`
+    })
+    return `there is no terminal on this page for the pane guard to read (${seen})`
+  }
   // Wrapped rather than used as handed over: puppeteer answers with a plain
   // Uint8Array, which has none of Buffer's readers.
   const image = decodePng(Buffer.from(await page.screenshot({ clip: rect })))
@@ -910,6 +1016,7 @@ async function expectDialogOpen(page, title) {
 }
 
 module.exports = {
+  dockTerminals,
   ATTENTION_AGENT,
   ATTENTION_WORD,
   BASE,
@@ -917,7 +1024,9 @@ module.exports = {
   DEFAULT_STAGING,
   displayOrder,
   armAttention,
-  openMoreWays,
+  openLauncher,
+  openLauncherEntry,
+  openLauncherMenu,
   openNewAgent,
   containerSh,
   stage,
@@ -958,6 +1067,7 @@ module.exports = {
   setCaptureClip,
   setFixture,
   setSceneName,
+  showAgent,
   sleep,
   takeOver,
 }

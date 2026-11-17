@@ -5,6 +5,7 @@
 //! - Test-only (`#[cfg(test)]`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_consent_tests.rs
 //! ├── cloud_ingress
@@ -14,6 +15,7 @@
 //! Used by:
 //! cloud_consent_tests.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::Ordering;
@@ -243,7 +245,7 @@ async fn tampered_future_and_expired_cookies_get_the_page_and_are_not_cleared() 
             .bind(binding_input(host), Box::new(|_| {}))
             .unwrap();
         h.clock.store(c["now"].as_i64().unwrap(), Ordering::SeqCst);
-        let version = c["current_kv"].as_u64().unwrap() as u32;
+        let version = u32::try_from(c["current_kv"].as_u64().unwrap()).unwrap();
         *h.consent.0.lock().unwrap() = Some(ConsentKey {
             version,
             ..fixture_consent_key()

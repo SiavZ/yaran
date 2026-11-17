@@ -12,6 +12,21 @@
 //!   on the owner. Moving terminals to a flat collection changed what the BROWSER
 //!   receives and deliberately not these, so they re-nest each owner's terminals
 //!   through [`SessionWithTerminals`] and [`ProjectWithTerminals`].
+//! - `GET /api/v1/terminals` lists every terminal flat and owner-tagged, standalone
+//!   ones included, each with `remote_viewers`: how many browsers closing it would
+//!   be refused over, counted like an agent's. A device with any part of a row open
+//!   is attached to the whole row, so an agent's terminal counts its agent's
+//!   browsers too.
+//! - The thin reads answer from the engine at the request; the workspace document is
+//!   the last one pushed, so a client reading right after its own change reads a thin one.
+//! - `GET /api/v1/sessions` also lists, after the live agents, each agent a followed
+//!   delete is still removing, with `"removing": true` and no terminals, until the
+//!   delete's record finishes; the workspace document drops it when the delete starts.
+//! - Its live rows carry `remote_viewers`, how many browsers a change to the agent
+//!   would cut off: those with it open now and those whose socket was lost within the
+//!   presence grace (every tab of one browser profile counted once). The pushed workspace document
+//!   leaves the count out, or every attach would re-push it, and so does
+//!   `GET /api/v1/sessions/{id}`, which keeps the create replay's shape.
 //!
 //! A nested terminal entry carries a tagged `owner` field. That is additive and it
 //! is kept, not hidden behind a parallel stripped-down type: the tag says out loud
@@ -48,15 +63,38 @@ use crate::server::AppState;
 /// served. `flatten` keeps every session field exactly where it was, so this
 /// adds the array back and changes nothing else.
 #[derive(Serialize)]
-pub struct SessionWithTerminals {
+pub(crate) struct SessionWithTerminals {
     #[serde(flatten)]
     session: SessionView,
     terminals: Vec<TerminalView>,
+    /// Set only on `GET /api/v1/sessions`, for an agent a delete is still removing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    removing: bool,
+    /// Browsers with the agent's tabs or terminals open, every tab of one browser
+    /// profile counted once; present only on the live rows of `GET /api/v1/sessions`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_viewers: Option<usize>,
 }
 
 impl SessionWithTerminals {
-    pub fn new(session: SessionView, terminals: Vec<TerminalView>) -> Self {
-        Self { session, terminals }
+    pub(crate) fn new(session: SessionView, terminals: Vec<TerminalView>) -> Self {
+        Self {
+            session,
+            terminals,
+            removing: false,
+            remote_viewers: None,
+        }
+    }
+
+    /// This row with its count of browsers, read from the attachment
+    /// registry, the one record of who is attached to what.
+    fn counting_viewers(mut self, attachments: &yaran_core::attachments::Attachments) -> Self {
+        let scope = yaran_core::attachments::Scope {
+            agents: [self.session.id.clone()].into(),
+            ..Default::default()
+        };
+        self.remote_viewers = Some(attachments.remote_viewers(&scope, std::time::Instant::now()));
+        self
     }
 }
 
@@ -125,6 +163,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/projects", get(get_projects))
         .route("/api/v1/sessions", get(get_sessions))
         .route("/api/v1/sessions/{id}", get(get_session))
+        .route("/api/v1/terminals", get(get_terminals))
 }
 
 async fn get_workspace(State(state): State<AppState>) -> Response {
@@ -132,11 +171,28 @@ async fn get_workspace(State(state): State<AppState>) -> Response {
     // already a JSON string with its `rev` embedded, so it goes back raw rather than
     // being deserialized to be re-serialized. These are the exact bytes the push
     // frame carries, which is what makes the two orderable.
+    // The run clock rides in a header, outside the cached bytes, for the same
+    // reason it rides beside the pushed frame's document: the browser ages the
+    // verdicts against it.
     match state.engine.spine_json().await {
-        Some(json) => ([(header::CONTENT_TYPE, "application/json")], json).into_response(),
+        Some(json) => (
+            [
+                (header::CONTENT_TYPE, "application/json".to_string()),
+                (
+                    header::HeaderName::from_static(RUN_CLOCK_HEADER),
+                    yaran_core::tab_verdict::run_clock_seconds().to_string(),
+                ),
+            ],
+            json,
+        )
+            .into_response(),
         None => engine_unavailable(),
     }
 }
+
+/// The header `GET /api/v1/workspace` carries the server's run clock in
+/// ([`yaran_core::tab_verdict::run_clock_seconds`]), as the response was built.
+const RUN_CLOCK_HEADER: &str = "x-yaran-run-clock";
 
 async fn get_projects(State(state): State<AppState>) -> Response {
     match state.engine.spine().await {
@@ -156,6 +212,57 @@ async fn get_projects(State(state): State<AppState>) -> Response {
     }
 }
 
+/// A terminal on `GET /api/v1/terminals`, with its count of browsers.
+#[derive(Serialize)]
+struct TerminalWithViewers {
+    #[serde(flatten)]
+    terminal: TerminalView,
+    /// Browsers with the terminal's row open, every tab of one browser profile
+    /// counted once.
+    remote_viewers: usize,
+}
+
+impl TerminalWithViewers {
+    /// The terminal with the browsers attached to its row: its agent's row for
+    /// an agent's terminal, which is what closing it is judged against.
+    fn counting(
+        terminal: TerminalView,
+        attachments: &yaran_core::attachments::Attachments,
+    ) -> Self {
+        let mut scope = yaran_core::attachments::Scope {
+            ptys: [terminal.id.clone()].into(),
+            ..Default::default()
+        };
+        match &terminal.owner {
+            TerminalOwnerView::Session { session_id } => {
+                scope.agents.insert(session_id.clone());
+            }
+            TerminalOwnerView::Project { .. } | TerminalOwnerView::Standalone { .. } => {}
+        }
+        let remote_viewers = attachments.remote_viewers(&scope, std::time::Instant::now());
+        Self {
+            terminal,
+            remote_viewers,
+        }
+    }
+}
+
+/// Every terminal, flat and owner-tagged, in manual order: the one thin read
+/// that lists standalone terminals, which own nothing to nest under.
+async fn get_terminals(State(state): State<AppState>) -> Response {
+    match state.engine.spine().await {
+        Some(spine) => {
+            let terminals: Vec<TerminalWithViewers> = spine
+                .terminals
+                .into_iter()
+                .map(|terminal| TerminalWithViewers::counting(terminal, state.engine.attachments()))
+                .collect();
+            Json(terminals).into_response()
+        }
+        None => engine_unavailable(),
+    }
+}
+
 async fn get_sessions(State(state): State<AppState>) -> Response {
     match state.engine.spine().await {
         Some(spine) => {
@@ -166,8 +273,26 @@ async fn get_sessions(State(state): State<AppState>) -> Response {
                 .map(|session| {
                     let terminals = by_session.remove(&session.id).unwrap_or_default();
                     SessionWithTerminals::new(session, terminals)
+                        .counting_viewers(state.engine.attachments())
                 })
                 .collect();
+            // The agents a delete is still removing, after the live ones. An
+            // agent that is somehow still live is listed once, as live.
+            let removing: Vec<SessionWithTerminals> = state
+                .engine
+                .operations()
+                .removing_agents()
+                .into_iter()
+                .filter(|gone| !sessions.iter().any(|live| live.session.id == gone.id))
+                .map(|session| SessionWithTerminals {
+                    session,
+                    terminals: Vec::new(),
+                    removing: true,
+                    remote_viewers: None,
+                })
+                .collect();
+            let mut sessions = sessions;
+            sessions.extend(removing);
             Json(sessions).into_response()
         }
         None => engine_unavailable(),
@@ -188,5 +313,221 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
         }
         Some(None) => (StatusCode::NOT_FOUND, "unknown session").into_response(),
         None => engine_unavailable(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    use yaran_core::operations::OperationKind;
+    use yaran_core::statusline::StatusTone;
+
+    use super::*;
+
+    async fn get_json(app: &Router, uri: &str) -> serde_json::Value {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// An agent whose delete is still removing its worktree has already left
+    /// the workspace. The thin list a script reads still names it, marked as
+    /// being removed, until the delete's record finishes; the document the
+    /// browser reads does not. Every live row counts the browsers attached to
+    /// the agent, leaving out the terminal UI.
+    #[tokio::test]
+    async fn the_thin_read_lists_agents_being_removed_and_counts_remote_browsers() {
+        use yaran_core::attachments::{ConnectionFacts, Heard, Surface, Target, TargetKind};
+
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let mut engine = crate::test_support::unstarted_test_engine(tmp.path());
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("gone"));
+        let view = engine.session_view("gone").expect("a view of the agent");
+        engine.sessions.clear();
+        engine.open_operation("op-d", OperationKind::AgentDelete);
+        engine.operations.set_removing("op-d", view);
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("live"));
+        let slot = Target {
+            kind: TargetKind::Tab,
+            id: "live-slot".to_string(),
+            agent: Some("live".to_string()),
+        };
+        // e1 and e2 are two tabs of one browser; e3 named no browser.
+        let laptop = yaran_core::attachments::BrowserId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        for (connection, surface, browser) in [
+            ("e1", Surface::Browser, laptop.clone()),
+            ("e2", Surface::Browser, laptop.clone()),
+            ("e3", Surface::Browser, None),
+            (
+                yaran_core::attachments::TERMINAL_UI_CONNECTION,
+                Surface::TerminalUi,
+                None,
+            ),
+        ] {
+            engine.attachments.register(
+                connection,
+                ConnectionFacts {
+                    surface,
+                    device: None,
+                    address: None,
+                    verified: true,
+                    events: true,
+                    browser,
+                },
+                Some(Heard::now()),
+            );
+            engine
+                .attachments
+                .attach(connection, slot.clone(), Some(Heard::now()), None)
+                .unwrap();
+        }
+        // A second terminal of the agent on the same browser tab is still
+        // one browser.
+        engine
+            .attachments
+            .attach(
+                "e1",
+                Target {
+                    kind: TargetKind::Terminal,
+                    id: "live-term".to_string(),
+                    agent: Some("live".to_string()),
+                },
+                Some(Heard::now()),
+                None,
+            )
+            .unwrap();
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle.clone());
+
+        let listed = get_json(&app, "/api/v1/sessions").await;
+        let rows = listed.as_array().expect("an array");
+        assert_eq!(rows.len(), 2, "{listed}");
+        assert_eq!(rows[0]["id"], "live");
+        assert_eq!(rows[0]["remote_viewers"], 2, "{listed}");
+        assert_eq!(rows[1]["id"], "gone");
+        assert_eq!(rows[1]["removing"], true);
+        assert_eq!(rows[1]["terminals"], serde_json::json!([]));
+
+        let document = get_json(&app, "/api/v1/workspace").await;
+        let ids: Vec<&str> = document["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["live"], "{document}");
+
+        handle
+            .operations()
+            .finish("op-d", StatusTone::Info, "Deleted.", None, Instant::now());
+        let listed = get_json(&app, "/api/v1/sessions").await;
+        assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    }
+
+    /// The terminal listing counts browsers per row: one with only the agent's
+    /// tab open counts on the agent's terminal, because closing that terminal
+    /// is refused over it, and not on a standalone terminal, a row of its own.
+    #[tokio::test]
+    async fn the_terminal_listing_counts_the_browsers_of_each_terminals_row() {
+        use yaran_core::attachments::{ConnectionFacts, Heard, Surface, Target, TargetKind};
+
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let worktree = tempfile::tempdir().expect("worktree");
+        let mut engine = crate::test_support::unstarted_test_engine(tmp.path());
+        let mut agent = crate::test_support::sample_agent("live");
+        agent
+            .workspace
+            .as_managed_mut()
+            .expect("a managed agent")
+            .worktree_path = worktree.path().to_string_lossy().to_string();
+        engine.sessions.push(agent);
+        engine.config.terminal.command = "cat".to_string();
+        engine.config.terminal.args = vec![];
+        let (companion, _) = engine
+            .create_companion_terminal("live", 24, 80)
+            .expect("the agent's terminal");
+        let (standalone, _) = engine
+            .create_standalone_terminal(24, 80)
+            .expect("a standalone terminal");
+        engine.attachments.register(
+            "e1",
+            ConnectionFacts {
+                surface: Surface::Browser,
+                device: None,
+                address: None,
+                verified: true,
+                events: true,
+                browser: None,
+            },
+            Some(Heard::now()),
+        );
+        engine
+            .attachments
+            .attach(
+                "e1",
+                Target {
+                    kind: TargetKind::Tab,
+                    id: "live-slot".to_string(),
+                    agent: Some("live".to_string()),
+                },
+                Some(Heard::now()),
+                None,
+            )
+            .unwrap();
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+
+        let listed = get_json(&app, "/api/v1/terminals").await;
+        let viewers = |id: &str| {
+            listed
+                .as_array()
+                .expect("an array")
+                .iter()
+                .find(|terminal| terminal["id"] == id)
+                .map(|terminal| terminal["remote_viewers"].clone())
+        };
+        assert_eq!(viewers(&companion), Some(serde_json::json!(1)), "{listed}");
+        assert_eq!(viewers(&standalone), Some(serde_json::json!(0)), "{listed}");
+    }
+
+    /// The workspace read carries the server's run clock beside the document,
+    /// which the browser ages a verdict against.
+    #[tokio::test]
+    async fn the_workspace_read_carries_the_run_clock() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let engine = crate::test_support::unstarted_test_engine(tmp.path());
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/workspace")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let clock = resp
+            .headers()
+            .get(RUN_CLOCK_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        assert!(clock.is_some(), "{:?}", resp.headers());
     }
 }

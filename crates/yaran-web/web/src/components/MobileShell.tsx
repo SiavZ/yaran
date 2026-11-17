@@ -1,7 +1,7 @@
 import { ChevronLeft, GitPullRequest, Settings } from "lucide-react"
-import { Suspense, useState, type ReactElement, type ReactNode } from "react"
+import { Suspense, useState, type ReactElement } from "react"
 
-import { AgentNotFound } from "@/components/AgentNotFound"
+import { RouteNotFoundScreen } from "@/components/RouteNotFoundScreen"
 import { LauncherCorner } from "@/components/LauncherCorner"
 import { AppMenuSheet } from "@/components/AppMenuSheet"
 import { ChangedFiles } from "@/components/ChangedFiles"
@@ -9,29 +9,34 @@ import { ChunkBoundary } from "@/components/ChunkBoundary"
 import { LazyTerminalPane } from "@/components/LazyTerminalPane"
 import { ConnDot } from "@/components/ConnDot"
 import { AgentTabsStrip } from "@/components/AgentTabsStrip"
-import { DormantTabSurface } from "@/components/DormantTabSurface"
+import { DockStrip } from "@/components/DockStrip"
 import { FlatAgentList } from "@/components/FlatAgentList"
 import { CHIP_GLYPHS } from "@/components/headerChipGlyphs"
 import { MobileActionFlap } from "@/components/MobileActionFlap"
+import { PhoneAgentStack } from "@/components/PhoneAgentStack"
+import { agentStackModel } from "@/components/agentStackModel"
+import { PrListMenuItems } from "@/components/PrListMenu"
 import type { PaneMenuSubject } from "@/components/PaneMenu"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { TheaterChrome } from "@/components/TheaterChrome"
 import { TheaterPill } from "@/components/TheaterPill"
 import { Button } from "@yaran/ui-kit/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@yaran/ui-kit/dropdown-menu"
 import { useTheaterFlight } from "@/hooks/use-theater-flight"
 import { useChromeGesture } from "@/hooks/use-theater"
 import { usePaneCoverKnown, usePaneCoverOwned } from "@/lib/paneCover"
 import { topChromeHidden } from "@/lib/theater"
 import { flapMounted, flapVisible, pillMounted } from "@/lib/theaterFlight"
-import {
-  dormantTabNeedsCard,
-  shouldShowTabStrip,
-  slotTabIdOf,
-} from "@/lib/agentTabs"
+import { readStackMemory } from "@/lib/stackMemory"
 import { mobileHeaderLanes } from "@/lib/headerSubject"
 import { resolveInstanceTitle } from "@/lib/instanceTitle"
 import {
   navigateUp,
+  openPullRequests,
   selectSession,
   selectTerminal,
   useYaran,
@@ -41,6 +46,7 @@ import {
   prIconClass,
   prIconHoverClass,
   prStateLabel,
+  sessionPrs,
 } from "@/lib/pr"
 import type { SelectedTarget, TerminalOwnerRef } from "@/lib/store"
 import type { AgentTabView, SessionView } from "@/lib/types"
@@ -67,9 +73,9 @@ function selectTerminalAndOpen(
   selectTerminal(terminalId, owner)
 }
 
-// The hub: the shared flat agent list at touch size. Search, sort and the
-// new-agent + live in the list header; the launcher corner sits in the bottom
-// bar, the same component and size tokens as the desktop sidebar's footer.
+// The hub: the shared flat agent list at touch size. Search and sort live in
+// the list header; the launcher corner sits in the bottom bar, the same
+// component and size tokens as the desktop sidebar's footer.
 function HomeScreen() {
   const { bootstrap } = useYaran()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -337,17 +343,17 @@ interface TerminalHeaderProps {
 // of half a dozen near-identical terminals you are looking at. The actions live
 // in the flap hanging off the band below.
 //
-// The pull request stays as the compact chip, the phone's whole PR surface: one
-// tap to the review, opening the same URL every other PR control does. It
-// carries `#N` beside the glyph, as the sidebar row and the desktop banner do,
-// so the chip can be matched against the tab open in the review.
+// The pull requests stay as the compact chip, the phone's whole PR surface: one
+// tap to the review, or with several to the list of them. It carries `#N`
+// beside the glyph, as the sidebar row and the desktop banner do, so the chip
+// can be matched against the tab open in the review.
 function TerminalHeader({ session, focusedTab, projectName }: TerminalHeaderProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
       <Button
         variant="ghost"
         size="lg"
-        className="min-w-11 shrink-0"
+        className="h-10 min-w-11 shrink-0"
         aria-label="Back"
         onClick={() => navigateUp()}
       >
@@ -360,96 +366,69 @@ function TerminalHeader({ session, focusedTab, projectName }: TerminalHeaderProp
           projectName={projectName}
         />
       </div>
-      {session.pr ? (
-        <SimpleTooltip
-          content={`#${session.pr.number} · ${prStateLabel(session.pr.state)} · ${session.pr.title}`}
-        >
-          <a
-            href={session.pr.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={prAriaLabel(session.pr.number, session.pr.state)}
-            className={cn(
-              "inline-flex h-10 w-auto shrink-0 items-center justify-center gap-1 rounded-md px-2 transition-colors",
-              prIconClass(session.pr.state),
-              prIconHoverClass(session.pr.state),
-            )}
-          >
-            <GitPullRequest className="size-4 shrink-0" />
-            {/* The number is data, so it stays where this surface otherwise
-              * prefers icon-only, and the chip is content-sized rather than
-              * square. `shrink-0` makes the identity give up width first: a
-              * truncated agent name still reads, half a PR number does not. */}
-            <span className="text-xs font-medium tabular-nums">
-              #{session.pr.number}
-            </span>
-          </a>
-        </SimpleTooltip>
-      ) : null}
+      {session.pr ? <HeaderPrChip session={session} /> : null}
     </header>
   )
 }
 
-interface TerminalViewportProps {
-  target: SelectedTarget
-  focusedTab: AgentTabView | undefined
-  dormant: boolean
-  paneKey: string
-  targetId: string
-  slotTabId: string | undefined
-  overlay: ReactNode
-}
-
-function TerminalViewport({
-  target,
-  focusedTab,
-  dormant,
-  paneKey,
-  targetId,
-  slotTabId,
-  overlay,
-}: TerminalViewportProps) {
-  // Over a live terminal the overlay belongs inside the pane's own positioned
-  // box, because the compose row and the terminal keys sit under the terminal in
-  // this column. A dormant card has no input rows, so there it rides the column.
-  if (dormant && focusedTab && target.kind === "agent") {
+// The header's pull-request chip. With one pull request it is a link to it;
+// with several it reads "#418 +2" in the shown one's color and opens the list
+// of them as a bottom sheet (the shared dropdown primitive at phone width).
+function HeaderPrChip({ session }: { session: SessionView }) {
+  const shown = session.pr!
+  const prs = sessionPrs(session)
+  const chipClass = cn(
+    "inline-flex h-10 min-w-10 w-auto shrink-0 items-center justify-center gap-1 rounded-md px-2 transition-colors",
+    prIconClass(shown.state),
+    prIconHoverClass(shown.state),
+  )
+  // The number is data, so it stays where this surface otherwise prefers
+  // icon-only, and the chip is content-sized rather than square. `shrink-0`
+  // makes the identity give up width first: a truncated agent name still
+  // reads, half a PR number does not.
+  const face = (
+    <>
+      <GitPullRequest className="size-4 shrink-0" />
+      <span className="text-xs font-medium tabular-nums">
+        #{shown.number}
+        {prs.length > 1 ? ` +${prs.length - 1}` : null}
+      </span>
+    </>
+  )
+  if (prs.length > 1) {
     return (
-      <>
-        <DormantTabSurface
-          sessionId={target.sessionId}
-          tabId={focusedTab.id}
-          provider={focusedTab.provider}
-          lastRunFailed={focusedTab.last_run_failed === true}
-          lastRunVerdict={focusedTab.last_run_verdict}
-        />
-        {overlay}
-      </>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label={`${prAriaLabel(shown.number, shown.state)}, and ${prs.length - 1} more`}
+              className={chipClass}
+            />
+          }
+        >
+          {face}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <PrListMenuItems prs={prs} onManage={() => openPullRequests(session.id)} />
+        </DropdownMenuContent>
+      </DropdownMenu>
     )
   }
-
   return (
-    <ChunkBoundary>
-      <Suspense fallback={null}>
-        {target.kind === "agent" ? (
-          <LazyTerminalPane
-            key={paneKey}
-            kind="agent"
-            id={targetId}
-            sessionId={target.sessionId}
-            slotTabId={slotTabId}
-            overlay={overlay}
-          />
-        ) : (
-          <LazyTerminalPane
-            key={paneKey}
-            kind="terminal"
-            id={targetId}
-            owner={target.owner}
-            overlay={overlay}
-          />
-        )}
-      </Suspense>
-    </ChunkBoundary>
+    <SimpleTooltip
+      content={`#${shown.number} · ${prStateLabel(shown.state)} · ${shown.title}`}
+    >
+      <a
+        href={shown.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={prAriaLabel(shown.number, shown.state)}
+        className={chipClass}
+      >
+        {face}
+      </a>
+    </SimpleTooltip>
   )
 }
 
@@ -466,8 +445,10 @@ function TerminalScreen() {
   return <AgentTerminalScreen session={session} target={selectedTarget} />
 }
 
-// The agent spoke: the agent's chrome stack over its pane, with the flap and
-// the pill rendered from the ONE flight phase this screen owns.
+// The agent spoke: the agent's chrome stack over its stack, with the flap and
+// the pill rendered from the ONE flight phase this screen owns. A phone shows
+// the agent or its terminals, never both: the part the selection names, with
+// that part's strip, and the switch in the flap moves between them.
 function AgentTerminalScreen({
   session,
   target: selectedTarget,
@@ -476,85 +457,88 @@ function AgentTerminalScreen({
   target: SelectedTarget
 }) {
   const yaranState = useYaran()
-  const { spine, bootstrap, terminalEpoch, startedDormantTabs, pendingSlotTab } =
-    yaranState
+  const { spine, bootstrap, terminalEpoch } = yaranState
 
-  const targetId =
-    selectedTarget.kind === "terminal"
-      ? selectedTarget.terminalId
-      : selectedTarget.tabId
+  const model = agentStackModel({
+    target: selectedTarget,
+    session,
+    terminals: spine?.terminals ?? [],
+    stackLayouts: yaranState.stackLayouts,
+    stackTerminals: yaranState.stackTerminals,
+    stackTabs: yaranState.stackTabs,
+    memory: readStackMemory(session.id),
+    startedDormantTabs: yaranState.startedDormantTabs,
+    pendingSlotTab: yaranState.pendingSlotTab,
+    endedInViewTab: yaranState.endedInViewTab,
+    pendingTerminalOrder: yaranState.pendingTerminalOrder,
+    alwaysShowTabStrip: bootstrap?.always_show_tab_strip ?? false,
+    theater: yaranState.theater,
+    surface: "phone",
+  })
+  const shownId =
+    model.view === "terminals" && model.activeTerminal !== null
+      ? model.activeTerminal
+      : model.tabId
   // Theater's one exception, phone only (desktop has Escape): a full-pane cover
   // withholds the pill, so the header is the only way back and comes back with
   // it. Nothing writes the mode; the chrome leaves again once the cover goes.
-  const coverOwnsPane = usePaneCoverOwned(targetId)
+  const coverOwnsPane = usePaneCoverOwned(shownId)
   const chromeHidden = topChromeHidden({
     theater: yaranState.theater,
     coverOwnsPane,
   })
   // See the sibling screen: the pane's first verdict is initial state, because
   // this screen is on screen before the lazy pane it reads has resolved.
-  useChromeGesture(chromeHidden, usePaneCoverKnown(targetId))
+  useChromeGesture(chromeHidden, usePaneCoverKnown(shownId))
   const flight = useTheaterFlight(coverOwnsPane)
-  const paneKey =
-    selectedTarget.kind === "agent" ? `${targetId}:${terminalEpoch}` : targetId
-  const tabs = session.tabs ?? []
-  const focusedTab =
-    selectedTarget.kind === "agent"
-      ? tabs.find((tab) => tab.id === selectedTarget.tabId)
-      : undefined
-  const slotTabId = slotTabIdOf(session.id, session, pendingSlotTab)
   const projectName = spine?.projects.find(
     (project) => project.id === workspaceProjectId(session.workspace),
   )?.name
-  const stripShown =
-    selectedTarget.kind === "agent" &&
-    shouldShowTabStrip(tabs, bootstrap?.always_show_tab_strip ?? false)
+  // Both strips show or neither, and only the shown part's is on screen.
+  const strip = !model.stripsShown ? null : model.view === "agent" ? (
+    <AgentTabsStrip
+      session={session}
+      activeTabId={model.tabId}
+      maxTabs={bootstrap?.agent_tabs_max}
+    />
+  ) : (
+    <DockStrip
+      sessionId={session.id}
+      terminals={model.dock}
+      activeTerminal={model.activeTerminal}
+      unlisted={model.unlistedTerminal}
+    />
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      {/* The phone shell's chrome stack: the header and the tab strip, which
-        * leave together on the one flag. The actions beside them are in the flap
-        * below, which detaches into the floating pill rather than leaving.
-        * Theater is the only thing that hides them. */}
+      {/* The phone shell's chrome stack: the header and the shown part's strip,
+        * which leave together on the one flag. The actions beside them are in
+        * the flap below, which detaches into the floating pill rather than
+        * leaving. Theater is the only thing that hides them. */}
       <TheaterChrome hidden={chromeHidden}>
         <TerminalHeader
           session={session}
-          focusedTab={focusedTab}
+          focusedTab={model.tab}
           projectName={projectName}
         />
-        {stripShown ? (
-          <AgentTabsStrip
-            session={session}
-            activeTabId={selectedTarget.tabId}
-            maxTabs={bootstrap?.agent_tabs_max}
-          />
-        ) : null}
+        {strip}
       </TheaterChrome>
       <div className="relative min-h-0 flex-1">
-        {/* The flap is a sibling of the pane, not part of its overlay, which is
+        {/* The flap is a sibling of the stack, not part of its overlay, which is
           * withheld while a full-pane cover owns the terminal; under such a
           * cover it rides the returned chrome, docked rather than half flown. */}
         {flapMounted(flight) ? (
           <MobileActionFlap
             target={selectedTarget}
             subject={{ kind: "agent", session }}
-            band={stripShown ? "strip" : "plain"}
+            band={strip !== null ? "strip" : "plain"}
             hidden={!flapVisible(flight)}
           />
         ) : null}
-        <TerminalViewport
-          target={selectedTarget}
-          focusedTab={focusedTab}
-          dormant={dormantTabNeedsCard(
-            selectedTarget,
-            session,
-            focusedTab,
-            startedDormantTabs,
-            slotTabId,
-          )}
-          paneKey={paneKey}
-          targetId={targetId}
-          slotTabId={slotTabId}
+        <PhoneAgentStack
+          model={model}
+          terminalEpoch={terminalEpoch}
           overlay={
             pillMounted(flight) ? (
               <TheaterPill
@@ -571,7 +555,8 @@ function AgentTerminalScreen({
 }
 
 // The changes spoke: a slim back bar over the full-screen shared changed-files
-// pane (diffs open in the full-screen Monaco editor, not a sheet).
+// pane. A tapped file opens in the standalone editor page in this same browser
+// tab, and Back comes back here.
 function ChangesScreen() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -597,14 +582,14 @@ function ChangesScreen() {
 }
 
 // The screen the URL names, plus the one it cannot name: a route pointing at an
-// agent that no longer exists. Not-found is checked first only to stay ahead of
+// agent or a terminal that no longer exists. Not-found is checked first only to stay ahead of
 // the hub, which is the fallthrough at the bottom; it cannot compete with the
 // other branches, since `setRouteNotFound` commits the home screen in the same
 // patch and any patch carrying a target clears the flag.
 export function MobileShell() {
   const { mobileScreen, routeNotFound } = useYaran()
 
-  if (routeNotFound) return <AgentNotFound sessionId={routeNotFound.sessionId} />
+  if (routeNotFound) return <RouteNotFoundScreen missing={routeNotFound} />
   if (mobileScreen === "terminal") return <TerminalScreen />
   if (mobileScreen === "changes") return <ChangesScreen />
   return <HomeScreen />

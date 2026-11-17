@@ -45,7 +45,7 @@ function AgentEnvForm({
   async function handleSave() {
     if (savingRef.current || envError) return
     const env = parseEnv(text)
-    // No-op when unchanged (skips the request and just closes).
+    // Unchanged is an empty patch: no request, a nothing-to-save notice, close.
     const keys = Object.keys(env)
     const unchanged = keys.length === Object.keys(project.env).length
       && keys.every((key) => Object.hasOwn(project.env, key) && env[key] === project.env[key])
@@ -53,7 +53,7 @@ function AgentEnvForm({
     savingRef.current = true
     setSaving(true)
     try {
-      if (await updateProjectSettings(project.id, patch) && mounted.current) closeAgentEnv()
+      if (await updateProjectSettings(project.id, patch, "environment") && mounted.current) closeAgentEnv()
     } finally {
       savingRef.current = false
       setSaving(false)

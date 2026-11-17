@@ -20,6 +20,7 @@
 //! types into an agent reaches it directly, and an agent's own answers need
 //! no echo.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -28,7 +29,8 @@ use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 
 use super::{
-    Board, BoardSettings, BoardStore, Card, CardId, MAX_DETAIL_CHARS, Message, clean, same_person,
+    Board, BoardSettings, BoardStore, Card, CardId, MAX_DETAIL_CHARS, Message, clean_line,
+    clean_text, same_person,
 };
 use crate::bounded_command::{CommandOutcome, DEFAULT_READER_DRAIN, run_command_with_timeout};
 
@@ -40,6 +42,7 @@ pub const RELAY_TIMEOUT: Duration = Duration::from_secs(30);
 /// One message (or card) to pass to one agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelayJob {
+    /// The card the message belongs to.
     pub card: CardId,
     /// The agent handle it goes to.
     pub to: String,
@@ -62,8 +65,7 @@ impl RelayJob {
         let newest = self
             .messages
             .last()
-            .map(|(at, from, _)| format!("{}|{from}", at.timestamp_millis()))
-            .unwrap_or_default();
+            .map_or_default(|(at, from, _)| format!("{}|{from}", at.timestamp_millis()));
         format!("{}|{}|{newest}", self.card, self.card_itself)
     }
 }
@@ -71,6 +73,11 @@ impl RelayJob {
 /// Send `job` with the yaran binary at `exe` (`yaran peer send`, so it takes
 /// the route every agent message takes), then record it on the card in
 /// `store`. A send that fails records nothing, so the job is planned again.
+///
+/// # Errors
+///
+/// Fails when the send cannot run or is refused, or the card cannot be
+/// updated.
 pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) -> Result<()> {
     let mut cmd = Command::new(exe);
     cmd.arg("peer")
@@ -82,7 +89,13 @@ pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) 
         .arg(&job.to)
         .arg(&job.text);
     let label = format!("yaran peer send to {}", job.to);
-    match run_command_with_timeout(cmd, RELAY_TIMEOUT, DEFAULT_READER_DRAIN, &label) {
+    match run_command_with_timeout(
+        cmd,
+        crate::bounded_command::ChildGroup::New,
+        RELAY_TIMEOUT,
+        DEFAULT_READER_DRAIN,
+        &label,
+    ) {
         CommandOutcome::Completed(output) if output.status.success() => {}
         CommandOutcome::Completed(output) => {
             let why = crate::sanitize::for_terminal(String::from_utf8_lossy(&output.stderr).trim());
@@ -96,12 +109,18 @@ pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) 
         CommandOutcome::TimedOut => {
             bail!("{label} took longer than {}s", RELAY_TIMEOUT.as_secs())
         }
-        CommandOutcome::Failed(why) => return Err(anyhow!("could not run {label}: {why}")),
+        CommandOutcome::Failed(why) | CommandOutcome::NotFound(why) => {
+            return Err(anyhow!("could not run {label}: {why}"));
+        }
     }
     record(job, store, Utc::now())
 }
 
 /// Mark what `job` carried as relayed on its card.
+///
+/// # Errors
+///
+/// Fails when the board cannot be read or written.
 pub fn record(job: &RelayJob, store: &BoardStore, now: DateTime<Utc>) -> Result<()> {
     store.update(|board| {
         if job.card_itself {
@@ -189,7 +208,7 @@ pub fn plan(
 
 /// How a card is named to an agent: `card #G-12 [4812] "Approve it"`.
 fn card_name(card: &Card) -> String {
-    let title = clean(&card.title, 120, false).unwrap_or_default();
+    let title = clean_line(&card.title, 120).unwrap_or_default();
     format!("card {} \"{title}\"", card.label())
 }
 
@@ -233,7 +252,7 @@ fn card_text(card: &Card, person: &str, me: &str, messages: &[&Message]) -> Stri
     if let Some(detail) = card
         .detail
         .as_deref()
-        .and_then(|detail| clean(detail, RELAY_DETAIL_CHARS.min(MAX_DETAIL_CHARS), true))
+        .and_then(|detail| clean_text(detail, RELAY_DETAIL_CHARS.min(MAX_DETAIL_CHARS)))
     {
         text.push('\n');
         text.push_str(&detail);
@@ -242,11 +261,12 @@ fn card_text(card: &Card, person: &str, me: &str, messages: &[&Message]) -> Stri
         text.push_str("\nSo far on the card:\n");
         text.push_str(&message_lines(messages));
     }
-    text.push_str(&format!(
+    let _ = write!(
+        text,
         "\nTake it on and report on the card, not here: yaran board reply {id} \"...\" reaches \
          {person}; when it is finished, yaran board reply {id} --done \"what was done\". \
          yaran board show {id} prints the whole card."
-    ));
+    );
     text
 }
 
@@ -283,7 +303,7 @@ mod tests {
         board.prefix = origin[..1].to_string();
         board
             .post(
-                NewCard {
+                &NewCard {
                     kind: Some(CardKind::Confirm),
                     title: "Drop the table?".to_string(),
                     detail: Some("It is the old audit table.".to_string()),
@@ -298,19 +318,26 @@ mod tests {
             .id()
     }
 
-    fn say(board: &mut Board, id: &CardId, from: &str, side: &str, text: &str, done: bool) {
-        board
-            .reply(
-                id,
-                NewMessage {
-                    from: from.to_string(),
-                    side: Some(side.to_string()),
-                    text: text.to_string(),
-                    done,
-                },
-                at(1),
-            )
-            .unwrap();
+    fn message(from: &str, side: &str, text: &str) -> NewMessage {
+        NewMessage {
+            from: from.to_string(),
+            side: Some(side.to_string()),
+            text: text.to_string(),
+            done: false,
+        }
+    }
+
+    fn say(board: &mut Board, id: &CardId, from: &str, side: &str, text: &str) {
+        board.reply(id, &message(from, side, text), at(1)).unwrap();
+    }
+
+    /// A reply that also marks the card done.
+    fn say_done(board: &mut Board, id: &CardId, from: &str, side: &str, text: &str) {
+        let done = NewMessage {
+            done: true,
+            ..message(from, side, text)
+        };
+        board.reply(id, &done, at(1)).unwrap();
     }
 
     fn here(handle: &str) -> bool {
@@ -324,20 +351,13 @@ mod tests {
         let id = post(&mut board, "Sam", "orchestrator", "Alex");
         assert!(plan(&board, &sam, &here).is_empty(), "nothing to pass yet");
 
-        say(
-            &mut board,
-            &id,
-            "orchestrator",
-            "Sam",
-            "Asking again.",
-            false,
-        );
+        say(&mut board, &id, "orchestrator", "Sam", "Asking again.");
         assert!(
             plan(&board, &sam, &here).is_empty(),
             "this side's words are not echoed"
         );
 
-        say(&mut board, &id, "Alex", "Alex", "Yes, drop it.", true);
+        say_done(&mut board, &id, "Alex", "Alex", "Yes, drop it.");
         let jobs = plan(&board, &sam, &here);
         assert_eq!(jobs.len(), 1);
         let job = &jobs[0];
@@ -362,21 +382,17 @@ mod tests {
         // Once marked relayed it is never planned again.
         let (at, from, text) = job.messages[0].clone();
         board.mark_relayed(&id, (at, &from, &text), at).unwrap();
-        assert!(plan(&board, &sam, &here).is_empty());
+        assert_eq!(
+            plan(&board, &sam, &here),
+            Vec::<crate::human_board::relay::RelayJob>::new()
+        );
     }
 
     #[test]
     fn a_card_handed_over_goes_to_relay_to_with_its_conversation() {
         let mut board = Board::default();
         let id = post(&mut board, "Alex", "Alex", "Sam");
-        say(
-            &mut board,
-            &id,
-            "Alex",
-            "Alex",
-            "Needed before Friday.",
-            false,
-        );
+        say(&mut board, &id, "Alex", "Alex", "Needed before Friday.");
         assert!(
             plan(&board, &settings("Sam", Some("hub")), &here).is_empty(),
             "posted for Sam is a question for Sam: it waits for the person"
@@ -415,10 +431,16 @@ mod tests {
         for (at, from, text) in &job.messages {
             board.mark_relayed(&id, (*at, from, text), *at).unwrap();
         }
-        assert!(plan(&board, &sam, &here).is_empty());
+        assert_eq!(
+            plan(&board, &sam, &here),
+            Vec::<crate::human_board::relay::RelayJob>::new()
+        );
 
         // Alex's own board never relays Alex's card back to an agent there.
-        assert!(plan(&board, &settings("Alex", Some("hub")), &|_| true).is_empty());
+        assert_eq!(
+            plan(&board, &settings("Alex", Some("hub")), &|_| true),
+            Vec::<crate::human_board::relay::RelayJob>::new()
+        );
     }
 
     #[test]
@@ -430,7 +452,7 @@ mod tests {
             .update(|board| {
                 board.prefix = "S".to_string();
                 let id = post(board, "Sam", "orchestrator", "Alex");
-                say(board, &id, "Alex", "Alex", "Yes.", false);
+                say(board, &id, "Alex", "Alex", "Yes.");
                 Ok(id)
             })
             .unwrap();
@@ -463,7 +485,10 @@ mod tests {
         assert!(sent.contains("Alex answered on card #S-1"), "{sent}");
         let card = store.load().unwrap().card(&id).unwrap().clone();
         assert!(card.thread[0].relayed_at.is_some());
-        assert!(plan(&store.load().unwrap(), &settings("Sam", None), &here).is_empty());
+        assert_eq!(
+            plan(&store.load().unwrap(), &settings("Sam", None), &here),
+            Vec::<crate::human_board::relay::RelayJob>::new()
+        );
 
         // A send that fails records nothing: the job comes back next time.
         let failing = dir.path().join("failing-yaran");
@@ -471,7 +496,7 @@ mod tests {
         std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
         store
             .update(|board| {
-                say(board, &id, "Alex", "Alex", "Also: today.", false);
+                say(board, &id, "Alex", "Alex", "Also: today.");
                 Ok(())
             })
             .unwrap();
@@ -488,16 +513,22 @@ mod tests {
     fn nothing_is_relayed_when_off_or_to_an_agent_of_another_machine() {
         let mut board = Board::default();
         let id = post(&mut board, "Sam", "orchestrator", "Alex");
-        say(&mut board, &id, "Alex", "Alex", "Yes.", false);
+        say(&mut board, &id, "Alex", "Alex", "Yes.");
         let mut off = settings("Sam", None);
         off.relay = false;
-        assert!(plan(&board, &off, &here).is_empty());
+        assert_eq!(
+            plan(&board, &off, &here),
+            Vec::<crate::human_board::relay::RelayJob>::new()
+        );
         assert!(
             plan(&board, &settings("Sam", None), &|_| false).is_empty(),
             "the poster is not one of this yaran's agents"
         );
         let mut nobody = settings("Sam", None);
         nobody.me = None;
-        assert!(plan(&board, &nobody, &here).is_empty());
+        assert_eq!(
+            plan(&board, &nobody, &here),
+            Vec::<crate::human_board::relay::RelayJob>::new()
+        );
     }
 }

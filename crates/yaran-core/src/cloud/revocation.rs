@@ -8,6 +8,7 @@
 //!   and a dropped receiver is pruned).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: std
 //!
@@ -17,6 +18,7 @@
 //! ├── cloud::machine_api
 //! ├── cloud::push_link
 //! └── yaran-core[test cloud_push_emitter]
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +26,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 
 /// A raise counter plus subscribers.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RevocationSignal {
     generation: AtomicU64,
     subscribers: Mutex<Vec<Sender<u64>>>,
@@ -40,7 +42,10 @@ impl RevocationSignal {
     /// Record a revocation and notify every live subscriber with the new generation.
     pub fn raise(&self) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut subs = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subs = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.retain(|tx| tx.send(generation).is_ok());
     }
 
@@ -54,7 +59,7 @@ impl RevocationSignal {
         let (tx, rx) = mpsc::channel();
         self.subscribers
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(tx);
         rx
     }

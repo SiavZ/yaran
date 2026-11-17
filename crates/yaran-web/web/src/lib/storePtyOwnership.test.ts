@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 // The per-PTY input-ownership ledger and the server-published spine field it
 // combines with. Two sources answer "is another connection driving this
 // agent": a MOUNTED TerminalPane's live verdict ("mine"/"elsewhere", the fast
@@ -42,7 +49,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -78,6 +90,20 @@ describe("ptyOwnership ledger", () => {
     mod.noteOwnPtyConnection("7", false)
     expect(mod.getSnapshot().ownPtyConnIds).toEqual({})
     mod.noteOwnPtyConnection("ghost", false)
+    expect(mod.getSnapshot().ownPtyConnIds).toEqual({})
+  })
+})
+
+describe("noteOwnPtyConnection with two sockets of one page on one id", () => {
+  it("keeps the id while a sibling socket still holds it", async () => {
+    const mod = await import("./store")
+    const agentPane = {}
+    const dockPane = {}
+    mod.noteOwnPtyConnection("9", true, agentPane)
+    mod.noteOwnPtyConnection("9", true, dockPane)
+    mod.noteOwnPtyConnection("9", false, agentPane)
+    expect(mod.getSnapshot().ownPtyConnIds).toEqual({ "9": true })
+    mod.noteOwnPtyConnection("9", false, dockPane)
     expect(mod.getSnapshot().ownPtyConnIds).toEqual({})
   })
 })

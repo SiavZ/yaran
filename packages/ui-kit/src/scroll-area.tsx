@@ -13,6 +13,7 @@
  *
  * Used by:
  * src/scroll-area.tsx
+ * ├── web:src/components/ChangeBaseBranchDialog.tsx
  * ├── web:src/components/ChangedFiles.tsx
  * ├── web:src/components/CustomizeWebappDialog.tsx
  * ├── web:src/components/EditorBody.tsx
@@ -20,7 +21,7 @@
  * ├── web:src/components/FileTree.tsx
  * ├── web:src/components/FolderBrowseList.tsx
  * ├── web:src/components/MoveEntryDialog.tsx
- * ├── web:src/components/NewAgentPickerDialog.tsx
+ * ├── web:src/components/ProjectList.tsx
  * ├── web:src/components/StartupLogsDialog.tsx
  * └── web:src/components/WorktreesDialog.tsx
  * <module-headers:end>

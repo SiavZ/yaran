@@ -7,6 +7,7 @@
 //! - Cheap to clone; the lock is held only to copy.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/view.rs
 //! └── cloud::leg_identity
@@ -23,6 +24,7 @@
 //! ├── yaran-web::cloud_mode
 //! ├── yaran-web::cloud_mode_routes
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use std::sync::{Arc, Mutex};
@@ -33,18 +35,29 @@ use super::leg_identity::CloudMode;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CloudLegState {
+    /// Cloud Connect is off.
     #[default]
     Off,
+    /// It is on but this machine is not paired.
     Unpaired,
+    /// cloudflared is being downloaded.
     Acquiring {
+        /// How far along, when the size is known.
         pct: Option<u8>,
     },
+    /// cloudflared is starting.
     Starting,
+    /// The tunnel is up.
     Ready,
+    /// The tunnel dropped and cloudflared is reconnecting.
     Reconnecting,
+    /// yaran is asking the control plane about an Unauthorized tunnel.
     Healing,
+    /// The control plane says this machine is no longer paired.
     Revoked,
+    /// The leg stopped on an error.
     Failed,
+    /// Nothing is serving for the tunnel to forward to.
     NotServing,
 }
 
@@ -66,16 +79,22 @@ impl CloudLegState {
     }
 }
 
+/// What every surface shows about Cloud Connect.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CloudLegView {
+    /// The `[cloud] mode` setting.
     pub mode: CloudMode,
+    /// Where the leg is.
     #[serde(flatten)]
     pub state: CloudLegState,
     /// Whether the credentials name an unrevoked pairing (gates "Connect a phone…").
     #[serde(default)]
     pub paired: bool,
+    /// The machine's hostname, when paired.
     pub hostname: Option<String>,
+    /// The organization's control-plane address, when paired.
     pub org_url: Option<String>,
+    /// The organization's name, when paired.
     pub org_name: Option<String>,
     /// RFC 3339 time the state was entered.
     pub since: Option<String>,
@@ -88,13 +107,20 @@ pub struct CloudLegView {
 pub struct SharedCloudView(Arc<Mutex<CloudLegView>>);
 
 impl SharedCloudView {
+    /// The current view.
     pub fn snapshot(&self) -> CloudLegView {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Replace the snapshot; answers whether anything a surface shows changed.
     pub fn replace(&self, view: CloudLegView) -> bool {
-        let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut slot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed = *slot != view;
         *slot = view;
         changed

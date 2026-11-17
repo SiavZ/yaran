@@ -10,7 +10,8 @@
 use std::collections::HashSet;
 
 pub use crate::model::{AGENT_HANDLE_MAX_LEN, is_valid_agent_handle, normalize_agent_handle};
-pub use crate::sanitize::{amq_handle, for_terminal, truncate, utf8_lossy};
+pub use crate::sanitize::amq_handle;
+pub(crate) use crate::sanitize::{for_terminal, truncate, utf8_lossy};
 
 /// A stable handle for a session: its directory basename, else its branch,
 /// else its id, normalized. The canonical rule, with the branch optional.
@@ -20,7 +21,10 @@ pub fn derive_agent_handle(directory: &str, branch_name: Option<&str>, id: &str)
 
 /// `base` if it is free, otherwise `base-2`, `base-3`, ... within
 /// [`AGENT_HANDLE_MAX_LEN`].
-pub fn next_unique_agent_handle(base: &str, used: &HashSet<String>) -> String {
+pub fn next_unique_agent_handle<S: std::hash::BuildHasher>(
+    base: &str,
+    used: &HashSet<String, S>,
+) -> String {
     if !used.contains(base) {
         return base.to_string();
     }

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ratatui::prelude::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::{Change, ChangeTag, TextDiff};
@@ -10,16 +10,17 @@ use syntect::parsing::SyntaxSet;
 
 use crate::app::components::wrap_lines::{char_display_width, display_width};
 use crate::theme::Theme as AppTheme;
+use yaran_core::diff_comments::{DiffAnchor, DiffSide};
 use yaran_core::text::count_of;
 
 /// Cached syntax highlighting resources to avoid reloading on every diff.
-pub struct SyntaxCache {
+pub(crate) struct SyntaxCache {
     pub syntax_set: SyntaxSet,
     pub theme_set: ThemeSet,
 }
 
 impl SyntaxCache {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme_set: ThemeSet::load_defaults(),
@@ -28,15 +29,28 @@ impl SyntaxCache {
 }
 
 /// Pre-rendered diff ready for display.
-pub struct DiffOutput {
+pub(crate) struct DiffOutput {
     pub lines: Vec<Line<'static>>,
     /// Display-column width of the gutter (line numbers + separator + prefix).
     /// Zero when line numbers are disabled.
     pub gutter_width: usize,
+    /// The line each row of `lines` shows, for diff comments: `None` on a
+    /// header or a message row. The whole field is `None` for a diff yaran did
+    /// not compute itself line by line (binary, too large, git's own patch), so
+    /// no comment can be placed on it and none is judged stale against it.
+    pub anchors: Option<Vec<Option<DiffAnchor>>>,
 }
 
-fn diff_line_number_width(text_diff: &TextDiff<'_, '_, str>, enabled: bool) -> usize {
-    if !enabled {
+/// Whether a rendered diff shows line numbers (`[ui] show_diff_line_numbers`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LineNumbers {
+    /// It shows them.
+    Shown,
+    /// It does not.
+    Hidden,
+}
+fn diff_line_number_width(text_diff: &TextDiff<'_, '_, str>, numbers: LineNumbers) -> usize {
+    if numbers == LineNumbers::Hidden {
         return 0;
     }
 
@@ -101,7 +115,7 @@ fn render_change_line<'a>(
         ),
         ChangeTag::Equal => (" ", Color::Reset, None, new_highlighter),
     };
-    let content = expand_tabs(change.value().trim_end_matches('\n'), context.tab_width);
+    let line_text = expand_tabs(change.value().trim_end_matches('\n'), context.tab_width);
     let mut spans = Vec::new();
     if context.show_line_numbers {
         spans.push(Span::styled(
@@ -117,15 +131,15 @@ fn render_change_line<'a>(
     // `None` means "render this line plainly", which a skipped highlight and a
     // highlighter that could not parse the line reach by different routes and
     // want the same answer to.
-    let highlighted = if context.highlight {
+    let highlighted_spans = if context.highlight {
         highlighter
-            .highlight_line(&content, &context.cache.syntax_set)
+            .highlight_line(&line_text, &context.cache.syntax_set)
             .ok()
     } else {
         None
     };
 
-    match highlighted {
+    match highlighted_spans {
         Some(ranges) if tag == ChangeTag::Equal => {
             spans.push(Span::styled(prefix, Style::default().fg(base_fg)));
             spans.extend(
@@ -145,7 +159,7 @@ fn render_change_line<'a>(
             }));
         }
         None => spans.push(Span::styled(
-            format!("{prefix}{content}"),
+            format!("{prefix}{line_text}"),
             Style::default()
                 .fg(base_fg)
                 .bg(background.unwrap_or(Color::Reset)),
@@ -187,17 +201,22 @@ pub(crate) struct DiffAnswer {
 /// everything it renders with and the run loop keeps drawing while it works.
 pub(crate) fn spawn_diff_job(
     key: DiffRequestKey,
-    theme: AppTheme,
+    theme: &AppTheme,
     cache: std::sync::Arc<SyntaxCache>,
     tx: std::sync::mpsc::Sender<DiffAnswer>,
 ) {
+    let theme = *theme;
     std::thread::spawn(move || {
         let result = diff_file(
             Path::new(&key.worktree_path),
             &key.rel_path,
             &theme,
             &cache,
-            key.show_line_numbers,
+            if key.show_line_numbers {
+                LineNumbers::Shown
+            } else {
+                LineNumbers::Hidden
+            },
             key.tab_width,
         )
         .map_err(|error| format!("{error:#}"));
@@ -267,12 +286,93 @@ fn count_lines(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
-    let newlines = bytes.iter().filter(|byte| **byte == b'\n').count();
+    let newlines = memchr::memchr_iter(b'\n', bytes).count();
     if bytes.last() == Some(&b'\n') {
         newlines
     } else {
         newlines + 1
     }
+}
+
+/// The syntax a file is highlighted with, chosen by its extension; plain text
+/// when nothing matches.
+fn syntax_for<'c>(cache: &'c SyntaxCache, rel_path: &str) -> &'c syntect::parsing::SyntaxReference {
+    cache
+        .syntax_set
+        .find_syntax_by_extension(
+            Path::new(rel_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or(""),
+        )
+        .unwrap_or_else(|| cache.syntax_set.find_syntax_plain_text())
+}
+
+/// The `--- a/` and `+++ b/` lines a diff opens with.
+fn file_header_lines(rel_path: &str, theme: &AppTheme) -> [Line<'static>; 2] {
+    let style = Style::default()
+        .fg(theme.diff_file_header)
+        .add_modifier(Modifier::BOLD);
+    [
+        Line::from(Span::styled(format!("--- a/{rel_path}"), style)),
+        Line::from(Span::styled(format!("+++ b/{rel_path}"), style)),
+    ]
+}
+
+/// The working-tree side of a diff, read the way git sees the path.
+///
+/// Git does not follow symlinks: a path whose parent folder is now a file or
+/// a symlink, or that is now a folder itself, is deleted, and a symlink's
+/// content is its target text. Those all read as git reports them. A file
+/// that is there but cannot be read is an error, since diffing it as empty
+/// would show a deletion that never happened.
+fn working_tree_bytes(worktree_path: &Path, rel_path: &str) -> Result<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let abs_path = worktree_path.join(rel_path);
+    let mut parent = worktree_path.to_path_buf();
+    let components: Vec<_> = Path::new(rel_path).components().collect();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        parent.push(component);
+        match std::fs::symlink_metadata(&parent) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(Vec::new()),
+            Err(error) if is_absent(&error) => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("could not read {}", parent.display()));
+            }
+        }
+    }
+    let unreadable = |error: std::io::Error| {
+        Err(error).with_context(|| format!("could not read {}", abs_path.display()))
+    };
+    let meta = match std::fs::symlink_metadata(&abs_path) {
+        Ok(meta) => meta,
+        Err(error) if is_absent(&error) => return Ok(Vec::new()),
+        Err(error) => return unreadable(error),
+    };
+    if meta.is_dir() {
+        return Ok(Vec::new());
+    }
+    if meta.file_type().is_symlink() {
+        return match std::fs::read_link(&abs_path) {
+            Ok(target) => Ok(target.as_os_str().as_bytes().to_vec()),
+            Err(error) => unreadable(error),
+        };
+    }
+    match std::fs::read(&abs_path) {
+        Ok(bytes) => Ok(bytes),
+        Err(error) if is_absent(&error) => Ok(Vec::new()),
+        Err(error) => unreadable(error),
+    }
+}
+
+/// A read that failed because nothing is at the path any more.
+fn is_absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 /// Compute a syntax-highlighted, unified diff for a single file.
@@ -289,27 +389,17 @@ fn diff_file(
     rel_path: &str,
     theme: &AppTheme,
     cache: &SyntaxCache,
-    show_line_numbers: bool,
+    numbers: LineNumbers,
     diff_tab_width: u16,
 ) -> Result<DiffOutput> {
     let old_bytes = crate::git::file_bytes_at_head(worktree_path, rel_path)?.unwrap_or_default();
-    let abs_path = worktree_path.join(rel_path);
-    // Only an ABSENT working copy is a deletion. Any other read failure (a
-    // directory in the file's place, permissions, I/O) surfaces: rendering it
-    // as "every line deleted" would tell the user their file is gone (fork
-    // 24deeeee, audit03 P1-22).
-    let new_bytes = match std::fs::read(&abs_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(err) => {
-            return Err(anyhow::Error::new(err).context(format!("read {}", abs_path.display())));
-        }
-    };
+    let new_bytes = working_tree_bytes(worktree_path, rel_path)?;
 
     if old_bytes == new_bytes {
         return Ok(DiffOutput {
             lines: vec![Line::from("No changes.")],
             gutter_width: 0,
+            anchors: Some(vec![None]),
         });
     }
 
@@ -340,50 +430,33 @@ fn diff_file(
 
     let syn_theme = &cache.theme_set.themes["base16-ocean.dark"];
 
-    let syntax = cache
-        .syntax_set
-        .find_syntax_by_extension(
-            Path::new(rel_path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or(""),
-        )
-        .unwrap_or_else(|| cache.syntax_set.find_syntax_plain_text());
+    let syntax = syntax_for(cache, rel_path);
 
     let text_diff = TextDiff::from_lines(&old_text, &new_text);
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    let ln_width = diff_line_number_width(&text_diff, show_line_numbers);
+    let ln_width = diff_line_number_width(&text_diff, numbers);
 
     let gutter_style = Style::default().fg(theme.diff_line_number_fg);
     let sep_style = Style::default().fg(theme.diff_line_number_sep);
     let change_context = ChangeRenderContext {
         theme,
         cache,
-        show_line_numbers,
+        show_line_numbers: numbers == LineNumbers::Shown,
         line_number_width: ln_width,
         tab_width: diff_tab_width,
         highlight: verdict == DiffSizeVerdict::Full,
     };
 
-    // File header.
-    lines.push(Line::from(Span::styled(
-        format!("--- a/{rel_path}"),
-        Style::default()
-            .fg(theme.diff_file_header)
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!("+++ b/{rel_path}"),
-        Style::default()
-            .fg(theme.diff_file_header)
-            .add_modifier(Modifier::BOLD),
-    )));
+    lines.extend(file_header_lines(rel_path, theme));
+    // One entry per row of `lines`; headers and messages stay `None`, and the
+    // tail is padded to the full length once the rows are all in.
+    let mut anchors: Vec<Option<DiffAnchor>> = vec![None; lines.len()];
 
     for hunk in text_diff.unified_diff().context_radius(3).iter_hunks() {
         // Hunk header (@@ ... @@).
         let mut hunk_spans: Vec<Span<'static>> = Vec::new();
-        if show_line_numbers {
+        if numbers == LineNumbers::Shown {
             // Blank gutter for hunk headers.
             let blank = " ".repeat(ln_width);
             hunk_spans.push(Span::styled(format!("{blank} {blank} "), gutter_style));
@@ -394,6 +467,7 @@ fn diff_file(
             Style::default().fg(theme.diff_hunk),
         ));
         lines.push(Line::from(hunk_spans));
+        anchors.push(None);
 
         // We maintain two separate highlighters so that removed lines are
         // highlighted in the context of the old file and added/context lines
@@ -403,6 +477,7 @@ fn diff_file(
         let mut hl_new = HighlightLines::new(syntax, syn_theme);
 
         for change in hunk.iter_changes() {
+            anchors.push(change_anchor(&change, rel_path));
             lines.push(render_change_line(
                 &change,
                 &change_context,
@@ -419,15 +494,36 @@ fn diff_file(
 
     // Gutter width includes line numbers, separator, and the +/-/space prefix.
     // Layout: "{old_ln} {new_ln} │{prefix}" = 2*ln_width + 2 + 1 + 1 = 2*ln_width + 4.
-    let gutter_width = if show_line_numbers {
+    let gutter_width = if numbers == LineNumbers::Shown {
         2 * ln_width + 4
     } else {
         0
     };
 
+    anchors.resize(lines.len(), None);
     Ok(DiffOutput {
         lines,
         gutter_width,
+        anchors: Some(anchors),
+    })
+}
+
+/// The line one change row is about: a removed line counts in the old
+/// version, every other line in the new one.
+fn change_anchor(change: &Change<&str>, rel_path: &str) -> Option<DiffAnchor> {
+    let (side, index) = match change.tag() {
+        ChangeTag::Delete => (DiffSide::Old, change.old_index()?),
+        ChangeTag::Insert | ChangeTag::Equal => (DiffSide::New, change.new_index()?),
+    };
+    Some(DiffAnchor {
+        rel_path: rel_path.to_string(),
+        side,
+        line_number: index + 1,
+        line_content: change
+            .value()
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string(),
     })
 }
 
@@ -479,6 +575,7 @@ fn head_diff_output(
     DiffOutput {
         lines,
         gutter_width: 0,
+        anchors: None,
     }
 }
 
@@ -551,6 +648,7 @@ fn too_large_diff_output(
             ),
         ],
         gutter_width: 0,
+        anchors: None,
     }
 }
 
@@ -580,6 +678,7 @@ fn binary_diff_output(
             Line::from("No text diff available for binary or non-UTF-8 content."),
         ],
         gutter_width: 0,
+        anchors: None,
     }
 }
 
@@ -612,13 +711,14 @@ fn syntect_color(c: SynColor) -> Option<Color> {
     }
 }
 
-/// Expand tab characters to spaces, aligning to tab stops of the given width.
+/// Expand tab characters to spaces, aligning to tab stops of the given width,
+/// counted in display columns so a wide glyph moves the next stop by two.
 /// If `tab_width` is 0, tabs are left as-is.
 fn expand_tabs(line: &str, tab_width: u16) -> String {
     if tab_width == 0 || !line.contains('\t') {
         return line.to_string();
     }
-    let tw = tab_width as usize;
+    let tw = usize::from(tab_width);
     let mut out = String::with_capacity(line.len());
     let mut col: usize = 0;
     for ch in line.chars() {
@@ -630,7 +730,7 @@ fn expand_tabs(line: &str, tab_width: u16) -> String {
             col += spaces;
         } else {
             out.push(ch);
-            col += 1;
+            col += char_display_width(ch);
         }
     }
     out
@@ -759,22 +859,35 @@ fn find_soft_break(spans: &[Span<'static>], max_col: usize) -> Option<usize> {
 /// width with no indent. The diff pane draws only the rows in the viewport, so
 /// it needs the wrapped extent for every setting, and having one wrapper answer
 /// for both is what keeps the scroll extent and the drawn rows agreeing.
-pub fn wrap_diff_lines(
+#[cfg(test)]
+pub(crate) fn wrap_diff_lines(
     lines: &[Line<'static>],
     total_width: usize,
     gutter_width: usize,
 ) -> Vec<Line<'static>> {
+    wrap_diff_lines_with_sources(lines, total_width, gutter_width).0
+}
+
+/// [`wrap_diff_lines`], also answering which line of `lines` each wrapped row
+/// came from, so the pane can find a line's rows (the diff-comment cursor).
+pub(crate) fn wrap_diff_lines_with_sources(
+    lines: &[Line<'static>],
+    total_width: usize,
+    gutter_width: usize,
+) -> (Vec<Line<'static>>, Vec<usize>) {
     if total_width == 0 || total_width <= gutter_width {
-        return lines.to_vec();
+        return (lines.to_vec(), (0..lines.len()).collect());
     }
 
     let content_width = total_width - gutter_width;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    let mut sources: Vec<usize> = Vec::with_capacity(lines.len());
 
-    for line in lines {
+    for (source, line) in lines.iter().enumerate() {
         let line_width = line.width();
         if line_width <= total_width {
             out.push(line.clone());
+            sources.push(source);
             continue;
         }
 
@@ -817,18 +930,20 @@ pub fn wrap_diff_lines(
             };
             row_spans.extend(chunk);
             out.push(Line::from(row_spans));
+            sources.push(source);
 
             remaining = rest;
             first = false;
         }
     }
 
-    out
+    (out, sources)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use tempfile::tempdir;
 
     #[test]
@@ -873,14 +988,14 @@ mod tests {
             "image.bin",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
         let rendered = output
             .lines
             .iter()
-            .map(|line| line.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>();
 
         assert!(
@@ -922,6 +1037,9 @@ mod tests {
             .unwrap();
 
         let file = repo.join(filename);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(&file, initial).unwrap();
         yaran_core::test_git::fixture_git()
             .args(["add", filename])
@@ -939,7 +1057,10 @@ mod tests {
     }
 
     #[test]
-    fn diff_surfaces_worktree_read_errors_instead_of_rendering_deletion() {
+    /// A file replaced by a folder of the same name is a deletion of the file
+    /// as far as git is concerned (the folder is listed on its own row), so
+    /// its diff shows the old content going rather than an error.
+    fn a_file_replaced_by_a_folder_diffs_as_its_deletion() {
         let dir = setup_text_repo("not-a-file", "committed\n", "committed\n");
         std::fs::remove_file(dir.path().join("not-a-file")).unwrap();
         std::fs::create_dir(dir.path().join("not-a-file")).unwrap();
@@ -948,11 +1069,16 @@ mod tests {
             "not-a-file",
             &AppTheme::default_dark(),
             &SyntaxCache::new(),
-            false,
+            LineNumbers::Hidden,
             4,
         );
-        let err = result.err().expect("directory read must surface");
-        assert!(format!("{err:#}").contains("not-a-file"), "{err:#}");
+        let output = result.expect("the folder reads as no content");
+        let text: String = output
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(text.contains("committed"), "{text}");
     }
 
     #[test]
@@ -963,13 +1089,149 @@ mod tests {
             "same.txt",
             &AppTheme::default_dark(),
             &SyntaxCache::new(),
-            true,
+            LineNumbers::Shown,
             4,
         )
         .unwrap();
 
         assert_eq!(output.lines, vec![Line::from("No changes.")]);
         assert_eq!(output.gutter_width, 0);
+    }
+
+    #[test]
+    fn every_change_row_carries_the_line_it_is_about() {
+        let dir = setup_text_repo("notes.txt", "one\ntwo\nthree\n", "one\nTWO\nthree\nfour\n");
+        let output = working_side(dir.path(), "notes.txt").unwrap();
+        let anchors = output.anchors.expect("an in-process diff takes comments");
+        assert_eq!(anchors.len(), output.lines.len());
+        let at = |side, line_number, text: &str| DiffAnchor {
+            rel_path: "notes.txt".to_string(),
+            side,
+            line_number,
+            line_content: text.to_string(),
+        };
+        let found: Vec<DiffAnchor> = anchors.into_iter().flatten().collect();
+        assert!(
+            found.contains(&at(DiffSide::New, 1, "one")),
+            "context: {found:?}"
+        );
+        assert!(
+            found.contains(&at(DiffSide::Old, 2, "two")),
+            "removed: {found:?}"
+        );
+        assert!(
+            found.contains(&at(DiffSide::New, 2, "TWO")),
+            "added: {found:?}"
+        );
+        assert!(
+            found.contains(&at(DiffSide::New, 4, "four")),
+            "added: {found:?}"
+        );
+        let (rows, sources) = wrap_diff_lines_with_sources(&output.lines, 6, 0);
+        assert_eq!(rows.len(), sources.len());
+        assert!(sources.windows(2).all(|w| w[0] <= w[1]), "{sources:?}");
+    }
+
+    fn working_side(dir: &Path, rel_path: &str) -> Result<DiffOutput> {
+        diff_file(
+            dir,
+            rel_path,
+            &AppTheme::default_dark(),
+            &SyntaxCache::new(),
+            LineNumbers::Shown,
+            4,
+        )
+    }
+
+    fn shows_deletion_of_first(output: &DiffOutput) -> bool {
+        output
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("-first"))
+    }
+
+    #[test]
+    fn a_file_replaced_by_a_folder_diffs_as_a_deletion() {
+        let dir = setup_text_repo("swapped.txt", "first\n", "first\n");
+        let path = dir.path().join("swapped.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let output = working_side(dir.path(), "swapped.txt").expect("git says deleted");
+        assert!(shows_deletion_of_first(&output));
+    }
+
+    #[test]
+    fn a_file_under_a_folder_replaced_by_a_file_diffs_as_a_deletion() {
+        let dir = setup_text_repo("a/b.txt", "first\n", "first\n");
+        std::fs::remove_dir_all(dir.path().join("a")).unwrap();
+        std::fs::write(dir.path().join("a"), "now a file\n").unwrap();
+        let output = working_side(dir.path(), "a/b.txt").expect("git says deleted");
+        assert!(shows_deletion_of_first(&output));
+    }
+
+    #[test]
+    fn a_file_under_a_folder_replaced_by_a_symlink_diffs_as_a_deletion() {
+        let dir = setup_text_repo("a/b.txt", "first\n", "first\n");
+        let elsewhere = tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("b.txt"), "first\n").unwrap();
+        std::fs::remove_dir_all(dir.path().join("a")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("a")).unwrap();
+        let output = working_side(dir.path(), "a/b.txt").expect("git says deleted");
+        assert!(shows_deletion_of_first(&output));
+    }
+
+    #[test]
+    fn a_file_replaced_by_a_symlink_diffs_against_the_link_target_text() {
+        let dir = setup_text_repo("y.txt", "first\n", "first\n");
+        let elsewhere = tempdir().unwrap();
+        let path = dir.path().join("y.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &path).unwrap();
+        let output = working_side(dir.path(), "y.txt").expect("a typechange diffs");
+        let target = elsewhere.path().to_string_lossy().into_owned();
+        assert!(shows_deletion_of_first(&output));
+        assert!(
+            output
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains(&format!("+{target}")))
+        );
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_an_error_not_a_deletion() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = setup_text_repo("locked.txt", "first\n", "second\n");
+        let path = dir.path().join("locked.txt");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // A user that reads past permissions (root) cannot produce the failure.
+        if std::fs::read(&path).is_ok() {
+            return;
+        }
+        let result = working_side(dir.path(), "locked.txt");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn missing_working_file_still_diffs_as_a_deletion() {
+        let dir = setup_text_repo("removed.txt", "first\n", "first\n");
+        std::fs::remove_file(dir.path().join("removed.txt")).unwrap();
+        let output = diff_file(
+            dir.path(),
+            "removed.txt",
+            &AppTheme::default_dark(),
+            &SyntaxCache::new(),
+            LineNumbers::Shown,
+            4,
+        )
+        .unwrap();
+        assert!(
+            output
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("-first"))
+        );
     }
 
     #[test]
@@ -980,7 +1242,7 @@ mod tests {
             "gone.txt",
             &AppTheme::default_dark(),
             &SyntaxCache::new(),
-            true,
+            LineNumbers::Shown,
             4,
         )
         .unwrap();
@@ -1005,28 +1267,32 @@ mod tests {
             "hello.txt",
             &AppTheme::default_dark(),
             &cache,
-            true,
+            LineNumbers::Shown,
             4,
         )
         .unwrap();
-        let rendered: Vec<String> = output.lines.iter().map(|l| l.to_string()).collect();
+        let rendered: Vec<String> = output
+            .lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
 
         // Context line "aaa" should show both old and new line numbers.
         // Max line is 4, so ln_width is 1: numbers are right-aligned in 1 char.
         assert!(
             rendered
                 .iter()
-                .any(|l| l.contains("1") && l.contains("aaa")),
+                .any(|l| l.contains('1') && l.contains("aaa")),
             "expected line number 1 for context line 'aaa', got: {rendered:?}"
         );
 
         // Inserted line "XXX" should show only the new line number.
         let insert_line = rendered
             .iter()
-            .find(|l| l.contains("XXX") && l.contains("+"))
+            .find(|l| l.contains("XXX") && l.contains('+'))
             .expect("expected an inserted line containing XXX");
         assert!(
-            insert_line.contains("3"),
+            insert_line.contains('3'),
             "expected new line number 3 for inserted line, got: {insert_line}"
         );
 
@@ -1046,11 +1312,15 @@ mod tests {
             "hello.txt",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
-        let rendered: Vec<String> = output.lines.iter().map(|l| l.to_string()).collect();
+        let rendered: Vec<String> = output
+            .lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
 
         // No gutter separator should be present in any content line.
         let has_gutter = rendered.iter().any(|l| l.contains('│'));
@@ -1068,6 +1338,7 @@ mod tests {
         assert_eq!(expand_tabs("abcd\te", 4), "abcd    e");
         assert_eq!(expand_tabs("no tabs", 4), "no tabs");
         assert_eq!(expand_tabs("\t", 0), "\t");
+        assert_eq!(expand_tabs("漢\tb", 4), "漢  b");
     }
 
     #[test]
@@ -1083,11 +1354,15 @@ mod tests {
             "indent.rs",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
-        let rendered: Vec<String> = output.lines.iter().map(|l| l.to_string()).collect();
+        let rendered: Vec<String> = output
+            .lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
 
         let insert_line = rendered
             .iter()
@@ -1334,7 +1609,10 @@ mod tests {
                 3,
                 "sixty columns of content in twenty is three rows (gutter \
                  {gutter_width}): {:?}",
-                wrapped.iter().map(|l| l.to_string()).collect::<Vec<_>>()
+                wrapped
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
             );
             for row in &wrapped {
                 assert!(
@@ -1347,9 +1625,8 @@ mod tests {
             }
             let rejoined: String = wrapped
                 .iter()
-                .map(|row| row.to_string())
-                .collect::<Vec<_>>()
-                .join("")
+                .map(std::string::ToString::to_string)
+                .collect::<String>()
                 .replace("  1 │ ", "")
                 .replace("    │ ", "");
             assert_eq!(
@@ -1378,7 +1655,7 @@ mod tests {
         let line = Line::from("    indented words here supercalifragilistic tail   ");
         let wrapped: Vec<String> = wrap_diff_lines(&[line], 16, 0)
             .iter()
-            .map(|row| row.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert_eq!(
             wrapped,
@@ -1412,7 +1689,7 @@ mod tests {
             "gw.txt",
             &AppTheme::default_dark(),
             &cache,
-            true,
+            LineNumbers::Shown,
             4,
         )
         .unwrap();
@@ -1424,7 +1701,7 @@ mod tests {
             "gw.txt",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
@@ -1473,7 +1750,7 @@ mod tests {
             "small.rs",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
@@ -1508,7 +1785,7 @@ mod tests {
             "big.rs",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
@@ -1539,7 +1816,10 @@ mod tests {
         // Both sides rewritten line for line, so the pair is past the hard cap
         // AND git's own patch is far longer than the head cap.
         let lines = DIFF_REFUSE_ABOVE_LINES / 2 + 1;
-        let base: String = (0..lines).map(|i| format!("old {i}\n")).collect();
+        let base = (0..lines).fold(String::new(), |mut text, i| {
+            let _ = writeln!(text, "old {i}");
+            text
+        });
         // Every other line rewritten, so the patch interleaves its removals and
         // its additions rather than emitting one whole side before the other.
         let changed: String = (0..lines)
@@ -1559,12 +1839,16 @@ mod tests {
             "huge.txt",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
 
-        let rendered: Vec<String> = output.lines.iter().map(|line| line.to_string()).collect();
+        let rendered: Vec<String> = output
+            .lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         assert!(
             !rendered
                 .iter()
@@ -1653,12 +1937,16 @@ mod tests {
             "huge.txt",
             &AppTheme::default_dark(),
             &cache,
-            false,
+            LineNumbers::Hidden,
             4,
         )
         .unwrap();
 
-        let rendered: Vec<String> = output.lines.iter().map(|line| line.to_string()).collect();
+        let rendered: Vec<String> = output
+            .lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         assert!(
             rendered.iter().any(|line| line.starts_with("+y")),
             "got {rendered:?}"
@@ -1685,7 +1973,7 @@ mod tests {
 
         spawn_diff_job(
             key.clone(),
-            AppTheme::default_dark(),
+            &AppTheme::default_dark(),
             std::sync::Arc::new(SyntaxCache::new()),
             tx,
         );
@@ -1710,7 +1998,7 @@ mod tests {
         let rendered: Vec<String> = binary_diff_output("image.bin", 1, 2, &theme)
             .lines
             .iter()
-            .map(|line| line.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert!(rendered.iter().any(|line| line == "Old size: 1 byte"));
         assert!(rendered.iter().any(|line| line == "New size: 2 bytes"));
@@ -1718,7 +2006,7 @@ mod tests {
         let rendered: Vec<String> = too_large_diff_output("image.bin", 1, 2, &theme)
             .lines
             .iter()
-            .map(|line| line.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert!(rendered.iter().any(|line| line == "Old size: 1 byte"));
         assert!(rendered.iter().any(|line| line == "New size: 2 bytes"));

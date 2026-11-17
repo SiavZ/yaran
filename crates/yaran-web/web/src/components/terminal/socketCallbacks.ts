@@ -1,4 +1,5 @@
 import { agentTabSocketGone } from "@/lib/agentTabs"
+import { terminalSocketGone } from "@/lib/terminals"
 import type { Heartbeat } from "@/lib/heartbeat"
 import type { HandshakeOwner } from "@/lib/ptyOwnership"
 import type { PtySocket } from "@/lib/ptySocket"
@@ -37,12 +38,15 @@ type TerminalSocketCallbackOptions = {
   resetReplayWait: () => void
 }
 
+// `holder` is the socket the id was registered for: two panes of one page on
+// one row share an id, and retiring it for one must leave the other's.
 export function retireConnectionIdentity(
   connectionIdentity: ConnectionIdentity,
+  holder: unknown,
 ): boolean {
   const connectionId = connectionIdentity.read()
   if (connectionId === null) return false
-  noteOwnPtyConnection(connectionId, false)
+  noteOwnPtyConnection(connectionId, false, holder)
   connectionIdentity.write(null)
   return true
 }
@@ -71,7 +75,7 @@ export function registerTerminalSocketCallbacks(
 
   pty.onConnected = (connectionId, owner, ownerEpoch, ownerDevice) => {
     connId.write(connectionId)
-    noteOwnPtyConnection(connectionId, true)
+    noteOwnPtyConnection(connectionId, true, pty)
     seedOwnershipFromConnected(connectionId, owner, ownerEpoch, ownerDevice)
   }
 
@@ -85,7 +89,7 @@ export function registerTerminalSocketCallbacks(
   pty.onOpen = () => {
     // Each open gets a new server-side identity. The stale one must not answer
     // ownership questions while the next handshake is still in flight.
-    if (!retireConnectionIdentity(connId)) connId.write(null)
+    if (!retireConnectionIdentity(connId, pty)) connId.write(null)
     setReconnecting(false)
     noteSocketOpen()
 
@@ -99,7 +103,7 @@ export function registerTerminalSocketCallbacks(
 
   pty.onReconnecting = () => {
     setReconnecting(true)
-    retireConnectionIdentity(connId)
+    retireConnectionIdentity(connId, pty)
   }
 
   pty.onConn = (connectionState) => {
@@ -116,6 +120,17 @@ export function registerTerminalSocketCallbacks(
     pty.shouldRetry = () =>
       !agentTabSocketGone(live.current.sessionTabs, sessionId, id)
     pty.onGone = () => handleTabGone(id)
+  }
+
+  // A terminal is runtime-only, so one that is not on the spine is gone for good
+  // and its route keeps 404ing. `onGone` is left at its quiet default: the spine
+  // update that removed the terminal also prunes its selection and unmounts the
+  // pane, so there is nothing for the socket to announce.
+  if (kind === "terminal") {
+    pty.shouldRetry = () => {
+      const listed = live.current.terminalListed
+      return !terminalSocketGone(listed.now, listed.ever)
+    }
   }
 
   pty.onBeat = (sequence) => beat.noteAnswer(sequence)

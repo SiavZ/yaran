@@ -1,12 +1,17 @@
 // Scoped REST client for project mutations. Requests carry the connection id so
 // server-side operation status routes back to the caller; failures are `ProjectsApiError`.
 
+import { forceConnectedQuery } from "./attached"
 import { createJsonRequest } from "./jsonRequest"
 import type { DeleteWorktreeReply } from "./worktreeDelete"
 import type {
   AcceptedOperation,
+  BranchChoiceView,
   BranchWarningView,
+  DeleteLeftoverFolderReply,
   InspectKind,
+  LeftoverFolderWire,
+  OperationView,
   ProjectView,
   ProjectWorktreeEntryView,
   StartupLogContent,
@@ -51,15 +56,45 @@ export const projectsApi = {
     // Adopt a plain folder: `git init`, seed a starter .gitignore, empty initial
     // commit, then register. Outranks `create_initial_commit` server-side.
     init_repo?: boolean
+    // Clone this address into `path` as a new project, then start an agent
+    // there named `agent_name` (a pet name when it is blank and `random_name`
+    // is set). Outranks every other flag; answers 202 with the operation at
+    // once, or 400 with the sentence a check refused it with.
+    clone_url?: string
+    agent_name?: string
+    random_name?: boolean
+    // Clone the pull request's repository and create the agent from the pull
+    // request. The server builds the address from it and ignores `clone_url`;
+    // it outranks every other flag.
+    pull_request?: { host: string; owner_repo: string; number: number }
+    // The folder already holds a checkout of the repository: add it instead of
+    // cloning. Valid only with `pull_request`.
+    add_existing?: boolean
+    // The agreement to a review copy the dialog showed, with the reason and the
+    // copy's branch exactly as shown. Valid only with `pull_request`.
+    review_copy?: boolean
+    review_copy_reason?: string
+    review_copy_branch?: string
   }) => request<ProjectView | AcceptedOperation>("POST", "/api/v1/projects", body),
-  remove: (id: string) =>
-    request<void>("DELETE", `/api/v1/projects/${encodeURIComponent(id)}`),
-  // The destructive cascade: removes the project, its agents and their worktrees
-  // from disk, where the plain `remove` above keeps the worktrees.
-  deleteWithWorktrees: (id: string) =>
+  // The record of the operation a 202 named. The server holds the reply until
+  // the record has an outcome or `waitSeconds` pass (it caps the wait at 25).
+  operation: (opId: string, waitSeconds: number) =>
+    request<OperationView>(
+      "GET",
+      `/api/v1/operations/${encodeURIComponent(opId)}?wait_seconds=${waitSeconds}`,
+    ),
+  remove: (id: string, accepted: readonly string[] | null = null) =>
     request<void>(
       "DELETE",
-      `/api/v1/projects/${encodeURIComponent(id)}?delete_worktrees=true`,
+      `/api/v1/projects/${encodeURIComponent(id)}` + forceConnectedQuery(accepted, true),
+    ),
+  // The destructive cascade: removes the project, its agents and their worktrees
+  // from disk, where the plain `remove` above keeps the worktrees.
+  deleteWithWorktrees: (id: string, accepted: readonly string[] | null = null) =>
+    request<void>(
+      "DELETE",
+      `/api/v1/projects/${encodeURIComponent(id)}?delete_worktrees=true` +
+        forceConnectedQuery(accepted, false),
     ),
   patch: (id: string, body: PatchProjectBody) =>
     request<void>("PATCH", `/api/v1/projects/${encodeURIComponent(id)}`, body),
@@ -69,9 +104,31 @@ export const projectsApi = {
     request<void>("POST", `/api/v1/projects/${encodeURIComponent(id)}/pull`),
   checkoutDefault: (id: string) =>
     request<void>("POST", `/api/v1/projects/${encodeURIComponent(id)}/checkout-default`),
-  // List a project's managed worktrees for the "Attach worktree" picker.
+  // Every branch the project folder could switch to for "Change base branch",
+  // after one bounded fetch of origin. `fetched: false` means the origin-only
+  // branches are as last fetched, and `fetch_error` says why.
+  branches: (id: string) =>
+    request<{
+      branches: BranchChoiceView[]
+      fetched: boolean
+      fetch_error?: string
+    }>("GET", `/api/v1/projects/${encodeURIComponent(id)}/branches`),
+  // Switch the project folder to `branch` and save it as the base. Accepted at
+  // once; the outcome arrives on the status stream. A 400 carries the reason.
+  changeBaseBranch: (id: string, branch: string) =>
+    request<void>(
+      "POST",
+      `/api/v1/projects/${encodeURIComponent(id)}/base-branch`,
+      { branch },
+    ),
+  // List a project's managed worktrees for the "Attach worktree" picker, plus
+  // the left-over folders its deletes could not finish. An older server sends
+  // no `leftovers`.
   worktrees: (id: string) =>
-    request<{ entries: ProjectWorktreeEntryView[] }>(
+    request<{
+      entries: ProjectWorktreeEntryView[]
+      leftovers?: LeftoverFolderWire[]
+    }>(
       "GET",
       `/api/v1/projects/${encodeURIComponent(id)}/worktrees`,
     ),
@@ -83,6 +140,15 @@ export const projectsApi = {
     request<DeleteWorktreeReply>(
       "DELETE",
       `/api/v1/projects/${encodeURIComponent(id)}/worktrees?path=${encodeURIComponent(worktreePath)}&delete_branch=${deleteBranch}`,
+    ),
+  // Delete one left-over folder, and the kept branches named in
+  // `deleteBranches` with it. Every decided outcome, a refusal included, is a
+  // 200 whose reply says what happened; a 404 or 400 carries a plain reason.
+  deleteLeftoverFolder: (id: string, path: string, deleteBranches: string[]) =>
+    request<DeleteLeftoverFolderReply>(
+      "POST",
+      `/api/v1/projects/${encodeURIComponent(id)}/leftover-folders/delete`,
+      { path, delete_branches: deleteBranches },
     ),
   // Managed-worktree counts for every project, so the project picker can label its rows.
   worktreeCounts: () =>

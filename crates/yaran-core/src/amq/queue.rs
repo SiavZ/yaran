@@ -94,21 +94,36 @@ pub enum InjectRejection {
     /// `stat` and `read`.
     Symlink,
     /// File exceeded `[amq.inject].max_message_bytes`.
-    Oversized { actual: u64, cap: u64 },
+    Oversized {
+        /// The file's size in bytes.
+        actual: u64,
+        /// The configured cap.
+        cap: u64,
+    },
     /// Receiver dir name failed `[a-z0-9_-]+` check (or was the
     /// reserved `..` token). Means an attacker dropped a file under a
     /// crafted directory name to traverse out of the queue root.
-    BadReceiver { name: String },
+    BadReceiver {
+        /// The directory name that was refused.
+        name: String,
+    },
     /// I/O error while reading the file. The drainer leaves the file
     /// in place so the operator can recover it.
-    Io { msg: String },
+    Io {
+        /// What failed.
+        msg: String,
+    },
     /// Body contains a terminal control byte such as Ctrl-C or ESC.
     /// Injecting those into an agent PTY can interrupt the harness or
     /// corrupt its terminal state.
-    UnsafeControl { codepoint: u32 },
+    UnsafeControl {
+        /// The control character's code point.
+        codepoint: u32,
+    },
 }
 
 impl InjectRejection {
+    /// The rejection in words, for the log and the status line.
     pub fn human(&self) -> String {
         match self {
             Self::Symlink => "queue file is a symlink (refusing to follow)".to_string(),
@@ -168,12 +183,20 @@ pub fn is_valid_receiver(name: &str) -> bool {
 /// rejected entries separately so the caller can emit warnings. Does
 /// not recurse beyond the per-receiver dir — multi-level subdirectories
 /// inside a receiver are ignored on purpose (forces a flat layout).
+///
+/// # Errors
+///
+/// Fails when the queue directory cannot be listed.
 pub fn scan_queue_dir(queue_dir: &Path) -> Result<ScanOutcome> {
     scan_queue_dir_limited(queue_dir, usize::MAX)
 }
 
 /// Limited variant of [`scan_queue_dir`]. Used by the live TUI so a large
 /// AMQ backlog cannot make one scan claim/load an unbounded number of files.
+///
+/// # Errors
+///
+/// Fails when the queue directory cannot be listed.
 pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<ScanOutcome> {
     let mut by_receiver: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     let mut rejections = Vec::new();
@@ -185,17 +208,15 @@ pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<S
         Err(e) => return Err(anyhow!("read_dir({}): {e}", queue_dir.display())),
     };
     for receiver_entry in entries.flatten() {
-        let metadata = match receiver_entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
+        let Ok(metadata) = receiver_entry.file_type() else {
+            continue;
         };
         if !metadata.is_dir() {
             continue;
         }
         let name = receiver_entry.file_name();
-        let name_str = match name.to_str() {
-            Some(s) => s,
-            None => continue,
+        let Some(name_str) = name.to_str() else {
+            continue;
         };
         if !is_valid_receiver(name_str) {
             rejections.push((
@@ -207,9 +228,8 @@ pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<S
             continue;
         }
         let receiver_dir = receiver_entry.path();
-        let inner = match fs::read_dir(&receiver_dir) {
-            Ok(it) => it,
-            Err(_) => continue,
+        let Ok(inner) = fs::read_dir(&receiver_dir) else {
+            continue;
         };
         for file_entry in inner.flatten() {
             let file_name = file_entry.file_name();
@@ -219,7 +239,10 @@ pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<S
             if file_str.starts_with(INFLIGHT_PREFIX) || file_str.starts_with('.') {
                 continue;
             }
-            if !file_str.ends_with(".msg") {
+            if !std::path::Path::new(file_str)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("msg"))
+            {
                 continue;
             }
             by_receiver
@@ -267,15 +290,20 @@ pub fn scan_queue_dir_limited(queue_dir: &Path, max_messages: usize) -> Result<S
 }
 
 /// Return value of [`scan_queue_dir`].
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ScanOutcome {
+    /// The messages waiting, oldest first.
     pub messages: Vec<PendingFile>,
+    /// The files refused, with why.
     pub rejections: Vec<(PathBuf, InjectRejection)>,
 }
 
+/// One message waiting in the queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingFile {
+    /// The agent handle it is for.
     pub receiver: String,
+    /// The message file.
     pub path: PathBuf,
 }
 
@@ -284,7 +312,9 @@ pub struct PendingFile {
 /// moved to `.expired/` so a restart cannot replay an old backlog.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReclaimOutcome {
+    /// Fresh files put back in the queue.
     pub reclaimed: usize,
+    /// Stale files moved to `.expired/`.
     pub expired: usize,
 }
 
@@ -292,6 +322,10 @@ pub struct ReclaimOutcome {
 /// `.inflight.` prefix. Subsequent scans skip it; on delivery success
 /// the caller `unlink`s the in-flight path; on failure
 /// [`release`](Self::release) puts it back so the next tick retries.
+///
+/// # Errors
+///
+/// Fails when the rename fails, for example because another drainer claimed it first.
 pub fn claim(path: &Path) -> Result<PathBuf> {
     let parent = path
         .parent()
@@ -332,6 +366,10 @@ pub fn claim(path: &Path) -> Result<PathBuf> {
 /// Returns the count of files reclaimed. Errors during a single rename
 /// are logged and do not abort the sweep — a partially-stuck queue is
 /// still better than no recovery.
+///
+/// # Errors
+///
+/// Fails when the queue directory cannot be listed.
 pub fn reclaim_stale_inflight(queue_dir: &Path) -> Result<usize> {
     Ok(reclaim_stale_inflight_with_max_age(queue_dir, None)?.reclaimed)
 }
@@ -339,6 +377,10 @@ pub fn reclaim_stale_inflight(queue_dir: &Path) -> Result<usize> {
 /// Age-bounded variant of [`reclaim_stale_inflight`]. `max_age = None`
 /// preserves the legacy "reclaim everything" behaviour for tests and
 /// explicit operator escape hatches.
+///
+/// # Errors
+///
+/// Fails when the queue directory cannot be listed.
 pub fn reclaim_stale_inflight_with_max_age(
     queue_dir: &Path,
     max_age: Option<Duration>,
@@ -352,17 +394,12 @@ pub fn reclaim_stale_inflight_with_max_age(
         Err(e) => return Err(anyhow!("read_dir({}): {e}", queue_dir.display())),
     };
     for receiver_entry in entries.flatten() {
-        if !receiver_entry
-            .file_type()
-            .map(|t| t.is_dir())
-            .unwrap_or(false)
-        {
+        if !receiver_entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let receiver_dir = receiver_entry.path();
-        let inner = match fs::read_dir(&receiver_dir) {
-            Ok(it) => it,
-            Err(_) => continue,
+        let Ok(inner) = fs::read_dir(&receiver_dir) else {
+            continue;
         };
         for entry in inner.flatten() {
             let name = entry.file_name();
@@ -375,7 +412,10 @@ pub fn reclaim_stale_inflight_with_max_age(
             // Bridge-format mktemp temps don't end in `.msg`; leave
             // them alone so we don't yank a half-written file out
             // from under a concurrent bridge process.
-            if !name_str.ends_with(".msg") {
+            if !std::path::Path::new(name_str)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("msg"))
+            {
                 continue;
             }
             let original_name = &name_str[INFLIGHT_PREFIX.len()..];
@@ -389,7 +429,7 @@ pub fn reclaim_stale_inflight_with_max_age(
                             "amq: expired stale AMQ inflight instead of replaying it (from={} to={} max_age_secs={})",
                             inflight_path.display(),
                             expired_path.display(),
-                            max_age.map(|d| d.as_secs()).unwrap_or(0)
+                            max_age.map_or(0, |d| d.as_secs())
                         ));
                     }
                     Err(e) => {
@@ -451,6 +491,10 @@ pub fn reclaim_stale_inflight_with_max_age(
 /// Move old plain `<ts>.msg` files out of the live queue. This runs at
 /// startup before the initial scan so messages accumulated while yaran was
 /// offline do not flood restored panes.
+///
+/// # Errors
+///
+/// Fails when the queue directory cannot be listed.
 pub fn expire_stale_messages(queue_dir: &Path, max_age: Option<Duration>) -> Result<usize> {
     let Some(max_age) = max_age else {
         return Ok(0);
@@ -466,24 +510,23 @@ pub fn expire_stale_messages(queue_dir: &Path, max_age: Option<Duration>) -> Res
         Err(e) => return Err(anyhow!("read_dir({}): {e}", queue_dir.display())),
     };
     for receiver_entry in entries.flatten() {
-        if !receiver_entry
-            .file_type()
-            .map(|t| t.is_dir())
-            .unwrap_or(false)
-        {
+        if !receiver_entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let receiver_dir = receiver_entry.path();
-        let inner = match fs::read_dir(&receiver_dir) {
-            Ok(it) => it,
-            Err(_) => continue,
+        let Ok(inner) = fs::read_dir(&receiver_dir) else {
+            continue;
         };
         for entry in inner.flatten() {
             let name = entry.file_name();
             let Some(name_str) = name.to_str() else {
                 continue;
             };
-            if name_str.starts_with('.') || !name_str.ends_with(".msg") {
+            if name_str.starts_with('.')
+                || !std::path::Path::new(name_str)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("msg"))
+            {
                 continue;
             }
             let path = entry.path();
@@ -539,6 +582,10 @@ pub fn is_file_older_than(path: &Path, max_age: Option<Duration>, now: SystemTim
 
 /// Move a stale queue file out of the live drainer path while keeping it
 /// available for operator inspection.
+///
+/// # Errors
+///
+/// Fails when the file cannot be moved into `.expired/`.
 pub fn quarantine_expired(path: &Path) -> Result<PathBuf> {
     let parent = path
         .parent()
@@ -575,6 +622,10 @@ pub fn quarantine_expired(path: &Path) -> Result<PathBuf> {
 /// Reverse of [`claim`]: rename the in-flight back to its `.msg` form
 /// so the next scan picks it up. Used when the PTY write fails (e.g.
 /// the agent has exited between the busy-check and the write).
+///
+/// # Errors
+///
+/// Fails when the file cannot be renamed back into the queue.
 pub fn release(inflight_path: &Path) -> Result<PathBuf> {
     let parent = inflight_path
         .parent()
@@ -613,6 +664,10 @@ pub fn release(inflight_path: &Path) -> Result<PathBuf> {
 /// makes startup recovery reclaim and re-reject them forever. Keep them
 /// available for inspection under a per-receiver `.rejected/` directory
 /// that normal scans do not recurse into.
+///
+/// # Errors
+///
+/// Fails when the file cannot be moved into quarantine.
 pub fn quarantine_rejected(inflight_path: &Path) -> Result<PathBuf> {
     let parent = inflight_path
         .parent()
@@ -649,6 +704,10 @@ pub fn quarantine_rejected(inflight_path: &Path) -> Result<PathBuf> {
 /// Read and validate a queue file by path. Caller is expected to have
 /// already called [`claim`] so the path here is the `.inflight.` form.
 /// Returns the body exactly as stored. Rejects symlinks and oversized files.
+///
+/// # Errors
+///
+/// Fails with the [`InjectRejection`] the file breaks.
 pub fn read_validated(inflight_path: &Path, max_bytes: u64) -> Result<String, InjectRejection> {
     let metadata = fs::symlink_metadata(inflight_path).map_err(|e| InjectRejection::Io {
         msg: format!("stat {}: {e}", inflight_path.display()),
@@ -672,7 +731,7 @@ pub fn read_validated(inflight_path: &Path, max_bytes: u64) -> Result<String, In
         .find(|&ch| ch.is_control() && ch != '\n' && ch != '\t')
     {
         return Err(InjectRejection::UnsafeControl {
-            codepoint: ch as u32,
+            codepoint: u32::from(ch),
         });
     }
     Ok(body)
@@ -683,6 +742,10 @@ pub fn read_validated(inflight_path: &Path, max_bytes: u64) -> Result<String, In
 /// Returns the handle; dropping it stops the watcher. The polling fallback
 /// for filesystems where `notify` is lossy is the engine's loop worker
 /// (`Engine::start_amq`), which honours the engine's shutdown flag.
+///
+/// # Errors
+///
+/// Fails when the queue directory cannot be created or the thread cannot start.
 pub fn spawn_inject_watcher<E>(
     queue_dir: &Path,
     event_tx: Sender<E>,
@@ -724,7 +787,7 @@ pub fn snapshot_busy_marker<'a>(snapshot: &str, busy_markers: &'a [String]) -> O
     busy_markers
         .iter()
         .find(|marker| snapshot.contains(marker.as_str()))
-        .map(|s| s.as_str())
+        .map(std::string::String::as_str)
 }
 
 /// Boolean shorthand for [`snapshot_busy_marker`] used in tests where
@@ -786,8 +849,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let queue = dir.path().join("inject-queue");
         let outcome = scan_queue_dir(&queue).unwrap();
-        assert!(outcome.messages.is_empty());
-        assert!(outcome.rejections.is_empty());
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
+        assert_eq!(
+            outcome.rejections,
+            Vec::<(std::path::PathBuf, crate::amq::queue::InjectRejection)>::new()
+        );
     }
 
     #[test]
@@ -863,7 +932,10 @@ mod tests {
         fs::create_dir_all(&bad).unwrap();
         fs::write(bad.join("001.msg"), b"steal\n").unwrap();
         let outcome = scan_queue_dir(&queue).unwrap();
-        assert!(outcome.messages.is_empty());
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
         assert_eq!(outcome.rejections.len(), 1);
         assert!(matches!(
             outcome.rejections[0].1,
@@ -930,7 +1002,10 @@ mod tests {
         assert_eq!(rejected, receiver.join(".rejected/.inflight.001.msg"));
         assert_eq!(fs::read(&rejected).unwrap(), b"\x03\n");
         let outcome = scan_queue_dir(dir.path()).unwrap();
-        assert!(outcome.messages.is_empty());
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
     }
 
     #[test]
@@ -947,7 +1022,10 @@ mod tests {
         assert_eq!(expired, receiver.join(".expired/001.msg"));
         assert_eq!(fs::read(&expired).unwrap(), b"old wake\n");
         let outcome = scan_queue_dir(dir.path()).unwrap();
-        assert!(outcome.messages.is_empty());
+        assert_eq!(
+            outcome.messages,
+            Vec::<crate::amq::queue::PendingFile>::new()
+        );
     }
 
     #[test]
@@ -1232,17 +1310,15 @@ mod tests {
         // SAFETY: rust 2024 marks env mutation as unsafe; we only
         // touch our own var and restore it before exit. Tests in
         // this module are not parallelised against XDG.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", "/custom/xdg");
-        }
+        unsafe { std::env::set_var("XDG_DATA_HOME", "/custom/xdg") };
         let cfg = AmqInjectConfig::default();
         let resolved = resolve_queue_dir(&cfg).unwrap();
         assert_eq!(resolved, PathBuf::from("/custom/xdg/dux-amq/inject-queue"));
-        unsafe {
-            match saved {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
+        match saved {
+            // SAFETY: as above, nothing else in this test touches the variable.
+            Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+            // SAFETY: as above.
+            None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
         }
     }
 

@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 
 use super::id::normalize_prefix;
 use super::sync::SyncMode;
-use super::{BoardStore, Card, MAX_FROM_CHARS, clean, same_person};
+use super::{BoardStore, Card, MAX_FROM_CHARS, clean_line, same_person};
 use crate::config::BoardConfig;
 
 /// Shortest sync interval honoured, so a typo cannot hammer a remote.
@@ -26,13 +26,16 @@ const NOBODY: &[&str] = &[
 /// `[board]`, resolved.
 #[derive(Clone, Debug)]
 pub struct BoardSettings {
+    /// Where the board lives.
     pub store: BoardStore,
     /// The people with a queue, as configured, without blanks or repeats.
     pub people: Vec<String>,
     /// Who runs this yaran: one of `people` (in its configured spelling), or
     /// any name when `people` is empty. `None` when unset.
     pub me: Option<String>,
+    /// How the board is shared with other machines.
     pub sync: SyncMode,
+    /// How often a sync runs.
     pub sync_every: Duration,
     /// Pass replies from other people to this machine's agents (see
     /// `[board] relay`).
@@ -58,13 +61,13 @@ impl BoardSettings {
     fn resolve(config: &BoardConfig, root: &Path, home: Option<&Path>) -> Self {
         let mut people: Vec<String> = Vec::new();
         for person in &config.people {
-            if let Some(name) = clean(person, MAX_FROM_CHARS, false)
+            if let Some(name) = clean_line(person, MAX_FROM_CHARS)
                 && !people.iter().any(|known| same_person(known, &name))
             {
                 people.push(name);
             }
         }
-        let me = clean(&config.me, MAX_FROM_CHARS, false).map(|me| {
+        let me = clean_line(&config.me, MAX_FROM_CHARS).map(|me| {
             people
                 .iter()
                 .find(|person| same_person(person, &me))
@@ -111,7 +114,7 @@ impl BoardSettings {
             ));
             "auto".to_string()
         };
-        let relay_to = clean(&config.relay_to, MAX_FROM_CHARS, false);
+        let relay_to = clean_line(&config.relay_to, MAX_FROM_CHARS);
         Self {
             store,
             people,
@@ -173,12 +176,16 @@ impl BoardSettings {
     /// cleaned name when no people are configured. A name that is not one of
     /// the configured people is refused with the list, so a typo never parks a
     /// card in a queue nobody reads.
+    ///
+    /// # Errors
+    ///
+    /// Fails, naming the configured people, when the name is not one of them.
     pub fn person(&self, value: &str) -> Result<Option<String>> {
         let trimmed = value.trim();
         if NOBODY.iter().any(|word| trimmed.eq_ignore_ascii_case(word)) {
             return Ok(None);
         }
-        let Some(name) = clean(trimmed, MAX_FROM_CHARS, false) else {
+        let Some(name) = clean_line(trimmed, MAX_FROM_CHARS) else {
             bail!("--for needs a person");
         };
         if self.people.is_empty() {
@@ -198,8 +205,7 @@ impl BoardSettings {
 /// letter of `me`, upper-cased. No `me`, no prefix.
 fn default_prefix(me: Option<&str>) -> String {
     me.and_then(|me| me.chars().find(char::is_ascii_alphabetic))
-        .map(|c| c.to_ascii_uppercase().to_string())
-        .unwrap_or_default()
+        .map_or_default(|c| c.to_ascii_uppercase().to_string())
 }
 
 /// The board folder `dir` names: `~` and `~/...` start at the home directory,
@@ -236,7 +242,10 @@ mod tests {
     fn config(dir: &str, people: &[&str], me: &str, prefix: &str) -> BoardConfig {
         BoardConfig {
             dir: dir.to_string(),
-            people: people.iter().map(|p| p.to_string()).collect(),
+            people: people
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             me: me.to_string(),
             id_prefix: prefix.to_string(),
             ..BoardConfig::default()

@@ -8,6 +8,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/fingerprint.rs
 //! └── cloud::protocol::test_fixtures
@@ -18,10 +19,12 @@
 //! ├── cloud::identity
 //! ├── cloud::protocol
 //! └── cloud::protocol::handoff_consent
+//! ```
 //! <module-headers:end>
 
 use ring::digest::{SHA256, digest};
 
+/// The domain tag hashed before a machine key's bytes.
 pub const MACHINE_KEY_TAG: &str = "yaran-machine-key-v1\n";
 const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
@@ -34,13 +37,18 @@ pub fn base32(bytes: &[u8]) -> String {
         bits += 8;
         while bits >= 5 {
             bits -= 5;
-            out.push(BASE32[((acc >> bits) & 31) as usize] as char);
+            out.push(base32_digit(acc >> bits));
         }
     }
     if bits > 0 {
-        out.push(BASE32[((acc << (5 - bits)) & 31) as usize] as char);
+        out.push(base32_digit(acc << (5 - bits)));
     }
     out
+}
+
+/// The base32 digit of the low five bits of `value`.
+fn base32_digit(value: u32) -> char {
+    char::from(BASE32[usize::try_from(value & 31).unwrap_or(0)])
 }
 
 /// The 24-character undashed fingerprint.

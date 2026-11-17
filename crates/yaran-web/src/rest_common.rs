@@ -18,6 +18,14 @@
 //! The await helpers watch the dispatched operation alongside the resource, so a
 //! create that fails is answered when it fails rather than at the end of the
 //! window.
+//!
+//! A change route that takes [`OperationQuery`] answers `?operation=1` at once with
+//! [`operation_accepted`], and the real outcome is read from
+//! `GET /api/v1/operations/{id}` ([`crate::operation_routes`]); refusals answer as
+//! without it. Asked or not, such a change opens a record that holds what it changes
+//! while it runs, so a second change to the same thing is refused with a `409`
+//! naming the one in the way ([`yaran_core::operations`]); [`refusal`] tells that
+//! refusal from an invalid request.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -89,8 +97,8 @@ pub const FROM_PR_CREATE_AWAIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// stopped being the operation to watch, but not the create's verdict; the
 /// hand-off is the engine's design and this type only reports it honestly.
 #[derive(serde::Serialize)]
-pub struct Accepted {
-    pub op_id: Option<String>,
+pub(crate) struct Accepted {
+    pub(crate) op_id: Option<String>,
 }
 
 /// The class of a live WebSocket connection tracked in the [`ConnectionRegistry`].
@@ -118,99 +126,149 @@ pub enum ConnClass {
 /// every operation releases the lock without awaiting, so no guard crosses an
 /// `.await`.
 #[derive(Default)]
-pub struct ConnectionRegistry {
-    entries: Mutex<HashMap<String, ConnClass>>,
-    /// How many [`ConnClass::Events`] connections are live, maintained on every
+pub(crate) struct ConnectionRegistry {
+    entries: Mutex<HashMap<String, Entry>>,
+    /// How many distinct browsers have an Events connection open, set on every
     /// insert and remove so it can be read without the lock and from a crate that
-    /// cannot see this type: the terminal UI's serving chip counts connected
-    /// browsers and `yaran-tui` never sees `yaran-web`. Every registry has one, so the
+    /// cannot see this type: the terminal UI's serving chip and the flip's status
+    /// screen show it, and neither sees `yaran-web`. Every registry has one, so the
     /// count is never a special case.
-    events_live: Arc<AtomicUsize>,
+    browsers_live: Arc<AtomicUsize>,
+}
+
+struct Entry {
+    class: ConnClass,
+    /// What an Events connection is counted under: its browser's id, else what
+    /// the lost connection it succeeds was counted under, else its own id.
+    /// `None` for the other classes, which are never counted.
+    browser: Option<String>,
 }
 
 impl ConnectionRegistry {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// A registry that reports its live Events count into `gauge`, so a reader
-    /// outside this crate can see it. One registry per gauge: two sharing one would
-    /// each subtract from a total neither owns, and the reset below would zero a
-    /// count the other still has entries for, after which its next disconnect wraps
-    /// the `usize`.
-    pub fn with_events_gauge(gauge: Arc<AtomicUsize>) -> Self {
+    /// A registry that reports its live browser count into `gauge`, so a reader
+    /// outside this crate can see it. One registry per gauge: two sharing one
+    /// would each overwrite a total the other is also keeping.
+    pub(crate) fn with_events_gauge(gauge: Arc<AtomicUsize>) -> Self {
         debug_assert_eq!(
             gauge.load(Ordering::Relaxed),
             0,
-            "a connection registry's events gauge must be its own: this one is already counting \
+            "a connection registry's browser gauge must be its own: this one is already counting \
              somebody else's connections"
         );
         gauge.store(0, Ordering::Relaxed);
         Self {
             entries: Mutex::new(HashMap::new()),
-            events_live: gauge,
+            browsers_live: gauge,
         }
     }
 
     /// Register a live connection id with its class (called on socket upgrade).
-    pub fn insert(&self, id: String, class: ConnClass) {
-        let mut entries = self.entries.lock().unwrap();
-        let previous = entries.insert(id, class);
-        self.adjust_events_count(previous, Some(class));
+    /// An Events connection registered this way counts as a browser of its own.
+    pub(crate) fn insert(&self, id: String, class: ConnClass) {
+        let browser = (class == ConnClass::Events).then(|| format!("connection:{id}"));
+        self.put(id, Entry { class, browser });
+    }
+
+    /// Register a browser tab's Events connection, counted under `browser`, or,
+    /// when it named none, under whatever the live connection it succeeds
+    /// (`after`) is counted under, so a reconnect is not a second browser while
+    /// the lost socket waits to be reaped. The id is display-only and decides
+    /// nothing else (see [`yaran_core::attachments::BrowserId`]).
+    pub(crate) fn insert_events(
+        &self,
+        id: String,
+        browser: Option<&yaran_core::attachments::BrowserId>,
+        after: Option<&str>,
+    ) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = match browser {
+            Some(browser) => format!("browser:{}", browser.as_str()),
+            None => after
+                .and_then(|old| entries.get(old))
+                .and_then(|old| old.browser.clone())
+                .unwrap_or_else(|| format!("connection:{id}")),
+        };
+        entries.insert(
+            id,
+            Entry {
+                class: ConnClass::Events,
+                browser: Some(key),
+            },
+        );
+        self.recount(&entries);
+    }
+
+    fn put(&self, id: String, entry: Entry) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.insert(id, entry);
+        self.recount(&entries);
     }
 
     /// Deregister a connection id (called on socket disconnect), freeing its slot.
-    pub fn remove(&self, id: &str) {
-        let mut entries = self.entries.lock().unwrap();
-        let previous = entries.remove(id);
-        self.adjust_events_count(previous, None);
+    pub(crate) fn remove(&self, id: &str) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.remove(id);
+        self.recount(&entries);
     }
 
-    /// How many Events connections are live: one per open browser tab. Events
-    /// sockets only, because a tab watching a terminal has a PTY socket open beside
-    /// its Events one. Called with the entries lock held, so a concurrent insert and
-    /// remove cannot interleave into a count that drifts from the map.
-    fn adjust_events_count(&self, previous: Option<ConnClass>, current: Option<ConnClass>) {
-        let was = previous == Some(ConnClass::Events);
-        let is = current == Some(ConnClass::Events);
-        match (was, is) {
-            (false, true) => {
-                self.events_live.fetch_add(1, Ordering::Relaxed);
-            }
-            (true, false) => {
-                self.events_live.fetch_sub(1, Ordering::Relaxed);
-            }
-            // Unchanged, including the re-insert of an id that is already there.
-            // Ids are server-minted UUIDs so that should never happen, but a
-            // double count would be permanent and this costs nothing.
-            (false, false) | (true, true) => {}
-        }
+    /// Set the gauge from the map, under its lock, so a concurrent insert and
+    /// remove cannot leave a count that drifts from the map. Events sockets only,
+    /// because a tab watching a terminal has a PTY socket open beside its Events
+    /// one; a handful of entries, so counting them again each time costs nothing.
+    fn recount(&self, entries: &HashMap<String, Entry>) {
+        let browsers: std::collections::HashSet<&str> = entries
+            .values()
+            .filter(|entry| entry.class == ConnClass::Events)
+            .filter_map(|entry| entry.browser.as_deref())
+            .collect();
+        self.browsers_live.store(browsers.len(), Ordering::Relaxed);
     }
 
-    /// How many browser tabs are connected right now: the live
-    /// [`ConnClass::Events`] count.
-    pub fn events_count(&self) -> usize {
-        self.events_live.load(Ordering::Relaxed)
+    /// How many browsers are connected right now: every tab of one browser
+    /// profile counted once.
+    #[cfg(test)]
+    pub(crate) fn browsers_count(&self) -> usize {
+        self.browsers_live.load(Ordering::Relaxed)
     }
 
     /// Whether `id` is a currently-live connection.
     #[cfg(test)]
-    pub fn contains(&self, id: &str) -> bool {
+    pub(crate) fn contains(&self, id: &str) -> bool {
         self.entries.lock().unwrap().contains_key(id)
     }
 
     /// The [`ConnClass`] of a currently-live connection, or `None` if absent.
     /// Used by [`scope_from_headers`] to require that a scoped header carries
     /// a live EVENTS-class id rather than any registered id.
-    pub fn class_of(&self, id: &str) -> Option<ConnClass> {
-        self.entries.lock().unwrap().get(id).copied()
+    pub(crate) fn class_of(&self, id: &str) -> Option<ConnClass> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .map(|entry| entry.class)
     }
 
     /// Whether `id` names a connection that is still up, whatever its class.
     /// Asked by the status forwarder, which needs to know only whether the
     /// address a scoped status carries still has anybody at it.
-    pub fn is_live(&self, id: &str) -> bool {
-        self.entries.lock().unwrap().contains_key(id)
+    pub(crate) fn is_live(&self, id: &str) -> bool {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(id)
     }
 }
 
@@ -235,7 +293,10 @@ impl ConnectionRegistry {
 /// `connection.ts`/`socket.onConn`). Broadcasting in those windows is the safe
 /// default for this single-tenant tool: the initiating client still sees its toast
 /// (it shares the one workspace), and there is no per-user scoping to leak across.
-pub fn scope_from_headers(headers: &HeaderMap, registry: &ConnectionRegistry) -> StatusScope {
+pub(crate) fn scope_from_headers(
+    headers: &HeaderMap,
+    registry: &ConnectionRegistry,
+) -> StatusScope {
     headers
         .get(CONNECTION_ID_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -246,8 +307,9 @@ pub fn scope_from_headers(headers: &HeaderMap, registry: &ConnectionRegistry) ->
         // Only EVENTS-class connections are ever disclosed to clients; a PTY-class
         // id in the header must not scope-and-silence toasts.
         .filter(|id| registry.class_of(id) == Some(ConnClass::Events))
-        .map(|id| StatusScope::Connection(id.to_string()))
-        .unwrap_or(StatusScope::All)
+        .map_or(StatusScope::All, |id| {
+            StatusScope::Connection(id.to_string())
+        })
 }
 
 /// 404 response for an unknown or over-length session id. Shared across the REST
@@ -266,6 +328,17 @@ pub(crate) fn outcome_is_error(outcome: &WireCommandOutcome) -> bool {
         .is_some_and(|status| status.tone == "error")
 }
 
+/// Answer an engine refusal: `409` when another change still holds what this
+/// one wanted ([`yaran_core::operations::is_in_the_way`]), else `otherwise`.
+pub(crate) fn refusal(error: String, otherwise: StatusCode) -> Response {
+    let status = if yaran_core::operations::is_in_the_way(&error) {
+        StatusCode::CONFLICT
+    } else {
+        otherwise
+    };
+    (status, error).into_response()
+}
+
 /// Map a delete command's accepted, soft-refused, and hard-error outcomes.
 pub(crate) fn delete_wire_response(result: Result<WireCommandOutcome, String>) -> Response {
     match result {
@@ -275,7 +348,226 @@ pub(crate) fn delete_wire_response(result: Result<WireCommandOutcome, String>) -
             }
             _ => StatusCode::NO_CONTENT.into_response(),
         },
-        Err(error) => (StatusCode::BAD_REQUEST, error).into_response(),
+        Err(error) => refusal(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// `?operation=1` on a change route (see the module doc); absent or `0`, the route
+/// gives its usual reply.
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct OperationQuery {
+    #[serde(default)]
+    operation: u8,
+}
+
+impl OperationQuery {
+    pub(crate) fn asked(&self) -> bool {
+        self.operation != 0
+    }
+}
+
+/// `202 Accepted`, a `Location` naming the record, and the record itself: the snapshot
+/// the engine handed back rather than a fresh read, so a record already retired still answers.
+pub(crate) fn operation_accepted(record: &yaran_core::operations::OperationView) -> Response {
+    let location = format!("/api/v1/operations/{}", record.id);
+    (
+        StatusCode::ACCEPTED,
+        [(axum::http::header::LOCATION, location)],
+        axum::Json(record),
+    )
+        .into_response()
+}
+
+/// [`operation_accepted`] from the record the engine left in an
+/// [`crate::engine_actor::OperationTicket`]'s slot.
+pub(crate) fn ticket_accepted(
+    record: &std::sync::OnceLock<yaran_core::operations::OperationView>,
+) -> Response {
+    match record.get() {
+        Some(record) => operation_accepted(record),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::engine_actor::MISSING_OPERATION_RECORD,
+        )
+            .into_response(),
+    }
+}
+
+/// [`delete_wire_response`] for a delete followed as an operation: the same
+/// refusals, and the record in place of the bare `204`.
+pub(crate) fn delete_operation_response(
+    result: Result<(WireCommandOutcome, yaran_core::operations::OperationView), String>,
+) -> Response {
+    match result {
+        Ok((outcome, _)) if outcome_is_error(&outcome) => (
+            StatusCode::CONFLICT,
+            outcome.status.map_or_default(|status| status.message),
+        )
+            .into_response(),
+        Ok((_, record)) => operation_accepted(&record),
+        Err(error) => refusal(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// `force_connected`: `true` skips the attached refusal over everybody; a comma-separated
+/// list of [`yaran_core::attachments::Blocker::key`]s skips it over exactly those.
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct ForceConnectedQuery {
+    #[serde(default)]
+    force_connected: Option<String>,
+}
+
+impl ForceConnectedQuery {
+    /// Whether to go ahead over somebody attached, and over whom (`None` for
+    /// everybody).
+    fn decision(&self) -> (bool, Option<std::collections::BTreeSet<String>>) {
+        match self.force_connected.as_deref().map(str::trim) {
+            None | Some("" | "false") => (false, None),
+            Some("true") => (true, None),
+            Some(keys) => (
+                true,
+                Some(
+                    keys.split(',')
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                ),
+            ),
+        }
+    }
+}
+
+/// `409 {"error":"attached","blockers":[...]}`: each blocker as it serializes, plus the
+/// `key` a dialog sends back in `force_connected` to go ahead over exactly those.
+pub(crate) fn attached_refusal(blockers: &[yaran_core::attachments::Blocker]) -> Response {
+    let blockers: Vec<serde_json::Value> = blockers
+        .iter()
+        .map(|blocker| {
+            let mut value = serde_json::to_value(blocker).unwrap_or_default();
+            value["key"] = serde_json::Value::String(blocker.key());
+            value
+        })
+        .collect();
+    (
+        StatusCode::CONFLICT,
+        axum::Json(serde_json::json!({
+            "error": "attached",
+            "blockers": blockers,
+        })),
+    )
+        .into_response()
+}
+
+/// The requesting tab's own events connection, exempt from the guard, when it is live and
+/// from the request's address: the guard stops accidents, and any client may force past it.
+pub(crate) fn exempt_requester(
+    attachments: &yaran_core::attachments::Attachments,
+    scope: &StatusScope,
+    address: Option<std::net::IpAddr>,
+    now: std::time::Instant,
+) -> Option<String> {
+    match scope {
+        StatusScope::Connection(id) if attachments.linkable(id, address, now) => Some(id.clone()),
+        _ => None,
+    }
+}
+
+/// Dispatch a change that would end terminals under an operation record of `kind`. The
+/// attached refusal comes back as the finished `Err`; any other outcome is the route's to answer.
+pub(crate) async fn dispatch_guarded(
+    state: &crate::server::AppState,
+    command: yaran_core::wire::WireCommand,
+    headers: &HeaderMap,
+    kind: yaran_core::operations::OperationKind,
+    operation: &OperationQuery,
+    force: &ForceConnectedQuery,
+    client: &crate::server::SocketClient,
+) -> Result<Result<Guarded, String>, RouteRejection> {
+    dispatch_under_guard(
+        state,
+        command,
+        headers,
+        Some((kind, operation)),
+        force,
+        client,
+    )
+    .await
+}
+
+/// [`dispatch_guarded`] for a change that keeps no operation record: the same
+/// refusal and the same `force_connected`, with what it reserves held for as
+/// long as the engine decides.
+pub(crate) async fn dispatch_guarded_unrecorded(
+    state: &crate::server::AppState,
+    command: yaran_core::wire::WireCommand,
+    headers: &HeaderMap,
+    force: &ForceConnectedQuery,
+    client: &crate::server::SocketClient,
+) -> Result<Result<Guarded, String>, RouteRejection> {
+    dispatch_under_guard(state, command, headers, None, force, client).await
+}
+
+/// `record` is the change's operation record kind and whether the client asked
+/// to follow it, or `None` for a change that keeps no record.
+async fn dispatch_under_guard(
+    state: &crate::server::AppState,
+    command: yaran_core::wire::WireCommand,
+    headers: &HeaderMap,
+    record: Option<(yaran_core::operations::OperationKind, &OperationQuery)>,
+    force: &ForceConnectedQuery,
+    client: &crate::server::SocketClient,
+) -> Result<Result<Guarded, String>, RouteRejection> {
+    let kind = record.map(|(kind, _)| kind);
+    let answered = record.is_some_and(|(_, operation)| operation.asked());
+    let scope = scope_from_headers(headers, &state.connections);
+    let (force_connected, accepted_connected) = force.decision();
+    let followed = crate::engine_actor::Followed {
+        kind,
+        answered,
+        force_connected,
+        accepted_connected,
+        requester: exempt_requester(
+            state.engine.attachments(),
+            &scope,
+            client.address(),
+            std::time::Instant::now(),
+        ),
+    };
+    match state
+        .engine
+        .apply_wire_guarded(command, scope, followed)
+        .await
+    {
+        Ok(outcome) => Ok(Ok(Guarded {
+            record: outcome.operation.as_deref().cloned(),
+            outcome,
+        })),
+        Err(crate::engine_actor::WireError {
+            attached: Some(blockers),
+            ..
+        }) => Err(attached_refusal(&blockers).into()),
+        Err(error) => Ok(Err(error.message)),
+    }
+}
+
+/// What [`dispatch_guarded`] hands back for a change it dispatched.
+pub(crate) struct Guarded {
+    pub(crate) outcome: WireCommandOutcome,
+    /// The change's record, when the client asked to follow it.
+    pub(crate) record: Option<yaran_core::operations::OperationView>,
+}
+
+impl Guarded {
+    /// The outcome with its record, as a followed change answers; a followed
+    /// change that came back without one is the engine's own failure.
+    pub(crate) fn followed(
+        self,
+    ) -> Result<(WireCommandOutcome, yaran_core::operations::OperationView), String> {
+        match self.record {
+            Some(record) => Ok((self.outcome, record)),
+            None => Err(crate::engine_actor::MISSING_OPERATION_RECORD.to_string()),
+        }
     }
 }
 
@@ -285,6 +577,7 @@ pub(crate) fn delete_wire_response(result: Result<WireCommandOutcome, String>) -
 /// `Err` variant, so this newtype boxes it to shrink the `Result` by
 /// construction rather than suppressing the lint, following the same choice
 /// documented on `acquire_ws_permit` in `server.rs`.
+#[derive(Debug)]
 pub struct RouteRejection(Box<Response>);
 
 impl From<Response> for RouteRejection {
@@ -331,7 +624,7 @@ pub fn idempotency_key(headers: &HeaderMap) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|k| !k.is_empty())
-        .map(|k| k.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Whether a `:id` path segment is within the length bound. Counts characters, not
@@ -477,35 +770,50 @@ pub(crate) async fn await_new_project(
     }
 }
 
+/// A `u32` count or limit from the config as a `usize`, exactly: every target
+/// yaran builds for has a `usize` at least 32 bits wide.
+pub(crate) fn usize_from_u32(n: u32) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
+}
+
+/// A `usize` as a `u64`, exactly: no target yaran builds for has a `usize` wider
+/// than 64 bits.
+pub(crate) fn u64_from_usize(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
 /// Records `Idempotency-Key -> created resource id` for a TTL so a retried create
 /// returns the same resource instead of creating a duplicate. Cheap `Arc`-cloned
 /// into [`crate::server::AppState`]; entries past the TTL are pruned lazily on read.
 #[derive(Default)]
-pub struct IdempotencyCache {
+pub(crate) struct IdempotencyCache {
     entries: Mutex<HashMap<String, (String, Instant)>>,
 }
 
 impl IdempotencyCache {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// The recorded resource id for `key` if present and still within the TTL.
     /// Prunes expired entries while holding the lock so the map cannot grow
     /// unbounded from one-shot keys.
-    pub fn get(&self, key: &str) -> Option<String> {
+    pub(crate) fn get(&self, key: &str) -> Option<String> {
         let now = Instant::now();
-        let mut map = self.entries.lock().unwrap();
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.retain(|_, (_, at)| now.saturating_duration_since(*at) < IDEMPOTENCY_TTL);
         map.get(key).map(|(id, _)| id.clone())
     }
 
     /// Record `key -> id` (stamped now). A second create with the same key within
     /// the TTL replays this id.
-    pub fn record(&self, key: String, id: String) {
+    pub(crate) fn record(&self, key: String, id: String) {
         self.entries
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key, (id, Instant::now()));
     }
 }
@@ -513,6 +821,48 @@ impl IdempotencyCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_counts_and_sizes_convert_without_losing_their_top_values() {
+        assert_eq!(usize_from_u32(u32::MAX), 4_294_967_295);
+        assert_eq!(u64_from_usize(usize::MAX), u64::MAX);
+    }
+
+    /// A request names its browser tab's events connection to be exempt from
+    /// that tab's own attachments, and it is only when that connection came
+    /// from the request's own address.
+    #[test]
+    fn a_request_is_its_tabs_own_only_from_the_tabs_address() {
+        let attachments = yaran_core::attachments::Attachments::default();
+        attachments.register(
+            "e1",
+            yaran_core::attachments::ConnectionFacts {
+                surface: yaran_core::attachments::Surface::Browser,
+                device: None,
+                address: Some("10.0.0.1".parse().unwrap()),
+                verified: false,
+                events: true,
+                browser: None,
+            },
+            None,
+        );
+        let now = std::time::Instant::now();
+        let tab = StatusScope::Connection("e1".to_string());
+        let at = |address: &str| Some(address.parse().unwrap());
+        assert_eq!(
+            exempt_requester(&attachments, &tab, at("10.0.0.1"), now),
+            Some("e1".to_string())
+        );
+        assert_eq!(
+            exempt_requester(&attachments, &tab, at("10.0.0.2"), now),
+            None
+        );
+        assert_eq!(exempt_requester(&attachments, &tab, None, now), None);
+        assert_eq!(
+            exempt_requester(&attachments, &StatusScope::All, at("10.0.0.1"), now),
+            None
+        );
+    }
 
     fn header_map_with(name: &'static str, value: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -551,6 +901,7 @@ mod tests {
                 yaran_core::wire::WireCommand::AddProjectCreateInitialCommit {
                     path: repo.to_string_lossy().into_owned(),
                     name: String::new(),
+                    checked: None,
                 },
                 StatusScope::All,
             )
@@ -661,7 +1012,7 @@ mod tests {
         );
     }
 
-    /// A PTY-class id (AgentPty or TerminalPty) must fall back to All: PTY
+    /// A PTY-class id (`AgentPty` or `TerminalPty`) must fall back to All: PTY
     /// connection ids are never disclosed to clients and must not scope toasts.
     #[test]
     fn pty_class_id_falls_back_to_all_scope() {
@@ -683,7 +1034,7 @@ mod tests {
         );
     }
 
-    /// An id longer than MAX_ID_LEN characters must fall back to All without a
+    /// An id longer than `MAX_ID_LEN` characters must fall back to All without a
     /// registry lookup.
     #[test]
     fn over_long_id_falls_back_to_all_scope() {
@@ -699,19 +1050,19 @@ mod tests {
         );
     }
 
-    /// The gauge counts browser tabs, which means Events sockets and nothing
-    /// else: a PTY socket is a second connection from a tab that is already
-    /// counted, so counting those would report three connections for one browser.
+    /// The gauge counts Events sockets and nothing else: a PTY socket is a second
+    /// connection from a tab that is already counted, so counting those would
+    /// report three for one browser.
     #[test]
     fn the_events_gauge_counts_only_events_connections() {
         let gauge = Arc::new(AtomicUsize::new(0));
         let reg = ConnectionRegistry::with_events_gauge(Arc::clone(&gauge));
-        assert_eq!(reg.events_count(), 0, "nothing connected yet");
+        assert_eq!(reg.browsers_count(), 0, "nothing connected yet");
 
         reg.insert("tab-1".into(), ConnClass::Events);
         reg.insert("tab-1-pty".into(), ConnClass::AgentPty);
         reg.insert("tab-1-term".into(), ConnClass::TerminalPty);
-        assert_eq!(reg.events_count(), 1, "one browser tab, three sockets");
+        assert_eq!(reg.browsers_count(), 1, "one browser tab, three sockets");
         assert_eq!(
             gauge.load(Ordering::Relaxed),
             1,
@@ -719,24 +1070,24 @@ mod tests {
         );
 
         reg.insert("tab-2".into(), ConnClass::Events);
-        assert_eq!(reg.events_count(), 2);
+        assert_eq!(reg.browsers_count(), 2);
 
         reg.remove("tab-1-pty");
         assert_eq!(
-            reg.events_count(),
+            reg.browsers_count(),
             2,
             "a PTY socket closing changes nothing"
         );
         reg.remove("tab-1");
-        assert_eq!(reg.events_count(), 1, "the tab left");
+        assert_eq!(reg.browsers_count(), 1, "the tab left");
         reg.remove("tab-1");
         assert_eq!(
-            reg.events_count(),
+            reg.browsers_count(),
             1,
             "removing an id twice must not underflow the count"
         );
         reg.remove("tab-2");
-        assert_eq!(reg.events_count(), 0);
+        assert_eq!(reg.browsers_count(), 0);
         assert_eq!(gauge.load(Ordering::Relaxed), 0);
     }
 
@@ -752,26 +1103,26 @@ mod tests {
         reg.insert("tab-1".into(), ConnClass::Events);
         reg.insert("tab-1".into(), ConnClass::Events);
         assert_eq!(
-            reg.events_count(),
+            reg.browsers_count(),
             1,
             "the same id registered twice is still one connection"
         );
 
         reg.insert("tab-1".into(), ConnClass::AgentPty);
         assert_eq!(
-            reg.events_count(),
+            reg.browsers_count(),
             0,
             "an id that stopped being an Events connection must stop being counted"
         );
 
         reg.insert("tab-1".into(), ConnClass::Events);
         assert_eq!(
-            reg.events_count(),
+            reg.browsers_count(),
             1,
             "and counted again when it comes back"
         );
         reg.remove("tab-1");
-        assert_eq!(reg.events_count(), 0);
+        assert_eq!(reg.browsers_count(), 0);
     }
 
     /// A registry nobody handed a gauge to still counts, so every existing serve
@@ -780,7 +1131,74 @@ mod tests {
     fn a_registry_without_a_shared_gauge_still_counts() {
         let reg = ConnectionRegistry::default();
         reg.insert("tab-1".into(), ConnClass::Events);
-        assert_eq!(reg.events_count(), 1);
+        assert_eq!(reg.browsers_count(), 1);
+    }
+
+    fn browser_id(raw: &str) -> yaran_core::attachments::BrowserId {
+        yaran_core::attachments::BrowserId::parse(raw).expect("a well-formed browser id")
+    }
+
+    /// The count is browsers, not tabs: two tabs of one browser profile are one
+    /// browser, a second browser is a second one, and the browser leaves the
+    /// count only when its last tab closes.
+    #[test]
+    fn tabs_of_one_browser_count_once_and_a_second_browser_counts_again() {
+        let gauge = Arc::new(AtomicUsize::new(0));
+        let reg = ConnectionRegistry::with_events_gauge(Arc::clone(&gauge));
+        let laptop = browser_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let phone = browser_id("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        reg.insert_events("tab-1".into(), Some(&laptop), None);
+        reg.insert_events("tab-2".into(), Some(&laptop), None);
+        reg.insert("tab-2-pty".into(), ConnClass::AgentPty);
+        assert_eq!(reg.browsers_count(), 1, "two tabs of one browser");
+        assert_eq!(gauge.load(Ordering::Relaxed), 1, "the gauge agrees");
+
+        reg.insert_events("tab-3".into(), Some(&phone), None);
+        assert_eq!(reg.browsers_count(), 2, "a second browser");
+
+        reg.remove("tab-1");
+        assert_eq!(reg.browsers_count(), 2, "the laptop still has a tab open");
+        reg.remove("tab-2");
+        assert_eq!(reg.browsers_count(), 1, "the laptop's last tab closed");
+        reg.remove("tab-3");
+        assert_eq!(gauge.load(Ordering::Relaxed), 0);
+    }
+
+    /// A tab that named no browser (old page, no storage, a malformed id the
+    /// socket dropped) is a browser of its own, never folded into another one.
+    #[test]
+    fn a_tab_with_no_browser_id_counts_on_its_own() {
+        let reg = ConnectionRegistry::default();
+        let laptop = browser_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        reg.insert_events("tab-1".into(), Some(&laptop), None);
+        reg.insert_events("tab-2".into(), None, None);
+        reg.insert_events("tab-3".into(), None, None);
+        assert_eq!(reg.browsers_count(), 3);
+    }
+
+    /// A reconnect opens its new socket while the lost one may still be waiting
+    /// to be reaped; naming the lost one (`?after=`) keeps that one browser.
+    #[test]
+    fn a_reconnect_naming_its_lost_connection_is_not_a_second_browser() {
+        let reg = ConnectionRegistry::default();
+        let laptop = browser_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        reg.insert_events("old".into(), Some(&laptop), None);
+        reg.insert_events("new".into(), Some(&laptop), Some("old"));
+        assert_eq!(reg.browsers_count(), 1, "same browser id");
+
+        // With no browser id, the succession alone keeps it one browser.
+        reg.insert_events("bare-old".into(), None, None);
+        reg.insert_events("bare-new".into(), None, Some("bare-old"));
+        assert_eq!(reg.browsers_count(), 2);
+        reg.remove("bare-old");
+        assert_eq!(reg.browsers_count(), 2, "the successor still counts");
+        reg.remove("bare-new");
+        assert_eq!(reg.browsers_count(), 1);
+
+        // Naming a connection that is not there inherits nothing.
+        reg.insert_events("stray".into(), None, Some("gone"));
+        assert_eq!(reg.browsers_count(), 2);
     }
 
     #[test]

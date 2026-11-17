@@ -18,19 +18,40 @@ FROM ${BASE_IMAGE}
 # tmux provides a fixed terminal grid for TUI captures. `which` is required, not
 # incidental: yaran probes for the gh CLI by running `which gh`, and the base image
 # does not ship it, so without this every GitHub feature reports gh as missing
-# however it was installed. Clean the package cache.
-RUN pacman -Syu --noconfirm git nodejs npm ca-certificates tmux which \
+# however it was installed. `iproute2` lets a TUI capture give the container's
+# loopback a stand-in Tailscale address. Clean the package cache.
+RUN pacman -Syu --noconfirm git nodejs npm ca-certificates tmux which iproute2 \
     && pacman -Scc --noconfirm
 
 # The two default resume-capable providers, installed exactly as a user would
 # (npm global). They land on PATH as `claude` and `codex`; yaran's default config
 # references them by those bare names. They run headless and prompt for login on
 # first spawn, which is a valid, observable state for UI testing.
-RUN npm install -g @anthropic-ai/claude-code @openai/codex \
-    && npm cache clean --force
+#
+# AGENT_CLIS=0 leaves them out: the container journey suite (crates/yaran-journeys)
+# builds this same image with only the fake provider, and the two CLIs are the
+# slowest and largest layer here.
+ARG AGENT_CLIS=1
+RUN if [ "$AGENT_CLIS" = "1" ]; then \
+      npm install -g @anthropic-ai/claude-code @openai/codex \
+      && npm cache clean --force; \
+    fi
+
+# The journey suite's extra tools, off for an ordinary preview. `socat` relays a
+# published port onto an address inside the container (the stand-in tailnet
+# address, or loopback with no forwarding header, the way `tailscale serve` with
+# a raw TCP forward reaches yaran). `curl` is how a journey makes a request FROM
+# this machine, which no published port can do. `chromium` ships `chromedriver`,
+# which is the browser the browser journeys drive over WebDriver.
+ARG JOURNEY_TOOLS=0
+RUN if [ "$JOURNEY_TOOLS" = "1" ]; then \
+      pacman -Syu --noconfirm --needed socat curl chromium \
+      && pacman -Scc --noconfirm; \
+    fi
 
 COPY fake-agent.sh /usr/local/bin/fake-agent
 COPY entrypoint.sh /usr/local/bin/entrypoint
+COPY tailscale-stand-in.sh /usr/local/share/yaran-preview/tailscale-stand-in
 COPY tui-driver.js /usr/local/bin/tui-driver.js
 COPY tui-journey.example.js /usr/local/share/yaran-preview/tui-journey.example.js
 RUN chmod +x /usr/local/bin/fake-agent /usr/local/bin/entrypoint

@@ -6,6 +6,7 @@
 use super::*;
 use crate::app::test_support::{default_bindings, test_app};
 use crate::pty::PtyClient;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use yaran_core::ids::TabId;
@@ -29,21 +30,26 @@ impl OutputFixture {
 }
 
 fn shell_printf(bytes: &str) -> String {
-    let encoded: String = bytes.bytes().map(|byte| format!("\\0{byte:03o}")).collect();
+    let encoded = bytes.bytes().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "\\0{byte:03o}");
+        out
+    });
     format!("printf '%b' '{encoded}'\n")
 }
 
 fn numbered_lines(count: usize) -> String {
-    (0..count).map(|n| format!("L{n:02}\r\n")).collect()
+    (0..count).fold(String::new(), |mut out, n| {
+        let _ = write!(out, "L{n:02}\r\n");
+        out
+    })
 }
 
 fn fixture(scrollback: usize, initial: &str, phases: &[&str]) -> (App, OutputFixture) {
     let directory = tempfile::tempdir().expect("private terminal output directory");
     let mut script = shell_printf(initial);
     for (index, output) in phases.iter().enumerate() {
-        script.push_str(&format!(
-            "n=0\nwhile [ ! -f \"$1/phase-{index}\" ]; do\n  n=$((n + 1))\n  [ \"$n\" -lt 1000 ] || exit 71\n  sleep 0.01\ndone\n"
-        ));
+        let _ = writeln!(script, "n=0\nwhile [ ! -f \"$1/phase-{index}\" ]; do");
+        script.push_str("  n=$((n + 1))\n  [ \"$n\" -lt 1000 ] || exit 71\n  sleep 0.01\ndone\n");
         script.push_str(&shell_printf(output));
     }
     // Keep the child alive until the test drops it, without reading any input.
@@ -62,7 +68,7 @@ fn fixture(scrollback: usize, initial: &str, phases: &[&str]) -> (App, OutputFix
     app.session_surface = SessionSurface::Agent;
     app.focus = FocusPane::Center;
     app.mouse_layout.center = Rect::new(9, 1, 82, 26);
-    app.mouse_layout.agent_term = Some(Rect::new(10, 2, 80, 24));
+    app.mouse_layout.focused_term = Some(Rect::new(10, 2, 80, 24));
     app.engine.sessions[0].provider = ProviderKind::from_str("jcode");
     let policy = app
         .engine
@@ -83,7 +89,9 @@ fn fixture(scrollback: usize, initial: &str, phases: &[&str]) -> (App, OutputFix
 }
 
 fn row_text(app: &App, row: u16) -> String {
-    app.snapshot_buf
+    app.part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .filter(|cell| cell.row == row)
@@ -97,7 +105,9 @@ fn wait_for_text(app: &mut App, needle: &str) -> u16 {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         app.refresh_snapshot_buf();
-        if let Some(row) = (0..app.snapshot_buf.rows).find(|row| row_text(app, *row) == needle) {
+        if let Some(row) =
+            (0..app.part_snapshots.main.buf.rows).find(|row| row_text(app, *row) == needle)
+        {
             return row;
         }
         assert!(
@@ -119,7 +129,10 @@ fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
 
 fn select_host_row(app: &mut App, needle: &str) {
     let row = wait_for_text(app, needle);
-    let area = app.mouse_layout.agent_term.expect("private pane geometry");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("private pane geometry");
     app.handle_mouse(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         area.x,
@@ -127,7 +140,7 @@ fn select_host_row(app: &mut App, needle: &str) {
     ));
     app.handle_mouse(mouse_event(
         MouseEventKind::Drag(MouseButton::Left),
-        area.x + needle.len() as u16 - 1,
+        area.x + u16::try_from(needle.len()).unwrap() - 1,
         area.y + row,
     ));
     assert!(app.center_mouse_forward.is_none(), "host owns the drag");
@@ -143,12 +156,12 @@ fn host_selection_crossing_history_capacity_never_copies_different_text() {
     let (mut app, mut output) = fixture(5, &initial, &["M00\r\nM01\r\nM02\r\n"]);
     wait_for_text(&mut app, "L26");
     select_host_row(&mut app, "L20");
-    assert_eq!(app.snapshot_buf.scrollback_total, 4);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 4);
     assert!(!app.snapshot_selection_origin().history_saturated);
 
     output.advance();
     wait_for_text(&mut app, "M02");
-    assert_eq!(app.snapshot_buf.scrollback_total, 5);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 5);
     assert!(app.snapshot_selection_origin().history_saturated);
     assert_eq!(
         app.terminal_selection_text(),
@@ -165,7 +178,7 @@ fn host_selection_below_history_capacity_follows_the_selected_text() {
     select_host_row(&mut app, "L20");
     output.advance();
     wait_for_text(&mut app, "M02");
-    assert_eq!(app.snapshot_buf.scrollback_total, 7);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 7);
     assert_eq!(app.terminal_selection_text(), "L20");
 }
 
@@ -181,10 +194,10 @@ fn host_selection_alt_screen_does_not_inherit_saturated_main_history() {
         ],
     );
     wait_for_text(&mut app, "L39");
-    assert_eq!(app.snapshot_buf.scrollback_total, 5);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 5);
     output.advance();
     select_host_row(&mut app, "STATIC TARGET");
-    assert_eq!(app.snapshot_buf.scrollback_total, 0);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 0);
     assert!(!app.snapshot_selection_origin().history_saturated);
     output.advance();
     wait_for_text(&mut app, "UNRELATED REPAINT");
@@ -209,7 +222,10 @@ fn first_drag_after_saturated_repaint(initial_lines: usize, repaint: &str, senti
     let (mut app, mut output) = fixture(5, &initial, &[repaint]);
     wait_for_text(&mut app, &format!("L{:02}", initial_lines - 1));
     let row = wait_for_text(&mut app, "L20");
-    let area = app.mouse_layout.agent_term.expect("private pane geometry");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("private pane geometry");
     app.handle_mouse(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         area.x,
@@ -225,7 +241,7 @@ fn first_drag_after_saturated_repaint(initial_lines: usize, repaint: &str, senti
     output.advance();
     wait_for_text(&mut app, sentinel);
     assert!(app.snapshot_selection_origin().history_saturated);
-    assert_ne!(app.grid_generation, origin.grid_generation);
+    assert_ne!(app.part_snapshots.main.generation, origin.grid_generation);
     // Match the render lifecycle between the press and the first real motion.
     // A fix may retain a zero-extent carrier solely for click replay, but must
     // never re-stamp that carrier into a valid selection at the new generation.
@@ -272,7 +288,7 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
         .draw(|frame| app.render(frame))
         .expect("establish real host pane geometry");
     select_host_row(&mut app, "STATIC TARGET");
-    assert_eq!(app.snapshot_buf.scrollback_total, 5);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 5);
     assert!(app.snapshot_selection_origin().history_saturated);
     assert!(
         !app.selected_terminal_surface_client()
@@ -281,7 +297,9 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
     );
     let origin = app.snapshot_selection_origin();
     let text_cells = |app: &App| {
-        app.snapshot_buf
+        app.part_snapshots
+            .main
+            .buf
             .cells
             .iter()
             .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -289,7 +307,9 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
     };
     let before = text_cells(&app);
     assert!(
-        !app.snapshot_buf
+        !app.part_snapshots
+            .main
+            .buf
             .cursor
             .is_some_and(|cursor| cursor.row == 9 && cursor.col == 11),
         "the cursor-only phase must move the cursor to a different position"
@@ -300,7 +320,9 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
     loop {
         app.refresh_snapshot_buf();
         if app
-            .snapshot_buf
+            .part_snapshots
+            .main
+            .buf
             .cursor
             .is_some_and(|cursor| cursor.row == 9 && cursor.col == 11)
         {
@@ -335,6 +357,19 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
 
 static CAPTURED_MEMORY_COPIES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// Whether the snapshot's scrollback history is full when the gesture starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum History {
+    /// Lines are still being added to it.
+    Room,
+    /// It is at capacity, so each new line pushes the oldest out.
+    Saturated,
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the clipboard's copier, whose signature is fallible"
+)]
 fn capture_memory_copy(text: &str) -> anyhow::Result<()> {
     CAPTURED_MEMORY_COPIES
         .lock()
@@ -367,9 +402,14 @@ fn host_selection_cursor_only_before_first_drag_copies_static_target_to_memory()
             .unwrap()
             .is_alt_screen()
     );
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
     let before: Vec<_> = app
-        .snapshot_buf
+        .part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -385,7 +425,9 @@ fn host_selection_cursor_only_before_first_drag_copies_static_target_to_memory()
     loop {
         app.refresh_snapshot_buf();
         if app
-            .snapshot_buf
+            .part_snapshots
+            .main
+            .buf
             .cursor
             .is_some_and(|cursor| cursor.row == 9 && cursor.col == 11)
         {
@@ -401,13 +443,15 @@ fn host_selection_cursor_only_before_first_drag_copies_static_target_to_memory()
         .draw(|frame| app.render(frame))
         .expect("real host render between press and first drag");
     let after: Vec<_> = app
-        .snapshot_buf
+        .part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
         .collect();
     assert_eq!(after, before, "cursor-only output changed no text cells");
-    let end_col = area.x + "STATIC TARGET".len() as u16 - 1;
+    let end_col = area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1;
     app.handle_mouse(mouse_event(
         MouseEventKind::Drag(MouseButton::Left),
         end_col,
@@ -463,10 +507,10 @@ enum StatusRedraw {
 /// one-line trace for the failure message.
 fn status_redraw_gesture(
     scrollback: usize,
-    expect_saturated: bool,
+    history: History,
     when: StatusRedraw,
     copies: &'static std::sync::Mutex<Vec<String>>,
-    copier: fn(&str) -> anyhow::Result<()>,
+    clipboard: fn(&str) -> anyhow::Result<()>,
 ) -> (Vec<String>, String) {
     let initial = format!(
         "\x1b[?1002h{}\x1b[1;1H\x1b[2KSTATUS 0\x1b[19;1H\x1b[2KSTATIC TARGET",
@@ -481,7 +525,7 @@ fn status_redraw_gesture(
         ],
     );
     copies.lock().unwrap().clear();
-    app.clipboard = crate::clipboard::Clipboard::from_fn(copier);
+    app.clipboard = crate::clipboard::Clipboard::from_fn(clipboard);
     wait_for_text(&mut app, "STATUS 0");
     wait_for_text(&mut app, "STATIC TARGET");
     let backend = ratatui::backend::TestBackend::new(160, 28);
@@ -492,15 +536,18 @@ fn status_redraw_gesture(
     let row = wait_for_text(&mut app, "STATIC TARGET");
     assert_eq!(
         app.snapshot_selection_origin().history_saturated,
-        expect_saturated
+        history == History::Saturated
     );
     assert!(
         !app.selected_terminal_surface_client()
             .unwrap()
             .is_alt_screen()
     );
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
-    let end_col = area.x + "STATIC TARGET".len() as u16 - 1;
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
+    let end_col = area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1;
 
     app.handle_mouse(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
@@ -515,7 +562,7 @@ fn status_redraw_gesture(
         ));
     }
     let stamped = app.snapshot_selection_origin();
-    let generation_before = app.grid_generation;
+    let generation_before = app.part_snapshots.main.generation;
 
     output.advance();
     wait_for_text(&mut app, "STATUS 1");
@@ -547,23 +594,23 @@ fn status_redraw_gesture(
     while copies.lock().unwrap().is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let copied = copies.lock().unwrap().clone();
+    let clipboard_text = copies.lock().unwrap().clone();
     let trace = format!(
         "saturated={} selection_after_status_redraw={} grid_generation {}->{} selection_after_gesture={}",
         after.history_saturated,
         selection_after_redraw,
         generation_before,
-        app.grid_generation,
+        app.part_snapshots.main.generation,
         app.terminal_selection.is_some(),
     );
-    (copied, trace)
+    (clipboard_text, trace)
 }
 
 #[test]
 fn host_selection_saturated_status_redraw_between_press_and_first_drag_still_copies() {
     let (copied, trace) = status_redraw_gesture(
         5,
-        true,
+        History::Saturated,
         StatusRedraw::BetweenPressAndFirstDrag,
         &STATUS_PRESS_COPIES,
         capture_status_press_copy,
@@ -579,7 +626,7 @@ fn host_selection_saturated_status_redraw_between_press_and_first_drag_still_cop
 fn host_selection_saturated_status_redraw_mid_drag_still_copies() {
     let (copied, trace) = status_redraw_gesture(
         5,
-        true,
+        History::Saturated,
         StatusRedraw::BetweenDragAndRelease,
         &STATUS_DRAG_COPIES,
         capture_status_drag_copy,
@@ -595,7 +642,7 @@ fn host_selection_saturated_status_redraw_mid_drag_still_copies() {
 fn host_selection_unsaturated_status_redraw_mid_drag_still_copies() {
     let (copied, trace) = status_redraw_gesture(
         64,
-        false,
+        History::Room,
         StatusRedraw::BetweenDragAndRelease,
         &STATUS_UNSATURATED_COPIES,
         capture_status_unsaturated_copy,
@@ -620,7 +667,7 @@ fn saturated_established_drag_failsafe(
     phase: &str,
     sentinel: &str,
     copies: &'static std::sync::Mutex<Vec<String>>,
-    copier: fn(&str) -> anyhow::Result<()>,
+    clipboard: fn(&str) -> anyhow::Result<()>,
 ) {
     let initial = format!(
         "\x1b[?1002h{}\x1b[19;1H\x1b[2KSTATIC TARGET",
@@ -628,7 +675,7 @@ fn saturated_established_drag_failsafe(
     );
     let (mut app, mut output) = fixture(5, &initial, &[phase]);
     copies.lock().unwrap().clear();
-    app.clipboard = crate::clipboard::Clipboard::from_fn(copier);
+    app.clipboard = crate::clipboard::Clipboard::from_fn(clipboard);
     wait_for_text(&mut app, "STATIC TARGET");
     let backend = ratatui::backend::TestBackend::new(160, 28);
     let mut terminal = ratatui::Terminal::new(backend).expect("private host renderer");
@@ -636,7 +683,10 @@ fn saturated_established_drag_failsafe(
         .draw(|frame| app.render(frame))
         .expect("establish real host pane geometry");
     let row = wait_for_text(&mut app, "STATIC TARGET");
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
     // Down plus Drag: an established drag with anchor != end, copyable right now.
     select_host_row(&mut app, "STATIC TARGET");
     assert!(app.snapshot_selection_origin().history_saturated);
@@ -670,17 +720,17 @@ fn saturated_established_drag_failsafe(
     // content through the old established selection.
     app.handle_mouse(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
-        area.x + "STATIC TARGET".len() as u16 - 1,
+        area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1,
         area.y + row,
     ));
     let deadline = Instant::now() + Duration::from_millis(300);
     while copies.lock().unwrap().is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let copied = copies.lock().unwrap().clone();
+    let clipboard_text = copies.lock().unwrap().clone();
     assert!(
-        copied.is_empty(),
-        "release after unsafe movement must not enqueue a clipboard copy, got {copied:?}"
+        clipboard_text.is_empty(),
+        "release after unsafe movement must not enqueue a clipboard copy, got {clipboard_text:?}"
     );
 }
 
@@ -731,7 +781,10 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
         .expect("establish real host pane geometry");
     // The first of the two identical rows.
     let row = wait_for_text(&mut app, "STATIC TARGET");
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
     select_host_row(&mut app, "STATIC TARGET");
     assert!(app.snapshot_selection_origin().history_saturated);
     let origin = app.snapshot_selection_origin();
@@ -747,7 +800,7 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_ne!(app.grid_generation, origin.grid_generation);
+    assert_ne!(app.part_snapshots.main.generation, origin.grid_generation);
     assert_eq!(
         row_text(&app, row),
         "STATIC TARGET",
@@ -785,7 +838,7 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
     );
     app.handle_mouse(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
-        area.x + "STATIC TARGET".len() as u16 - 1,
+        area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1,
         area.y + row,
     ));
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -799,6 +852,10 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
     );
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the clipboard's copier, whose signature is fallible"
+)]
 fn capture_hidden_scroll_copy(text: &str) -> anyhow::Result<()> {
     CAPTURED_HIDDEN_SCROLL_COPIES
         .lock()
@@ -824,11 +881,16 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
         .draw(|frame| app.render(frame))
         .expect("establish real host pane geometry");
     let row = wait_for_text(&mut app, "STATIC TARGET");
-    let area = app.mouse_layout.agent_term.expect("private pane geometry");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("private pane geometry");
     select_host_row(&mut app, "STATIC TARGET");
     let origin = app.snapshot_selection_origin();
     let before = app
-        .snapshot_buf
+        .part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -838,16 +900,24 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         app.refresh_snapshot_buf();
-        if app.snapshot_buf.full_damage_epoch != origin.full_damage_epoch {
+        if app.part_snapshots.main.buf.full_damage_epoch != origin.full_damage_epoch {
             break;
         }
         assert!(Instant::now() < deadline, "private scroll did not arrive");
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(app.snapshot_buf.scrollback_offset, origin.scrollback_offset);
-    assert_eq!(app.snapshot_buf.scrollback_total, origin.scrollback_total);
     assert_eq!(
-        app.snapshot_buf
+        app.part_snapshots.main.buf.scrollback_offset,
+        origin.scrollback_offset
+    );
+    assert_eq!(
+        app.part_snapshots.main.buf.scrollback_total,
+        origin.scrollback_total
+    );
+    assert_eq!(
+        app.part_snapshots
+            .main
+            .buf
             .cells
             .iter()
             .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -855,9 +925,12 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
         before,
         "fixture must leave visible cells and scroll geometry unchanged"
     );
-    assert_ne!(app.snapshot_buf.full_damage_epoch, origin.full_damage_epoch);
+    assert_ne!(
+        app.part_snapshots.main.buf.full_damage_epoch,
+        origin.full_damage_epoch
+    );
     assert_eq!(
-        app.grid_generation, origin.grid_generation,
+        app.part_snapshots.main.generation, origin.grid_generation,
         "identical text and geometry must not advance the legacy generation"
     );
     app.drop_drifted_selection();
@@ -867,7 +940,7 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
     app.clipboard = crate::clipboard::Clipboard::from_fn(capture_hidden_scroll_copy);
     app.handle_mouse(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
-        area.x + "STATIC TARGET".len() as u16 - 1,
+        area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1,
         area.y + row,
     ));
     assert!(CAPTURED_HIDDEN_SCROLL_COPIES.lock().unwrap().is_empty());

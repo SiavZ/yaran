@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { publishConnectionTiming } from "./connectionTiming"
+import { browserId } from "./browserId"
+import { setConnectionId } from "./connection"
 import { EventsSocket } from "./eventsSocket"
 import type { ConnState, EventsServerMessage, ResourceEvent } from "./types"
 
@@ -72,6 +74,20 @@ function lastFrame(ws: FakeWS): unknown {
 }
 
 describe("EventsSocket", () => {
+  it("names the connection it had before on every reopen, so the server can hand over what it counted", () => {
+    vi.useFakeTimers()
+    const sock = new EventsSocket("ws://x/ws/events")
+    sock.connect()
+    const browser = `browser=${browserId()}`
+    expect(last().url).toBe(`ws://x/ws/events?${browser}`)
+    last().open()
+    setConnectionId("e/1")
+    setConnectionId(null)
+    last().triggerClose()
+    vi.advanceTimersByTime(600)
+    expect(last().url).toBe(`ws://x/ws/events?${browser}&after=e%2F1`)
+  })
+
   it("sends a subscribe frame for newly-added topics when open", () => {
     const sock = new EventsSocket("ws://x/ws/events")
     sock.connect()
@@ -381,6 +397,27 @@ describe("EventsSocket", () => {
 })
 
 // Phase 13: the events socket's own beat, and the Access-expiry close.
+// The 4401 reaches the Access session only on a page Cloudflare Access verified;
+// anywhere else it is the sign-in gate's (`isGateCloseCode`).
+async function openAccessVerifiedGate(): Promise<void> {
+  const gate = await import("./authGate")
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          password_set: true,
+          required_here: false,
+          signed_in: false,
+          access_verified: true,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    ),
+  )
+  await gate.initAuthGate()
+}
+
 describe("EventsSocket beat and 4401", () => {
   it("beats, and drops a socket that stops answering within the deadline", async () => {
     vi.useFakeTimers()
@@ -412,16 +449,20 @@ describe("EventsSocket beat and 4401", () => {
   })
 
   it("reconnects on 4401 and asks the access-session probe", async () => {
+    await openAccessVerifiedGate()
     const { accessSession } = await import("./native/accessSession")
     const spy = vi.spyOn(accessSession, "noteSessionExpired").mockImplementation(() => {})
     vi.useFakeTimers()
     const sock = new EventsSocket("ws://x/ws/events")
     sock.connect()
-    last().open()
-    last().triggerClose(4401)
+    const ws = last()
+    ws.open()
+    // Opening the gate resumed sockets earlier tests left behind; count from here.
+    const before = FakeWS.instances.length
+    ws.triggerClose(4401)
     expect(spy).toHaveBeenCalledTimes(1)
     vi.advanceTimersByTime(600)
-    expect(FakeWS.instances.length).toBe(2)
+    expect(FakeWS.instances.length).toBe(before + 1)
     spy.mockRestore()
     sock.dispose()
   })

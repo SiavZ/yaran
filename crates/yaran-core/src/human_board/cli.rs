@@ -13,11 +13,12 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use super::{
-    Audience, Board, BoardSettings, BoardStore, Card, CardId, CardKind, NewCard, PostOutcome,
-    Priority, compact_age,
+    Audience, Blocking, Board, BoardSettings, BoardStore, Card, CardId, CardKind, NewCard,
+    PostOutcome, Priority, compact_age,
 };
 use crate::config::YaranPaths;
 
+/// The help text of `yaran board`.
 pub const BOARD_HELP: &str = "\
 yaran board - cards for the people running yaran
 
@@ -91,23 +92,43 @@ for every agent it launches.";
 /// variable says who is posting: set once by [`run_board`].
 static AGENT_HERE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
-/// Entry point for `yaran board <args>`.
-pub fn run_board(args: &[String], paths: &YaranPaths) -> Result<()> {
+/// Entry point for `yaran board <args>`. `sessions` asks the running yaran for
+/// its agents, or answers `None` when it cannot; the command line never opens
+/// the session database itself.
+///
+/// # Errors
+///
+/// Fails when the config cannot be loaded or the command fails.
+pub fn run_board(
+    args: &[String],
+    paths: &YaranPaths,
+    sessions: &dyn Fn() -> Option<Vec<crate::peer::PeerSession>>,
+) -> Result<()> {
     // An agent whose launch did not export its handle is still recognised by
     // the directory it works in, so its posts and replies are signed with its
-    // handle rather than the person's name.
-    let _ = AGENT_HERE.set(
-        std::env::current_dir()
-            .ok()
-            .and_then(|cwd| crate::peer::router::agent_handle_for_cwd(paths, &cwd)),
-    );
-    let config = crate::config::load_config(paths);
+    // handle rather than the person's name. Only then is yaran asked.
+    if env_handle().is_none() {
+        let _ = AGENT_HERE.set(std::env::current_dir().ok().and_then(|cwd| {
+            sessions()
+                .and_then(|sessions| crate::peer::router::agent_handle_for_cwd(&cwd, &sessions))
+        }));
+    }
+    let config = crate::config::load_config(paths)?;
     let settings = BoardSettings::from_config(&config.board, &paths.root);
     let mut stdin = std::io::stdin();
     run_with(args, &settings, &mut stdin, &mut std::io::stdout())
 }
 
 /// The testable body of [`run_board`]: everything comes in through arguments.
+///
+/// # Errors
+///
+/// Fails, with the sentence to print, on a bad argument or when the board
+/// cannot be read or written.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dispatch over every board verb, each arm a few lines"
+)]
 pub fn run_with(
     args: &[String],
     settings: &BoardSettings,
@@ -115,7 +136,7 @@ pub fn run_with(
     out: &mut dyn std::io::Write,
 ) -> Result<()> {
     let store = &settings.store;
-    let sub = args.first().map(String::as_str).unwrap_or("");
+    let sub = args.first().map_or("", String::as_str);
     let rest = args.get(1..).unwrap_or_default();
     match sub {
         "post" | "add" => {
@@ -125,15 +146,13 @@ pub fn run_with(
             };
             let kind = card.kind;
             let assignee = card.assignee.clone();
-            let outcome = store.update(|board| board.post(card, Utc::now()))?;
+            let outcome = store.update(|board| board.post(&card, Utc::now()))?;
             let verb = match outcome {
                 PostOutcome::Added(_) => "posted",
                 PostOutcome::Updated(_) => "updated",
             };
-            let kind = kind.map(CardKind::as_str).unwrap_or_default();
-            let whose = assignee
-                .map(|person| format!(", for {person}"))
-                .unwrap_or_default();
+            let kind = kind.map_or_default(CardKind::as_str);
+            let whose = assignee.map_or_default(|person| format!(", for {person}"));
             writeln!(out, "{verb} #{} ({kind}{whose})", outcome.id())?;
             Ok(())
         }
@@ -145,8 +164,8 @@ pub fn run_with(
                 bail!("`yaran board blocking` needs a card id and yes or no");
             };
             let blocking = match value.trim().to_ascii_lowercase().as_str() {
-                "yes" | "true" | "on" | "1" => true,
-                "no" | "false" | "off" | "0" => false,
+                "yes" | "true" | "on" | "1" => Blocking::HoldsPoster,
+                "no" | "false" | "off" | "0" => Blocking::DoesNotHold,
                 other => bail!("`yaran board blocking` takes yes or no, not {other:?}"),
             };
             let (id, changed) = store.update(|board| {
@@ -154,7 +173,7 @@ pub fn run_with(
                 let changed = board.set_blocking(&id, blocking, Utc::now())?;
                 Ok((id, changed))
             })?;
-            let state = if blocking {
+            let state = if blocking == Blocking::HoldsPoster {
                 "holds its poster up until a person answers"
             } else {
                 "does not hold anybody up"
@@ -196,9 +215,10 @@ pub fn run_with(
                     board.assign(&id, assignee.as_deref(), settings.me.as_deref(), Utc::now())?;
                 Ok((id, changed))
             })?;
-            let queue = assignee
-                .map(|person| format!("{person}'s queue"))
-                .unwrap_or_else(|| "everybody's queue".to_string());
+            let queue = assignee.map_or_else(
+                || "everybody's queue".to_string(),
+                |person| format!("{person}'s queue"),
+            );
             if changed {
                 writeln!(out, "#{id} is now in {queue}")?;
             } else {
@@ -255,11 +275,15 @@ pub fn run_with(
 /// The poster when `--from` is not given: the handle yaran gives every agent,
 /// else the agent whose working directory this runs in.
 fn default_from() -> Option<String> {
+    env_handle().or_else(|| AGENT_HERE.get().cloned().flatten())
+}
+
+/// The handle yaran exported to the agent this runs in, when it did.
+fn env_handle() -> Option<String> {
     ["YARAN_AMQ_HANDLE", "AM_ME"]
         .iter()
         .find_map(|var| crate::brand_env::var(var).ok())
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| AGENT_HERE.get().cloned().flatten())
 }
 
 /// A priority from the CLI, or an error naming the valid levels.
@@ -340,7 +364,7 @@ fn parse_post(
         card.from = default_from();
     }
     card.assignee = assignee.unwrap_or_else(|| settings.me.clone());
-    card.origin = settings.me.clone();
+    card.origin.clone_from(&settings.me);
     Ok(Some(card))
 }
 
@@ -411,7 +435,7 @@ fn run_reply(
     let (id, closed) = settings.store.update(|board| {
         let id = board.find(query)?;
         let was_open = board.card(&id).is_some_and(Card::is_open);
-        board.reply(&id, message, Utc::now())?;
+        board.reply(&id, &message, Utc::now())?;
         let closed = was_open && board.card(&id).is_some_and(|card| !card.is_open());
         Ok((id, closed))
     })?;
@@ -644,13 +668,11 @@ fn run_list(args: &[String], settings: &BoardSettings, out: &mut dyn std::io::Wr
         let whose = card
             .assignee
             .as_deref()
-            .map(|person| format!("  for {person}"))
-            .unwrap_or_default();
+            .map_or_default(|person| format!("  for {person}"));
         let from = card
             .from
             .as_deref()
-            .map(|from| format!("  from {from}"))
-            .unwrap_or_default();
+            .map_or_default(|from| format!("  from {from}"));
         writeln!(
             out,
             "{:<14} {:<22} {:>4}  {}{whose}{from}",
@@ -712,7 +734,7 @@ fn run_import(
             let mut copy = card.clone();
             copy.id = id.clone();
             if copy.assignee.is_none() {
-                copy.assignee = me.clone();
+                copy.assignee.clone_from(&me);
             }
             board.cards.push(copy);
             moved.push((card.id.clone(), id));
@@ -744,7 +766,7 @@ mod tests {
     use super::*;
 
     fn args(words: &[&str]) -> Vec<String> {
-        words.iter().map(|w| w.to_string()).collect()
+        words.iter().map(std::string::ToString::to_string).collect()
     }
 
     fn run(store: &BoardStore, words: &[&str]) -> Result<String> {
@@ -888,7 +910,10 @@ mod tests {
         assert!(format!("{err}").contains("needs a value"), "{err}");
         let err = run(&store, &["post", "--bogus", "x"]).unwrap_err();
         assert!(format!("{err}").contains("unknown flag"), "{err}");
-        assert!(store.load().unwrap().cards.is_empty());
+        assert_eq!(
+            store.load().unwrap().cards,
+            Vec::<crate::human_board::Card>::new()
+        );
     }
 
     #[test]
@@ -916,7 +941,7 @@ mod tests {
             "no open card is about ticket 1\n"
         );
         let board = store.load().unwrap();
-        assert!(board.open_cards().is_empty());
+        assert_eq!(board.open_cards(), Vec::<&crate::human_board::Card>::new());
         assert_eq!(
             board.card(1).unwrap().resolution.as_deref(),
             Some("shipped")
@@ -1198,6 +1223,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one conversation followed end to end, every step asserted where it happens"
+    )]
     fn reply_show_and_blocking_carry_a_conversation() {
         let home = tempfile::tempdir().unwrap();
         let sam = team(home.path());

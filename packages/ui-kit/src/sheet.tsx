@@ -10,12 +10,16 @@
  * Uses:
  * src/sheet.tsx
  * ├── src/button.tsx
- * └── src/cn.ts
+ * ├── src/cn.ts
+ * └── src/use-back-dismiss.ts
  * External: @base-ui/react, lucide-react, react
  *
  * Used by:
  * src/sheet.tsx
  * ├── web:src/components/AppMenuSheet.tsx
+ * ├── web:src/components/AttachPullRequestDialog.tsx
+ * ├── web:src/components/NewLauncherDialog.tsx
+ * ├── web:src/components/PullRequestsDialog.tsx
  * └── web:src/components/ui/sidebar.tsx
  * <module-headers:end>
  */
@@ -26,10 +30,14 @@ import { Dialog as SheetPrimitive } from "@base-ui/react/dialog"
 
 import { cn } from "./cn"
 import { Button } from "./button"
+import { useBackDismiss } from "./use-back-dismiss"
 import { XIcon } from "lucide-react"
 
+// Every sheet closes on the browser's Back, the way its close does
+// (`useBackDismiss`).
 function Sheet({ ...props }: SheetPrimitive.Root.Props) {
-  return <SheetPrimitive.Root data-slot="sheet" {...props} />
+  const back = useBackDismiss(props)
+  return <SheetPrimitive.Root data-slot="sheet" {...props} {...back} />
 }
 
 function SheetTrigger({ ...props }: SheetPrimitive.Trigger.Props) {

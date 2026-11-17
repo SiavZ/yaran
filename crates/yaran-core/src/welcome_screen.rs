@@ -16,7 +16,9 @@ use std::path::Path;
 pub struct WelcomeStep {
     /// 1-based position, so a surface never has to derive it from an index.
     pub number: u8,
+    /// The step's title.
     pub title: &'static str,
+    /// What the step asks the user to do.
     pub detail: &'static str,
 }
 
@@ -38,10 +40,10 @@ pub struct WelcomeScreen {
 /// It names both front ends on purpose: this screen is the first thing a brand
 /// new install shows, and a headline mentioning only a terminal would teach the
 /// user that yaran is a terminal-only product with no later prompt to unlearn it.
-pub const TAGLINE: &str =
+pub(crate) const TAGLINE: &str =
     "Coding agents in your terminal or browser, with shared checkouts or git worktrees.";
 
-pub const STEPS: &[WelcomeStep] = &[
+pub(crate) const STEPS: &[WelcomeStep] = &[
     WelcomeStep {
         number: 1,
         title: "Add a project",
@@ -122,7 +124,7 @@ mod tests {
         assert_eq!(s.steps[2].title, "Launch");
         // Numbers are carried, not derived, and they are 1-based and sequential.
         for (i, step) in s.steps.iter().enumerate() {
-            assert_eq!(step.number as usize, i + 1);
+            assert_eq!(usize::from(step.number), i + 1);
         }
     }
 
@@ -213,7 +215,7 @@ mod tests {
                 p.as_str(),
                 "paragraph has stray whitespace: {p:?}"
             );
-            assert!(!p.is_empty());
+            assert_ne!(p, "");
         }
     }
 

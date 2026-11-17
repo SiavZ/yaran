@@ -8,9 +8,11 @@
 //! - Blocking; the CLI's own thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cli/login.rs
 //! ├── cloud::cli
+//! ├── cloud::cli::args
 //! ├── cloud::leg_state
 //! ├── cloud::login
 //! └── cloud::outcome
@@ -19,12 +21,14 @@
 //! Used by:
 //! cloud/cli/login.rs
 //! └── cloud::cli
+//! ```
 //! <module-headers:end>
 
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use super::args::LoginArgs;
 use super::{CloudDeps, finish};
 use crate::cloud::leg_state;
 use crate::cloud::login::{LoginIo, LoginParams, LoginStep, run_login};
@@ -97,12 +101,15 @@ impl LoginIo for CliIo<'_> {
 
 pub(super) fn run(
     mut deps: CloudDeps,
-    url: Option<String>,
-    name: Option<String>,
-    no_browser: bool,
+    args: LoginArgs,
     stdin: Box<dyn BufRead + Send>,
     out: &mut dyn Write,
 ) -> i32 {
+    let LoginArgs {
+        url,
+        name,
+        no_browser,
+    } = args;
     let org_url = url.unwrap_or_else(|| deps.config.org_url.clone());
     if org_url.trim().is_empty() {
         let _ = writeln!(
@@ -117,7 +124,7 @@ pub(super) fn run(
         origin_port: deps.server_port,
         timeout: Duration::from_secs(deps.config.login_timeout_seconds.max(1)),
         paths: deps.paths.clone(),
-        api: deps.api.clone(),
+        api: std::sync::Arc::clone(&deps.api),
     };
     let outcome = {
         let mut io = CliIo {

@@ -13,6 +13,7 @@
 //! - Escape on a running login cancels it, which also closes its loopback listener.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_commands.rs
 //! ├── app
@@ -38,12 +39,15 @@
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
 //! ├── app::modal
-//! └── app::overlay_dismiss
+//! ├── app::overlay_dismiss
+//! ├── app::sessions
+//! └── app::test_support
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;
 
-use yaran_core::cloud::actions::{logout, rotate_token};
+use yaran_core::cloud::actions::{LogoutScope, logout, rotate_token};
 use yaran_core::cloud::login::{LoginParams, LoginStep};
 use yaran_core::cloud::login_session::{AuthorizeInfo, LoginEvent, LoginHandle, spawn_login};
 use yaran_core::cloud::machine_api::{ApiFactory, default_api_factory};
@@ -59,14 +63,16 @@ use yaran_core::prose::Prose;
 use yaran_core::status_text;
 use yaran_core::status_text::StatusText;
 
-use super::*;
+use super::{
+    App, ConfirmAnswer, ConfirmFocus, PromptState, Result, StatusTone, TextInput, mpsc, thread,
+};
 
 /// The pair-phone busy's key: a local read with no outcome sentence of its own.
 pub(crate) const KEY_PAIR_PHONE: &str = "cloud-pair-phone";
 
-/// A keyed busy (core keeps `StatusUpdate::busy` crate-private).
+/// A busy on one of the fixed cloud keys both surfaces share.
 fn cloud_busy(key: &str, text: impl Into<StatusText>) -> StatusUpdate {
-    StatusUpdate::keyed(key, StatusTone::Busy, text)
+    yaran_core::cloud::outcome::busy_status(key, text)
 }
 
 /// Which Yaran Cloud modal is open, and where it is.
@@ -431,11 +437,11 @@ impl App {
     }
 
     /// Answer Disconnect / Rotate token. Cancel runs nothing.
-    pub(super) fn resolve_cloud_confirm(&mut self, confirm: bool) {
+    pub(super) fn resolve_cloud_confirm(&mut self, answer: ConfirmAnswer) {
         let rotate = matches!(self.prompt, PromptState::Cloud(CloudPrompt::Rotate(_)));
         self.cloud.pressed = None;
         self.prompt = PromptState::None;
-        if !confirm {
+        if answer == ConfirmAnswer::Cancel {
             return;
         }
         let (paths, api) = (self.cloud_paths(), self.cloud_api());
@@ -454,7 +460,7 @@ impl App {
                 "Disconnecting this machine from Yaran Cloud...",
                 move || CloudAnswer::Action {
                     key: KEY_LOGOUT,
-                    outcome: logout(&paths, &api, false),
+                    outcome: logout(&paths, &api, LogoutScope::ControlPlane),
                 },
             );
         }
@@ -466,8 +472,7 @@ fn phone_qr(paths: &CloudPaths, configured: &str) -> Result<PhoneQr, Prose> {
     let raw = credentials::read(paths)
         .ok()
         .flatten()
-        .map(|c| c.org_url)
-        .unwrap_or_else(|| configured.to_string());
+        .map_or_else(|| configured.to_string(), |c| c.org_url);
     if raw.trim().is_empty() {
         return Err(Prose::new()
             .text("This machine is not paired and no organization is set. Run ")

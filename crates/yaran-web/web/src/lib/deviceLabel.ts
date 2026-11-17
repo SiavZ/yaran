@@ -24,6 +24,8 @@ function appLabel(ua: string): string | null {
   }
 }
 
+import { stripBidiControls } from "./bidi"
+
 // Detect the operating system. ORDER MATTERS: Android UA strings also contain
 // "Linux", and iOS UA strings also contain "like Mac OS X", so the more specific
 // token must be tested first.
@@ -54,6 +56,23 @@ function detectBrowser(ua: string): string | null {
 // Must stay in step with `TUI_DEVICE_LABEL` in yaran-core's `background_serve`.
 const TUI_DEVICE_LABEL = "the yaran TUI"
 
+// Control characters (Unicode's Cc category), the bidirectional controls, and the
+// surrounding White_Space, removed the way yaran-core's `short_device_label` removes
+// them before it matches, so a string both surfaces recognize gets the same label
+// on both. They still part ways on a string neither recognizes, deliberately: the
+// terminal UI shows a cut-down copy of it, while this returns null rather than
+// echo attacker-supplied text into the page. The trim is White_Space alone, as
+// Rust's is, so U+FEFF, which JavaScript's own trim also removes, stays.
+const CONTROLS = /\p{Cc}/gu
+const EDGE_WHITESPACE = /^\p{White_Space}+|\p{White_Space}+$/gu
+
+function cleaned(text: string): string {
+  return stripBidiControls(text.replace(CONTROLS, "")).replace(
+    EDGE_WHITESPACE,
+    "",
+  )
+}
+
 // Compose the take-over label from a raw `User-Agent`.
 //   - Empty input, or an unrecognized OS: `null`, and the caller says "another device".
 //   - Known OS and browser: "{Browser} on {OS}".
@@ -63,7 +82,7 @@ export function deviceLabel(
   userAgent: string | null | undefined,
 ): string | null {
   if (!userAgent) return null
-  const ua = userAgent.trim()
+  const ua = cleaned(userAgent)
   if (ua === "") return null
   if (ua === TUI_DEVICE_LABEL) return ua
   const app = appLabel(ua)

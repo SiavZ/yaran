@@ -8,6 +8,7 @@
 //! gate compares [`App::cloud_crumb`] rather than waiting for a mark.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_crumb.rs
 //! ├── app
@@ -19,9 +20,10 @@
 //! Used by:
 //! app/cloud_crumb.rs
 //! └── app
+//! ```
 //! <module-headers:end>
 
-use super::*;
+use super::{App, Span, Style};
 use yaran_core::cloud::leg_identity::CloudMode;
 use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 

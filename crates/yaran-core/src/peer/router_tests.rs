@@ -444,6 +444,7 @@ fn yaran_pid_is_read_from_the_lockfile() {
         worktrees_root: dir.path().join("worktrees"),
         lock_path: dir.path().join("yaran.lock"),
         root: dir.path().to_path_buf(),
+        socket_path: dir.path().join("yaran.sock"),
     };
     assert_eq!(yaran_tui_pid(&paths), None);
     fs::write(&paths.lock_path, "4321\n").unwrap();
@@ -827,7 +828,7 @@ fn registered_claude_sender_sends_as_itself_without_preamble() {
 }
 
 fn args(parts: &[&str]) -> Vec<String> {
-    parts.iter().map(|s| s.to_string()).collect()
+    parts.iter().map(std::string::ToString::to_string).collect()
 }
 
 #[test]
@@ -893,11 +894,60 @@ fn peer_subcommands_reject_unknown_flags_and_subcommands() {
         worktrees_root: dir.path().join("worktrees"),
         lock_path: dir.path().join("yaran.lock"),
         root: dir.path().to_path_buf(),
+        socket_path: dir.path().join("yaran.sock"),
     };
-    assert!(run_peer(&args(&["bogus"]), &paths).is_err());
-    assert!(run_peer(&args(&["list", "--nope"]), &paths).is_err());
-    assert!(run_peer(&args(&["sync-amq", "--nope"]), &paths).is_err());
-    assert!(run_peer(&args(&["--help"]), &paths).is_ok());
+    // A refused line never asks the running yaran anything.
+    let fetch = || -> Result<PeerSnapshot> { panic!("a refused line asked yaran") };
+    assert!(run_peer(&args(&["bogus"]), &paths, &fetch, &mut std::io::sink()).is_err());
+    assert!(
+        run_peer(
+            &args(&["list", "--nope"]),
+            &paths,
+            &fetch,
+            &mut std::io::sink()
+        )
+        .is_err()
+    );
+    assert!(
+        run_peer(
+            &args(&["sync-amq", "--nope"]),
+            &paths,
+            &fetch,
+            &mut std::io::sink()
+        )
+        .is_err()
+    );
+    assert!(run_peer(&args(&["--help"]), &paths, &fetch, &mut std::io::sink()).is_ok());
+}
+
+/// Every peer command takes its sessions and its registry pass from the
+/// running yaran it asks, once, and opens no database of its own.
+#[test]
+fn peer_commands_ask_the_running_yaran_once() {
+    let dir = tempdir().unwrap();
+    let paths = YaranPaths {
+        config_path: dir.path().join("config.toml"),
+        sessions_db_path: dir.path().join("sessions.sqlite3"),
+        worktrees_root: dir.path().join("worktrees"),
+        lock_path: dir.path().join("yaran.lock"),
+        root: dir.path().to_path_buf(),
+        socket_path: dir.path().join("yaran.sock"),
+    };
+    let asked = std::cell::Cell::new(0);
+    let fetch = || -> Result<PeerSnapshot> {
+        asked.set(asked.get() + 1);
+        Ok(PeerSnapshot {
+            report: AmqSyncReport {
+                skipped: true,
+                ..AmqSyncReport::default()
+            },
+            sessions: Vec::new(),
+        })
+    };
+    assert!(run_peer(&args(&["sync-amq"]), &paths, &fetch, &mut std::io::sink()).is_ok());
+    assert!(run_peer(&args(&["list"]), &paths, &fetch, &mut std::io::sink()).is_ok());
+    assert_eq!(asked.get(), 2);
+    assert!(!paths.sessions_db_path.exists(), "no database was opened");
 }
 
 #[test]

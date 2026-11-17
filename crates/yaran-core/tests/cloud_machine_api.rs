@@ -5,6 +5,7 @@
 //! plane is ever contacted.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/cloud_machine_api.rs
 //! ├── yaran-core::cloud::credentials
@@ -16,6 +17,7 @@
 //! External: serde_json, std, tempfile
 //!
 //! Used by: entry point (cargo test -p yaran-core --test <name> (integration tests))
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;
@@ -33,11 +35,11 @@ use yaran_core::cloud::test_support::{
 fn api_for(
     handler: impl Fn(&RecordedRequest) -> MockResponse + Send + Sync + 'static,
 ) -> (tempfile::TempDir, CloudPaths, MockWorker, MachineApi) {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("the test fixture");
     let paths = CloudPaths::from_root(root.path());
     let worker = MockWorker::start(handler);
     let api = MachineApi::new(SAMPLE_ORG, &paths, Duration::from_secs(5))
-        .unwrap()
+        .expect("the test fixture")
         .with_test_transport(&worker.base_url());
     (root, paths, worker, api)
 }
@@ -72,23 +74,27 @@ fn config_json(token_version: i64) -> serde_json::Value {
 
 #[test]
 fn meta_negotiates_and_a_protocol_mismatch_is_typed() {
-    let (_r, _p, _w, api) = api_for(|_| MockResponse::json(200, meta_json()));
+    let (_r, _p, _w, api) = api_for(|_| MockResponse::json(200, &meta_json()));
     assert_eq!(api.meta().unwrap().org.unwrap().name, "Example Org");
     let mut newer = meta_json();
     newer["protocol"] = serde_json::json!({"min": 5, "max": 6});
-    let (_r, _p, _w, api) = api_for(move |_| MockResponse::json(200, newer.clone()));
+    let (_r, _p, _w, api) = api_for(move |_| MockResponse::json(200, &newer.clone()));
     assert!(matches!(
         api.meta(),
         Err(MachineApiError::ProtocolUnsupported { min: 5, max: 6, .. })
     ));
-    let (_r, _p, _w, api) = api_for(|_| MockResponse::json(200, serde_json::json!({"service": 1})));
+    let (_r, _p, _w, api) =
+        api_for(|_| MockResponse::json(200, &serde_json::json!({"service": 1})));
     assert!(matches!(api.meta(), Err(MachineApiError::Malformed(_))));
 }
 
 #[test]
 fn the_claim_is_signed_without_a_machine_id() {
     let (_r, _p, worker, api) = api_for(|_| {
-        MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+        MockResponse::json(
+            200,
+            &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+        )
     });
     let id = MachineIdentity::generate().unwrap();
     let req = ClaimRequest {
@@ -111,12 +117,12 @@ fn the_claim_is_signed_without_a_machine_id() {
 
 #[test]
 fn config_success_skew_and_revocation() {
-    let (_r, paths, worker, api) = api_for(|_| MockResponse::json(200, config_json(1)));
+    let (_r, paths, worker, api) = api_for(|_| MockResponse::json(200, &config_json(1)));
     let creds = pair_sample(&paths, SAMPLE_ORG);
     assert_eq!(api.config().unwrap().tunnel.token_version, 1);
     let seen = &worker.requests()[0];
     assert!(seen.signature_verifies(&public_key_of(&creds.machine_key_der().unwrap())));
-    assert!(seen.body.is_empty());
+    assert_eq!(seen.body, Vec::<u8>::new());
 
     let (_r, paths, _w, api) = api_for(|_| {
         let mut r = MockResponse::error(401, "signature_expired", "clock");
@@ -150,7 +156,7 @@ fn rotate_user_and_sync_rewrite_the_token_and_keep_the_consent_key() {
         let (_r, paths, worker, api) = api_for(|_| {
             MockResponse::json(
                 200,
-                serde_json::json!({
+                &serde_json::json!({
                     "tunnel": {"id": SAMPLE_TUNNEL_ID, "token": "tunnel-token-2", "token_version": 2},
                     "rotated": true
                 }),
@@ -186,13 +192,13 @@ fn unpair_counts_202_and_410_as_done() {
     let (_r, paths, worker, api) = api_for(|_| {
         MockResponse::json(
             202,
-            serde_json::json!({"machine_id": yaran_core::cloud::test_support::SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+            &serde_json::json!({"machine_id": yaran_core::cloud::test_support::SAMPLE_MACHINE_ID, "state": "tearing_down"}),
         )
     });
     pair_sample(&paths, SAMPLE_ORG);
     assert_eq!(api.unpair(), Ok(Unpaired::TeardownStarted));
     assert_eq!(worker.requests()[0].path, "/v1/machine/unpair");
-    assert!(worker.requests()[0].body.is_empty());
+    assert_eq!(worker.requests()[0].body, Vec::<u8>::new());
     let (_r, paths, _w, api) = api_for(|_| MockResponse::error(410, "machine_revoked", "gone"));
     pair_sample(&paths, SAMPLE_ORG);
     assert_eq!(api.unpair(), Ok(Unpaired::AlreadyRevoked));
@@ -204,7 +210,7 @@ fn set_origin_rewrites_the_stored_port() {
         let (_r, paths, worker, api) = api_for(move |_| {
             MockResponse::json(
                 202,
-                serde_json::json!({"origin_port": 4000, "changed": changed}),
+                &serde_json::json!({"origin_port": 4000, "changed": changed}),
             )
         });
         let before = pair_sample(&paths, SAMPLE_ORG);

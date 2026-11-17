@@ -7,6 +7,7 @@
 //! - Test-only; one thread per mock, one request per connection (`Connection: close`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/support/mock_worker.rs
 //! ├── yaran-core::cloud::protocol
@@ -18,6 +19,7 @@
 //! Used by:
 //! tests/support/mock_worker.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::collections::VecDeque;
@@ -33,11 +35,11 @@ use yaran_core::cloud::protocol::machine::EventBatch;
 use yaran_core::cloud::protocol::rules::b64url_decode;
 use yaran_core::cloud::protocol::signing::{RequestParts, canonical_string};
 
-pub const MACHINE_ID: &str = "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b";
+pub(crate) const MACHINE_ID: &str = "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b";
 
 /// How the mock answers one `POST /v1/machine/events`.
 #[derive(Clone, Debug)]
-pub enum Answer {
+pub(crate) enum Answer {
     Accept,
     AcceptAsDuplicates,
     AcceptPushOff,
@@ -48,7 +50,7 @@ pub enum Answer {
 }
 
 #[derive(Clone, Debug)]
-pub struct Seen {
+pub(crate) struct Seen {
     pub method: String,
     pub path: String,
     pub verified: bool,
@@ -57,7 +59,7 @@ pub struct Seen {
     pub body: Value,
 }
 
-pub struct MockWorker {
+pub(crate) struct MockWorker {
     pub base: String,
     pub seen: Arc<Mutex<Vec<Seen>>>,
     pub answers: Arc<Mutex<VecDeque<Answer>>>,
@@ -80,31 +82,32 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 /// The 02 test machine key's PKCS#8 v2 bytes (`fixtures/sig/machine-request.json`).
-pub fn machine_key_pkcs8() -> Vec<u8> {
+pub(crate) fn machine_key_pkcs8() -> Vec<u8> {
     unhex(
         fixture("sig/machine-request.json")["pkcs8_v2_hex"]
             .as_str()
-            .unwrap(),
+            .expect("the test fixture"),
     )
 }
 
 /// The 02 test machine key (`fixtures/sig/machine-request.json`).
-pub fn machine_key() -> (Ed25519KeyPair, Vec<u8>) {
+pub(crate) fn machine_key() -> (Ed25519KeyPair, Vec<u8>) {
     let f = fixture("sig/machine-request.json");
     let key = Ed25519KeyPair::from_pkcs8(&machine_key_pkcs8()).expect("pkcs8");
-    let public = b64url_decode(f["public_key"].as_str().unwrap()).expect("public key");
+    let public =
+        b64url_decode(f["public_key"].as_str().expect("the test fixture")).expect("public key");
     (key, public)
 }
 
 /// 02's own `MachineConfig` fixture, spaced for tests.
-pub fn machine_config() -> Value {
+pub(crate) fn machine_config() -> Value {
     let mut config = fixture("api/MachineConfig.json")["valid"][0]["value"].clone();
     config["events"]["min_interval_ms"] = json!(0);
     config
 }
 
 impl MockWorker {
-    pub fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let addr = listener.local_addr().expect("addr");
         let mock = Self {
@@ -113,15 +116,18 @@ impl MockWorker {
             answers: Arc::default(),
             config: Arc::new(Mutex::new(machine_config())),
         };
-        let (seen, answers, config) =
-            (mock.seen.clone(), mock.answers.clone(), mock.config.clone());
+        let (seen, answers, config) = (
+            std::sync::Arc::clone(&mock.seen),
+            std::sync::Arc::clone(&mock.answers),
+            std::sync::Arc::clone(&mock.config),
+        );
         let public = machine_key().1;
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let (seen, answers, config, public) = (
-                    seen.clone(),
-                    answers.clone(),
-                    config.clone(),
+                    std::sync::Arc::clone(&seen),
+                    std::sync::Arc::clone(&answers),
+                    std::sync::Arc::clone(&config),
                     public.clone(),
                 );
                 std::thread::spawn(move || serve(stream, &seen, &answers, &config, &public));
@@ -130,30 +136,33 @@ impl MockWorker {
         mock
     }
 
-    pub fn script(&self, answers: impl IntoIterator<Item = Answer>) {
-        self.answers.lock().unwrap().extend(answers);
+    pub(crate) fn script(&self, answers: impl IntoIterator<Item = Answer>) {
+        self.answers
+            .lock()
+            .expect("the test fixture")
+            .extend(answers);
     }
 
-    pub fn posts(&self) -> Vec<Seen> {
+    pub(crate) fn posts(&self) -> Vec<Seen> {
         self.seen
             .lock()
-            .unwrap()
+            .expect("the test fixture")
             .iter()
             .filter(|s| s.method == "POST")
             .cloned()
             .collect()
     }
 
-    pub fn config_gets(&self) -> usize {
+    pub(crate) fn config_gets(&self) -> usize {
         self.seen
             .lock()
-            .unwrap()
+            .expect("the test fixture")
             .iter()
             .filter(|s| s.method == "GET")
             .count()
     }
 
-    pub fn wait_for_posts(&self, n: usize) -> Vec<Seen> {
+    pub(crate) fn wait_for_posts(&self, n: usize) -> Vec<Seen> {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let posts = self.posts();
@@ -170,6 +179,10 @@ impl MockWorker {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the mock control plane's every route in one dispatch"
+)]
 fn serve(
     stream: TcpStream,
     seen: &Mutex<Vec<Seen>>,
@@ -230,7 +243,7 @@ fn serve(
     let parsed = if method == "POST" {
         let batch: EventBatch = serde_json::from_slice(&body).expect("body is an EventBatch");
         batch.validate().expect("EventBatch validates");
-        serde_json::from_slice(&body).unwrap()
+        serde_json::from_slice(&body).expect("the test fixture")
     } else {
         Value::Null
     };
@@ -241,7 +254,7 @@ fn serve(
         .iter()
         .map(|e| e["id"].clone())
         .collect();
-    seen.lock().unwrap().push(Seen {
+    seen.lock().expect("the test fixture").push(Seen {
         method: method.clone(),
         path: path.clone(),
         verified,
@@ -253,12 +266,16 @@ fn serve(
     } else {
         answers
             .lock()
-            .unwrap()
+            .expect("the test fixture")
             .pop_front()
             .unwrap_or(Answer::Accept)
     };
     let (status, extra, out) = match (method.as_str(), answer) {
-        ("GET", _) => (200, String::new(), config.lock().unwrap().clone()),
+        ("GET", _) => (
+            200,
+            String::new(),
+            config.lock().expect("the test fixture").clone(),
+        ),
         (_, Answer::Accept) => (
             202,
             String::new(),
@@ -279,9 +296,7 @@ fn serve(
             if let Some(d) = details {
                 error["details"] = d;
             }
-            let extra = retry_after
-                .map(|s| format!("Retry-After: {s}\r\n"))
-                .unwrap_or_default();
+            let extra = retry_after.map_or_default(|s| format!("Retry-After: {s}\r\n"));
             (
                 status,
                 extra,

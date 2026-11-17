@@ -111,10 +111,13 @@ impl SyncReport {
         }
         let mut sentence = format!("Synced the shared board: {}.", parts.join(", "));
         if !self.settled.is_empty() {
-            sentence.push_str(&format!(
-                " Both sides had changed {}; the newer edit of each was kept.",
-                self.settled.join(", ")
-            ));
+            let _ = std::fmt::Write::write_fmt(
+                &mut sentence,
+                format_args!(
+                    " Both sides had changed {}; the newer edit of each was kept.",
+                    self.settled.join(", ")
+                ),
+            );
         }
         sentence
     }
@@ -123,11 +126,18 @@ impl SyncReport {
 /// One finished sync, as a surface shows it.
 #[derive(Clone, Debug)]
 pub struct SyncOutcome {
+    /// When it finished.
     pub at: DateTime<Utc>,
+    /// What it did, or why it failed.
     pub result: Result<SyncReport, String>,
 }
 
 /// Run one sync of `store`'s folder through git.
+///
+/// # Errors
+///
+/// Fails when the board is not a folder in a git repository with an
+/// upstream, or a git step fails or times out.
 pub fn sync_with_git(store: &BoardStore) -> Result<SyncReport> {
     if !store.is_folder() {
         bail!(
@@ -155,7 +165,12 @@ pub fn sync_with_git(store: &BoardStore) -> Result<SyncReport> {
         let (ahead, behind) = repo.ahead_behind()?;
         if behind > 0 {
             report.received += behind;
-            let settled = store.with_lock(|| repo.merge_upstream(ahead == 0))?;
+            let merge = if ahead == 0 {
+                Merge::FastForward
+            } else {
+                Merge::Reconcile
+            };
+            let settled = store.with_lock(|| repo.merge_upstream(merge))?;
             report.settled.extend(settled);
         }
         let (ahead, _) = repo.ahead_behind()?;
@@ -204,12 +219,17 @@ struct Repo {
     /// the folder is the top level itself.
     relative: String,
     /// Extra environment for calls that reach the network.
-    ssh_batch: bool,
+    ssh: Ssh,
 }
 
 impl Repo {
     fn open(dir: &Path) -> Result<Self> {
-        let probe = git_in(dir, &["rev-parse", "--show-toplevel"], LOCAL_TIMEOUT, false)?;
+        let probe = git_in(
+            dir,
+            &["rev-parse", "--show-toplevel"],
+            LOCAL_TIMEOUT,
+            Ssh::AsConfigured,
+        )?;
         if !probe.ok {
             bail!(
                 "the board folder {} is not inside a git repository, so sync = \"git\" has \
@@ -223,8 +243,7 @@ impl Repo {
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
         let relative = canonical_dir
             .strip_prefix(&canonical_root)
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
+            .map_or_default(Path::to_path_buf);
         let relative = relative.to_string_lossy().into_owned();
         // `top` anchors the path at the top level and `literal` keeps a
         // folder name holding `*` or `?` from being read as a pattern.
@@ -237,18 +256,21 @@ impl Repo {
             root: canonical_root,
             pathspec,
             relative,
-            ssh_batch: false,
+            ssh: Ssh::AsConfigured,
         };
-        repo.ssh_batch = std::env::var_os("GIT_SSH_COMMAND").is_none()
-            && std::env::var_os("GIT_SSH").is_none()
-            && !repo
+        let configured = std::env::var_os("GIT_SSH_COMMAND").is_some()
+            || std::env::var_os("GIT_SSH").is_some()
+            || repo
                 .git(&["config", "--get", "core.sshCommand"], LOCAL_TIMEOUT)?
                 .ok;
+        if !configured {
+            repo.ssh = Ssh::Batch;
+        }
         Ok(repo)
     }
 
     fn git(&self, args: &[&str], timeout: Duration) -> Result<GitOutput> {
-        git_in(&self.root, args, timeout, self.ssh_batch)
+        git_in(&self.root, args, timeout, self.ssh)
     }
 
     /// Run git and fail with its error text when it fails.
@@ -318,7 +340,7 @@ impl Repo {
             (Some(remote), Some(merge_ref)) if remote != "." => Ok(Upstream { remote, merge_ref }),
             _ => bail!(
                 "branch {branch} of {} has no upstream to sync the board with; set one with \
-                 `git branch --set-upstream-to`",
+                 \"git branch --set-upstream-to\"",
                 self.root.display()
             ),
         }
@@ -348,8 +370,7 @@ impl Repo {
             .map(|path| {
                 Path::new(path)
                     .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.clone())
+                    .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned())
             })
             .collect();
         let message = commit_message(&names);
@@ -377,8 +398,8 @@ impl Repo {
 
     /// Bring the upstream's commits in. Returns the notes settled by keeping
     /// the newer card.
-    fn merge_upstream(&self, fast_forward: bool) -> Result<Vec<String>> {
-        if fast_forward {
+    fn merge_upstream(&self, merge: Merge) -> Result<Vec<String>> {
+        if merge == Merge::FastForward {
             let out = self.git(
                 &["merge", "--ff-only", "--quiet", "@{upstream}"],
                 LOCAL_TIMEOUT,
@@ -453,18 +474,14 @@ impl Repo {
             let theirs = self.stage(3, path)?;
             let name = Path::new(path)
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.clone());
-            match newer_note(&name, ours.as_deref(), theirs.as_deref()) {
-                Some(bytes) => {
-                    std::fs::write(self.root.join(path), bytes)
-                        .with_context(|| format!("could not write {path}"))?;
-                    self.git_ok(&["add", "--", path], LOCAL_TIMEOUT)?;
-                }
-                None => {
-                    self.git_ok(&["rm", "--quiet", "--cached", "--", path], LOCAL_TIMEOUT)?;
-                    let _ = std::fs::remove_file(self.root.join(path));
-                }
+                .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+            if let Some(bytes) = newer_note(&name, ours.as_deref(), theirs.as_deref()) {
+                std::fs::write(self.root.join(path), bytes)
+                    .with_context(|| format!("could not write {path}"))?;
+                self.git_ok(&["add", "--", path], LOCAL_TIMEOUT)?;
+            } else {
+                self.git_ok(&["rm", "--quiet", "--cached", "--", path], LOCAL_TIMEOUT)?;
+                let _ = std::fs::remove_file(self.root.join(path));
             }
             settled.push(name);
         }
@@ -481,7 +498,12 @@ impl Repo {
             path.strip_prefix(self.relative.as_str())
                 .and_then(|rest| rest.strip_prefix('/'))
         };
-        name.is_some_and(|name| !name.contains('/') && name.ends_with(".md"))
+        name.is_some_and(|name| {
+            !name.contains('/')
+                && std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        })
     }
 
     /// The bytes of `path` at merge stage `stage`, or `None` when that side
@@ -555,7 +577,10 @@ fn commit_message(names: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     if ids.len() > LISTED {
-        listed.push_str(&format!(" and {} more", ids.len() - LISTED));
+        let _ = std::fmt::Write::write_fmt(
+            &mut listed,
+            format_args!(" and {} more", ids.len() - LISTED),
+        );
     }
     format!("Update the shared board: {listed}")
 }
@@ -579,7 +604,25 @@ fn porcelain_paths(raw: &[u8]) -> Vec<String> {
 }
 
 /// Run git in `dir` with a hard time limit, never prompting.
-fn git_in(dir: &Path, args: &[&str], timeout: Duration, ssh_batch: bool) -> Result<GitOutput> {
+/// How the board's merge with its upstream goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Merge {
+    /// Nothing local is ahead: take the upstream as it is.
+    FastForward,
+    /// Both sides moved: merge, settling each card both changed by its newer edit.
+    Reconcile,
+}
+
+/// Whether ssh may prompt for anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ssh {
+    /// As the user's environment configures it.
+    AsConfigured,
+    /// Never prompt (`BatchMode=yes`): a background sync has nobody to answer.
+    Batch,
+}
+
+fn git_in(dir: &Path, args: &[&str], timeout: Duration, ssh: Ssh) -> Result<GitOutput> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
@@ -588,11 +631,17 @@ fn git_in(dir: &Path, args: &[&str], timeout: Duration, ssh_batch: bool) -> Resu
         // English messages, so an error read in a bug report reads the same
         // everywhere; nothing here is parsed from them.
         .env("LC_ALL", "C");
-    if ssh_batch {
+    if ssh == Ssh::Batch {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     }
     let label = format!("git {}", args.first().copied().unwrap_or(""));
-    match run_command_with_timeout(cmd, timeout, DEFAULT_READER_DRAIN, &label) {
+    match run_command_with_timeout(
+        cmd,
+        crate::bounded_command::ChildGroup::New,
+        timeout,
+        DEFAULT_READER_DRAIN,
+        &label,
+    ) {
         CommandOutcome::Completed(output) => Ok(GitOutput {
             ok: output.status.success(),
             stderr: crate::sanitize::for_terminal(String::from_utf8_lossy(&output.stderr).trim()),
@@ -603,7 +652,9 @@ fn git_in(dir: &Path, args: &[&str], timeout: Duration, ssh_batch: bool) -> Resu
             dir.display(),
             timeout.as_secs()
         )),
-        CommandOutcome::Failed(why) => Err(anyhow!("could not run {label}: {why}")),
+        CommandOutcome::Failed(why) | CommandOutcome::NotFound(why) => {
+            Err(anyhow!("could not run {label}: {why}"))
+        }
     }
 }
 
@@ -611,6 +662,7 @@ fn git_in(dir: &Path, args: &[&str], timeout: Duration, ssh_batch: bool) -> Resu
 /// and one shortly after each [`BoardSyncer::poke`] (a local change), with
 /// pokes that arrive together folded into one sync. Stops when dropped, once
 /// any sync in flight has finished.
+#[derive(Debug)]
 pub struct BoardSyncer {
     poke: mpsc::Sender<()>,
     rx: mpsc::Receiver<SyncOutcome>,
@@ -621,12 +673,21 @@ pub struct BoardSyncer {
 pub const POKE_SETTLE: Duration = Duration::from_secs(3);
 
 impl BoardSyncer {
+    /// Start syncing `store` through git, every `every` and after each poke.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the syncer's thread cannot be started.
     pub fn spawn(store: BoardStore, every: Duration) -> std::io::Result<Self> {
         Self::spawn_with(store, every, POKE_SETTLE, sync_with_git)
     }
 
     /// [`BoardSyncer::spawn`] with the sync itself and the settle time
     /// supplied, for tests.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the syncer's thread cannot be started.
     pub fn spawn_with(
         store: BoardStore,
         every: Duration,

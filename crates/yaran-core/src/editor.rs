@@ -1,25 +1,39 @@
+//! Finds the code editors installed on this machine (Cursor, VS Code, Zed and
+//! the rest), picks the one the config names, and opens a worktree in it.
+
 use std::collections::HashSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 
+/// An editor yaran knows how to detect and launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditorKind {
+    /// Cursor.
     Cursor,
+    /// Visual Studio Code.
     VsCode,
+    /// Zed.
     Zed,
+    /// The open-source build of Visual Studio Code, `VSCodium`.
     VsCodium,
+    /// Sublime Text.
     SublimeText,
 }
 
+/// An editor found on PATH, with the command that launches it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetectedEditor {
+    /// Which editor it is.
     pub kind: EditorKind,
+    /// Its display name.
     pub label: &'static str,
+    /// The name `[editor] default` uses for it.
     pub config_key: &'static str,
+    /// The command found on PATH.
     pub command: String,
 }
 
@@ -126,6 +140,7 @@ pub fn detect_editors_on_path(path: &OsStr) -> Vec<DetectedEditor> {
     detect_editors_from_names(executable_names.iter().map(String::as_str))
 }
 
+/// The detected editor `configured` names, else the first one detected, else `None`.
 pub fn preferred_editor(detected: &[DetectedEditor], configured: &str) -> Option<DetectedEditor> {
     let configured = normalize_editor_name(configured);
     if !configured.is_empty()
@@ -138,6 +153,8 @@ pub fn preferred_editor(detected: &[DetectedEditor], configured: &str) -> Option
     detected.first().cloned()
 }
 
+/// Whether `configured` names `editor`, by its config key, an alias or one of its commands,
+/// ignoring case and reading spaces and underscores as dashes.
 pub fn matches_configured_editor(editor: &DetectedEditor, configured: &str) -> bool {
     let configured = normalize_editor_name(configured);
     if configured.is_empty() {
@@ -160,6 +177,26 @@ pub fn editor_label(name: &str) -> Option<&'static str> {
         .map(|spec| spec.label)
 }
 
+/// The config key of the editor `name` names, by its config key, an alias or
+/// one of its commands, whether or not it is installed; `None` for an empty or
+/// unrecognized value. What [`crate::config_effective::effective_editor_default`]
+/// reads `[editor] default` with.
+pub(crate) fn configured_editor_key(name: &str) -> Option<&'static str> {
+    let normalized = normalize_editor_name(name);
+    if normalized.is_empty() {
+        return None;
+    }
+    EDITOR_SPECS
+        .iter()
+        .find(|spec| spec_matches(spec, &normalized))
+        .map(|spec| spec.config_key)
+}
+
+/// Every supported editor's config key, in the order yaran prefers them.
+pub(crate) fn editor_config_keys() -> Vec<&'static str> {
+    EDITOR_SPECS.iter().map(|spec| spec.config_key).collect()
+}
+
 /// Whether a normalized editor name matches a spec by its config key, an alias,
 /// or one of its commands. `configured` must already be normalized.
 fn spec_matches(spec: &EditorSpec, configured: &str) -> bool {
@@ -168,6 +205,11 @@ fn spec_matches(spec: &EditorSpec, configured: &str) -> bool {
         || spec.commands.contains(&configured)
 }
 
+/// Opens `path` in `editor`, detached from yaran.
+///
+/// # Errors
+///
+/// Fails when `path` does not exist or the editor's command cannot be started.
 pub fn launch_editor(editor: &DetectedEditor, path: &Path) -> Result<()> {
     if !path.exists() {
         return Err(anyhow!("Path does not exist: {}", path.display()));
@@ -178,13 +220,19 @@ pub fn launch_editor(editor: &DetectedEditor, path: &Path) -> Result<()> {
     #[cfg(any(test, feature = "test-support"))]
     crate::test_provider::refuse_unlisted_launch("editor", &editor.command)?;
 
-    Command::new(&editor.command)
-        .args(editor_launch_args(editor, path, path.is_dir()))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("failed to launch {} via {}", editor.label, editor.command))?;
+    crate::browser::spawn_reaped(
+        Command::new(&editor.command).args(editor_launch_args(
+            editor,
+            path,
+            if path.is_dir() {
+                OpenTarget::Folder
+            } else {
+                OpenTarget::File
+            },
+        )),
+        editor.label,
+    )
+    .with_context(|| format!("failed to launch {} via {}", editor.label, editor.command))?;
 
     Ok(())
 }
@@ -196,9 +244,18 @@ pub fn launch_editor(editor: &DetectedEditor, path: &Path) -> Result<()> {
 /// replaces whatever project the user had open there (fork 9d9ffcef). A single
 /// file keeps the editor's default, since a new window per opened file would be
 /// worse. Zed and Sublime Text already open a folder in its own window.
-fn editor_launch_args(editor: &DetectedEditor, path: &Path, is_dir: bool) -> Vec<OsString> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenTarget {
+    /// A folder, which opens in a window of its own.
+    Folder,
+    /// A single file.
+    File,
+}
+
+/// The arguments that open `path` in `editor`; see [`OpenTarget`].
+fn editor_launch_args(editor: &DetectedEditor, path: &Path, target: OpenTarget) -> Vec<OsString> {
     let mut args = Vec::new();
-    if is_dir
+    if target == OpenTarget::Folder
         && matches!(
             editor.kind,
             EditorKind::Cursor | EditorKind::VsCode | EditorKind::VsCodium
@@ -337,7 +394,10 @@ mod tests {
             vec![("VS Code", "code".to_string()), ("Zed", "zed".to_string())]
         );
         let empty = tempfile::tempdir().unwrap();
-        assert!(detect_editors_on_path(empty.path().as_os_str()).is_empty());
+        assert_eq!(
+            detect_editors_on_path(empty.path().as_os_str()),
+            Vec::<DetectedEditor>::new()
+        );
     }
 
     #[test]
@@ -432,14 +492,22 @@ mod tests {
     fn vscode_launch_args_force_new_window() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::VsCode, "code"), &path, true),
+            editor_launch_args(
+                &detected(EditorKind::VsCode, "code"),
+                &path,
+                OpenTarget::Folder
+            ),
             vec![
                 OsString::from("--new-window"),
                 OsString::from("/tmp/agent-worktree")
             ]
         );
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::VsCodium, "codium"), &path, true)[0],
+            editor_launch_args(
+                &detected(EditorKind::VsCodium, "codium"),
+                &path,
+                OpenTarget::Folder
+            )[0],
             OsString::from("--new-window")
         );
     }
@@ -448,7 +516,11 @@ mod tests {
     fn cursor_launch_args_force_new_window() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::Cursor, "cursor"), &path, true),
+            editor_launch_args(
+                &detected(EditorKind::Cursor, "cursor"),
+                &path,
+                OpenTarget::Folder
+            ),
             vec![
                 OsString::from("--new-window"),
                 OsString::from("/tmp/agent-worktree")
@@ -460,7 +532,7 @@ mod tests {
     fn zed_launch_args_keep_single_path_arg() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::Zed, "zed"), &path, true),
+            editor_launch_args(&detected(EditorKind::Zed, "zed"), &path, OpenTarget::Folder),
             vec![OsString::from("/tmp/agent-worktree")]
         );
     }
@@ -470,7 +542,11 @@ mod tests {
     fn a_single_file_opens_without_a_new_window() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree/src/main.rs");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::VsCode, "code"), &path, false),
+            editor_launch_args(
+                &detected(EditorKind::VsCode, "code"),
+                &path,
+                OpenTarget::File
+            ),
             vec![OsString::from("/tmp/agent-worktree/src/main.rs")]
         );
     }

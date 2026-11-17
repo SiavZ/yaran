@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ProviderKind;
 
+/// One agent's own settings: its context mode, permission bypass, envelope
+/// check and prompts, stored with the agent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionSettings {
@@ -65,6 +67,7 @@ pub struct SessionSettings {
 ///
 /// Injected at the session-settings layer so the policy follows the role,
 /// independent of whether the underlying harness is Claude or Codex.
+// backtick-ok: a system prompt handed to the agent CLI, never a status
 pub const ORCHESTRATOR_SYSTEM_PROMPT: &str = "\
 You are running in Yaran Orchestrator mode.
 
@@ -96,8 +99,10 @@ pub enum ContextMode {
 }
 
 impl ContextMode {
+    /// Every mode, in the order a chooser lists them.
     pub const ALL: [ContextMode; 3] = [Self::Attended, Self::Orchestrator, Self::Worker];
 
+    /// The mode's stored token.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Attended => "attended",
@@ -106,6 +111,7 @@ impl ContextMode {
         }
     }
 
+    /// The mode's display name.
     pub fn label(self) -> &'static str {
         match self {
             Self::Attended => "Attended",
@@ -118,6 +124,7 @@ impl ContextMode {
 /// Env vars derived from [`SessionSettings`] for a spawned agent PTY.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PerSessionEnv {
+    /// The variables, in the order they are set.
     pub vars: Vec<(String, String)>,
 }
 
@@ -143,6 +150,10 @@ impl SessionSettings {
     }
 
     /// Serialise for storage. Always valid JSON.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: every field serialises.
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("SessionSettings serialises")
     }
@@ -189,6 +200,10 @@ impl SessionSettings {
     /// Every agent launch appends these through
     /// [`crate::agent_env::session_settings_env`], after the YARAN_* identity
     /// and before the user's `[env]`.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "the bool is the [amq.inject] verify_envelope setting exactly as the config holds it"
+    )]
     pub fn to_pty_env(
         &self,
         provider: &ProviderKind,
@@ -226,7 +241,7 @@ impl SessionSettings {
     }
 
     /// Extra CLI args YOLO adds for providers that take it as a flag rather
-    /// than through a wrapper env var (fork c2c44378: OpenCode `--auto`).
+    /// than through a wrapper env var (fork c2c44378: `OpenCode` `--auto`).
     /// Appended after the provider's own args, resume args included.
     /// The launch request builders carry them in `AgentLaunchRequest::yolo_args`
     /// and `run_agent_launch_job` appends them.
@@ -261,13 +276,13 @@ mod tests {
         assert_eq!(s.compact_instructions_path, None);
         assert!(s.is_default());
         assert_eq!(s.effective_system_prompt(), None);
-        assert!(
-            s.yolo_launch_args(&ProviderKind::from_str("opencode"))
-                .is_empty()
+        assert_eq!(
+            s.yolo_launch_args(&ProviderKind::from_str("opencode")),
+            Vec::<std::string::String>::new()
         );
     }
 
-    /// c2c44378: OpenCode's YOLO is `--auto` on the command line, after any
+    /// c2c44378: `OpenCode`'s YOLO is `--auto` on the command line, after any
     /// resume args; no other provider gets a flag from it.
     #[test]
     fn opencode_yolo_launch_adds_auto() {
@@ -276,19 +291,18 @@ mod tests {
             yolo_permissions: true,
             ..SessionSettings::default()
         };
-        assert!(
-            SessionSettings::default()
-                .yolo_launch_args(&opencode)
-                .is_empty()
+        assert_eq!(
+            SessionSettings::default().yolo_launch_args(&opencode),
+            Vec::<std::string::String>::new()
         );
         assert_eq!(yolo.yolo_launch_args(&opencode), vec!["--auto"]);
         let mut resumed = vec!["--continue".to_string()];
         resumed.extend(yolo.yolo_launch_args(&opencode));
         assert_eq!(resumed, vec!["--continue", "--auto"]);
         for other in ["claude", "codex", "jcode"] {
-            assert!(
-                yolo.yolo_launch_args(&ProviderKind::from_str(other))
-                    .is_empty()
+            assert_eq!(
+                yolo.yolo_launch_args(&ProviderKind::from_str(other)),
+                Vec::<std::string::String>::new()
             );
         }
     }

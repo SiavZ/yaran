@@ -115,6 +115,7 @@ fn test_paths(home: &Path) -> YaranPaths {
         worktrees_root: home.join("worktrees"),
         lock_path: home.join("yaran.lock"),
         root: home.to_path_buf(),
+        socket_path: home.join("yaran.sock"),
     }
 }
 
@@ -407,9 +408,8 @@ fn unambiguous_legacy_path_marker_upgrades_to_exact_owner() {
     reconcile_amq_root(&root, "store-a", Some(&store), &mut rows).unwrap();
 
     assert_eq!(rows[0].agent_handle(), "agent");
-    let owner = match marker_state(&root, "agent").unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("legacy marker was not upgraded"),
+    let MarkerState::Owner(owner) = marker_state(&root, "agent").unwrap() else {
+        panic!("legacy marker was not upgraded")
     };
     assert_eq!(owner.store_id, "store-a");
     assert_eq!(owner.session_id, "session-a");
@@ -432,9 +432,8 @@ fn ambiguous_legacy_path_is_preserved_and_local_handle_is_suffixed() {
 
     assert_eq!(rows[0].agent_handle(), "agent-2");
     assert!(root.join("agents/agent/.dux-amq-source").is_symlink());
-    let owner = match marker_state(&root, "agent-2").unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("replacement owner marker missing"),
+    let MarkerState::Owner(owner) = marker_state(&root, "agent-2").unwrap() else {
+        panic!("replacement owner marker missing")
     };
     assert_eq!(owner.session_id, "a-session");
 }
@@ -525,9 +524,9 @@ fn spawn_failure_after_persist_leaves_retryable_owned_row() {
 
     let loaded = store.load_sessions_including_deleted().unwrap();
     assert_eq!(loaded.len(), 1);
-    let owner = match marker_state(&amq_root, loaded[0].agent_handle()).unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("reserved owner marker missing"),
+    let MarkerState::Owner(owner) = marker_state(&amq_root, loaded[0].agent_handle()).unwrap()
+    else {
+        panic!("reserved owner marker missing")
     };
     assert_eq!(owner.store_id, "store-a");
     assert_eq!(owner.session_id, "session-a");
@@ -725,7 +724,7 @@ fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
     let kill_wake = |reaper: &std::thread::JoinHandle<_>| {
         if let (false, Some(pid)) = (
             reaper.is_finished(),
-            rustix::process::Pid::from_raw(wake_pid as i32),
+            rustix::process::Pid::from_raw(i32::try_from(wake_pid).unwrap()),
         ) {
             let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
         }
@@ -733,9 +732,11 @@ fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
     // A hang guard only: every verdict below waits on an event, never a clock.
     let deadline = Instant::now() + Duration::from_secs(30);
     while !ready.exists() {
-        if reaper.is_finished() {
-            panic!("wake stand-in exited early: {:?}", reaper.join());
-        }
+        assert!(
+            !reaper.is_finished(),
+            "wake stand-in exited early: {:?}",
+            reaper.join()
+        );
         if Instant::now() >= deadline {
             kill_wake(&reaper);
             panic!("wake stand-in never installed its SIGTERM handler");
@@ -804,9 +805,8 @@ fn tombstone_terminates_recorded_wake_pid_and_keeps_inbox() {
     let _ = reaper.join().unwrap();
 
     assert!(root.join("agents/agent").is_dir());
-    let owner = match marker_state(&root, "agent").unwrap() {
-        MarkerState::Owner(owner) => owner,
-        _ => panic!("owner marker missing"),
+    let MarkerState::Owner(owner) = marker_state(&root, "agent").unwrap() else {
+        panic!("owner marker missing")
     };
     assert_eq!(owner.wake_pid, None);
     assert!(!config_raw(&root).contains("\"agent\""));

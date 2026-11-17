@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest"
 import {
   FLIGHT_ATTACH_HOLD_MS,
   FLIGHT_CHROME_SLACK_MS,
+  FLIGHT_EASE,
   FLIGHT_TRAVEL_HOLD_MS,
   FLIGHT_TRAVEL_MS,
   flapMounted,
   flapVisible,
+  flightEaseProgress,
   flightForMode,
   flightForModeFrom,
   flightHoldMs,
@@ -61,12 +63,18 @@ describe("the phone's theater flight, stage by stage", () => {
     expect(flightForModeFrom("expanding", true, CHROME_MS)).toBe("floating")
   })
 
-  it("treats every later interruption as a real gesture the other way", () => {
-    // By then the cluster is somewhere else, and it has to travel back.
-    expect(flightForModeFrom("detaching", false, CHROME_MS)).toBe("expanding")
+  it("turns a cluster that is in the air around where it is", () => {
+    // Mid-flight the cluster is the pill, somewhere between the two ends, so
+    // the gesture the other way is the flight the other way, starting now:
+    // neither chrome stage, which would put the flap back on the band first or
+    // leave the pill flying away from the dock it was just asked back to.
+    expect(flightForModeFrom("detaching", false, CHROME_MS)).toBe("returning")
+    expect(flightForModeFrom("returning", true, CHROME_MS)).toBe("detaching")
+    expect(flightForModeFrom("attaching", true, CHROME_MS)).toBe("detaching")
+  })
+
+  it("starts a whole gesture from either resting state", () => {
     expect(flightForModeFrom("floating", false, CHROME_MS)).toBe("expanding")
-    expect(flightForModeFrom("returning", true, CHROME_MS)).toBe("collapsing")
-    expect(flightForModeFrom("attaching", true, CHROME_MS)).toBe("collapsing")
     expect(flightForModeFrom("docked", true, CHROME_MS)).toBe("collapsing")
   })
 
@@ -228,5 +236,29 @@ describe("the shadow that fades rather than pops", () => {
   it("is stable across calls, so a second flight fades like the first", () => {
     const shadow = "rgba(0, 0, 0, 0.5) 0 1px 2px"
     expect(transparentShadow(shadow)).toBe(transparentShadow(shadow))
+  })
+})
+
+describe("the flight's easing, as the browser runs it", () => {
+  it("names the same curve it computes", () => {
+    expect(FLIGHT_EASE).toBe("cubic-bezier(0.2, 0, 0, 1)")
+  })
+
+  it("starts at rest, ends at rest and never runs backwards", () => {
+    expect(flightEaseProgress(0)).toBe(0)
+    expect(flightEaseProgress(1)).toBe(1)
+    let last = 0
+    for (let i = 1; i <= 100; i++) {
+      const p = flightEaseProgress(i / 100)
+      expect(p).toBeGreaterThanOrEqual(last)
+      last = p
+    }
+  })
+
+  it("decelerates: most of the distance is covered in the first half of the time", () => {
+    // A known point on cubic-bezier(0.2, 0, 0, 1): the parameter 0.5 lands at
+    // x = 0.075 + 0.125 = 0.2, y = 0.375 + 0.125 = 0.5.
+    expect(flightEaseProgress(0.2)).toBeCloseTo(0.5, 6)
+    expect(flightEaseProgress(0.5)).toBeGreaterThan(0.85)
   })
 })

@@ -16,6 +16,7 @@
 // Uses:
 // src/lib/appMenu.ts
 // ├── @yaran/protocol:src/uri.ts
+// ├── src/lib/authGate.ts
 // ├── src/lib/configApi.ts
 // ├── src/lib/creationMenus.ts
 // ├── src/lib/notify.ts
@@ -28,6 +29,7 @@
 // ├── src/components/AppMenu.tsx
 // ├── src/components/AppMenuSheet.test.tsx
 // ├── src/components/AppMenuSheet.tsx
+// ├── src/components/CustomizeWebappDialog.tsx
 // ├── src/components/TheaterPill.test.tsx
 // ├── src/lib/appMenu.test.ts
 // └── src/lib/useAppMenuContext.ts
@@ -44,8 +46,10 @@ import {
   Clock,
   FileCode,
   FolderGit2,
+  FolderKanban,
   GitPullRequestArrow,
   Globe,
+  LogOut,
   Plus,
   RefreshCw,
   Rocket,
@@ -57,8 +61,9 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { HOME_URI, SETTINGS_URI } from "@yaran/protocol/uri"
-import { notifyError } from "./notify"
+import { notifyError, notifyInfo } from "@/lib/notify"
 
+import { signOut } from "@/lib/authGate"
 import { configApi } from "@/lib/configApi"
 import { addProjectMenuItems, newMenuItems } from "@/lib/creationMenus"
 import {
@@ -71,6 +76,7 @@ import {
   openMacrosDialog,
   openCloudDialog,
   openConnectPhone,
+  openProjects,
   sortAgents,
 } from "@/lib/store"
 
@@ -103,7 +109,7 @@ export interface AppMenuSeparator {
 
 export interface AppMenuContext {
   /** Whether `gh` is usable, which gates the from-PR agent variant here as it
-   *  does in the launcher corner's and the per-project `⋯` menus. */
+   *  does in the launcher's New dialog and the per-project `⋯` menus. */
   ghAvailable: boolean
   /** Whether the integration is switched on, a different question from whether
    *  `gh` works. It gates "Re-check GitHub", which exists for when `gh` does
@@ -116,6 +122,12 @@ export interface AppMenuContext {
   /** Whether this machine is paired with an org and the page is NOT in the app.
    *  Gates "Connect a phone…": there is no QR code to show otherwise. */
   phonePairing: boolean
+  /** Whether this browser holds a session it can end: a password is set and
+   *  this page signed in with it. False on a server with no password, or a
+   *  connection the password does not apply to, where there is nothing to sign
+   *  out of and an entry that did nothing would be a lie. Required, so a new
+   *  anchor cannot silently leave Sign out off by saying nothing. */
+  canSignOut: boolean
 }
 
 // The device group: present only when it has an entry, so its separator never
@@ -154,6 +166,10 @@ function deviceEntries(ctx: AppMenuContext): AppMenuEntry[] {
   return items.length > 0 ? [{ kind: "separator", id: "sep-device" }, ...items] : []
 }
 
+/** The config editor's entry, which the Settings dialog names as the way to
+ * everything it does not hold, so the two always say the same words. */
+export const EDIT_CONFIG_TITLE = "Edit config file…"
+
 /**
  * The app menu, top level first. Resist gating entries on the context without a
  * real reason: an entry that appears and disappears is harder to learn than one
@@ -161,7 +177,7 @@ function deviceEntries(ctx: AppMenuContext): AppMenuEntry[] {
  */
 export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
   // The creation submenus splice in the shared lists from `creationMenus.ts`
-  // verbatim, the same ones the launcher corner renders. An annotation rather
+  // verbatim, the same ones the launcher's New dialog reads. An annotation rather
   // than a cast, so a future divergence between the two unions fails here
   // instead of rendering wrong.
   const asEntries = (
@@ -187,6 +203,16 @@ export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
       title: "Add project",
       icon: FolderGit2,
       entries: asEntries(addProjectMenuItems()),
+    },
+    // Every project and orphaned group, each with its whole menu. Beside the
+    // way to add one because it is the way to manage one: without it, a
+    // project with no agents is reachable only through the New agent picker.
+    {
+      kind: "item",
+      id: "projects",
+      title: "Projects…",
+      icon: FolderKanban,
+      run: () => openProjects(),
     },
     { kind: "separator", id: "sep-create" },
     {
@@ -239,7 +265,7 @@ export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
         {
           kind: "item",
           id: "edit-config",
-          title: "Edit config file…",
+          title: EDIT_CONFIG_TITLE,
           icon: FileCode,
           run: () => openConfigEditor(),
         },
@@ -341,6 +367,38 @@ export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
       icon: PartyPopper,
       run: () => openReleaseNotes(),
     },
+    // Last, behind its own separator, so it is never the item a hurried click
+    // lands on. No ellipsis and no confirm: it loses nothing (the URL and every
+    // unsaved draft stay in this page and come back with the next sign-in), and
+    // the login page that replaces the app says what happened.
+    ...(ctx.canSignOut
+      ? ([
+          { kind: "separator", id: "sep-sign-out" },
+          {
+            kind: "item",
+            id: "sign-out",
+            title: "Sign out",
+            icon: LogOut,
+            run: () => {
+              void signOut().then((answer) => {
+                if (answer.kind === "ok" && answer.reopened) {
+                  // The screen came straight back, so it cannot say what
+                  // happened; this does.
+                  notifyInfo(
+                    "Signed out. This connection doesn't need a password, so yaran opened again.",
+                  )
+                } else if (answer.kind === "unreachable") {
+                  notifyError(
+                    "Could not reach yaran to sign out, so this browser is still signed in. Try again once yaran is reachable.",
+                  )
+                } else if (answer.kind === "refused") {
+                  notifyError(answer.message)
+                }
+              })
+            },
+          },
+        ] as AppMenuEntry[])
+      : []),
   ]
 }
 

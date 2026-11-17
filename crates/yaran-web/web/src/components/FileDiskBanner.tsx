@@ -15,6 +15,9 @@ interface FileDiskBannerProps {
   onReload: () => void
   onDismiss: () => void
   onCloseTab: () => void
+  // Another operation is out on the file (lib/editorLane.ts); Reload would
+  // start a second one, so it waits.
+  busy?: boolean
 }
 
 // The in-pane notice that the file on disk is no longer what this buffer holds.
@@ -33,6 +36,7 @@ export function FileDiskBanner({
   onReload,
   onDismiss,
   onCloseTab,
+  busy = false,
 }: FileDiskBannerProps) {
   if (state === "fresh") return null
   const deleted = state === "deleted"
@@ -45,12 +49,12 @@ export function FileDiskBanner({
       // A live region: the banner appears without the user having done
       // anything, so a screen reader has to be told.
       role="status"
-      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-yaran-warning/40 bg-yaran-warning/10 px-3 py-2 text-sm"
     >
       {deleted ? (
-        <Trash2 className="size-4 shrink-0 text-amber-500" />
+        <Trash2 className="size-4 shrink-0 text-yaran-warning" />
       ) : (
-        <CircleAlert className="size-4 shrink-0 text-amber-500" />
+        <CircleAlert className="size-4 shrink-0 text-yaran-warning" />
       )}
       <span className="min-w-0 flex-1">
         {deleted ? (
@@ -79,7 +83,7 @@ export function FileDiskBanner({
           Close tab
         </Button>
       ) : (
-        <Button size="sm" variant="outline" onClick={onReload}>
+        <Button size="sm" variant="outline" disabled={busy} onClick={onReload}>
           <RotateCw />
           Reload from disk
         </Button>

@@ -1,14 +1,16 @@
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 /// Bracket paste mode start marker: `ESC [ 200 ~`
-pub const BRACKET_PASTE_START: &[u8] = b"\x1b[200~";
+pub(crate) const BRACKET_PASTE_START: &[u8] = b"\x1b[200~";
 /// Bracket paste mode end marker: `ESC [ 201 ~`
-pub const BRACKET_PASTE_END: &[u8] = b"\x1b[201~";
+pub(crate) const BRACKET_PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Focus-in report (DEC private mode 1004): `ESC [ I`.
-pub const FOCUS_GAINED_SEQ: &[u8] = b"\x1b[I";
+pub(crate) const FOCUS_GAINED_SEQ: &[u8] = b"\x1b[I";
 /// Focus-out report (DEC private mode 1004): `ESC [ O`.
-pub const FOCUS_LOST_SEQ: &[u8] = b"\x1b[O";
+pub(crate) const FOCUS_LOST_SEQ: &[u8] = b"\x1b[O";
 
 /// Recognize a terminal focus report emitted while DEC mode 1004 is enabled.
 ///
@@ -18,7 +20,7 @@ pub const FOCUS_LOST_SEQ: &[u8] = b"\x1b[O";
 /// parameterized sequences; the CSI splitter always delivers them whole, so the
 /// interactive input path can intercept and drop them instead of forwarding the
 /// host's report into the child PTY.
-pub fn parse_focus_event(seq: &[u8]) -> Option<bool> {
+pub(crate) fn parse_focus_event(seq: &[u8]) -> Option<bool> {
     if seq == FOCUS_GAINED_SEQ {
         Some(true)
     } else if seq == FOCUS_LOST_SEQ {
@@ -53,7 +55,7 @@ pub fn parse_focus_event(seq: &[u8]) -> Option<bool> {
 ///
 /// Bracketed-paste content is exempt at the CALL SITE, not here: pasted text
 /// really can contain these bytes, and a paste is user data.
-pub fn is_device_report(seq: &[u8]) -> bool {
+pub(crate) fn is_device_report(seq: &[u8]) -> bool {
     if let Some(body) = seq.strip_prefix(b"\x1b]") {
         return body.ends_with(b"\x07") || body.ends_with(b"\x1b\\");
     }
@@ -70,32 +72,45 @@ pub fn is_device_report(seq: &[u8]) -> bool {
     }
 }
 
-/// Normalize the newlines of a bracketed-paste BODY chunk for a child that
-/// never enabled DECSET 2004: every LF becomes CR (a classic terminal paste
-/// sends CR per line break), and a CR-LF pair collapses to one CR rather
-/// than doubling. `prev_cr` threads the "last byte was CR" fact across
-/// chunks, because a pair can straddle two reads; the returned bool is the
-/// value to thread into the next chunk. Mirrors the string-side
+/// The newline normalizer for the bracketed-paste BODY chunks of one paste,
+/// for a child that never enabled DECSET 2004: every LF becomes CR (a classic
+/// terminal paste sends CR per line break), and a CR-LF pair collapses to one
+/// CR rather than doubling. It carries the "last byte was CR" fact from chunk
+/// to chunk, because a pair can straddle two reads. Mirrors the string-side
 /// normalization in `App::paste_to_center_pty`.
-pub fn normalize_paste_newlines(bytes: &[u8], mut prev_cr: bool) -> (Vec<u8>, bool) {
-    let mut out = Vec::with_capacity(bytes.len());
-    for &b in bytes {
-        if b == b'\n' {
-            if !prev_cr {
-                out.push(b'\r');
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PasteNewlines {
+    prev_cr: bool,
+}
+
+impl PasteNewlines {
+    /// Normalize one chunk, carrying its trailing CR into the next one.
+    pub(crate) fn normalize(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        for &b in bytes {
+            if b == b'\n' {
+                if !self.prev_cr {
+                    out.push(b'\r');
+                }
+                self.prev_cr = false;
+            } else {
+                out.push(b);
+                self.prev_cr = b == b'\r';
             }
-            prev_cr = false;
-        } else {
-            out.push(b);
-            prev_cr = b == b'\r';
         }
+        out
     }
-    (out, prev_cr)
+
+    /// Whether the last chunk ended in a CR.
+    #[cfg(test)]
+    fn after_cr(self) -> bool {
+        self.prev_cr
+    }
 }
 
 /// Returns `true` if the byte sequence is an SGR mouse event (`\x1b[<…M` or
 /// `\x1b[<…m`).
-pub fn is_sgr_mouse(seq: &[u8]) -> bool {
+pub(crate) fn is_sgr_mouse(seq: &[u8]) -> bool {
     seq.len() >= 6
         && seq[0] == 0x1b
         && seq[1] == b'['
@@ -136,7 +151,7 @@ fn sgr_button(button_bits: u16) -> Option<MouseButton> {
 ///   - Cx = column (1-based)
 ///   - Cy = row (1-based)
 ///   - M = press/motion, m = release
-pub fn parse_sgr_mouse(seq: &[u8]) -> Option<MouseEvent> {
+pub(crate) fn parse_sgr_mouse(seq: &[u8]) -> Option<MouseEvent> {
     if !is_sgr_mouse(seq) {
         return None;
     }
@@ -155,7 +170,7 @@ pub fn parse_sgr_mouse(seq: &[u8]) -> Option<MouseEvent> {
 
     let is_release = final_byte == b'm';
     let is_motion = cb & 32 != 0;
-    let button_bits = cb & 0b11000011; // mask out motion bit (bit 5) and modifier bits (4,3)
+    let button_bits = cb & 0b1100_0011; // mask out motion bit (bit 5) and modifier bits (4,3)
 
     let modifiers = sgr_modifiers(cb);
 
@@ -195,7 +210,7 @@ pub fn parse_sgr_mouse(seq: &[u8]) -> Option<MouseEvent> {
 /// a click at column `origin_col + 1` maps to translated column 1. Returns
 /// `None` if the sequence is not a valid SGR mouse event or the click falls on
 /// or before the origin.
-pub fn translate_sgr_mouse(seq: &[u8], origin_col: u16, origin_row: u16) -> Option<Vec<u8>> {
+pub(crate) fn translate_sgr_mouse(seq: &[u8], origin_col: u16, origin_row: u16) -> Option<Vec<u8>> {
     if !is_sgr_mouse(seq) {
         return None;
     }
@@ -215,7 +230,7 @@ pub fn translate_sgr_mouse(seq: &[u8], origin_col: u16, origin_row: u16) -> Opti
         return None;
     }
 
-    Some(format!("\x1b[<{cb};{tx};{ty}{}", final_byte as char).into_bytes())
+    Some(format!("\x1b[<{cb};{tx};{ty}{}", char::from(final_byte)).into_bytes())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,19 +245,40 @@ enum SequenceStatus {
 /// UTF-8 and SGR mouse reports share one byte stream; the parser holds
 /// incomplete trailing bytes so callers need not splice buffers themselves.
 #[derive(Debug, Clone, Default)]
-pub struct RawInputParser {
+pub(crate) struct RawInputParser {
     pending: Vec<u8>,
     in_bracket_paste: bool,
+    /// When the held bytes started looking like a host's OSC answer, so a
+    /// reply whose end never comes is dropped after [`HOST_REPLY_HOLD`].
+    host_reply_since: Option<Instant>,
+}
+
+/// How long an unfinished OSC shaped like a host's answer is held for the rest
+/// of it. A reply split by a slow link (SSH, mosh) can arrive in two reads well
+/// past the ambiguity timeout, and typing either half at the child is the harm
+/// being avoided; the bound keeps a reply that never finishes from holding
+/// input for longer than this.
+pub(crate) const HOST_REPLY_HOLD: Duration = Duration::from_secs(1);
+
+/// Whether `pending` begins the way a host's OSC answer does: `ESC ]`, a
+/// numeric selector, then `;` or nothing more yet. A lone `ESC ]` is not, so
+/// a typed Alt-] still resolves on the ambiguity timeout.
+fn is_host_reply_shaped(pending: &[u8]) -> bool {
+    let Some(body) = pending.strip_prefix(b"\x1b]") else {
+        return false;
+    };
+    let digits = body.iter().take_while(|b| b.is_ascii_digit()).count();
+    digits > 0 && body.get(digits).is_none_or(|&b| b == b';')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedSequence {
+pub(crate) struct ParsedSequence {
     pub bytes: Vec<u8>,
     pub in_bracket_paste: bool,
 }
 
 impl RawInputParser {
-    pub fn feed_sequences(&mut self, bytes: &[u8]) -> Vec<ParsedSequence> {
+    pub(crate) fn feed_sequences(&mut self, bytes: &[u8]) -> Vec<ParsedSequence> {
         self.pending.extend_from_slice(bytes);
         let mut sequences = Vec::new();
 
@@ -268,39 +304,89 @@ impl RawInputParser {
             }
         }
 
+        self.note_pending_changed();
         sequences
     }
 
-    pub fn resolve_pending_esc(&mut self) -> Option<Vec<u8>> {
-        if self.pending == [0x1b] {
-            self.pending.clear();
-            Some(vec![0x1b])
+    /// Whether the held bytes are a host's answer still arriving. Inside a
+    /// bracketed paste they are user data, never a reply.
+    fn holds_host_reply(&self) -> bool {
+        !self.in_bracket_paste && is_host_reply_shaped(&self.pending)
+    }
+
+    fn note_pending_changed(&mut self) {
+        if self.holds_host_reply() {
+            self.host_reply_since.get_or_insert_with(Instant::now);
         } else {
-            None
+            self.host_reply_since = None;
         }
     }
 
-    pub fn in_bracket_paste(&self) -> bool {
+    /// Drop a held host answer that has waited [`HOST_REPLY_HOLD`] for its end
+    /// by `now`. Returns whether anything was dropped.
+    pub(crate) fn expire_held_host_reply(&mut self, now: Instant) -> bool {
+        let expired = self
+            .host_reply_since
+            .is_some_and(|since| now.saturating_duration_since(since) >= HOST_REPLY_HOLD);
+        if expired {
+            self.pending.clear();
+            self.host_reply_since = None;
+        }
+        expired
+    }
+
+    /// Whether the held bytes are a keystroke the parser cannot tell from the
+    /// start of a longer sequence: a bare Escape, or an `ESC ]` (Alt-]) with
+    /// no BEL or ST behind it yet that is not shaped like a host's answer.
+    /// Once the ambiguity timeout passes with nothing more, it was typed. A
+    /// reply-shaped one is held instead (see [`Self::expire_held_host_reply`]).
+    pub(crate) fn pending_resolves_on_timeout(&self) -> bool {
+        self.pending == [0x1b] || (self.pending.starts_with(b"\x1b]") && !self.holds_host_reply())
+    }
+
+    /// Release what [`Self::pending_resolves_on_timeout`] holds as the
+    /// keystrokes it was: the Escape or the `ESC ]` on its own, then whatever
+    /// was typed after it parsed afresh, so a later BEL (Ctrl-g) is its own key
+    /// rather than the end of an OSC that swallows everything before it.
+    pub(crate) fn resolve_pending_esc(&mut self) -> Vec<ParsedSequence> {
+        if !self.pending_resolves_on_timeout() {
+            return Vec::new();
+        }
+        let rest = self.pending.split_off(self.pending.len().min(2));
+        let introducer = ParsedSequence {
+            bytes: std::mem::take(&mut self.pending),
+            in_bracket_paste: self.in_bracket_paste,
+        };
+        let mut sequences = vec![introducer];
+        sequences.extend(self.feed_sequences(&rest));
+        sequences
+    }
+
+    pub(crate) fn in_bracket_paste(&self) -> bool {
         self.in_bracket_paste
     }
 
-    pub fn pending(&self) -> &[u8] {
+    pub(crate) fn pending(&self) -> &[u8] {
         &self.pending
     }
 
-    pub fn replace_pending(&mut self, bytes: &[u8]) {
+    pub(crate) fn replace_pending(&mut self, bytes: &[u8]) {
         self.pending.clear();
         self.pending.extend_from_slice(bytes);
+        self.note_pending_changed();
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.pending.clear();
         self.in_bracket_paste = false;
+        self.host_reply_since = None;
     }
 }
 
 /// Measure the CSI sequence starting at `buf[0..2]` (`ESC [`), which runs to
-/// the first byte in the final-byte range.
+/// the first byte in the final-byte range. An ESC before that cancels the
+/// sequence (ECMA-48), so it ends short and the caller reconsiders that ESC as
+/// its own introducer.
 fn scan_csi(buf: &[u8]) -> SequenceStatus {
     let mut i = 2;
     loop {
@@ -308,6 +394,9 @@ fn scan_csi(buf: &[u8]) -> SequenceStatus {
             return SequenceStatus::Incomplete;
         }
         let c = buf[i];
+        if c == 0x1b {
+            return SequenceStatus::Complete(i);
+        }
         i += 1;
         if (0x40..=0x7e).contains(&c) {
             return SequenceStatus::Complete(i);
@@ -369,24 +458,36 @@ fn scan_one_sequence(buf: &[u8]) -> SequenceStatus {
                 }
             }
             b']' => scan_osc(buf),
+            // Alt with a non-ASCII character: the ESC prefix and the whole
+            // character are one keystroke, never split inside the character.
+            lead if utf8_len(lead).is_some() => utf8_sequence(&buf[1..])
+                .map_or(SequenceStatus::Incomplete, |len| {
+                    SequenceStatus::Complete(len + 1)
+                }),
             _ => SequenceStatus::Complete(2),
         }
-    } else if (0xc0..0xfe).contains(&b) {
-        let expected = if b < 0xe0 {
-            2
-        } else if b < 0xf0 {
-            3
-        } else {
-            4
-        };
-        if expected <= buf.len() {
-            SequenceStatus::Complete(expected)
-        } else {
-            SequenceStatus::Incomplete
-        }
+    } else if utf8_len(b).is_some() {
+        utf8_sequence(buf).map_or(SequenceStatus::Incomplete, SequenceStatus::Complete)
     } else {
         SequenceStatus::Complete(1)
     }
+}
+
+/// The length of the UTF-8 character `lead` starts, for a multi-byte lead byte.
+fn utf8_len(lead: u8) -> Option<usize> {
+    match lead {
+        0xc0..0xe0 => Some(2),
+        0xe0..0xf0 => Some(3),
+        0xf0..0xfe => Some(4),
+        _ => None,
+    }
+}
+
+/// The length of the multi-byte character `buf` starts with, once all of it
+/// has arrived.
+fn utf8_sequence(buf: &[u8]) -> Option<usize> {
+    let len = utf8_len(*buf.first()?)?;
+    (len <= buf.len()).then_some(len)
 }
 
 /// Splits a raw byte buffer into complete terminal input sequences.
@@ -394,7 +495,7 @@ fn scan_one_sequence(buf: &[u8]) -> SequenceStatus {
 /// Returns `(complete, remainder)`: fully received sequences, and the trailing
 /// bytes that could start an incomplete one (a partial CSI or UTF-8 character).
 /// Boundaries only; the splitter does not interpret what a sequence means.
-pub fn split_sequences(buf: &[u8]) -> (Vec<&[u8]>, &[u8]) {
+pub(crate) fn split_sequences(buf: &[u8]) -> (Vec<&[u8]>, &[u8]) {
     let mut sequences: Vec<&[u8]> = Vec::new();
     let mut i = 0;
 
@@ -415,6 +516,19 @@ pub fn split_sequences(buf: &[u8]) -> (Vec<&[u8]>, &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alt_with_a_multibyte_character_is_one_sequence() {
+        let (complete, rest) = split_sequences("\x1bé\x1b漢x".as_bytes());
+        assert_eq!(
+            complete,
+            vec!["\x1bé".as_bytes(), "\x1b漢".as_bytes(), b"x".as_slice()]
+        );
+        assert_eq!(rest, b"");
+        let (complete, rest) = split_sequences(b"\x1b\xc3");
+        assert!(complete.is_empty(), "{complete:?}");
+        assert_eq!(rest, b"\x1b\xc3");
+    }
 
     #[test]
     fn parse_focus_event_recognizes_gained_and_lost() {
@@ -488,28 +602,28 @@ mod tests {
                 b"\x1b[O".as_slice(),
             ]
         );
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
     fn single_printable_ascii() {
         let (seqs, rem) = split_sequences(b"a");
         assert_eq!(seqs, vec![b"a".as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
     fn single_control_char() {
         let (seqs, rem) = split_sequences(b"\x07");
         assert_eq!(seqs, vec![b"\x07".as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
     fn del_byte() {
         let (seqs, rem) = split_sequences(b"\x7f");
         assert_eq!(seqs, vec![b"\x7f".as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -517,7 +631,7 @@ mod tests {
         let input = "ñ".as_bytes(); // 0xc3 0xb1
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -525,7 +639,7 @@ mod tests {
         let input = "€".as_bytes(); // 0xe2 0x82 0xac
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -533,7 +647,7 @@ mod tests {
         let input = "𐍈".as_bytes(); // 4-byte UTF-8
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -541,7 +655,7 @@ mod tests {
         let input = b"\x1b[A";
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input.as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -549,7 +663,7 @@ mod tests {
         let input = b"\x1b[5~";
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input.as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -558,7 +672,7 @@ mod tests {
         let input = b"\x1b[1;5C";
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input.as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -566,7 +680,7 @@ mod tests {
         let input = b"\x1bOP";
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input.as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -574,13 +688,13 @@ mod tests {
         let input = b"\x1ba";
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs, vec![input.as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
     fn bare_esc_at_end() {
         let (seqs, rem) = split_sequences(b"\x1b");
-        assert!(seqs.is_empty());
+        assert_eq!(seqs, Vec::<&[u8]>::new());
         assert_eq!(rem, b"\x1b");
     }
 
@@ -589,7 +703,7 @@ mod tests {
         // ESC [ 5: missing final byte
         let input = b"\x1b[5";
         let (seqs, rem) = split_sequences(input);
-        assert!(seqs.is_empty());
+        assert_eq!(seqs, Vec::<&[u8]>::new());
         assert_eq!(rem, input.as_slice());
     }
 
@@ -598,7 +712,7 @@ mod tests {
         // First byte of a 2-byte UTF-8 sequence, missing continuation
         let input = b"\xc3";
         let (seqs, rem) = split_sequences(input);
-        assert!(seqs.is_empty());
+        assert_eq!(seqs, Vec::<&[u8]>::new());
         assert_eq!(rem, input.as_slice());
     }
 
@@ -607,7 +721,7 @@ mod tests {
         // ESC O: missing the third byte
         let input = b"\x1bO";
         let (seqs, rem) = split_sequences(input);
-        assert!(seqs.is_empty());
+        assert_eq!(seqs, Vec::<&[u8]>::new());
         assert_eq!(rem, input.as_slice());
     }
 
@@ -626,7 +740,7 @@ mod tests {
         assert_eq!(seqs[1], b"\x07");
         assert_eq!(seqs[2], b"\x1b[A");
         assert_eq!(seqs[3], "ñ".as_bytes());
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -641,8 +755,8 @@ mod tests {
     #[test]
     fn empty_buffer() {
         let (seqs, rem) = split_sequences(b"");
-        assert!(seqs.is_empty());
-        assert!(rem.is_empty());
+        assert_eq!(seqs, Vec::<&[u8]>::new());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -653,14 +767,14 @@ mod tests {
         assert_eq!(seqs.len(), 2);
         assert_eq!(seqs[0], b"\x1b[5~");
         assert_eq!(seqs[1], b"\x1b[6~");
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
     fn space_byte() {
         let (seqs, rem) = split_sequences(b" ");
         assert_eq!(seqs, vec![b" ".as_slice()]);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -726,7 +840,7 @@ mod tests {
         let input = b"\x1b[<0;50;10M\x1b[<0;50;10m";
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs.len(), 2);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
         assert!(is_sgr_mouse(seqs[0]));
         assert!(is_sgr_mouse(seqs[1]));
     }
@@ -738,62 +852,139 @@ mod tests {
         assert_eq!(seqs.len(), 2);
         assert_eq!(seqs[0], b"\x1b");
         assert_eq!(seqs[1], b"\x1b[<35;138;12M");
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
         assert!(is_sgr_mouse(seqs[1]));
     }
 
     #[test]
     fn parser_keeps_fragmented_csi_pending_until_complete() {
         let mut parser = RawInputParser::default();
-        assert!(parser.feed_sequences(b"\x1b[").is_empty());
+        assert_eq!(
+            parser.feed_sequences(b"\x1b["),
+            Vec::<ParsedSequence>::new()
+        );
         assert_eq!(parser.pending(), b"\x1b[");
 
         let seqs = parser.feed_sequences(b"5~");
         assert_eq!(seqs[0].bytes, b"\x1b[5~".to_vec());
-        assert!(parser.pending().is_empty());
+        assert_eq!(parser.pending(), b"");
     }
 
     #[test]
     fn parser_resolves_timed_out_bare_esc() {
         let mut parser = RawInputParser::default();
-        assert!(parser.feed_sequences(b"\x1b").is_empty());
+        assert_eq!(parser.feed_sequences(b"\x1b"), Vec::<ParsedSequence>::new());
         assert_eq!(parser.pending(), b"\x1b");
-        assert_eq!(parser.resolve_pending_esc(), Some(b"\x1b".to_vec()));
-        assert!(parser.pending().is_empty());
+        let seqs = parser.resolve_pending_esc();
+        assert_eq!(seqs.len(), 1);
+        assert_eq!(seqs[0].bytes, b"\x1b".to_vec());
+        assert_eq!(parser.pending(), b"");
+    }
+
+    #[test]
+    fn parser_flushes_a_timed_out_osc_introducer_as_keystrokes() {
+        let mut parser = RawInputParser::default();
+        assert_eq!(
+            parser.feed_sequences(b"\x1b]fix"),
+            Vec::<ParsedSequence>::new()
+        );
+        assert!(parser.pending_resolves_on_timeout());
+        let flushed: Vec<Vec<u8>> = parser
+            .resolve_pending_esc()
+            .into_iter()
+            .map(|seq| seq.bytes)
+            .collect();
+        assert_eq!(
+            flushed,
+            vec![
+                b"\x1b]".to_vec(),
+                b"f".to_vec(),
+                b"i".to_vec(),
+                b"x".to_vec()
+            ]
+        );
+        assert_eq!(parser.pending(), b"");
+
+        let seqs = parser.feed_sequences(b"\x07");
+        assert_eq!(seqs[0].bytes, b"\x07".to_vec());
+    }
+
+    #[test]
+    fn a_host_reply_split_across_reads_is_held_and_recognised_whole() {
+        let mut parser = RawInputParser::default();
+        assert_eq!(
+            parser.feed_sequences(b"\x1b]11;rgb:0000/"),
+            Vec::<ParsedSequence>::new()
+        );
+        assert!(!parser.pending_resolves_on_timeout());
+        assert_eq!(parser.resolve_pending_esc(), Vec::<ParsedSequence>::new());
+
+        let seqs = parser.feed_sequences(b"0000/0000\x07");
+        assert_eq!(seqs.len(), 1);
+        assert!(is_device_report(&seqs[0].bytes));
+    }
+
+    #[test]
+    fn a_held_host_reply_is_dropped_once_it_has_waited_too_long() {
+        let mut parser = RawInputParser::default();
+        parser.feed_sequences(b"\x1b]11;rgb:00");
+        let start = std::time::Instant::now();
+        assert!(!parser.expire_held_host_reply(start));
+        assert_eq!(parser.pending(), b"\x1b]11;rgb:00");
+
+        assert!(parser.expire_held_host_reply(start + HOST_REPLY_HOLD));
+        assert_eq!(parser.pending(), b"");
+        let seqs = parser.feed_sequences(b"x");
+        assert_eq!(seqs[0].bytes, b"x".to_vec());
+    }
+
+    #[test]
+    fn an_esc_inside_a_csi_cancels_it_so_the_paste_end_marker_still_lands() {
+        let mut parser = RawInputParser::default();
+        let seqs = parser.feed_sequences(b"\x1b[200~ab\x1b[\x1b[201~");
+        assert_eq!(
+            seqs.last().map(|seq| seq.bytes.as_slice()),
+            Some(BRACKET_PASTE_END)
+        );
+        assert!(!parser.in_bracket_paste());
     }
 
     #[test]
     fn parser_does_not_resolve_pending_csi_as_bare_esc() {
         let mut parser = RawInputParser::default();
-        assert!(parser.feed_sequences(b"\x1b[").is_empty());
+        assert_eq!(
+            parser.feed_sequences(b"\x1b["),
+            Vec::<ParsedSequence>::new()
+        );
         assert_eq!(parser.pending(), b"\x1b[");
-        assert!(parser.resolve_pending_esc().is_none());
+        assert!(!parser.pending_resolves_on_timeout());
+        assert_eq!(parser.resolve_pending_esc(), Vec::<ParsedSequence>::new());
         assert_eq!(parser.pending(), b"\x1b[");
     }
 
     #[test]
     fn parser_keeps_alt_key_as_single_sequence() {
         let mut parser = RawInputParser::default();
-        assert!(parser.feed_sequences(b"\x1b").is_empty());
+        assert_eq!(parser.feed_sequences(b"\x1b"), Vec::<ParsedSequence>::new());
         let seqs = parser.feed_sequences(b"x");
         assert_eq!(seqs[0].bytes, b"\x1bx".to_vec());
-        assert!(parser.pending().is_empty());
+        assert_eq!(parser.pending(), b"");
     }
 
     #[test]
     fn parser_does_not_strip_mouse_prefix_after_pending_esc() {
         let mut parser = RawInputParser::default();
-        assert!(parser.feed_sequences(b"\x1b").is_empty());
+        assert_eq!(parser.feed_sequences(b"\x1b"), Vec::<ParsedSequence>::new());
         let seqs = parser.feed_sequences(b"\x1b[<35;138;12M");
         assert_eq!(seqs[0].bytes, b"\x1b".to_vec());
         assert_eq!(seqs[1].bytes, b"\x1b[<35;138;12M".to_vec());
-        assert!(parser.pending().is_empty());
+        assert_eq!(parser.pending(), b"");
     }
 
     #[test]
     fn parser_handles_fragmented_esc_then_sgr_mouse() {
         let mut parser = RawInputParser::default();
-        assert!(parser.feed_sequences(b"\x1b").is_empty());
+        assert_eq!(parser.feed_sequences(b"\x1b"), Vec::<ParsedSequence>::new());
         let first = parser.feed_sequences(b"\x1b[<35;");
         assert_eq!(
             first,
@@ -812,18 +1003,21 @@ mod tests {
                 in_bracket_paste: false,
             }]
         );
-        assert!(parser.pending().is_empty());
+        assert_eq!(parser.pending(), b"");
     }
 
     #[test]
     fn parser_completes_malformed_osc_before_new_escape() {
         let mut parser = RawInputParser::default();
-        assert!(parser.feed_sequences(b"\x1b]11;rgb").is_empty());
+        assert_eq!(
+            parser.feed_sequences(b"\x1b]11;rgb"),
+            Vec::<ParsedSequence>::new()
+        );
         let seqs = parser.feed_sequences(b"\x1b[A");
         assert_eq!(seqs.len(), 2);
         assert_eq!(seqs[0].bytes, b"\x1b]11;rgb");
         assert_eq!(seqs[1].bytes, b"\x1b[A");
-        assert!(parser.pending().is_empty());
+        assert_eq!(parser.pending(), b"");
     }
 
     #[test]
@@ -852,7 +1046,7 @@ mod tests {
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs.len(), 1);
         assert_eq!(seqs[0], input.as_slice());
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -862,7 +1056,7 @@ mod tests {
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs.len(), 1);
         assert_eq!(seqs[0], input.as_slice());
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -873,7 +1067,7 @@ mod tests {
         let (seqs, rem) = split_sequences(input);
         assert_eq!(seqs.len(), 1);
         assert_eq!(seqs[0], input.as_slice());
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -881,7 +1075,7 @@ mod tests {
         // Incomplete OSC: no terminator yet.
         let input = b"\x1b]11;rgb:0000/0000";
         let (seqs, rem) = split_sequences(input);
-        assert!(seqs.is_empty());
+        assert_eq!(seqs, Vec::<&[u8]>::new());
         assert_eq!(rem, input.as_slice());
     }
 
@@ -890,7 +1084,7 @@ mod tests {
         // OSC followed by ESC but no backslash yet.
         let input = b"\x1b]11;rgb:0000/0000/0000\x1b";
         let (seqs, rem) = split_sequences(input);
-        assert!(seqs.is_empty());
+        assert_eq!(seqs, Vec::<&[u8]>::new());
         assert_eq!(rem, input.as_slice());
     }
 
@@ -904,7 +1098,7 @@ mod tests {
         assert_eq!(seqs.len(), 2);
         assert_eq!(seqs[0], b"\x1b]11;rgb:0000/0000/0000\x07");
         assert_eq!(seqs[1], b"a");
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -922,7 +1116,7 @@ mod tests {
         );
         // The full OSC including terminator must be preserved.
         assert_eq!(seqs[0], input.as_slice());
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
     }
 
     #[test]
@@ -1172,7 +1366,7 @@ mod tests {
         input.extend_from_slice(BRACKET_PASTE_END);
 
         let (seqs, rem) = split_sequences(&input);
-        assert!(rem.is_empty());
+        assert_eq!(rem, b"");
         // 1 start marker + 5 chars + 1 end marker = 7 sequences
         assert_eq!(seqs.len(), 7);
         assert_eq!(seqs[0], BRACKET_PASTE_START);
@@ -1192,21 +1386,27 @@ mod tests {
 
     #[test]
     fn normalize_paste_newlines_turns_lf_into_cr() {
-        let (out, prev_cr) = normalize_paste_newlines(b"a\nb\n", false);
+        let mut paste = PasteNewlines::default();
+        let out = paste.normalize(b"a\nb\n");
+        let prev_cr = paste.after_cr();
         assert_eq!(out, b"a\rb\r");
         assert!(!prev_cr);
     }
 
     #[test]
     fn normalize_paste_newlines_collapses_crlf_to_one_cr() {
-        let (out, prev_cr) = normalize_paste_newlines(b"a\r\nb", false);
+        let mut paste = PasteNewlines::default();
+        let out = paste.normalize(b"a\r\nb");
+        let prev_cr = paste.after_cr();
         assert_eq!(out, b"a\rb", "CR-LF must not double into CR-CR");
         assert!(!prev_cr);
     }
 
     #[test]
     fn normalize_paste_newlines_keeps_a_bare_cr() {
-        let (out, prev_cr) = normalize_paste_newlines(b"a\r", false);
+        let mut paste = PasteNewlines::default();
+        let out = paste.normalize(b"a\r");
+        let prev_cr = paste.after_cr();
         assert_eq!(out, b"a\r");
         assert!(prev_cr, "a trailing CR must be reported for the next chunk");
     }
@@ -1215,8 +1415,10 @@ mod tests {
     fn normalize_paste_newlines_threads_a_crlf_pair_across_chunks() {
         // "a\r" then "\nb" split over two reads: the LF opening the second
         // chunk belongs to the CR closing the first and must be dropped.
-        let (first, prev_cr) = normalize_paste_newlines(b"a\r", false);
-        let (second, prev_cr) = normalize_paste_newlines(b"\nb", prev_cr);
+        let mut paste = PasteNewlines::default();
+        let first = paste.normalize(b"a\r");
+        let second = paste.normalize(b"\nb");
+        let prev_cr = paste.after_cr();
         assert_eq!(first, b"a\r");
         assert_eq!(second, b"b");
         assert!(!prev_cr);
@@ -1224,7 +1426,7 @@ mod tests {
 
     #[test]
     fn normalize_paste_newlines_only_the_lf_directly_after_a_cr_is_dropped() {
-        let (out, _) = normalize_paste_newlines(b"\r\r\n\n", false);
+        let out = PasteNewlines::default().normalize(b"\r\r\n\n");
         // \r stays, \r stays, the \n after it is dropped, the lone \n becomes \r.
         assert_eq!(out, b"\r\r\r");
     }

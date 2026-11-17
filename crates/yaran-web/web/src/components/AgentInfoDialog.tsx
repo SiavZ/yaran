@@ -13,6 +13,7 @@ import { InlineCode } from "@yaran/ui-kit/inline-code"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
 import { formatRegularCount } from "@/lib/formatRegularCount"
 import { formatDisplayDate } from "@/lib/projectInfo"
+import { prName, sessionPrs } from "@/lib/pr"
 import { closeAgentInfo, useYaran } from "@/lib/store"
 import type { SessionView } from "@/lib/types"
 import {
@@ -41,7 +42,7 @@ function MissingDirectoryLine({
   const line = missingDirectoryInfoLine(workspace)
   if (line === null) return null
   return (
-    <p className="flex items-center gap-1.5 text-xs text-amber-500">
+    <p className="flex items-center gap-1.5 text-xs text-yaran-warning">
       <TriangleAlert className="size-3.5 shrink-0" />
       {line}
     </p>
@@ -86,6 +87,7 @@ export function AgentInfoDialog() {
     // omit it) and truly differs.
     const { drifted } = branchDriftOf(session.workspace)
     const tabCount = session.tabs.length
+    const prs = sessionPrs(session)
     body = (
       <dl className="flex flex-col gap-3">
         <InfoRow label="Name">
@@ -133,7 +135,7 @@ export function AgentInfoDialog() {
                 // longer matches the branch the agent was created on. Amber +
                 // icon to mirror the TUI's warning-toned drift line, so both
                 // surfaces flag it equally.
-                <p className="flex items-center gap-1.5 text-xs text-amber-500">
+                <p className="flex items-center gap-1.5 text-xs text-yaran-warning">
                   <TriangleAlert className="size-3.5 shrink-0" />
                   The branch changed since creation.
                 </p>
@@ -166,18 +168,22 @@ export function AgentInfoDialog() {
         <InfoRow label="Tabs">
           {formatRegularCount(tabCount, "tab")}
         </InfoRow>
-        {session.pr ? (
-          // Mirrors the TUI Agent Info's "Pull request:" line, including the
-          // "manually attached" cue: this row is where a pin says it is one.
-          <InfoRow label="Pull request">
-            <InlineCode>#{session.pr.number}</InlineCode> ({session.pr.state}){" "}
-            {session.pr.title}
-            {session.pr.overridden ? (
-              <span className="text-muted-foreground">
-                {" "}
-                (manually attached)
-              </span>
-            ) : null}
+        {prs.length > 0 ? (
+          // Mirrors the TUI Agent Info's pull-request lines, including the
+          // "manually attached" cue: this row is where an attachment says it
+          // is one.
+          <InfoRow label={prs.length === 1 ? "Pull request" : "Pull requests"}>
+            {prs.map((pr) => (
+              <div key={pr.url}>
+                <InlineCode>{prName(pr)}</InlineCode> ({pr.state}) {pr.title}
+                {(pr.attached ?? pr.overridden) ? (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    (manually attached)
+                  </span>
+                ) : null}
+              </div>
+            ))}
           </InfoRow>
         ) : null}
       </dl>

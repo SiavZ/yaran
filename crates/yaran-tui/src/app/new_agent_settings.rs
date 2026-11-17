@@ -147,6 +147,10 @@ pub(crate) enum ExtrasLine {
 
 /// The block's lines, in draw (and focus) order. Headings mirror the
 /// settings modal's sections so the two read the same.
+#[expect(
+    clippy::too_many_lines,
+    reason = "every line of the block in draw order, so the order reads straight off the code"
+)]
 pub(crate) fn extras_lines(extras: &NewAgentExtras) -> Vec<ExtrasLine> {
     use yaran_core::session_settings::ContextMode;
     let radio = |on: bool| if on { "(\u{2022})" } else { "( )" }.to_string();
@@ -159,8 +163,7 @@ pub(crate) fn extras_lines(extras: &NewAgentExtras) -> Vec<ExtrasLine> {
     };
     let harness = extras
         .selected()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| "(none)".to_string());
+        .map_or_else(|| "(none)".to_string(), |p| p.as_str().to_string());
     let mut lines = vec![
         row(
             NameNewAgentFocus::Provider,
@@ -343,7 +346,8 @@ impl App {
             }
             NameNewAgentFocus::Input
             | NameNewAgentFocus::RandomizedNameCheckbox
-            | NameNewAgentFocus::CopyChangesCheckbox => {}
+            | NameNewAgentFocus::CopyChangesCheckbox
+            | NameNewAgentFocus::ReviewCopyCheckbox => {}
         }
     }
 
@@ -362,7 +366,7 @@ impl App {
     /// Draw the block into `area` and return each row's hit rect.
     pub(crate) fn render_new_agent_extras(
         &self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         area: Rect,
         lines: &[ExtrasLine],
     ) -> Vec<(Rect, NameNewAgentFocus)> {
@@ -377,8 +381,7 @@ impl App {
         let text = Style::default().fg(self.theme.text_fg);
         let focused = self.theme.selection_style();
         let mut hits = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            let y = area.y + i as u16;
+        for (y, line) in (area.y..).zip(lines.iter()) {
             if y >= area.y + area.height {
                 break;
             }
@@ -498,8 +501,9 @@ mod tests {
             use_existing_branch: false,
             pull_before_create: false,
             copy_uncommitted_changes: false,
+            cloned: None,
         };
-        app.open_name_new_agent_prompt(request).unwrap();
+        app.open_name_new_agent_prompt(request);
     }
 
     fn extras(app: &App) -> &NewAgentExtras {
@@ -521,6 +525,7 @@ mod tests {
             input: Rect::new(10, 5, 30, 1),
             checkbox: None,
             copy_checkbox: None,
+            review_copy_checkbox: None,
         };
         if let PromptState::NameNewAgent { extras, .. } = &mut app.prompt {
             extras.hit_rows = rows;
@@ -589,7 +594,7 @@ mod tests {
     }
 
     /// Mode, YOLO and verify rows reuse the settings modal's toggle, and the
-    /// draft reaches the new session through SetSessionSettings.
+    /// draft reaches the new session through `SetSessionSettings`.
     #[test]
     fn advanced_draft_is_applied_to_the_created_session() {
         let mut app = test_app(default_bindings());

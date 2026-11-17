@@ -11,6 +11,7 @@
 //!   rect so a click can land the caret.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_render.rs
 //! ├── app
@@ -19,15 +20,17 @@
 //! ├── app::components::button
 //! ├── app::modal
 //! ├── app::render
+//! ├── theme
 //! ├── yaran-core::cloud::outcome
 //! ├── yaran-core::cloud::status
 //! └── yaran-core::prose
-//! External: none
+//! External: ratatui
 //!
 //! Used by:
 //! app/cloud_render.rs
 //! ├── app
 //! └── app::cloud_tests
+//! ```
 //! <module-headers:end>
 
 use yaran_core::cloud::outcome::CloudActionOutcome;
@@ -41,12 +44,19 @@ use super::components::{
 };
 use super::modal::ModalFrame;
 use super::render::{centered_rect_exact, render_single_line_cursor_input};
-use super::*;
+use super::{
+    Action, App, ConfirmFocus, Line, OverlayMouseLayout, PromptState, Rect, Result, Span, Style,
+    Theme,
+};
+use crate::theme::FocusState;
+use ratatui::prelude::*;
+use ratatui::symbols::border;
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 /// Blank columns between the border and the content, each side.
 const PAD: u16 = 2;
-/// Columns between the two confirm buttons: enough that a sloppy click cannot hit both.
-const BUTTON_GAP: u16 = 4;
+/// Columns between the two confirm buttons: the one gap every dialog's row uses.
+use super::components::button::BUTTON_GAP;
 
 const LOGOUT_BODY: &str = "Disconnect this machine from Yaran Cloud? The control plane is told \
      to remove it and the credentials stored here are deleted. Pairing it again needs a new \
@@ -81,7 +91,7 @@ pub(crate) fn qr_lines(
 }
 
 impl App {
-    pub(super) fn render_cloud_prompt(&mut self, frame: &mut Frame) {
+    pub(super) fn render_cloud_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::Cloud(prompt) = &self.prompt else {
             return;
         };
@@ -136,7 +146,7 @@ impl App {
     /// `tail` rows under it. Returns the rect of that tail.
     fn cloud_frame(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         title: &str,
         width: u16,
         body: &[Line<'static>],
@@ -146,7 +156,11 @@ impl App {
         let width = width.min(screen.width.max(1));
         let content_width = width.saturating_sub(2 + 2 * PAD).max(1);
         let rows = wrap_styled_lines(body, usize::from(content_width));
-        let body_height = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+        // A short screen clips the body first, so the rows under it (buttons,
+        // the key line) keep their places inside the frame.
+        let body_height = u16::try_from(rows.len())
+            .unwrap_or(u16::MAX)
+            .min(screen.height.saturating_sub(3 + tail).max(1));
         // shortcut: a body taller than the screen is clipped, not scrolled; the
         // tallest (the QR) fits a 40-row terminal. Add scrolling if that bites.
         let area = centered_rect_exact(width, 3 + body_height + tail, screen);
@@ -170,8 +184,15 @@ impl App {
         )
     }
 
-    fn render_cloud_hints(&self, frame: &mut Frame, x: u16, y: u16, width: u16, hints: &[Hint]) {
-        let mut line = modal_hint_line(&self.theme, hints);
+    fn render_cloud_hints(
+        &self,
+        frame: &mut Frame<'_>,
+        x: u16,
+        y: u16,
+        width: u16,
+        hints: &[Hint],
+    ) {
+        let mut line = modal_hint_line(&self.theme, hints, width);
         if let Some(first) = line.spans.first_mut() {
             first.content = first.content.trim_start().to_string().into();
         }
@@ -181,7 +202,7 @@ impl App {
     }
 
     /// The login form. Returns the field's inner rect for the mouse.
-    fn render_cloud_login(&mut self, frame: &mut Frame, login: &CloudLogin) -> Rect {
+    fn render_cloud_login(&mut self, frame: &mut Frame<'_>, login: &CloudLogin) -> Rect {
         let text = self.cloud_text();
         let label = Style::default().fg(self.theme.input_label_fg);
         let mut body: Vec<Line<'static>> = Vec::new();
@@ -234,7 +255,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(self.theme.overlay_field_border_style(true));
+            .border_style(self.theme.overlay_field_border_style(FocusState::Focused));
         let inner = block.inner(field_area);
         let input = login.field();
         Paragraph::new(render_single_line_cursor_input(
@@ -243,7 +264,7 @@ impl App {
             input.cursor,
             self.theme.input_cursor_fg,
             self.theme.input_cursor_bg,
-            true,
+            FocusState::Focused,
         ))
         .block(block)
         .render(field_area, frame.buffer_mut());
@@ -274,7 +295,7 @@ impl App {
     /// A Cancel / act pair under one sentence. Returns (cancel, act) rects.
     fn render_cloud_confirm(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         title: &str,
         body: &'static str,
         act: &'static str,
@@ -285,8 +306,11 @@ impl App {
         let rest = self.cloud_frame(frame, title, 64, &lines, 6);
         let width = shared_button_width(&["Cancel", act]);
         let left = rest.x + rest.width.saturating_sub(2 * width + BUTTON_GAP) / 2;
-        let cancel = Rect::new(left, rest.y + 1, width, 3);
-        let confirm = Rect::new(left + width + BUTTON_GAP, rest.y + 1, width, 3);
+        // Clipped to the rows left inside the frame, so a screen too short for
+        // the dialog never paints or publishes a button past it.
+        let room = rest.intersection(frame.area());
+        let cancel = Rect::new(left, rest.y + 1, width, 3).intersection(room);
+        let confirm = Rect::new(left + width + BUTTON_GAP, rest.y + 1, width, 3).intersection(room);
         let state = |focused: bool| {
             if focused {
                 ButtonState::Focused
@@ -318,7 +342,7 @@ impl App {
 
     fn render_cloud_report(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         title: &str,
         width: u16,
         body: &[Line<'static>],
@@ -330,7 +354,7 @@ impl App {
             rest.y + 1,
             rest.width,
             &[
-                Hint::key(self.bindings.label_for(Action::Confirm), "close"),
+                Hint::key(self.bindings.label_for(Action::Confirm), "done"),
                 Hint::key(self.bindings.label_for(Action::CloseOverlay), "close"),
             ],
         );

@@ -91,7 +91,7 @@ fn post(machine: &Machine, title: &str, minute: u32) -> CardId {
         .store
         .update(|board| {
             board.post(
-                NewCard {
+                &NewCard {
                     kind: Some(CardKind::Task),
                     title: title.to_string(),
                     assignee: Some("Sam".to_string()),
@@ -217,12 +217,12 @@ fn two_machines_replying_on_one_card_keep_both_replies() {
     world
         .b
         .store
-        .update(|board| board.reply(&id, reply("Alex", "Plan B, it is cheaper."), at(5)))
+        .update(|board| board.reply(&id, &reply("Alex", "Plan B, it is cheaper."), at(5)))
         .unwrap();
     world
         .a
         .store
-        .update(|board| board.reply(&id, reply("orchestrator", "Plan A is ready now."), at(7)))
+        .update(|board| board.reply(&id, &reply("orchestrator", "Plan A is ready now."), at(7)))
         .unwrap();
 
     sync_with_git(&world.a.store).unwrap();
@@ -336,7 +336,7 @@ fn the_newer_note_wins_and_a_change_beats_a_delete() {
         };
         board
             .post(
-                NewCard {
+                &NewCard {
                     kind: Some(CardKind::Task),
                     title: title.to_string(),
                     ..NewCard::default()
@@ -421,6 +421,10 @@ fn the_report_says_what_moved() {
 
 static SYNCS: AtomicUsize = AtomicUsize::new(0);
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the real sync, so it keeps the sync's signature"
+)]
 fn counting_sync(_store: &BoardStore) -> Result<SyncReport> {
     SYNCS.fetch_add(1, Ordering::SeqCst);
     Ok(SyncReport::default())

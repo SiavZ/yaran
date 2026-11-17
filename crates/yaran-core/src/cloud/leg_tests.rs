@@ -4,6 +4,7 @@
 //! - Test-only; spawns real child processes, never touches the network.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_tests.rs
 //! ├── cloud::cloudflared::acquire
@@ -18,6 +19,7 @@
 //! Used by:
 //! cloud/leg_tests.rs
 //! └── cloud::leg
+//! ```
 //! <module-headers:end>
 
 use super::*;
@@ -76,7 +78,7 @@ impl CloudIdentity for FakeIdentity {
     fn revision(&self) -> Option<CredentialsRevision> {
         let m = self.machine.lock().unwrap();
         m.as_ref().map(|m| CredentialsRevision {
-            dev: m.token_version as u64,
+            dev: u64::try_from(m.token_version).unwrap(),
             ino: 0,
             len: 0,
             mtime_ns: 0,
@@ -157,7 +159,7 @@ impl Harness {
             unauthorized_confirm_seconds: 1,
             ..CloudLegSettings::default()
         };
-        let ready = self.ready.clone();
+        let ready = std::sync::Arc::clone(&self.ready);
         LegParams {
             probe: Arc::new(move |_| match ready.load(Ordering::SeqCst) {
                 1 => Readiness::Ready { connections: 4 },
@@ -168,7 +170,7 @@ impl Harness {
     }
 
     fn start(&self, params: LegParams, identity: Arc<FakeIdentity>) -> CloudLeg {
-        let events = self.events.clone();
+        let events = std::sync::Arc::clone(&self.events);
         CloudLeg::start(
             params,
             identity,
@@ -206,7 +208,7 @@ impl Harness {
 fn a_paired_leg_reaches_ready_and_stops_without_leaving_anything() {
     let h = Harness::new();
     let id = FakeIdentity::paired(h.dir.path().to_path_buf(), h.port);
-    let leg = h.start(h.params(FAKE_CF), id.clone());
+    let leg = h.start(h.params(FAKE_CF), std::sync::Arc::clone(&id));
     h.wait_for("Ready", |e| matches!(e, CloudLegEvent::Ready { .. }));
     let state = id.read_leg_state().expect("the leg records its child");
     assert_eq!(state.state, "ready");
@@ -227,14 +229,17 @@ fn a_paired_leg_reaches_ready_and_stops_without_leaving_anything() {
     leg.join();
     assert!(!h.dir.path().join("tunnel-token").exists());
     assert!(id.read_leg_state().is_none());
-    assert!(!crate::cloud::cloudflared::child_registry::live().contains(&(state.pid as i32)));
+    assert!(
+        !crate::cloud::cloudflared::child_registry::live()
+            .contains(&i32::try_from(state.pid).unwrap())
+    );
 }
 
 #[test]
 fn a_different_serving_port_is_reported_before_the_spawn() {
     let h = Harness::new();
     let id = FakeIdentity::paired(h.dir.path().to_path_buf(), 3890);
-    let leg = h.start(h.params(FAKE_CF), id.clone());
+    let leg = h.start(h.params(FAKE_CF), std::sync::Arc::clone(&id));
     h.wait_for("Ready", |e| matches!(e, CloudLegEvent::Ready { .. }));
     assert_eq!(id.calls.lock().unwrap().set_origin, vec![h.port]);
     drop(leg);
@@ -250,7 +255,7 @@ fn a_failed_origin_update_stops_as_a_mismatch_and_410_as_revoked() {
         let h = Harness::new();
         let id = FakeIdentity::paired(h.dir.path().to_path_buf(), 3890);
         *id.set_origin.lock().unwrap() = Err(answer);
-        let _leg = h.start(h.params(FAKE_CF), id.clone());
+        let _leg = h.start(h.params(FAKE_CF), std::sync::Arc::clone(&id));
         match h.wait_stopped() {
             LegStop::Revoked { .. } => assert!(expect_revoked),
             LegStop::OriginPortMismatch { paired, serving } => {
@@ -323,7 +328,7 @@ fn unauthorized_with_a_newer_token_version_syncs_and_restarts() {
         "Registered tunnel connection\"}' >&2",
         "Register tunnel error\",\"level\":\"error\",\"error\":\"Unauthorized: x\"}' >&2",
     );
-    let leg = h.start(h.params(&body), id.clone());
+    let leg = h.start(h.params(&body), std::sync::Arc::clone(&id));
     h.wait_for("Healing", |e| *e == CloudLegEvent::Healing);
     let until = Instant::now() + Duration::from_secs(10);
     while id.calls.lock().unwrap().rotate.is_empty() {
@@ -354,7 +359,7 @@ fn unauthorized_with_an_equal_version_rotates_once_then_fails() {
         "Registered tunnel connection\"}' >&2",
         "x\",\"error\":\"Unauthorized: x\"}' >&2",
     );
-    let _leg = h.start(h.params(&body), id.clone());
+    let _leg = h.start(h.params(&body), std::sync::Arc::clone(&id));
     let until = Instant::now() + Duration::from_secs(10);
     while id.calls.lock().unwrap().rotate.is_empty() {
         assert!(Instant::now() < until);
@@ -377,7 +382,7 @@ fn a_revoked_config_answer_stops_and_clock_skew_keeps_the_child() {
         "Registered tunnel connection\"}' >&2",
         "x\",\"error\":\"Unauthorized: x\"}' >&2",
     );
-    let _leg = h.start(h.params(&body), id.clone());
+    let _leg = h.start(h.params(&body), std::sync::Arc::clone(&id));
     h.wait_for(
         "the clock warning",
         |e| matches!(e, CloudLegEvent::Warning(w) if w.contains("clock is off by")),
@@ -398,7 +403,7 @@ fn exit_255_heals_and_a_crash_restarts_with_one_warning() {
          echo x >> {m}\nif [ $(wc -l < {m}) -eq 1 ]; then exit 255; fi\nexit 1",
         m = marker.display()
     );
-    let _leg = h.start(h.params(&body), id.clone());
+    let _leg = h.start(h.params(&body), std::sync::Arc::clone(&id));
     h.wait_for("a restart", |e| {
         matches!(e, CloudLegEvent::Restarting { first: true, .. })
     });

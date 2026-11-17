@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 
@@ -14,6 +14,7 @@ const openCreateAgentFromPr = vi.fn()
 const openAttachWorktree = vi.fn()
 const openAddProject = vi.fn()
 const closeNewAgentPicker = vi.fn()
+const openStandaloneAgentPicker = vi.fn()
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
   return {
@@ -24,13 +25,21 @@ vi.mock("@/lib/store", async (importOriginal) => {
     openAttachWorktree: (...args: unknown[]) => openAttachWorktree(...args),
     openAddProject: (...args: unknown[]) => openAddProject(...args),
     closeNewAgentPicker: (...args: unknown[]) => closeNewAgentPicker(...args),
+    openStandaloneAgentPicker: (...args: unknown[]) =>
+      openStandaloneAgentPicker(...args),
   }
 })
 
 // ProjectMenuItems only mounts inside the (closed) row ⋯ menu, but it reads the
 // store on import; keep the tests focused by rendering nothing for it.
+// The props it was last rendered with are kept, so a test can check what the
+// picker hands its row menus.
+let menuItemsProps: { id: string; onLeave?: () => void } | null = null
 vi.mock("@/components/ProjectMenuItems", () => ({
-  ProjectMenuItems: () => null,
+  ProjectMenuItems: (props: { id: string; onLeave?: () => void }) => {
+    menuItemsProps = props
+    return null
+  },
 }))
 
 // The real store boots on import (localStorage + bootstrap fetch). jsdom doesn't
@@ -93,6 +102,19 @@ describe("NewAgentPickerDialog", () => {
     expect(screen.getByText("zzz", { selector: "code" })).toBeTruthy()
   })
 
+  // New agent… and New terminal from a row's menu take the user somewhere
+  // else, so the picker must not stay open over where they land.
+  it("closes the picker before a row menu item that leaves it", async () => {
+    seed("new")
+    menuItemsProps = null
+    render(<NewAgentPickerDialog />)
+    fireEvent.click(screen.getAllByLabelText("Project actions")[0])
+    await waitFor(() => expect(menuItemsProps).not.toBeNull())
+    expect(menuItemsProps!.onLeave).toBeTypeOf("function")
+    menuItemsProps!.onLeave!()
+    expect(closeNewAgentPicker).toHaveBeenCalledTimes(1)
+  })
+
   it("opens the create-agent name dialog for the clicked project in the new intent", () => {
     seed("new")
     render(<NewAgentPickerDialog />)
@@ -102,6 +124,55 @@ describe("NewAgentPickerDialog", () => {
     expect(openCreateAgent).toHaveBeenCalledTimes(1)
     expect(openCreateAgent).toHaveBeenCalledWith("p1")
     expect(closeNewAgentPicker).toHaveBeenCalledTimes(1)
+  })
+
+  describe("picking from the search field", () => {
+    function seedFront() {
+      mockState = {
+        newAgentPickerOpen: true,
+        newAgentPickerIntent: "new",
+        spine: {
+          projects: [
+            { id: "p1", name: "front-door", default_provider: "claude" },
+            { id: "p2", name: "backend", default_provider: "claude" },
+            { id: "p3", name: "frontier", default_provider: "claude" },
+          ],
+          sessions: [],
+        },
+      } as unknown as YaranState
+    }
+
+    function typeQuery(value: string): HTMLElement {
+      const search = screen.getByLabelText("Search projects")
+      fireEvent.change(search, { target: { value } })
+      return search
+    }
+
+    it("opens the first match on Enter", () => {
+      seedFront()
+      render(<NewAgentPickerDialog />)
+      fireEvent.keyDown(typeQuery("front"), { key: "Enter" })
+      expect(openCreateAgent).toHaveBeenCalledTimes(1)
+      expect(openCreateAgent).toHaveBeenCalledWith("p1")
+    })
+
+    it("moves to the second match with Down, then opens it on Enter", () => {
+      seedFront()
+      render(<NewAgentPickerDialog />)
+      const search = typeQuery("front")
+      fireEvent.keyDown(search, { key: "ArrowDown" })
+      fireEvent.keyDown(search, { key: "Enter" })
+      expect(openCreateAgent).toHaveBeenCalledTimes(1)
+      expect(openCreateAgent).toHaveBeenCalledWith("p3")
+    })
+
+    it("does nothing on Enter when nothing matches", () => {
+      seedFront()
+      render(<NewAgentPickerDialog />)
+      fireEvent.keyDown(typeQuery("zzz"), { key: "Enter" })
+      expect(openCreateAgent).not.toHaveBeenCalled()
+      expect(closeNewAgentPicker).not.toHaveBeenCalled()
+    })
   })
 
   it("does not render a provider selector or a Create button in the new intent", () => {
@@ -379,5 +450,159 @@ describe("NewAgentPickerDialog", () => {
       b.textContent!.includes("Add a new project"),
     )
     expect(footerButton!.parentElement!.className).toContain("shrink-0")
+  })
+
+  // The footer's second door: a standalone agent needs no project, so the
+  // plain new-agent picker offers it beside Add a new project. The flows that
+  // are about a project (from a PR, from a worktree) do not.
+  describe("the footer", () => {
+    function footerButtons(): HTMLButtonElement[] {
+      const add = screen.getByRole("button", { name: "Add a new project…" })
+      return [...add.parentElement!.querySelectorAll("button")]
+    }
+
+    it("offers Add a new project and Add standalone agent in the new intent", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      expect(footerButtons().map((b) => b.textContent)).toEqual([
+        "Add a new project…",
+        "Add standalone agent…",
+      ])
+    })
+
+    it.each(["from_pr", "from_worktree"] as const)(
+      "offers only Add a new project in the %s intent",
+      (intent) => {
+        seed(intent)
+        render(<NewAgentPickerDialog />)
+        expect(
+          screen.queryByRole("button", { name: "Add standalone agent…" }),
+        ).toBeNull()
+        expect(footerButtons().map((b) => b.textContent)).toEqual([
+          "Add a new project…",
+        ])
+      },
+    )
+
+    it("closes the picker before opening the standalone agent flow", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      fireEvent.click(
+        screen.getByRole("button", { name: "Add standalone agent…" }),
+      )
+      expect(closeNewAgentPicker).toHaveBeenCalledTimes(1)
+      expect(openStandaloneAgentPicker).toHaveBeenCalledTimes(1)
+      expect(closeNewAgentPicker.mock.invocationCallOrder[0]).toBeLessThan(
+        openStandaloneAgentPicker.mock.invocationCallOrder[0],
+      )
+      expect(openAddProject).not.toHaveBeenCalled()
+    })
+
+    it("gives both actions a leading icon", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      for (const button of footerButtons()) {
+        expect(button.firstElementChild?.tagName.toLowerCase()).toBe("svg")
+      }
+    })
+
+    it("sizes both actions from one explicit height token with the touch floor", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      const heights = footerButtons().map((b) =>
+        b.className
+          .split(" ")
+          .filter((c) => /(^|:)h-\d+$/.test(c))
+          .sort()
+          .join(" "),
+      )
+      expect(heights[0]).not.toBe("")
+      expect(heights[1]).toBe(heights[0])
+      // 40px on a phone and on any coarse pointer.
+      expect(heights[0]).toContain("max-md:h-10")
+      expect(heights[0]).toContain("pointer-coarse:h-10")
+    })
+
+    it("stacks the actions on a narrow screen and sets them side by side above it", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      const row = footerButtons()[0].parentElement!
+      expect(row.className).toContain("grid-cols-1")
+      // Side by side: two equal columns with the divider's own column between.
+      expect(row.className).toContain("sm:grid-cols-[1fr_auto_1fr]")
+    })
+
+    // jsdom cannot lay out, so the two layouts are pinned by their responsive
+    // classes: the divider takes no box while stacked and appears from sm up.
+    it("divides the actions with a thin rule side by side and none when stacked", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      const row = footerButtons()[0].parentElement!
+      const dividers = row.querySelectorAll('[data-slot="footer-divider"]')
+      expect(dividers).toHaveLength(1)
+      const divider = dividers[0] as HTMLElement
+      // Between the two actions, decorative, and never a click target.
+      expect(divider.previousElementSibling).toBe(footerButtons()[0])
+      expect(divider.nextElementSibling).toBe(footerButtons()[1])
+      expect(divider.getAttribute("aria-hidden")).toBe("true")
+      expect(divider.tagName.toLowerCase()).not.toBe("button")
+      // Stacked: display none, so no horizontal rule and no extra row gap.
+      expect(divider.classList.contains("hidden")).toBe(true)
+      // Side by side: a 1px vertical rule in the theme's border token.
+      expect(divider.classList.contains("sm:block")).toBe(true)
+      expect(divider.classList.contains("w-px")).toBe(true)
+      expect(divider.classList.contains("self-stretch")).toBe(true)
+      expect(divider.classList.contains("bg-border")).toBe(true)
+      expect(divider.className).not.toMatch(/(^|\s)(h-px|border-t|border-b)(\s|$)/)
+      // The row's gap sits on both sides of the rule.
+      expect(row.classList.contains("gap-3")).toBe(true)
+    })
+
+    // jsdom cannot paint a focus ring, so the shared Button's ring classes are
+    // what is pinned: a keyboard user tabbing to either action sees where they are.
+    it("rings both actions under keyboard focus the way the shared Button does", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      for (const button of footerButtons()) {
+        expect(button.className).toContain("outline-none")
+        expect(button.className).toContain("focus-visible:ring-3")
+        expect(button.className).toContain("focus-visible:ring-ring/50")
+        expect(button.className).toContain("focus-visible:border-ring")
+      }
+    })
+
+    it("draws no divider when the footer has a single action", () => {
+      seed("from_pr")
+      render(<NewAgentPickerDialog />)
+      expect(document.querySelector('[data-slot="footer-divider"]')).toBeNull()
+    })
+  })
+
+  // The project rows and their ⋯, under keyboard focus. Classes, because jsdom
+  // cannot lay out or paint.
+  describe("the rows' focus rings", () => {
+    it("rings each row's own button the way the shared Button does", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      const rows = screen.getAllByTestId("project-row")
+      expect(rows.length).toBeGreaterThan(0)
+      for (const row of rows) {
+        const button = row.querySelector(":scope > button")!
+        expect(button.className).toContain("outline-none")
+        expect(button.className).toContain("focus-visible:ring-3")
+        expect(button.className).toContain("focus-visible:ring-ring/50")
+      }
+    })
+
+    it("lets the ⋯ ring out of its clipping reveal wrapper under keyboard focus", () => {
+      seed("new")
+      render(<NewAgentPickerDialog />)
+      for (const trigger of screen.getAllByLabelText("Project actions")) {
+        expect(trigger.className).toContain("focus-visible:ring-3")
+        const wrapper = trigger.parentElement!
+        expect(wrapper.className).not.toMatch(/ring/)
+        expect(wrapper.className).toContain("has-[:focus-visible]:overflow-visible")
+      }
+    })
   })
 })

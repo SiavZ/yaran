@@ -131,18 +131,21 @@ async fn boot_with(
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     if !config.is_empty() {
-        std::fs::write(&paths.config_path, config).unwrap();
+        std::fs::write(&paths.config_path, config).expect("write the test file");
     }
     if let Some(version) = seed_last_seen {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
-        store.set_last_seen_version(version).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
+        store
+            .set_last_seen_version(version)
+            .expect("save the last seen version");
     }
 
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     yaran_core::test_provider::defuse_config(&mut engine.config);
     let (handle, _join) = spawn_engine_thread(engine);
     let app = build_app(
@@ -150,8 +153,10 @@ async fn boot_with(
         Router::new(),
         tune(RouterParams::plain_http().with_release_notes_api_base(api_base)),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         let _ = axum::serve(
             listener,
@@ -194,9 +199,10 @@ async fn await_pending_screen(server: &Server) -> serde_json::Value {
         if !doc["pending_first_load"].is_null() {
             return doc["pending_first_load"].clone();
         }
-        if Instant::now() >= deadline {
-            panic!("no first-load screen was ever offered: {doc}");
-        }
+        assert!(
+            Instant::now() < deadline,
+            "no first-load screen was ever offered: {doc}"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
@@ -209,12 +215,11 @@ async fn await_last_seen(server: &Server, expected: &str) {
         if server.last_seen().as_deref() == Some(expected) {
             return;
         }
-        if Instant::now() >= deadline {
-            panic!(
-                "the stored version never became {expected:?} (it is {:?})",
-                server.last_seen()
-            );
-        }
+        assert!(
+            Instant::now() < deadline,
+            "the stored version never became {expected:?} (it is {:?})",
+            server.last_seen()
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }

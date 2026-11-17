@@ -78,6 +78,8 @@ const SONNER_TEST_IMPORTERS = [
   // duration each report ends up with.
   "components/TerminalPane.clipboard.test.tsx",
   "components/TerminalPane.filedrop.test.tsx",
+  // A blocked agent copy: it asserts the toast's id, stickiness and button.
+  "lib/agentCopy.test.ts",
   // The favicon migration notice.
   "lib/favicon.dom.test.tsx",
   "lib/favicon.test.ts",

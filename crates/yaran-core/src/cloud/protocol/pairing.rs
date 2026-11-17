@@ -9,6 +9,7 @@
 //!   against the pending login by the caller (constant-time), not here.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/pairing.rs
 //! ├── cloud::protocol::rules
@@ -19,6 +20,7 @@
 //! cloud/protocol/pairing.rs
 //! ├── cloud::login
 //! └── cloud::protocol
+//! ```
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};
@@ -29,14 +31,23 @@ use super::rules::{self, Checked, Validate, check, check_opt};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairAuthorizeQuery {
+    /// The pairing protocol version.
     pub v: i64,
+    /// The machine's state value, echoed back to its callback.
     pub state: String,
+    /// The PKCE challenge for the verifier the claim will send.
     pub code_challenge: String,
+    /// The challenge method; always `S256`.
     pub code_challenge_method: String,
+    /// The machine's Ed25519 public key, which signs its later calls.
     pub machine_pubkey: String,
+    /// The name the machine asks for.
     pub machine_name: String,
+    /// The loopback address the browser is sent back to.
     pub callback: String,
+    /// The version of the yaran pairing.
     pub yaran_version: String,
+    /// The local port the tunnel will forward to, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_port: Option<i64>,
 }
@@ -85,10 +96,13 @@ impl Validate for PairAuthorizeQuery {
     }
 }
 
+/// What the person chose on the confirm page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairDecision {
+    /// Pair the machine.
     Approve,
+    /// Refuse it.
     Deny,
 }
 
@@ -96,9 +110,13 @@ pub enum PairDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairConsent {
+    /// The pairing request being answered.
     pub request_id: String,
+    /// The token the confirm page was served with.
     pub csrf: String,
+    /// What the person chose.
     pub decision: PairDecision,
+    /// A machine of theirs this one replaces, when they chose Replace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replace_machine_id: Option<String>,
 }
@@ -119,21 +137,29 @@ impl Validate for PairConsent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PairCallbackQuery {
+    /// The pairing was approved.
     Success(PairCallbackSuccess),
+    /// It was refused or failed.
     Error(PairCallbackError),
 }
 
+/// An approved pairing: the code the machine claims it with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairCallbackSuccess {
+    /// The one-time pair code.
     pub code: String,
+    /// The machine's state value, echoed back.
     pub state: String,
 }
 
+/// A refused or failed pairing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairCallbackError {
+    /// The error code.
     pub error: String,
+    /// The machine's state value, echoed back.
     pub state: String,
 }
 

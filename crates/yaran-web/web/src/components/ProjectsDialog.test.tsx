@@ -1,0 +1,521 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
+
+import type { YaranState } from "@/lib/store"
+import type { Spine } from "@/lib/types"
+
+// Journeys through the Projects list with the REAL store and the real dialogs:
+// only the HTTP boundary (fetch) is stubbed, and the spine is overlaid on the
+// store's own state because it normally arrives over the events socket.
+let spine: Spine
+vi.mock("@/lib/store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/store")>()
+  return {
+    ...actual,
+    useYaran: (): YaranState => ({ ...actual.useYaran(), spine }),
+  }
+})
+
+const WORKTREE = {
+  worktree_path: "/wt/beta/spare",
+  branch_name: "spare",
+  branch: "spare",
+  adoptable: true,
+  reason: null,
+  dirty: false,
+  agent_id: null,
+  being_removed: false,
+}
+
+type FetchCall = { url: string; method: string }
+let fetchCalls: FetchCall[] = []
+
+// The store boots on import (localStorage + a bootstrap fetch), so both are
+// stubbed before it loads. Every request is recorded and answered with an empty
+// success, which is what the accepted project and terminal routes return.
+function installBootStubs() {
+  const mem = new Map<string, string>()
+  vi.stubGlobal("localStorage", {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => void mem.set(k, String(v)),
+    removeItem: (k: string) => void mem.delete(k),
+    clear: () => mem.clear(),
+  })
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), method: init?.method ?? "GET" })
+      // The Worktrees dialog's listing: one unused worktree it can adopt.
+      if (String(url).endsWith("/worktrees")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ entries: [WORKTREE] }), { status: 200 }),
+        )
+      }
+      if (String(url).endsWith("/branches")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              branches: [{ name: "main", location: "local", held_by: null }],
+              fetched: true,
+            }),
+            { status: 200 },
+          ),
+        )
+      }
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }),
+  )
+}
+installBootStubs()
+
+const store = await import("@/lib/store")
+const { ProjectsDialog } = await import("./ProjectsDialog")
+const { DeleteProjectDialog } = await import("./DeleteProjectDialog")
+const { ProjectSettingsDialog } = await import("./ProjectSettingsDialog")
+const { RemoveProjectDialog } = await import("./RemoveProjectDialog")
+const { ProjectInfoDialog } = await import("./ProjectInfoDialog")
+const { WorktreesDialog } = await import("./WorktreesDialog")
+const { ChangeBaseBranchDialog } = await import("./ChangeBaseBranchDialog")
+
+function project(id: string, name: string, extra: object = {}) {
+  return {
+    id,
+    name,
+    path: `/code/${name}`,
+    default_provider: "claude",
+    explicit_default_provider: null,
+    auto_reopen_agents: null,
+    startup_command: null,
+    env: {},
+    current_branch: "main",
+    branch_status: "leading",
+    path_missing: false,
+    leading_branch: "main",
+    created_at: "",
+    ...extra,
+  }
+}
+
+function agent(id: string, projectId: string, createdAt: string) {
+  return {
+    id,
+    workspace: { kind: "managed", project_id: projectId },
+    created_at: createdAt,
+  }
+}
+
+// acme has an agent, beta has none, and "ghost" is an orphaned group: agents
+// whose project record is gone.
+function seedSpine(
+  projects = [
+    project("p1", "acme", { created_at: "2026-07-01T09:00:00Z" }),
+    project("p2", "beta", {
+      created_at: "2026-07-02T09:00:00Z",
+      leading_branch: null,
+    }),
+  ],
+  sessions = [agent("a1", "p1", "2026-07-05T09:00:00Z"), agent("g1", "gone", "")],
+) {
+  spine = {
+    projects,
+    sessions,
+    terminals: [],
+    sidebar: {
+      groups: [
+        {
+          project_id: "gone",
+          name: "ghost",
+          orphaned: true,
+          path_missing: true,
+          session_ids: ["g1"],
+        },
+      ],
+      agentless_start: null,
+    },
+  } as unknown as Spine
+}
+
+function App() {
+  return (
+    <>
+      <ProjectsDialog />
+      <DeleteProjectDialog />
+      <RemoveProjectDialog />
+      <ProjectSettingsDialog />
+      <ProjectInfoDialog />
+      <WorktreesDialog />
+      <ChangeBaseBranchDialog />
+    </>
+  )
+}
+
+function openList() {
+  const view = render(<App />)
+  act(() => store.openProjects())
+  return view
+}
+
+function rowNames(): string[] {
+  return screen
+    .getAllByTestId("project-row")
+    .map((row) => row.getAttribute("data-name") ?? "")
+}
+
+function row(name: string): HTMLElement {
+  const found = screen
+    .getAllByTestId("project-row")
+    .find((r) => r.getAttribute("data-name") === name)
+  if (!found) throw new Error(`no row named ${name}`)
+  return found
+}
+
+function listIsOpen(): boolean {
+  return screen.queryByLabelText("Search projects") !== null
+}
+
+beforeEach(() => {
+  installBootStubs()
+  fetchCalls = []
+  seedSpine()
+})
+
+afterEach(() => {
+  act(() => {
+    store.closeProjects()
+    store.closeDeleteProject()
+    store.closeRemoveProject()
+    store.closeProjectSettings()
+    store.closeProjectInfo()
+    store.closeAttachWorktree()
+    store.closeChangeBaseBranch()
+  })
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+describe("ProjectsDialog", () => {
+  // Standalone agents belong to no project, so the Projects list is not where
+  // one is created: only the New agent picker offers that door.
+  it("offers only Add a new project in its footer", () => {
+    openList()
+    expect(screen.getByRole("button", { name: "Add a new project…" })).toBeTruthy()
+    expect(
+      screen.queryByRole("button", { name: "Add standalone agent…" }),
+    ).toBeNull()
+  })
+
+  it("lists an agent-less project and an orphaned group beside the rest", () => {
+    openList()
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeTruthy()
+    expect(rowNames()).toEqual(["acme", "beta", "ghost"])
+    // Each row carries its folder, agent count and base branch.
+    const beta = row("beta")
+    expect(beta.textContent).toContain("/code/beta")
+    expect(beta.textContent).toContain("0 agents")
+    expect(beta.textContent).toContain("no base yet")
+    expect(row("acme").textContent).toContain("1 agent")
+    expect(row("acme").textContent).toContain("main")
+  })
+
+  it("opens Delete project over the list, and cancelling returns to it", async () => {
+    openList()
+    fireEvent.click(
+      within(row("beta")).getByRole("button", { name: "Project actions" }),
+    )
+    fireEvent.click(await screen.findByText("Delete project…"))
+
+    expect(await screen.findByText("Delete project?")).toBeTruthy()
+    // The list is still underneath.
+    expect(listIsOpen()).toBe(true)
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByText("Delete project?")).toBeNull()
+    expect(listIsOpen()).toBe(true)
+    expect(rowNames()).toContain("beta")
+  })
+
+  it("offers an orphaned group only Remove project", async () => {
+    openList()
+    fireEvent.click(
+      within(row("ghost")).getByRole("button", { name: "Project actions" }),
+    )
+    await screen.findByRole("menu")
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Remove project…"])
+  })
+
+  // The whole row is a target: a click anywhere on it opens the same menu the
+  // ⋯ does.
+  it("opens the row's menu when the row itself is clicked", async () => {
+    openList()
+    fireEvent.click(within(row("beta")).getByRole("button", { name: /beta/ }))
+    expect(await screen.findByText("Project settings…")).toBeTruthy()
+  })
+
+  it("closes the list for New terminal, and keeps it under Project settings", async () => {
+    openList()
+    fireEvent.click(within(row("beta")).getByRole("button", { name: /beta/ }))
+    fireEvent.click(await screen.findByText("Project settings…"))
+    expect(await screen.findByText(/Project settings:/)).toBeTruthy()
+    expect(listIsOpen()).toBe(true)
+    act(() => store.closeProjectSettings())
+    expect(listIsOpen()).toBe(true)
+
+    fireEvent.click(within(row("beta")).getByRole("button", { name: /beta/ }))
+    fireEvent.click(await screen.findByText("New terminal at the project root"))
+    expect(listIsOpen()).toBe(false)
+    expect(
+      fetchCalls.some(
+        (call) => call.method === "POST" && call.url.includes("/p2/terminals"),
+      ),
+    ).toBe(true)
+  })
+
+  it("narrows the rows by search, keeps the order frozen, and drops a removed project", () => {
+    const { rerender } = openList()
+    fireEvent.change(screen.getByLabelText("Search projects"), {
+      target: { value: "bet" },
+    })
+    expect(rowNames()).toEqual(["beta"])
+    fireEvent.change(screen.getByLabelText("Search projects"), {
+      target: { value: "" },
+    })
+
+    // beta gets the newest agent: a live sort would lift it above acme.
+    seedSpine(undefined, [
+      agent("a1", "p1", "2026-07-05T09:00:00Z"),
+      agent("a2", "p2", "2026-07-09T09:00:00Z"),
+      agent("g1", "gone", ""),
+    ])
+    rerender(<App />)
+    expect(rowNames()).toEqual(["acme", "beta", "ghost"])
+
+    // acme is removed while the list is open.
+    seedSpine([project("p2", "beta")], [agent("g1", "gone", "")])
+    rerender(<App />)
+    expect(rowNames()).toEqual(["beta", "ghost"])
+  })
+
+  it("closes the list when adopting a worktree from it starts an agent", async () => {
+    openList()
+    fireEvent.click(
+      within(row("beta")).getByRole("button", { name: "Project actions" }),
+    )
+    fireEvent.click(await screen.findByText("Worktrees…"))
+    fireEvent.click(await screen.findByText("spare", { selector: "span" }))
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }))
+
+    await waitFor(() =>
+      expect(
+        fetchCalls.some(
+          (call) => call.method === "POST" && call.url === "/api/v1/sessions",
+        ),
+      ).toBe(true),
+    )
+    // The new agent is where the user is going: nothing may be left over it.
+    expect(listIsOpen()).toBe(false)
+  })
+
+  // The row is a button that opens a menu, and says so.
+  it("names the row by its project and toggles its menu", async () => {
+    openList()
+    const button = screen.getByRole("button", { name: "beta" })
+    expect(button.getAttribute("aria-haspopup")).toBe("menu")
+    expect(button.getAttribute("aria-expanded")).toBe("false")
+    // The rest of the row is its description, not its name.
+    expect(button.getAttribute("aria-describedby")).toBeTruthy()
+    const describedBy = button
+      .getAttribute("aria-describedby")!
+      .split(" ")
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ")
+    expect(describedBy).toContain("0 agents")
+    expect(describedBy).toContain("/code/beta")
+
+    fireEvent.click(button)
+    await screen.findByRole("menu")
+    expect(button.getAttribute("aria-expanded")).toBe("true")
+
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
+    expect(button.getAttribute("aria-expanded")).toBe("false")
+  })
+
+  // The touch-target tenet: on a coarse pointer the trigger is 40px, so no
+  // revealed state of its wrapper may cap it narrower, or a focused or open
+  // trigger is clipped to 32px on a tablet at desktop width.
+  it("never caps the revealed trigger narrower than its touch size", () => {
+    openList()
+    const trigger = within(row("beta")).getByRole("button", {
+      name: "Project actions",
+    })
+    expect(trigger.className).toContain("pointer-coarse:size-10")
+    const wrapper = trigger.parentElement!
+    const caps = [...wrapper.className.matchAll(/max-w-(\d+)\b/g)]
+      .map((m) => Number(m[1]))
+      .filter((n) => n > 0)
+    expect(caps.length).toBeGreaterThan(0)
+    for (const cap of caps) expect(cap).toBeGreaterThanOrEqual(10)
+  })
+
+  describe("a dialog opened from a row's menu takes focus", () => {
+    const cases: [string, string][] = [
+      ["Delete project…", "Delete project?"],
+      ["Remove project…", "Remove project?"],
+      ["Project settings…", "Project settings:"],
+      ["Project info…", "beta"],
+      ["Worktrees…", "Worktrees in"],
+      ["Change base branch…", "Change base branch"],
+    ]
+    for (const [item, title] of cases) {
+      it(`moves focus into the dialog for ${item} and Escape closes only it`, async () => {
+        openList()
+        fireEvent.click(
+          within(row("beta")).getByRole("button", { name: "Project actions" }),
+        )
+        fireEvent.click(await screen.findByText(item))
+        const dialogs = await screen.findAllByRole("dialog")
+        const top = await waitFor(() => {
+          const found = dialogs.find(
+            (d) =>
+              d.querySelector("h2")?.textContent?.startsWith(title) &&
+              !d.querySelector('[aria-label="Search projects"]'),
+          )
+          if (!found) throw new Error(`no dialog titled ${title}`)
+          return found
+        })
+        await waitFor(() =>
+          expect(
+            top.contains(document.activeElement),
+            `focus is on ${document.activeElement?.tagName}`,
+          ).toBe(true),
+        )
+        fireEvent.keyDown(document.activeElement!, { key: "Escape" })
+        await waitFor(() => expect(top.isConnected).toBe(false))
+        expect(listIsOpen()).toBe(true)
+      })
+    }
+  })
+
+  // An item that opens nothing leaves no dialog to take focus, so it goes back
+  // to the row's trigger rather than being dropped on the page.
+  it("hands focus back to the trigger after an item that opens nothing", async () => {
+    openList()
+    const trigger = within(row("beta")).getByRole("button", {
+      name: "Project actions",
+    })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByText("Pull project"))
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+    expect(listIsOpen()).toBe(true)
+  })
+
+  it("says a project's folder is missing", () => {
+    seedSpine([project("p1", "acme", { path_missing: true })], [])
+    openList()
+    expect(row("acme").textContent).toContain("Folder missing")
+  })
+
+  // A long folder path keeps its end, which is the part that tells two
+  // projects apart: it ellipsizes at the start through the shared component,
+  // and the shared tooltip carries the whole path. jsdom cannot lay out, so
+  // the structure is pinned; the pixel truth is the screenshot pass.
+  it("ellipsizes a project's folder at the start, with the whole path on hover", () => {
+    const long = "/home/patrick/Golang/src/github.com/patrickdappollonio/dux"
+    seedSpine([project("p1", "yaran", { path: long })], [])
+    openList()
+    const path = within(row("yaran")).getByText(long)
+    expect(path.tagName).toBe("BDI")
+    const box = path.parentElement!
+    expect(box.getAttribute("data-truncate")).toBe("start")
+    expect(box.className).toContain("font-mono")
+    expect(box.getAttribute("data-slot")).toBe("tooltip-trigger")
+  })
+
+  // The hint repeats the path, so it is worth showing only when the row has
+  // clipped it; it is measured at the gesture (jsdom lays out nothing, so the
+  // widths are stubbed on the element). Keyboard users reach it by focusing the
+  // row's own button, and the path adds no tab stop of its own.
+  describe("the folder path's hint", () => {
+    const long = "/home/patrick/Golang/src/github.com/patrickdappollonio/dux"
+
+    function pathBox(): HTMLElement {
+      return within(row("yaran")).getByText(long).parentElement!
+    }
+
+    function rowButton(): HTMLElement {
+      return within(row("yaran")).getAllByRole("button")[0]
+    }
+
+    function clip(box: HTMLElement, clipped: boolean) {
+      Object.defineProperty(box, "clientWidth", { configurable: true, value: 200 })
+      Object.defineProperty(box, "scrollWidth", {
+        configurable: true,
+        value: clipped ? 480 : 200,
+      })
+    }
+
+    function hintShown(): boolean {
+      return [...document.querySelectorAll("[data-slot=tooltip-content]")].some(
+        (node) => node.textContent === long,
+      )
+    }
+
+    function hover(el: HTMLElement) {
+      fireEvent.pointerEnter(el, { pointerType: "mouse" })
+      fireEvent.mouseEnter(el)
+      fireEvent.mouseMove(el)
+    }
+
+    beforeEach(() => {
+      seedSpine([project("p1", "yaran", { path: long })], [])
+    })
+
+    it("adds no tab stop for the path", () => {
+      openList()
+      expect(pathBox().hasAttribute("tabindex")).toBe(false)
+    })
+
+    it("shows the whole path on hover when the row has clipped it", async () => {
+      openList()
+      clip(pathBox(), true)
+      hover(pathBox())
+      await waitFor(() => expect(hintShown()).toBe(true), { timeout: 2000 })
+    })
+
+    it("shows nothing on hover when the path fits", async () => {
+      openList()
+      clip(pathBox(), false)
+      hover(pathBox())
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      expect(hintShown()).toBe(false)
+    })
+
+    it("shows the clipped path while the row's button has keyboard focus", async () => {
+      openList()
+      clip(pathBox(), true)
+      act(() => rowButton().focus())
+      await waitFor(() => expect(hintShown()).toBe(true))
+      act(() => rowButton().blur())
+      await waitFor(() => expect(hintShown()).toBe(false))
+    })
+
+    it("shows nothing on the row's focus when the path fits", async () => {
+      openList()
+      clip(pathBox(), false)
+      act(() => rowButton().focus())
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(hintShown()).toBe(false)
+    })
+  })
+})

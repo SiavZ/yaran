@@ -3,6 +3,7 @@
 //! - Test-only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_outcome_tests.rs
 //! ├── cloud::cloudflared::acquire
@@ -12,6 +13,7 @@
 //! Used by:
 //! cloud/leg_outcome_tests.rs
 //! └── cloud::leg_outcome
+//! ```
 //! <module-headers:end>
 
 use super::*;

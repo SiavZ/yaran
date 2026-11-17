@@ -5,17 +5,74 @@
 // The server validates and persists to `config.toml`, then emits `config.changed`
 // so every client refetches its bootstrap document.
 
+import { apiFetch, rethrowAuthInterruption } from "./apiFetch"
 import { getConnectionId } from "./connection"
 import type { SettingValue } from "./settingsDescriptors"
 import type { MacroView } from "./types"
 
+/// A refusal whose body is the 409 `config_changed` answer becomes a
+/// `ConfigChangedError`; anything else is passed through as it was.
+function asConfigChanged(e: unknown): unknown {
+  if (!(e instanceof Error)) return e
+  try {
+    const parsed = JSON.parse(e.message) as { error?: unknown; message?: unknown }
+    if (parsed.error === "config_changed" && typeof parsed.message === "string") {
+      return new ConfigChangedError(parsed.message)
+    }
+  } catch {
+    // Not JSON: an ordinary refusal.
+  }
+  return e
+}
+
+/// A refusal whose body is the 409 `changed` answer of a whole-set save becomes
+/// a `SetChangedError`; anything else is passed through as it was.
+function asSetChanged(e: unknown): unknown {
+  if (!(e instanceof Error)) return e
+  try {
+    const parsed = JSON.parse(e.message) as { error?: unknown; message?: unknown }
+    if (parsed.error === "changed" && typeof parsed.message === "string") {
+      return new SetChangedError(parsed.message)
+    }
+  } catch {
+    // Not JSON: an ordinary refusal.
+  }
+  return e
+}
+
 async function send(method: string, path: string, body: unknown): Promise<void> {
+  await request(method, path, body)
+}
+
+/// `send`, answering the version a whole-set save left the set at, when the
+/// server said.
+async function sendSet(
+  method: string,
+  path: string,
+  body: unknown,
+): Promise<string | undefined> {
+  let resp: Response
+  try {
+    resp = await request(method, path, body)
+  } catch (e) {
+    throw asSetChanged(e)
+  }
+  const text = await resp.text().catch(() => "")
+  try {
+    const parsed = JSON.parse(text) as { version?: unknown }
+    return typeof parsed.version === "string" ? parsed.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function request(method: string, path: string, body: unknown): Promise<Response> {
   const headers: Record<string, string> = { "content-type": "application/json" }
   const id = getConnectionId()
   if (id) headers["x-connection-id"] = id
   let resp: Response
   try {
-    resp = await fetch(path, {
+    resp = await apiFetch(path, {
       method,
       credentials: "same-origin",
       headers,
@@ -24,22 +81,53 @@ async function send(method: string, path: string, body: unknown): Promise<void> 
       // disables its whole form while one is pending.
       signal: AbortSignal.timeout(15_000),
     })
-  } catch {
-    throw new Error("Could not reach the server.")
+  } catch (e) {
+    rethrowAuthInterruption(e)
+    throw new Error("Could not reach the server.", { cause: e })
   }
   if (!resp.ok) {
     const detail = (await resp.text().catch(() => "")).trim()
     throw new Error(detail || `request failed (${resp.status})`)
   }
+  return resp
+}
+
+/// A whole-set save (the macro list, the global environment) met a set that
+/// changed since the dialog read it. The server wrote nothing; the message is its sentence.
+export class SetChangedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "SetChangedError"
+  }
+}
+
+/// The raw config editor's save met a file that changed on disk since the
+/// editor read it (a `yaran config set`, a blocked address, another editor). The
+/// server wrote nothing; the message is its sentence, and the editor offers to
+/// reload the file or keep editing.
+export class ConfigChangedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "ConfigChangedError"
+  }
+}
+
+/// The raw config as the editor opens it, with the proof of what it read that
+/// the save must carry back.
+export interface RawConfig {
+  content: string
+  token: string
 }
 
 export const configApi = {
-  // Replace the entire `[macros]` map (the macro editor saves wholesale).
-  updateMacros: (entries: MacroView[]) =>
-    send("PUT", "/api/v1/macros", { entries }),
-  // Persist the workspace-wide env map (replace-wholesale).
-  persistGlobalEnv: (env: Record<string, string>) =>
-    send("PUT", "/api/v1/global-env", { env }),
+  // Replace the entire `[macros]` map; a list that moved past `version` (the
+  // bootstrap's `macros_version`) throws `SetChangedError`. Resolves the new version.
+  updateMacros: (entries: MacroView[], version?: string) =>
+    sendSet("PUT", "/api/v1/macros", { entries, version }),
+  // Persist the workspace-wide env map (replace-wholesale), with the same
+  // `version` rule against `global_env_version`.
+  persistGlobalEnv: (env: Record<string, string>, version?: string) =>
+    sendSet("PUT", "/api/v1/global-env", { env, version }),
   // Persist the Changes-pane visibility flag (`config.ui.show_changes_pane`).
   setChangesPaneVisible: (visible: boolean) =>
     send("PUT", "/api/v1/ui/changes-pane", { visible }),
@@ -81,7 +169,7 @@ export const configApi = {
     if (id) headers["x-connection-id"] = id
     let resp: Response
     try {
-      resp = await fetch("/api/v1/server/tailscale-mode", {
+      resp = await apiFetch("/api/v1/server/tailscale-mode", {
         method: "POST",
         credentials: "same-origin",
         headers,
@@ -90,8 +178,9 @@ export const configApi = {
         // address detection), so a slow answer is still an answer.
         signal: AbortSignal.timeout(15_000),
       })
-    } catch {
-      throw new Error("Could not reach the server.")
+    } catch (e) {
+      rethrowAuthInterruption(e)
+      throw new Error("Could not reach the server.", { cause: e })
     }
     if (!resp.ok) {
       const detail = (await resp.text().catch(() => "")).trim()
@@ -129,22 +218,30 @@ export const configApi = {
   }): Promise<void> => send("PATCH", "/api/v1/config/settings", patch),
   // Read the raw config.toml text for the Monaco editor. Returns the file
   // verbatim (or the plain render of the running config if none exists yet).
-  readRawConfig: async (): Promise<string> => {
+  readRawConfig: async (): Promise<RawConfig> => {
     let resp: Response
     try {
-      resp = await fetch("/api/v1/config/raw", { credentials: "same-origin" })
-    } catch {
-      throw new Error("Could not reach the server.")
+      resp = await apiFetch("/api/v1/config/raw", { credentials: "same-origin" })
+    } catch (e) {
+      rethrowAuthInterruption(e)
+      throw new Error("Could not reach the server.", { cause: e })
     }
     if (!resp.ok) {
       const detail = (await resp.text().catch(() => "")).trim()
       throw new Error(detail || `request failed (${resp.status})`)
     }
-    const body = (await resp.json()) as { content: string }
-    return body.content
+    const body = (await resp.json()) as { content: string; token: string }
+    return { content: body.content, token: body.token }
   },
-  // Validate + write the raw config.toml text. A 400 (invalid TOML) throws with
-  // the server's parse message so the editor can surface it inline.
-  writeRawConfig: (content: string) =>
-    send("PUT", "/api/v1/config/raw", { content }),
+  // Validate + write the raw config.toml text over the file the editor read
+  // (`token` is the read's). A 409 means the file changed since and nothing was
+  // written: it throws `ConfigChangedError`. A 400 (invalid TOML, a refused
+  // change) throws with the server's message so the editor can show it inline.
+  writeRawConfig: async (content: string, token: string): Promise<void> => {
+    try {
+      await send("PUT", "/api/v1/config/raw", { content, token })
+    } catch (e) {
+      throw asConfigChanged(e)
+    }
+  },
 }

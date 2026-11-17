@@ -8,31 +8,54 @@
 //! same-origin check are not authentication.
 //!
 //! A successful config change makes the engine emit `config.changed`, so clients
-//! refetch `/api/v1/bootstrap`; no handler here echoes the new state.
+//! refetch `/api/v1/bootstrap`; no handler here echoes the new state, except the
+//! version a macro or global environment save leaves its set at.
+//!
+//! The macro list and the global environment each have two ways in. The whole
+//! set (`PUT /api/v1/macros`, `PUT /api/v1/global-env`) is what the browser's
+//! dialogs save: they send the `macros_version` or `global_env_version` they
+//! read, and a set that changed since is refused with `409 {"error":"changed",
+//! "message"}`, nothing written. One entry (`PUT` and `DELETE` on
+//! `/api/v1/macros/{name}` and `/api/v1/global-env/{name}`) is what a script
+//! changes, leaving the rest of the set alone; an entry that is not there is a
+//! `404`, and `?operation=1` answers an operation record.
+//!
+//! The `/api/v1/config/*` listings are what `yaran providers ls`, `yaran keys ls` and
+//! `yaran themes ls` print through a remote, built from this yaran's own `config.toml` by
+//! [`yaran_core::config_resources`], as the command line lists them locally.
 
 use std::collections::BTreeMap;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post, put},
 };
 use serde::{Deserialize, Serialize};
 
+use yaran_core::operations::OperationKind;
 use yaran_core::wire::{SettingsPatch, WireCommand, WireMacroEntry};
 
-use crate::rest_common::scope_from_headers;
+use crate::rest_common::{OperationQuery, operation_accepted, refusal, scope_from_headers};
 use crate::server::AppState;
 
 /// The config-mutation routes.
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/macros", put(update_macros))
+        .route("/api/v1/macros/{name}", put(set_macro).delete(remove_macro))
         .route("/api/v1/global-env", put(persist_global_env))
+        .route(
+            "/api/v1/global-env/{name}",
+            put(set_global_env_var).delete(remove_global_env_var),
+        )
         .route("/api/v1/ui/changes-pane", put(set_changes_pane))
         .route("/api/v1/config/reload", post(reload_config))
+        .route("/api/v1/config/providers", get(list_providers))
+        .route("/api/v1/config/keys", get(list_keys))
+        .route("/api/v1/config/themes", get(list_themes))
         .route(
             "/api/v1/defaults/toggle-randomized-pet-name",
             post(toggle_randomized_pet_name_default),
@@ -80,19 +103,73 @@ struct UpdateMacrosBody {
     /// matching the frontend's `MacroView`. The engine validates wholesale
     /// (empty/duplicate names, empty text, unknown surface all rejected).
     entries: Vec<WireMacroEntry>,
+    /// The bootstrap's `macros_version` the edit started from; absent, the save
+    /// replaces whatever is there.
+    #[serde(default)]
+    version: Option<String>,
 }
 
+/// `PUT /api/v1/macros`: replace the whole list. `200 {"version"}` with the
+/// version the list is at now, for the editor's next save.
 async fn update_macros(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<UpdateMacrosBody>,
 ) -> Response {
-    dispatch(
+    save_whole_set(
         &state,
         &headers,
         WireCommand::UpdateMacros {
             entries: body.entries,
+            version: body.version,
         },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct SetMacroBody {
+    text: String,
+    /// `agent` | `terminal` | `both`.
+    surface: String,
+}
+
+/// `PUT /api/v1/macros/{name}`: add the macro, or replace it in place. The
+/// command line's `macros add`; the rest of the list is untouched.
+async fn set_macro(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+    Json(body): Json<SetMacroBody>,
+) -> Response {
+    change_one_entry(
+        &state,
+        &headers,
+        &operation,
+        WireCommand::SetMacro {
+            name,
+            text: body.text,
+            surface: body.surface,
+        },
+        OperationKind::MacroSet,
+    )
+    .await
+}
+
+/// `DELETE /api/v1/macros/{name}`: remove one macro; `404` when there is none.
+async fn remove_macro(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+) -> Response {
+    change_one_entry(
+        &state,
+        &headers,
+        &operation,
+        WireCommand::RemoveMacro { name },
+        OperationKind::MacroRemove,
     )
     .await
 }
@@ -103,18 +180,188 @@ async fn update_macros(
 struct GlobalEnvBody {
     /// The whole workspace-wide env map (replace-wholesale).
     env: BTreeMap<String, String>,
+    /// The bootstrap's `global_env_version` the edit started from, with the
+    /// same meaning as the macro list's.
+    #[serde(default)]
+    version: Option<String>,
 }
 
+/// `PUT /api/v1/global-env`: replace the whole table. Answers as
+/// `PUT /api/v1/macros` does.
 async fn persist_global_env(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<GlobalEnvBody>,
 ) -> Response {
-    dispatch(
+    save_whole_set(
         &state,
         &headers,
-        WireCommand::PersistGlobalEnv { env: body.env },
+        WireCommand::PersistGlobalEnv {
+            env: body.env,
+            version: body.version,
+        },
     )
+    .await
+}
+
+#[derive(Deserialize)]
+struct SetGlobalEnvVarBody {
+    value: String,
+}
+
+/// `PUT /api/v1/global-env/{name}`: set one variable. The value is never
+/// echoed in the answer or in any status.
+async fn set_global_env_var(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+    Json(body): Json<SetGlobalEnvVarBody>,
+) -> Response {
+    change_one_entry(
+        &state,
+        &headers,
+        &operation,
+        WireCommand::SetGlobalEnvVar {
+            name,
+            value: body.value,
+        },
+        OperationKind::EnvSet,
+    )
+    .await
+}
+
+/// `DELETE /api/v1/global-env/{name}`: remove one variable; `404` when there
+/// is none.
+async fn remove_global_env_var(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+) -> Response {
+    change_one_entry(
+        &state,
+        &headers,
+        &operation,
+        WireCommand::RemoveGlobalEnvVar { name },
+        OperationKind::EnvRemove,
+    )
+    .await
+}
+
+/// The version a set is at after a change, as both kinds of save answer it.
+#[derive(Serialize)]
+struct SetVersion {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+}
+
+/// Run a whole-set save: `200 {"version"}` with the version the set is at now, or
+/// [`config_refusal`]'s answer.
+async fn save_whole_set(state: &AppState, headers: &HeaderMap, cmd: WireCommand) -> Response {
+    match state
+        .engine
+        .apply_wire_scoped(cmd, scope_from_headers(headers, &state.connections))
+        .await
+    {
+        Ok(outcome) => Json(SetVersion {
+            version: outcome.version,
+        })
+        .into_response(),
+        Err(e) => config_refusal(e),
+    }
+}
+
+/// Run a one-entry change. It finishes inside the call, so a followed change's
+/// record is already final when it answers.
+async fn change_one_entry(
+    state: &AppState,
+    headers: &HeaderMap,
+    operation: &OperationQuery,
+    cmd: WireCommand,
+    kind: OperationKind,
+) -> Response {
+    let scope = scope_from_headers(headers, &state.connections);
+    if operation.asked() {
+        return match state.engine.apply_wire_operation(cmd, scope, kind).await {
+            Ok((_, record)) => operation_accepted(&record),
+            Err(e) => config_refusal(e),
+        };
+    }
+    match state.engine.apply_wire_recorded(cmd, scope, kind).await {
+        Ok(outcome) => Json(SetVersion {
+            version: outcome.version,
+        })
+        .into_response(),
+        Err(e) => config_refusal(e),
+    }
+}
+
+/// How a macro or environment change's refusal answers.
+fn config_refusal(error: String) -> Response {
+    if yaran_core::wire::is_stale_set(&error) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "changed", "message": error })),
+        )
+            .into_response();
+    }
+    if error.starts_with("unknown macro") || error.starts_with("unknown global environment") {
+        return (StatusCode::NOT_FOUND, error).into_response();
+    }
+    refusal(error, StatusCode::BAD_REQUEST)
+}
+
+// ── Config-file listings ─────────────────────────────────────────────────────
+
+/// Build a listing from this yaran's own `config.toml` on a blocking thread; a file
+/// that cannot be read is a `500` with the reason.
+async fn config_listing<T: Serialize + Send + 'static>(
+    state: &AppState,
+    build: impl FnOnce(&yaran_core::config::YaranPaths) -> Result<T, String> + Send + 'static,
+) -> Response {
+    let paths = state.engine.paths();
+    match tokio::task::spawn_blocking(move || build(&paths)).await {
+        Ok(Ok(listing)) => Json(listing).into_response(),
+        Ok(Err(error)) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reading config.toml stopped before it finished",
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /api/v1/config/providers`: every provider, yaran's own included, as
+/// `yaran providers ls` lists them.
+async fn list_providers(State(state): State<AppState>) -> Response {
+    config_listing(&state, |paths| {
+        yaran_core::config_resources::read(&paths.config_path)
+            .map(|file| yaran_core::config_resources::providers(&file))
+    })
+    .await
+}
+
+/// `GET /api/v1/config/keys`: every action the terminal UI binds, with its
+/// keys, as `yaran keys ls` lists them.
+async fn list_keys(State(state): State<AppState>) -> Response {
+    config_listing(&state, |paths| {
+        let file = yaran_core::config_resources::read(&paths.config_path)?;
+        yaran_core::config_resources::keys(&file.raw)
+    })
+    .await
+}
+
+/// `GET /api/v1/config/themes`: the themes the terminal UI's picker offers,
+/// in its order, as `yaran themes ls` lists them.
+async fn list_themes(State(state): State<AppState>) -> Response {
+    config_listing(&state, |paths| {
+        let file = yaran_core::config_resources::read(&paths.config_path)?;
+        Ok(yaran_core::config_resources::themes(
+            paths,
+            &file.config.ui.theme,
+        ))
+    })
     .await
 }
 
@@ -142,10 +389,29 @@ async fn set_changes_pane(
 
 // ── Reload ─────────────────────────────────────────────────────────────────────
 
-/// `POST /api/v1/config/reload`. No body is required (the frontend sends `{}`),
-/// so no `Json` extractor is used. A config reload re-reads `config.toml` from disk.
-async fn reload_config(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    dispatch(&state, &headers, WireCommand::ReloadConfig {}).await
+/// `POST /api/v1/config/reload`, no body needed. With `?operation=1`, a `202` whose record ends
+/// when the reload's owner says how it went; without, a bare `200` once it is under way.
+async fn reload_config(
+    State(state): State<AppState>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if !operation.asked() {
+        return dispatch(&state, &headers, WireCommand::ReloadConfig {}).await;
+    }
+    let scope = scope_from_headers(&headers, &state.connections);
+    match state
+        .engine
+        .apply_wire_operation(
+            WireCommand::ReloadConfig {},
+            scope,
+            OperationKind::ConfigReload,
+        )
+        .await
+    {
+        Ok((_, record)) => operation_accepted(&record),
+        Err(e) => config_refusal(e),
+    }
 }
 
 // Each preference toggle below is a parameterless POST: the server owns the
@@ -280,6 +546,13 @@ struct UiSettingsPatch {
     show_changes_pane: Option<bool>,
     always_show_tab_strip: Option<bool>,
     tab_reaches_agent: Option<bool>,
+    /// Whether the TUI asks its host terminal for extended keys (`auto`, `on`
+    /// or `off`). TUI-only, carried so the Preferences dialog can change it
+    /// from a browser; an unknown value is refused engine-side.
+    extended_keys: Option<String>,
+    /// Whether the TUI draws its icons from a Nerd Font. TUI-only, carried so
+    /// the Preferences dialog can change it from a browser.
+    nerd_font_icons: Option<bool>,
     status_clear_seconds: Option<u16>,
     attention_grace_seconds: Option<u64>,
     attention_indicator: Option<bool>,
@@ -375,6 +648,8 @@ async fn set_settings(
             web_notifications: body.capabilities.web_notifications,
             always_show_tab_strip: body.ui.always_show_tab_strip,
             tab_reaches_agent: body.ui.tab_reaches_agent,
+            extended_keys: body.ui.extended_keys,
+            nerd_font_icons: body.ui.nerd_font_icons,
             status_clear_seconds: body.ui.status_clear_seconds,
             attention_grace_seconds: body.ui.attention_grace_seconds,
             attention_indicator: body.ui.attention_indicator,
@@ -402,11 +677,17 @@ struct RawConfigBody {
     /// The raw `config.toml` text, verbatim from disk (or the plain render of the
     /// running config when no file exists yet).
     content: String,
+    /// Proof of what was read, which the save must send back: the save is
+    /// refused when the file changed since.
+    token: String,
 }
 
 #[derive(Deserialize)]
 struct WriteRawConfigBody {
     content: String,
+    /// The token the read handed out. A save without one is refused.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// `GET /api/v1/config/raw`. Return the raw `config.toml` text for the editor. A
@@ -414,22 +695,40 @@ struct WriteRawConfigBody {
 /// instead of opening on blank content.
 async fn read_raw_config(State(state): State<AppState>) -> Response {
     match state.engine.read_raw_config().await {
-        Ok(content) => Json(RawConfigBody { content }).into_response(),
+        Ok(raw) => Json(RawConfigBody {
+            content: raw.content,
+            token: raw.token,
+        })
+        .into_response(),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
     }
 }
 
 /// `PUT /api/v1/config/raw`. Validate and write the raw `config.toml` text
-/// verbatim, `400` with the parse or IO error otherwise. Persists only: the
+/// verbatim, over the file the editor read: `409 {error:"config_changed",
+/// message}` when the file changed since that read (nothing written; the
+/// editor offers to reload or keep editing), and a plain-text `400` with the
+/// reason for anything else, a missing token included. Persists only: the
 /// running config is untouched and no `config.changed` fires until
 /// `POST /api/v1/config/reload`, which is the single apply point.
 async fn write_raw_config(
     State(state): State<AppState>,
     Json(body): Json<WriteRawConfigBody>,
 ) -> Response {
-    match state.engine.write_raw_config(body.content).await {
+    match state
+        .engine
+        .write_raw_config(body.content, body.token)
+        .await
+    {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(crate::engine_actor::RawWriteError::Changed(message)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "config_changed", "message": message })),
+        )
+            .into_response(),
+        Err(crate::engine_actor::RawWriteError::Refused(message)) => {
+            (StatusCode::BAD_REQUEST, message).into_response()
+        }
     }
 }
 
@@ -534,6 +833,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_config_listings_read_this_yarans_own_file_in_the_pickers_order() {
+        let (tmp, app) = router_no_auth();
+        std::fs::create_dir_all(tmp.path().join("themes")).unwrap();
+        std::fs::write(tmp.path().join("themes/alpha.toml"), "").unwrap();
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            "[ui]\ntheme = \"alpha\"\n\n[providers.mytool]\ncommand = \"my-cli\"\n",
+        )
+        .unwrap();
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let resp = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(uri)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+                let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            }
+        };
+        let themes = get("/api/v1/config/themes").await;
+        assert_eq!(
+            themes.as_array().unwrap()[..3],
+            [
+                serde_json::json!({"name": "yaran_dark", "source": "bundled", "current": false}),
+                serde_json::json!({"name": "alpha", "source": "user", "current": true}),
+                serde_json::json!({"name": "ayu_dark", "source": "opaline", "current": false}),
+            ]
+        );
+        let providers = get("/api/v1/config/providers").await;
+        assert_eq!(providers[0]["name"], "mytool");
+        assert_eq!(providers[0]["source"], "yours");
+        assert_eq!(providers[0]["settings"]["command"], "my-cli");
+        assert_eq!(providers[1]["name"], "claude");
+        assert_eq!(providers[1]["source"], "built in");
+    }
+
+    #[tokio::test]
     async fn setting_the_tailscale_mode_saves_it_and_says_it_applies_when_a_listener_starts() {
         // Nothing is serving behind a test router, which is the honest half of
         // the answer: the choice is saved, and the listener half happens later.
@@ -591,7 +936,7 @@ mod tests {
     /// reply body.
     fn tailscale_router(
         answer: yaran_core::config::TailscaleModeOutcome,
-        forced_no: bool,
+        no_tailscale: crate::serve_legs::NoTailscaleFlag,
     ) -> (
         yaran_core::test_scratch::ScratchDir,
         axum::Router,
@@ -616,7 +961,7 @@ mod tests {
             handle,
             axum::Router::new(),
             crate::server::RouterParams::plain_http()
-                .with_tailscale_mode_control(control, forced_no),
+                .with_tailscale_mode_control(control, no_tailscale),
         );
         (tmp, app, seen)
     }
@@ -643,7 +988,7 @@ mod tests {
         // reply has to say that AND that the choice is saved for the next one.
         let (_tmp, app, seen) = tailscale_router(
             yaran_core::config::TailscaleModeOutcome::RefusedForcedNo,
-            true,
+            crate::serve_legs::NoTailscaleFlag::Given,
         );
         let reply = reply_of(app.clone(), "yes").await;
         assert_eq!(reply["mode"], "yes");
@@ -685,7 +1030,7 @@ mod tests {
         let leg: std::net::SocketAddr = "100.64.0.5:8080".parse().unwrap();
         let (_tmp, app, seen) = tailscale_router(
             yaran_core::config::TailscaleModeOutcome::Applied { bound: Some(leg) },
-            false,
+            crate::serve_legs::NoTailscaleFlag::Absent,
         );
 
         let reply = reply_of(app, "yes").await;
@@ -727,18 +1072,75 @@ mod tests {
         );
     }
 
+    /// Send `req` and answer its status and body, parsed as JSON when it is.
+    async fn answer(
+        app: &Router,
+        req: Request<axum::body::Body>,
+    ) -> (StatusCode, serde_json::Value) {
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&bytes).into()));
+        (status, body)
+    }
+
+    async fn bootstrap(app: &Router) -> serde_json::Value {
+        let req = Request::builder()
+            .uri("/api/v1/bootstrap")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        answer(app, req).await.1
+    }
+
     #[tokio::test]
     async fn update_macros_accepts_a_valid_set() {
         let (_tmp, app) = router_no_auth();
-        let resp = app
-            .oneshot(json_req(
+        let (status, body) = answer(
+            &app,
+            json_req(
                 "PUT",
                 "/api/v1/macros",
                 r#"{"entries":[{"name":"greet","text":"hi","surface":"agent"}]}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The browser saves the list it read, and says which version that was.
+        let read_at = bootstrap(&app).await["macros_version"].clone();
+        assert_eq!(
+            body["version"], read_at,
+            "a save answers the version it left"
+        );
+        // The command line adds a macro in the meantime.
+        let (status, _) = answer(
+            &app,
+            json_req(
+                "PUT",
+                "/api/v1/macros/deploy",
+                r#"{"text":"ship it","surface":"terminal"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let stale = serde_json::json!({
+            "entries": [{"name": "greet", "text": "hello", "surface": "agent"}],
+            "version": read_at,
+        });
+        let (status, body) =
+            answer(&app, json_req("PUT", "/api/v1/macros", &stale.to_string())).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "changed");
+        let names: Vec<serde_json::Value> = bootstrap(&app).await["macros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].clone())
+            .collect();
+        assert_eq!(names, vec!["greet", "deploy"], "the added macro survives");
     }
 
     #[tokio::test]
@@ -758,15 +1160,158 @@ mod tests {
     #[tokio::test]
     async fn persist_global_env_accepts_a_map() {
         let (_tmp, app) = router_no_auth();
-        let resp = app
-            .oneshot(json_req(
+        let (status, _) = answer(
+            &app,
+            json_req("PUT", "/api/v1/global-env", r#"{"env":{"FOO":"bar"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let read_at = bootstrap(&app).await["global_env_version"].clone();
+        let (status, _) = answer(
+            &app,
+            json_req("PUT", "/api/v1/global-env/TOKEN", r#"{"value":"abc"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let stale = serde_json::json!({"env": {"FOO": "baz"}, "version": read_at});
+        let (status, body) = answer(
+            &app,
+            json_req("PUT", "/api/v1/global-env", &stale.to_string()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "changed");
+        assert_eq!(
+            bootstrap(&app).await["global_env"],
+            serde_json::json!({"FOO": "bar", "TOKEN": "abc"})
+        );
+    }
+
+    /// The per-entry routes change one macro or one variable, refuse what is
+    /// not there, and answer an operation record when asked, finished inside
+    /// the call.
+    #[tokio::test]
+    async fn the_per_entry_routes_change_one_entry_and_answer_an_operation_when_asked() {
+        // A macro written by hand with spaces around its name: a change to
+        // another macro leaves it exactly as it is.
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let mut engine = crate::test_support::unstarted_test_engine(tmp.path());
+        engine.config.macros.entries.insert(
+            " padded ".to_string(),
+            yaran_core::config::MacroEntry {
+                text: "by hand".to_string(),
+                surface: yaran_core::config::MacroSurface::Agent,
+            },
+        );
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+        let (status, record) = answer(
+            &app,
+            json_req(
                 "PUT",
-                "/api/v1/global-env",
-                r#"{"env":{"FOO":"bar"}}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+                "/api/v1/macros/Review%20it?operation=1",
+                r#"{"text":"review this","surface":"agent"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(record["kind"], "macro.set");
+        assert_eq!(record["state"], "succeeded");
+        assert!(
+            record["message"].as_str().unwrap().contains("Review it"),
+            "{record}"
+        );
+
+        let (status, _) = answer(
+            &app,
+            json_req(
+                "PUT",
+                "/api/v1/macros/bad",
+                r#"{"text":"","surface":"agent"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a macro needs text");
+
+        let (status, record) = answer(
+            &app,
+            json_req("DELETE", "/api/v1/macros/Review%20it?operation=1", ""),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(record["kind"], "macro.remove");
+        assert_eq!(record["state"], "succeeded");
+        assert_eq!(
+            bootstrap(&app).await["macros"],
+            serde_json::json!([{"name": " padded ", "text": "by hand", "surface": "agent"}])
+        );
+        let (status, _) = answer(&app, json_req("DELETE", "/api/v1/macros/Review%20it", "")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        global_env_routes_change_one_variable(&app).await;
+    }
+
+    /// Set and remove one global variable through its per-entry routes, and check
+    /// that no refusal echoes the name or value it refused.
+    async fn global_env_routes_change_one_variable(app: &Router) {
+        let (status, record) = answer(
+            app,
+            json_req(
+                "PUT",
+                "/api/v1/global-env/API_KEY?operation=1",
+                r#"{"value":"secret"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(record["kind"], "env.set");
+        assert_eq!(record["state"], "succeeded");
+        assert!(
+            !record.to_string().contains("secret"),
+            "a value is never echoed: {record}"
+        );
+        let (status, refusal) = answer(
+            app,
+            json_req("PUT", "/api/v1/global-env/1BAD", r#"{"value":"x"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "not a variable name");
+        assert!(
+            !refusal.to_string().contains("1BAD"),
+            "a name that is no variable name is never echoed: {refusal}"
+        );
+        let (status, refusal) =
+            answer(app, json_req("DELETE", "/api/v1/global-env/zz%20LEAK", "")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(!refusal.to_string().contains("LEAK"), "{refusal}");
+        for bad in ["nul\u{0}inside", "${1UNCLOSED}"] {
+            let body = serde_json::json!({ "value": bad }).to_string();
+            let (status, refusal) =
+                answer(app, json_req("PUT", "/api/v1/global-env/BAD_VALUE", &body)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {refusal}");
+            assert!(
+                !refusal.to_string().contains("inside")
+                    && !refusal.to_string().contains("UNCLOSED"),
+                "a refused value is never echoed: {refusal}"
+            );
+        }
+        assert!(
+            bootstrap(app).await["global_env"]
+                .get("BAD_VALUE")
+                .is_none(),
+            "a refused value is not kept"
+        );
+        let (status, record) = answer(
+            app,
+            json_req("DELETE", "/api/v1/global-env/API_KEY?operation=1", ""),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(record["kind"], "env.remove");
+        assert_eq!(bootstrap(app).await["global_env"], serde_json::json!({}));
+        let (status, _) = answer(app, json_req("DELETE", "/api/v1/global-env/API_KEY", "")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -934,6 +1479,70 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// Asked as an operation, a reload answers its record at once and the
+    /// record ends on how the reload really went: applied when the file
+    /// reads, refused, with the reason, when it does not.
+    #[tokio::test]
+    async fn a_reload_asked_as_an_operation_ends_on_how_it_went() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let engine = crate::test_support::unstarted_test_engine(tmp.path());
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+
+        let (status, record) = answer(
+            &app,
+            json_req("POST", "/api/v1/config/reload?operation=1", "{}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(record["kind"], "config.reload");
+        let id = record["id"].as_str().expect("an id").to_string();
+        let (status, done) = answer(
+            &app,
+            json_req(
+                "GET",
+                &format!("/api/v1/operations/{id}?wait_seconds=10"),
+                "",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(done["state"], "failed", "{done}");
+        assert!(
+            done["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Config reload failed:"),
+            "{done}"
+        );
+
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            "[ui]\nleft_width_pct = 30\n",
+        )
+        .unwrap();
+        let (_, record) = answer(
+            &app,
+            json_req("POST", "/api/v1/config/reload?operation=1", "{}"),
+        )
+        .await;
+        let id = record["id"].as_str().expect("an id").to_string();
+        let (_, done) = answer(
+            &app,
+            json_req(
+                "GET",
+                &format!("/api/v1/operations/{id}?wait_seconds=10"),
+                "",
+            ),
+        )
+        .await;
+        assert_eq!(done["state"], "succeeded", "{done}");
+        assert_eq!(
+            done["message"],
+            "Configuration reloaded. New settings are active now."
+        );
+    }
+
     #[tokio::test]
     async fn read_raw_config_returns_ok() {
         let (_tmp, app) = router_no_auth();
@@ -978,12 +1587,176 @@ mod tests {
 
         // Write it back unchanged: valid TOML with an unchanged [server] section,
         // so the happy path returns 200 (exercises the Ok arm of the persist).
-        let body = serde_json::json!({ "content": content }).to_string();
+        let token = parsed["token"].as_str().expect("a token").to_string();
+        let body = serde_json::json!({ "content": content, "token": token }).to_string();
         let put = app
             .oneshot(json_req("PUT", "/api/v1/config/raw", &body))
             .await
             .unwrap();
         assert_eq!(put.status(), StatusCode::OK);
+    }
+
+    /// The raw editor writes whatever an authenticated (or unprotected) page
+    /// sends, so it is where a password could be swapped or dropped without
+    /// the current one. It refuses every change to the credential, and lets
+    /// everything else through, the rest of `[server.auth]` included.
+    #[tokio::test]
+    async fn the_raw_editor_cannot_add_change_or_remove_the_password() {
+        let hash = |p: &str| {
+            yaran_core::auth::hash_password(&yaran_core::auth::Password::new(p.to_string()))
+                .unwrap()
+        };
+        // From this machine, which the default `require` asks for nothing: the
+        // editor is open to it, and this is about what the editor may write.
+        let put = |app: Router, content: String| async move {
+            let local = axum::extract::ConnectInfo(crate::auth::Arrival::Tcp {
+                peer: "127.0.0.1:40000".parse().unwrap(),
+                local: "127.0.0.1:3890".parse().unwrap(),
+            });
+            let token = raw_token_from(&app, Some(local)).await;
+            let body = serde_json::json!({ "content": content, "token": token }).to_string();
+            let mut request = json_req("PUT", "/api/v1/config/raw", &body);
+            request.extensions_mut().insert(local);
+            let answer = app.oneshot(request).await.unwrap();
+            let status = answer.status();
+            let text = axum::body::to_bytes(answer.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&text).into_owned())
+        };
+
+        // No password yet: adding one through the editor is refused.
+        let (tmp, app) = router_no_auth();
+        let added = format!(
+            "[server.auth]\npassword_hash = \"{}\"\n",
+            hash("orbit velvet quarry lantern cobalt")
+        );
+        let (status, said) = put(app.clone(), added).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
+        assert!(said.contains("password"), "{said}");
+        let on_disk = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap_or_default();
+        assert!(!on_disk.contains("$argon2id$"), "{on_disk}");
+
+        // A password set: changing it and removing it are refused; an edit that
+        // keeps it, even one tightening the rest of the section, is not.
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let current = hash("orbit velvet quarry lantern cobalt");
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            format!("[server.auth]\npassword_hash = \"{current}\"\n"),
+        )
+        .unwrap();
+        let app = crate::server::router(crate::test_support::test_engine_handle(tmp.path()));
+        let other = hash("harbor cinnamon glacier tundra mosaic");
+        for (content, what) in [
+            (
+                format!("[server.auth]\npassword_hash = \"{other}\"\n"),
+                "changed",
+            ),
+            (
+                "[server.auth]\npassword_hash = \"\"\n".to_string(),
+                "cleared",
+            ),
+            ("[ui]\n".to_string(), "section removed"),
+        ] {
+            let (status, said) = put(app.clone(), content).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {said}");
+            assert!(said.contains("current password"), "{what}: {said}");
+            let on_disk = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+            assert!(on_disk.contains(&current), "{what}: nothing was written");
+        }
+        let kept =
+            format!("[server.auth]\npassword_hash = \"{current}\"\nrequire = \"everywhere\"\n");
+        let (status, said) = put(app, kept).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let on_disk = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        assert!(on_disk.contains("require = \"everywhere\""), "{on_disk}");
+    }
+
+    /// The structured settings write has no field for anything in
+    /// `[server.auth]`, and a body that names one is refused whole, so the
+    /// password can never ride in on a settings patch.
+    #[tokio::test]
+    async fn a_settings_patch_cannot_reach_the_password() {
+        let (tmp, app) = router_no_auth();
+        for body in [
+            serde_json::json!({ "server": { "auth": { "password_hash": "$argon2id$x" } } }),
+            serde_json::json!({ "ui": { "password_hash": "$argon2id$x" } }),
+            serde_json::json!({ "auth": { "password": "orbit velvet quarry lantern" } }),
+        ] {
+            let answer = app
+                .clone()
+                .oneshot(json_req(
+                    "PATCH",
+                    "/api/v1/config/settings",
+                    &body.to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(answer.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        let on_disk = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap_or_default();
+        assert!(!on_disk.contains("$argon2id$"), "{on_disk}");
+    }
+
+    /// The token the raw read hands out, read as the editor reads it.
+    async fn raw_token_from(
+        app: &Router,
+        from: Option<axum::extract::ConnectInfo<crate::auth::Arrival>>,
+    ) -> String {
+        let mut request = Request::builder()
+            .method("GET")
+            .uri("/api/v1/config/raw")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        if let Some(from) = from {
+            request.extensions_mut().insert(from);
+        }
+        let answer = app.clone().oneshot(request).await.unwrap();
+        let bytes = axum::body::to_bytes(answer.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        parsed["token"].as_str().expect("a token").to_string()
+    }
+
+    /// A save over a file that moved since it was read is a conflict the
+    /// browser can tell apart, and writes nothing; one with no token is
+    /// refused.
+    #[tokio::test]
+    async fn a_raw_save_over_a_changed_file_is_a_409_and_one_without_a_token_a_400() {
+        let (tmp, app) = router_no_auth();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "[ui]\nleft_width_pct = 20\n").unwrap();
+        let token = raw_token_from(&app, None).await;
+        std::fs::write(&path, "[ui]\nleft_width_pct = 22\n").unwrap();
+        let body = serde_json::json!({ "content": "[ui]\nleft_width_pct = 25\n", "token": token });
+        let answer = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/v1/config/raw", &body.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(answer.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["error"], "config_changed");
+        assert!(
+            parsed["message"]
+                .as_str()
+                .unwrap()
+                .contains("nothing was saved")
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("= 22"));
+
+        let no_token = serde_json::json!({ "content": "[ui]\nleft_width_pct = 25\n" });
+        let answer = app
+            .oneshot(json_req("PUT", "/api/v1/config/raw", &no_token.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("= 22"));
     }
 
     #[tokio::test]
@@ -1121,7 +1894,7 @@ mod tests {
     /// `settingsDescriptors.test.ts` ("the settings-PATCH key set matches the
     /// server's accepted fields").
     ///
-    /// This PATCHes every key that modal can emit, in one body, across all
+    /// This `PATCHes` every key that modal can emit, in one body, across all
     /// three groups. Because `SettingsBody` is `deny_unknown_fields`, a key the
     /// modal sends but the server dropped fails here with a 400 rather than
     /// being silently ignored. Each value is asserted to land, so a key that
@@ -1148,6 +1921,8 @@ mod tests {
                         "auto_reopen_agents": true,
                         "always_show_tab_strip": true,
                         "tab_reaches_agent": true,
+                        "extended_keys": "off",
+                        "nerd_font_icons": true,
                         "status_clear_seconds": 42,
                         "attention_grace_seconds": 11,
                         "attention_indicator": false,
@@ -1185,6 +1960,8 @@ mod tests {
             "auto_reopen_agents = true",
             "always_show_tab_strip = true",
             "tab_reaches_agent = true",
+            "extended_keys = \"off\"",
+            "nerd_font_icons = true",
             "status_clear_seconds = 42",
             "attention_grace_seconds = 11",
             "attention_indicator = false",
@@ -1271,6 +2048,17 @@ mod tests {
                 "PATCH",
                 "/api/v1/config/settings",
                 r#"{"ui":{"pr_banner_position":"sideways"}}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PATCH",
+                "/api/v1/config/settings",
+                r#"{"ui":{"extended_keys":"kitty"}}"#,
             ))
             .await
             .unwrap();
@@ -1445,8 +2233,8 @@ mod tests {
         assert!(raw.contains("provider = \"codex\""), "raw: {raw}");
     }
 
-    // Test engines default to the four built-in providers (claude, codex,
-    // opencode, copilot; see `Config::default()`/`default_provider_commands()`),
+    // Test engines default to the five built-in providers (claude, codex,
+    // opencode, copilot, grok; see `Config::default()`/`default_provider_commands()`),
     // so a name outside that set is unconfigured and must be rejected with a
     // plain-text 400, mirroring `set_settings_rejects_unknown_enum_value_with_400`
     // for `pr_banner_position`.

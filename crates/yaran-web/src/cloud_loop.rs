@@ -12,6 +12,7 @@
 //!   for `yaran server`, and fires `cloud.changed` on every view change.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_loop.rs
 //! ├── cloud_ingress
@@ -21,6 +22,7 @@
 //! ├── engine_actor
 //! ├── yaran-core::cloud::cloudflared::child_registry
 //! ├── yaran-core::cloud::cloudflared::command
+//! ├── yaran-core::cloud::cloudflared::ready
 //! ├── yaran-core::cloud::leg
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
@@ -36,6 +38,7 @@
 //! cloud_loop.rs
 //! ├── cloud_loop::live_cloud_mode_tests
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;
@@ -47,7 +50,7 @@ use yaran_core::cloud::leg::{
 use yaran_core::cloud::leg_identity::{CloudIdentity, CloudLegSettings, PairedMachine};
 use yaran_core::cloud::leg_outcome::{CloudModeOutcome, leg_status, tls_disclosure};
 use yaran_core::cloud::planner::{
-    CloudStep, Desired, Pairing, StopReason, desired_leg, plan_cloud_change,
+    CloudStep, Desired, LegNow, Pairing, Refresh, StopReason, desired_leg, plan_cloud_change,
 };
 use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 
@@ -81,7 +84,6 @@ pub(crate) struct CloudLoop {
 }
 
 impl CloudLoop {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         rx: tokio::sync::mpsc::Receiver<CloudInput>,
         control: CloudModeControl,
@@ -120,7 +122,9 @@ impl CloudLoop {
 
     /// Start watching the credentials; the first snapshot arrives at once.
     pub(crate) fn start(&mut self) {
-        let identity = self.identity.clone();
+        let identity = std::sync::Arc::<dyn yaran_core::cloud::leg_identity::CloudIdentity>::clone(
+            &self.identity,
+        );
         let tx = self.control.sender();
         let on_change = Box::new(move || {
             let snapshot = match identity.load() {
@@ -133,7 +137,9 @@ impl CloudLoop {
             let _ = tx.blocking_send(CloudInput::Credentials(snapshot));
         });
         self.watch = Some(CredentialsWatch::spawn(
-            self.identity.clone(),
+            std::sync::Arc::<dyn yaran_core::cloud::leg_identity::CloudIdentity>::clone(
+                &self.identity,
+            ),
             yaran_core::cloud::leg::CREDENTIALS_POLL,
             on_change,
         ));
@@ -148,7 +154,7 @@ impl CloudLoop {
         match input {
             CloudInput::Mode { mode, reply } => {
                 self.settings.mode = mode;
-                let outcome = self.reconcile(false);
+                let outcome = self.reconcile(Refresh::Keep);
                 let _ = reply.send(outcome);
             }
             CloudInput::Settings(next) => {
@@ -158,12 +164,12 @@ impl CloudLoop {
                     ..next
                 };
                 if restart {
-                    self.reconcile(true);
+                    self.reconcile(Refresh::Restart);
                 }
             }
             CloudInput::Credentials(snapshot) => self.credentials_changed(snapshot),
             CloudInput::Leg { generation, event } if generation == self.generation => {
-                self.leg_event(event);
+                self.leg_event(&event);
             }
             CloudInput::Leg { .. } => {}
         }
@@ -200,7 +206,11 @@ impl CloudLoop {
         if !first && !repaired && !new_token {
             return;
         }
-        let outcome = self.reconcile(!first && self.leg.is_some());
+        let outcome = self.reconcile(if !first && self.leg.is_some() {
+            Refresh::Restart
+        } else {
+            Refresh::Keep
+        });
         if first
             && outcome == CloudModeOutcome::NotPaired
             && self.settings.mode.warns_when_unpaired()
@@ -209,24 +219,29 @@ impl CloudLoop {
         }
     }
 
-    fn reconcile(&mut self, restart: bool) -> CloudModeOutcome {
+    fn reconcile(&mut self, refresh: Refresh) -> CloudModeOutcome {
         let pairing = match self.machine() {
             None => Pairing::Unpaired,
             Some(m) if m.revoked => Pairing::Revoked,
             Some(_) => Pairing::Paired,
         };
         let desired = desired_leg(self.settings.mode, pairing);
-        let steps = plan_cloud_change(self.leg.is_some(), desired, restart);
+        let steps = plan_cloud_change(
+            if self.leg.is_some() {
+                LegNow::Running
+            } else {
+                LegNow::Stopped
+            },
+            desired,
+            refresh,
+        );
         for step in &steps {
             match step {
                 CloudStep::StopLeg => self.stop_leg(),
                 CloudStep::StartLeg => self.start_leg(),
             }
         }
-        let hostname = self
-            .machine()
-            .map(|m| m.hostname.clone())
-            .unwrap_or_default();
+        let hostname = self.machine().map_or_default(|m| m.hostname.clone());
         match desired {
             Desired::Run if steps.contains(&CloudStep::StartLeg) => {
                 self.set_state(CloudLegState::Starting, None);
@@ -267,24 +282,29 @@ impl CloudLoop {
         });
         let mut params = LegParams::new(self.settings.clone(), self.serving_port);
         if let Some(probe) = &self.probe {
-            params.probe = probe.clone();
+            params.probe = std::sync::Arc::<
+                dyn std::ops::Fn(u16) -> yaran_core::cloud::cloudflared::ready::Readiness
+                    + std::marker::Send
+                    + std::marker::Sync,
+            >::clone(probe);
         }
         self.leg = Some(CloudLeg::start(
             params,
-            self.identity.clone(),
+            std::sync::Arc::<dyn yaran_core::cloud::leg_identity::CloudIdentity>::clone(
+                &self.identity,
+            ),
             sink,
             self.stopping.take(),
         ));
     }
 
-    fn leg_event(&mut self, event: CloudLegEvent) {
+    fn leg_event(&mut self, event: &CloudLegEvent) {
         let (hostname, owner) = self
             .machine()
-            .map(|m| (m.hostname.clone(), m.owner_email.clone()))
-            .unwrap_or_default();
-        match &event {
+            .map_or_default(|m| (m.hostname.clone(), m.owner_email.clone()));
+        match event {
             CloudLegEvent::Acquiring { pct, .. } => {
-                self.set_state(CloudLegState::Acquiring { pct: *pct }, None)
+                self.set_state(CloudLegState::Acquiring { pct: *pct }, None);
             }
             CloudLegEvent::Acquired { .. } | CloudLegEvent::Warning(_) => {}
             CloudLegEvent::Starting { token_version } => {
@@ -324,7 +344,7 @@ impl CloudLoop {
                 self.leg_stopped(stop);
             }
         }
-        if let Some(update) = leg_status(&event, &hostname, &owner, self.settings.mode) {
+        if let Some(update) = leg_status(event, &hostname, &owner, self.settings.mode) {
             self.post(update);
         }
     }

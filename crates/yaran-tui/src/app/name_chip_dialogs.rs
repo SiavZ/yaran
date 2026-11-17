@@ -7,6 +7,7 @@
 //! bold, that the chip is padded by one chip-colored cell on each side, and that
 //! no straight quote is left around it.
 
+use crate::numeric::usize_to_u16_wrapping;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -52,7 +53,7 @@ fn screen(buf: &Buffer) -> String {
         .map(|c| c.symbol().to_string())
         .collect::<Vec<_>>()
         .chunks(width)
-        .map(|row| row.concat())
+        .map(<[std::string::String]>::concat)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -61,7 +62,7 @@ fn screen(buf: &Buffer) -> String {
 /// Names in these tests are ASCII, so one character is one cell.
 fn occurrences(buf: &Buffer, name: &str) -> Vec<(u16, u16)> {
     let chars: Vec<String> = name.chars().map(|c| c.to_string()).collect();
-    let len = chars.len() as u16;
+    let len = usize_to_u16_wrapping(chars.len());
     let mut hits = Vec::new();
     for y in 0..buf.area.height {
         for x in 0..buf.area.width.saturating_sub(len - 1) {
@@ -80,7 +81,7 @@ fn assert_chipped(app: &App, buf: &Buffer, name: &str) {
     let hits = occurrences(buf, name);
     let shown = screen(buf);
     assert!(!hits.is_empty(), "{name:?} is not on screen:\n{shown}");
-    let len = name.chars().count() as u16;
+    let len = usize_to_u16_wrapping(name.chars().count());
     for (x, y) in hits {
         for cx in x..x + len {
             let cell = &buf[(cx, y)];
@@ -127,7 +128,7 @@ fn assert_chipped(app: &App, buf: &Buffer, name: &str) {
 fn dialog_text(buf: &Buffer, title: &str) -> String {
     let edge = format!("\u{256d}{title}");
     let edge: Vec<String> = edge.chars().map(|c| c.to_string()).collect();
-    let len = edge.len() as u16;
+    let len = usize_to_u16_wrapping(edge.len());
     let cell = |x: u16, y: u16| buf[(x, y)].symbol().to_string();
     let (top, left) = (0..buf.area.height)
         .find_map(|y| {
@@ -162,6 +163,7 @@ fn the_detach_dialog_chips_the_agent() {
     let buf = open(
         &mut app,
         PromptState::ConfirmDetachAgent {
+            attached: Vec::new(),
             session_id: "s1".to_string(),
             label: "feat-detach".to_string(),
             grace_seconds: 30,
@@ -188,8 +190,15 @@ fn the_recreate_dialog_chips_the_path_the_branches_and_the_provider() {
             branch_name: "feat-rc".to_string(),
             source_branch: "trunk-rc".to_string(),
             conversation_resumes: true,
-            running_providers: vec!["gemini".to_string()],
-            focus: ConfirmFocus::Cancel,
+            running_tabs: yaran_core::working_copy::RunningTabs {
+                follows: Vec::new(),
+                restartable: vec!["gemini".to_string()],
+                left_running: Vec::new(),
+            },
+            restart_offer: Vec::new(),
+            restart_tabs: false,
+            focus: RecreateWorkingCopyFocus::Cancel,
+            attached: Vec::new(),
         },
     );
     assert_chipped(&app, &buf, "/srv/wt/repo/feat-rc");
@@ -210,10 +219,65 @@ fn the_checkout_default_branch_dialog_chips_the_project_and_its_base() {
             project_name: "proj-co".to_string(),
             stored_base: Some("base-co".to_string()),
             focus: ConfirmFocus::Cancel,
+            return_to: None,
         },
     );
     assert_chipped(&app, &buf, "proj-co");
     assert_chipped(&app, &buf, "base-co");
+}
+
+/// The delete-project dialog says, per agent worktree the cascade removes, how
+/// many uncommitted files go with it in the agent delete dialog's words: muted
+/// while git is asked, in the warning colour with the agent chipped once it
+/// answered, and nothing for a clean worktree.
+#[test]
+fn the_delete_project_dialog_counts_the_uncommitted_files_per_worktree() {
+    let mut app = test_app(default_bindings());
+    let project_id = project_with_agents(&mut app, 2);
+    let entry = |id: &str, label: &str, answer| crate::app::ProjectWorktreeFiles {
+        session_id: id.to_string(),
+        agent_label: label.to_string(),
+        answer,
+    };
+    let buf = open(
+        &mut app,
+        PromptState::ConfirmDeleteProject {
+            attached: Vec::new(),
+            project_id,
+            project_name: "proj-del".to_string(),
+            agent_count: 2,
+            focus: ConfirmFocus::Cancel,
+            return_to: None,
+            worktree_files: vec![
+                entry("s1", "dirty-duck", Some(Ok(3))),
+                entry("s2", "clean-duck", Some(Ok(0))),
+                entry("s3", "stuck-duck", Some(Err("git timed out".to_string()))),
+                entry("s4", "slow-duck", None),
+            ],
+        },
+    );
+    let text = dialog_text(&buf, "Delete Project");
+    assert!(
+        text.contains("3 files in dirty-duck aren't committed and will be deleted."),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "yaran could not look for uncommitted files in stuck-duck (git timed out); \
+             check it before deleting it."
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Looking for uncommitted files in slow-duck \u{2026}"),
+        "{text}"
+    );
+    assert!(!text.contains("clean-duck"), "{text}");
+    assert_chipped_on_row(&app, &buf, "3 files in", "dirty-duck");
+    let warning = occurrences(&buf, "3 files in")[0];
+    assert_eq!(buf[warning].fg, app.theme.warning_fg, "{}", screen(&buf));
+    let looking = occurrences(&buf, "Looking for")[0];
+    assert_eq!(buf[looking].fg, app.theme.hint_desc_fg, "{}", screen(&buf));
 }
 
 /// The delete-project dialog prints the core body (the browser's words),
@@ -226,10 +290,13 @@ fn the_delete_project_dialog_chips_the_project_and_names_the_cascade() {
     let buf = open(
         &mut app,
         PromptState::ConfirmDeleteProject {
+            attached: Vec::new(),
             project_id,
             project_name: "proj-del".to_string(),
             agent_count: 2,
             focus: ConfirmFocus::Cancel,
+            return_to: None,
+            worktree_files: Vec::new(),
         },
     );
     assert_chipped(&app, &buf, "proj-del");
@@ -271,11 +338,13 @@ fn the_remove_project_dialog_chips_the_project_and_keeps_the_worktrees() {
     let buf = open(
         &mut app,
         PromptState::ConfirmRemoveProject {
+            attached: Vec::new(),
             project_id,
             project_name: "proj-rm".to_string(),
             agent_count: 1,
             orphaned: true,
             focus: ConfirmFocus::Cancel,
+            return_to: None,
         },
     );
     assert_chipped(&app, &buf, "proj-rm");
@@ -304,6 +373,7 @@ fn a_multi_word_name_is_never_split_across_rows() {
             project_name: "My Cool Project".to_string(),
             stored_base: Some("base-co".to_string()),
             focus: ConfirmFocus::Cancel,
+            return_to: None,
         };
         let buf = render_at(&mut app, width, HEIGHT);
         assert_chipped(&app, &buf, "My Cool Project");
@@ -315,6 +385,7 @@ fn a_multi_word_name_is_never_split_across_rows() {
             continue;
         }
         app.prompt = PromptState::ConfirmDeleteTerminal {
+            attached: Vec::new(),
             terminal_id: "t1".to_string(),
             terminal_label: "My Cool Terminal".to_string(),
             foreground_cmd: Some("vim".to_string()),
@@ -331,6 +402,7 @@ fn the_delete_terminal_dialog_chips_the_terminal() {
     let buf = open(
         &mut app,
         PromptState::ConfirmDeleteTerminal {
+            attached: Vec::new(),
             terminal_id: "t1".to_string(),
             terminal_label: "term-dt".to_string(),
             foreground_cmd: Some("vim".to_string()),
@@ -341,76 +413,417 @@ fn the_delete_terminal_dialog_chips_the_terminal() {
 }
 
 #[test]
-fn the_close_tab_dialog_chips_the_provider_the_agent_and_the_successor() {
+fn the_close_and_stop_tab_dialogs_chip_the_provider_the_agent_and_the_successor() {
     let mut app = test_app(default_bindings());
     let session_id = app.engine.sessions[0].id.clone();
-    let agent = app.session_label(&app.engine.sessions[0]);
-    let buf = open(
-        &mut app,
-        PromptState::ConfirmCloseTab {
-            session_id,
-            tab_id: "no-such-tab".to_string(),
-            provider_label: "Prov-ct".to_string(),
-            promoted_label: Some("Next-ct".to_string()),
-            focus: ConfirmFocus::Cancel,
-        },
-    );
-    assert_chipped(&app, &buf, "Prov-ct");
-    assert_chipped(&app, &buf, "Next-ct");
-    // The agent's name also labels its sidebar row behind the overlay, so
-    // only the occurrence inside the dialog is asked about.
-    let dialog_row = occurrences(&buf, "Prov-ct")[0].1;
-    let in_dialog: Vec<_> = occurrences(&buf, &agent)
-        .into_iter()
-        .filter(|(_, y)| *y == dialog_row)
-        .collect();
-    assert!(!in_dialog.is_empty(), "{}", screen(&buf));
-    for (x, y) in in_dialog {
-        assert_eq!(
-            (buf[(x, y)].fg, buf[(x, y)].bg),
-            (app.theme.overlay_bg, app.theme.text_fg),
-            "{}",
-            screen(&buf)
-        );
+    let agent = app.engine.sessions[0].display_label();
+    let close = PromptState::ConfirmCloseTab {
+        attached: Vec::new(),
+        session_id: session_id.clone(),
+        tab_id: "no-such-tab".to_string(),
+        provider_label: "Prov-ct".to_string(),
+        promoted_label: Some("Next-ct".to_string()),
+        focus: ConfirmFocus::Cancel,
+    };
+    let stop = PromptState::ConfirmStopTab {
+        session_id,
+        tab_id: "no-such-tab".to_string(),
+        provider_label: "Prov-st".to_string(),
+        last_running: false,
+        focus: ConfirmFocus::Cancel,
+        attached: Vec::new(),
+    };
+    for (prompt, provider) in [(close, "Prov-ct"), (stop, "Prov-st")] {
+        let buf = open(&mut app, prompt);
+        assert_chipped(&app, &buf, provider);
+        if provider == "Prov-ct" {
+            assert_chipped(&app, &buf, "Next-ct");
+        }
+        // The agent's name also labels its sidebar row behind the overlay, so
+        // only the occurrence inside the dialog is asked about.
+        let dialog_row = occurrences(&buf, provider)[0].1;
+        let in_dialog: Vec<_> = occurrences(&buf, &agent)
+            .into_iter()
+            .filter(|(_, y)| *y == dialog_row)
+            .collect();
+        assert!(!in_dialog.is_empty(), "{}", screen(&buf));
+        for (x, y) in in_dialog {
+            assert_eq!(
+                (buf[(x, y)].fg, buf[(x, y)].bg),
+                (app.theme.overlay_bg, app.theme.text_fg),
+                "{}",
+                screen(&buf)
+            );
+        }
     }
 }
 
-fn delete_agent_prompt(target: DeleteAgentTarget, delete_worktree: bool) -> PromptState {
+fn delete_agent_prompt(
+    target: DeleteAgentTarget,
+    worktree: yaran_core::engine::WorktreeOnDelete,
+) -> PromptState {
     PromptState::ConfirmDeleteAgent {
+        offer: crate::app::DeleteBranchOffer::Pending,
+        attached: Vec::new(),
         session_id: "s1".to_string(),
         agent_label: "launch-at-login".to_string(),
         target,
         focus: DeleteAgentFocus::Cancel,
-        delete_worktree,
-        delete_branch: true,
-        unpushed_commits: Some(yaran_core::git::UnpushedCommits {
-            count: 2,
-            has_remote_refs: true,
-        }),
+        delete_worktree: worktree == yaran_core::engine::WorktreeOnDelete::Remove,
+        delete_branch: Some(true),
+        delete_other_branches: None,
     }
+}
+
+/// Deleting an agent a browser is watching leaves the dialog open: it names
+/// who as chips (the device, the tab and the agent), its confirm becomes
+/// Delete anyway with Cancel focused, and the override deletes the agent.
+#[test]
+fn a_refused_agent_delete_names_who_is_attached_and_offers_to_delete_anyway() {
+    let mut app = test_app(default_bindings());
+    let agent = app.engine.sessions[0].id.clone();
+    let tab = app.engine.sessions[0].slot_tab_id().to_string();
+    app.engine.attachments.register(
+        "browser-tab",
+        yaran_core::attachments::ConnectionFacts {
+            surface: yaran_core::attachments::Surface::Browser,
+            device: Some(
+                "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0"
+                    .to_string(),
+            ),
+            address: Some("10.0.0.7".parse().unwrap()),
+            verified: false,
+            events: true,
+            browser: None,
+        },
+        None,
+    );
+    app.engine
+        .attachments
+        .attach(
+            "browser-tab",
+            yaran_core::attachments::Target {
+                kind: yaran_core::attachments::TargetKind::Tab,
+                id: tab,
+                agent: Some(agent.clone()),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    app.confirm_delete_selected_session();
+
+    app.resolve_confirm_delete_agent(ConfirmAnswer::Confirm);
+
+    let PromptState::ConfirmDeleteAgent { focus, .. } = &app.prompt else {
+        panic!("the delete dialog stays open, got {:?}", app.prompt);
+    };
+    assert_eq!(*focus, DeleteAgentFocus::Cancel);
+    let buf = render(&mut app);
+    assert_chipped(&app, &buf, "Firefox on Linux");
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(
+        text.contains("at 10.0.0.7 (unverified), watching tab"),
+        "{text}"
+    );
+    assert!(text.contains("Delete anyway"), "{text}");
+    assert!(app.engine.sessions.iter().any(|s| s.id == agent));
+
+    // Somebody the dialog did not show attaches: the override is refused
+    // again, naming both, with focus back on Cancel.
+    app.engine.attachments.register(
+        "second-browser",
+        yaran_core::attachments::ConnectionFacts {
+            surface: yaran_core::attachments::Surface::Browser,
+            device: Some("Safari".to_string()),
+            address: Some("10.0.0.8".parse().unwrap()),
+            verified: false,
+            events: true,
+            browser: None,
+        },
+        None,
+    );
+    app.engine
+        .attachments
+        .attach(
+            "second-browser",
+            yaran_core::attachments::Target {
+                kind: yaran_core::attachments::TargetKind::Tab,
+                id: app.engine.sessions[0].slot_tab_id().to_string(),
+                agent: Some(agent.clone()),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    if let PromptState::ConfirmDeleteAgent { focus, .. } = &mut app.prompt {
+        *focus = DeleteAgentFocus::Delete;
+    }
+    app.resolve_confirm_delete_agent(ConfirmAnswer::Confirm);
+    let PromptState::ConfirmDeleteAgent {
+        focus, attached, ..
+    } = &app.prompt
+    else {
+        panic!("the override is refused again, got {:?}", app.prompt);
+    };
+    assert_eq!(attached.len(), 2);
+    assert_eq!(*focus, DeleteAgentFocus::Cancel);
+    assert!(app.engine.sessions.iter().any(|s| s.id == agent));
+
+    app.resolve_confirm_delete_agent(ConfirmAnswer::Confirm);
+
+    assert!(matches!(app.prompt, PromptState::None));
+    assert!(
+        !app.engine.sessions.iter().any(|s| s.id == agent),
+        "the override deletes the agent"
+    );
+}
+
+/// A double click on Delete never goes ahead over who the refusal named: the
+/// second click arrives before the override has been drawn, so it lands on
+/// nothing. The override takes a fresh press on the button once it is on
+/// screen.
+#[test]
+fn a_double_click_on_a_refused_delete_never_presses_the_override() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = test_app(default_bindings());
+    let agent = app.engine.sessions[0].id.clone();
+    let tab = app.engine.sessions[0].slot_tab_id().to_string();
+    crate::app::test_support::watch_from_a_browser(&app, &tab, &agent);
+    app.confirm_delete_selected_session();
+    let click = |app: &mut App, rect: ratatui::layout::Rect| {
+        let (column, row) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.handle_mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            });
+        }
+    };
+    let delete_button = |app: &App| match app.overlay_layout.active {
+        OverlayMouseLayout::ConfirmDeleteAgent { delete_button, .. } => delete_button,
+        _ => panic!("the delete dialog publishes its buttons"),
+    };
+
+    render(&mut app);
+    let first = delete_button(&app);
+    // Both halves of the double click in one input batch, no frame between.
+    click(&mut app, first);
+    click(&mut app, first);
+
+    assert!(
+        app.engine.sessions.iter().any(|s| s.id == agent),
+        "the second click must not go ahead"
+    );
+    assert!(!app.prompt.attached().is_empty(), "{:?}", app.prompt);
+
+    render(&mut app);
+    let drawn = delete_button(&app);
+    click(&mut app, drawn);
+    assert!(
+        !app.engine.sessions.iter().any(|s| s.id == agent),
+        "a fresh press on the drawn override goes ahead"
+    );
+}
+
+/// Quitting with a browser attached names it as a chip, and the confirm says
+/// it quits anyway.
+#[test]
+fn the_quit_dialog_names_who_is_attached_and_offers_to_quit_anyway() {
+    let mut app = test_app(default_bindings());
+    let agent = app.engine.sessions[0].id.clone();
+    let tab = app.engine.sessions[0].slot_tab_id().to_string();
+    crate::app::test_support::watch_from_a_browser(&app, &tab, &agent);
+    assert!(!app.begin_quit(), "asks first");
+
+    let buf = render(&mut app);
+    assert_chipped(&app, &buf, "Firefox");
+    let text = dialog_text(&buf, "Quit yaran");
+    assert!(
+        text.contains("Someone else is using this right now. Going ahead cuts them off:"),
+        "{text}"
+    );
+    assert!(text.contains("Quit anyway"), "{text}");
 }
 
 #[test]
 fn the_delete_agent_dialog_chips_the_agent_and_every_branch_it_names() {
+    use yaran_core::branch_history::{BranchOffer, BranchOrigin, OfferedBranch};
     let mut app = test_app(default_bindings());
-    let buf = open(
-        &mut app,
-        delete_agent_prompt(
-            DeleteAgentTarget::Managed {
-                branch_name: "now-br".to_string(),
-                initial_branch: "born-br".to_string(),
-                branch_provenance: yaran_core::model::BranchProvenance::AttachedExisting,
-                worktree_shared: false,
-            },
-            true,
-        ),
+    let offered = |name: &str, origin| OfferedBranch {
+        name: name.to_string(),
+        oid: "a".repeat(40),
+        origin,
+    };
+    let counted = |count| {
+        Ok(yaran_core::git::UnpushedCommits {
+            count,
+            has_remote_refs: true,
+        })
+    };
+    let mut prompt = delete_agent_prompt(
+        DeleteAgentTarget::Managed {
+            branch_name: "now-br".to_string(),
+            worktree_shared: false,
+        },
+        yaran_core::engine::WorktreeOnDelete::Remove,
     );
+    if let PromptState::ConfirmDeleteAgent { offer, .. } = &mut prompt {
+        *offer = crate::app::DeleteBranchOffer::answered(BranchOffer {
+            current_name: String::new(),
+            current: Some(offered("now-br", BranchOrigin::Yaran)),
+            current_unpushed: counted(2),
+            others: vec![offered("born-br", BranchOrigin::Before)],
+            others_unpushed: counted(0),
+            both_unpushed: counted(2),
+            newly_seen: Vec::new(),
+            uncommitted_files: Ok(0),
+            protected: Vec::new(),
+        });
+    }
+    let buf = open(&mut app, prompt);
     assert_chipped(&app, &buf, "launch-at-login");
-    // Named in the branch checkbox AND in the drift warning above it.
+    // Named in the first box AND in the line saying what deleting it loses.
     assert_chipped(&app, &buf, "now-br");
+    assert!(screen(&buf).contains("loses 2 commits"), "{}", screen(&buf));
+    assert!(occurrences(&buf, "now-br").len() >= 2, "{}", screen(&buf));
+    // Named in the second box AND in the warning under it.
     assert_chipped(&app, &buf, "born-br");
     assert!(occurrences(&buf, "born-br").len() >= 2, "{}", screen(&buf));
     assert!(screen(&buf).contains("Delete"), "{}", screen(&buf));
+}
+
+/// A landed offer with nothing unpushed and `files` as the worktree's answer.
+fn offer_with_files(files: Result<u32, String>) -> crate::app::DeleteBranchOffer {
+    use yaran_core::branch_history::{BranchOffer, BranchOrigin, OfferedBranch};
+    let counted = Ok(yaran_core::git::UnpushedCommits {
+        count: 0,
+        has_remote_refs: true,
+    });
+    crate::app::DeleteBranchOffer::answered(BranchOffer {
+        current_name: "now-br".to_string(),
+        current: Some(OfferedBranch {
+            name: "now-br".to_string(),
+            oid: "a".repeat(40),
+            origin: BranchOrigin::Yaran,
+        }),
+        current_unpushed: counted.clone(),
+        others: Vec::new(),
+        others_unpushed: counted.clone(),
+        both_unpushed: counted,
+        newly_seen: Vec::new(),
+        protected: Vec::new(),
+        uncommitted_files: files,
+    })
+}
+
+/// The delete dialog for a managed agent, its worktree box as `worktree`
+/// says, with `offer` as what git answered, painted.
+fn delete_dialog_with(
+    app: &mut App,
+    worktree: yaran_core::engine::WorktreeOnDelete,
+    offer: crate::app::DeleteBranchOffer,
+) -> Buffer {
+    let mut prompt = delete_agent_prompt(
+        DeleteAgentTarget::Managed {
+            branch_name: "now-br".to_string(),
+            worktree_shared: false,
+        },
+        worktree,
+    );
+    if let PromptState::ConfirmDeleteAgent { offer: slot, .. } = &mut prompt {
+        *slot = offer;
+    }
+    open(app, prompt)
+}
+
+/// A ticked worktree box says how many uncommitted files go with the
+/// worktree, in the warning colour and chipping the agent; nothing is said for
+/// a clean worktree or while the worktree box is unticked.
+#[test]
+fn the_delete_agent_dialog_counts_the_uncommitted_files_only_when_the_worktree_goes() {
+    use yaran_core::engine::WorktreeOnDelete::{Keep, Remove};
+    let mut app = test_app(default_bindings());
+
+    let buf = delete_dialog_with(&mut app, Remove, offer_with_files(Ok(3)));
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(
+        text.contains("3 files in launch-at-login aren't committed and will be deleted."),
+        "{text}"
+    );
+    let row = occurrences(&buf, "3 files in")
+        .first()
+        .copied()
+        .expect("the warning is on screen");
+    assert_eq!(buf[row].fg, app.theme.warning_fg, "{}", screen(&buf));
+    assert_chipped_on_row(&app, &buf, "3 files in", "launch-at-login");
+
+    let buf = delete_dialog_with(&mut app, Remove, offer_with_files(Ok(1)));
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(
+        text.contains("1 file in launch-at-login isn't committed and will be deleted."),
+        "{text}"
+    );
+
+    let buf = delete_dialog_with(&mut app, Remove, offer_with_files(Ok(0)));
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(!text.contains("committed and will be deleted"), "{text}");
+    assert!(!text.contains("uncommitted files"), "{text}");
+
+    let buf = delete_dialog_with(&mut app, Keep, offer_with_files(Ok(3)));
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(!text.contains("committed and will be deleted"), "{text}");
+}
+
+/// While git is asked the ticked worktree box says so; a look that failed,
+/// alone or with the whole check, says so in the warning colour rather than
+/// reading as a clean worktree; and an unticked box says nothing.
+#[test]
+fn the_delete_agent_dialog_says_when_it_is_still_looking_or_could_not_look() {
+    use crate::app::DeleteBranchOffer::{Failed, Pending};
+    use yaran_core::engine::WorktreeOnDelete::{Keep, Remove};
+    let mut app = test_app(default_bindings());
+
+    let failed = offer_with_files(Err("fatal: not a git repository".to_string()));
+    let buf = delete_dialog_with(&mut app, Remove, failed);
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(
+        text.contains(
+            "yaran could not look for uncommitted files in launch-at-login \
+             (fatal: not a git repository); check it before deleting it."
+        ),
+        "{text}"
+    );
+    let row = occurrences(&buf, "yaran could not look")
+        .first()
+        .copied()
+        .expect("the failure is on screen");
+    assert_eq!(buf[row].fg, app.theme.warning_fg, "{}", screen(&buf));
+
+    let buf = delete_dialog_with(&mut app, Remove, Failed("git could not be run".to_string()));
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(
+        text.contains(
+            "yaran could not look for uncommitted files in launch-at-login (git could not be run)"
+        ),
+        "{text}"
+    );
+
+    let buf = delete_dialog_with(&mut app, Remove, Pending);
+    let text = dialog_text(&buf, "Delete Agent");
+    // The chip's padding cell stands between the name and the ellipsis.
+    assert!(
+        text.contains("Looking for uncommitted files in launch-at-login \u{2026}"),
+        "{text}"
+    );
+    let buf = delete_dialog_with(&mut app, Keep, Pending);
+    let text = dialog_text(&buf, "Delete Agent");
+    assert!(!text.contains("uncommitted files"), "{text}");
 }
 
 #[test]
@@ -422,7 +835,7 @@ fn the_standalone_delete_dialog_chips_the_agent_and_its_folder() {
             DeleteAgentTarget::Folder {
                 folder_label: "~/notes-sa".to_string(),
             },
-            false,
+            yaran_core::engine::WorktreeOnDelete::Keep,
         ),
     );
     assert_chipped(&app, &buf, "launch-at-login");
@@ -436,6 +849,7 @@ fn the_discard_dialog_chips_the_file() {
         &mut app,
         PromptState::ConfirmDiscardFile {
             file_path: "src/discard-me.rs".to_string(),
+            kind: yaran_core::model::ChangedFileKind::File,
             focus: ConfirmFocus::Cancel,
         },
     );
@@ -635,6 +1049,7 @@ fn the_use_existing_branch_dialog_chips_the_branch() {
         use_existing_branch: false,
         pull_before_create: false,
         copy_uncommitted_changes: false,
+        cloned: None,
     };
     let buf = open(
         &mut app,
@@ -658,7 +1073,7 @@ fn assert_chipped_on_row(app: &App, buf: &Buffer, row_marker: &str, name: &str) 
         .lines()
         .enumerate()
         .filter(|(_, row)| row.contains(row_marker))
-        .map(|(y, _)| y as u16)
+        .map(|(y, _)| usize_to_u16_wrapping(y))
         .collect();
     assert!(
         !marked_rows.is_empty(),
@@ -672,7 +1087,7 @@ fn assert_chipped_on_row(app: &App, buf: &Buffer, row_marker: &str, name: &str) 
         !hits.is_empty(),
         "{name:?} is not on the {row_marker:?} row:\n{shown}"
     );
-    let len = name.chars().count() as u16;
+    let len = usize_to_u16_wrapping(name.chars().count());
     for (x, y) in hits {
         for cx in x..x + len {
             let cell = &buf[(cx, y)];
@@ -705,8 +1120,10 @@ fn the_delete_worktree_dialog_chips_the_worktree_its_path_and_its_branch() {
         &mut app,
         PromptState::ConfirmDeleteWorktree(Box::new(ConfirmDeleteWorktreePrompt {
             previous: ManageWorktreesPrompt {
+                return_to: None,
                 project: project.clone(),
                 entries: Vec::new(),
+                leftovers: Vec::new(),
                 loading: false,
                 selected: None,
                 error: None,
@@ -806,8 +1223,10 @@ fn the_worktree_manager_chips_the_project_and_its_repository() {
     let buf = open(
         &mut app,
         PromptState::ManageWorktrees(ManageWorktreesPrompt {
+            return_to: None,
             project,
             entries: Vec::new(),
+            leftovers: Vec::new(),
             loading: false,
             selected: None,
             error: None,
@@ -850,18 +1269,56 @@ fn the_pull_request_dialog_chips_the_project() {
     assert_chipped(&app, &buf, "proj-pr");
 }
 
+/// Assert `name` is a chip on the row of the screen that carries `marker`.
+/// The agent's name also labels the header and its sidebar row behind the
+/// overlay, so only the occurrence in the dialog is asked about.
+fn assert_chipped_on_row_with(app: &App, buf: &Buffer, name: &str, marker: &str) {
+    let shown = screen(buf);
+    let row = occurrences(buf, marker).first().map_or_else(
+        || panic!("{marker:?} is not on screen:\n{shown}"),
+        |(_, y)| *y,
+    );
+    let hits: Vec<_> = occurrences(buf, name)
+        .into_iter()
+        .filter(|(_, y)| *y == row)
+        .collect();
+    assert!(
+        !hits.is_empty(),
+        "{name:?} is not beside {marker:?}:\n{shown}"
+    );
+    for (x, y) in hits {
+        assert_eq!(
+            (buf[(x, y)].fg, buf[(x, y)].bg),
+            (app.theme.overlay_bg, app.theme.text_fg),
+            "{shown}"
+        );
+    }
+}
+
 #[test]
-fn the_attach_pull_request_dialog_chips_the_pull_request_it_replaces() {
+fn the_attach_pull_request_dialog_chips_the_agent_it_joins() {
     let mut app = test_app(default_bindings());
+    let agent = app.engine.sessions[0].display_label();
     let buf = open(
         &mut app,
         PromptState::AttachPullRequestInput {
-            session_id: "s1".to_string(),
-            current_pr: Some("#42 (open) Fix the frobnicator".to_string()),
+            session_id: "session-1".to_string(),
+            back: crate::app::test_support::pull_requests_prompt("session-1"),
             input: TextInput::new(),
         },
     );
-    assert_chipped(&app, &buf, "#42 (open) Fix the frobnicator");
+    assert_chipped_on_row_with(&app, &buf, &agent, "pull request on");
+}
+
+#[test]
+fn the_pull_requests_modal_chips_the_agent() {
+    let mut app = test_app(default_bindings());
+    let agent = app.engine.sessions[0].display_label();
+    let buf = open(
+        &mut app,
+        PromptState::PullRequests(crate::app::test_support::pull_requests_prompt("session-1")),
+    );
+    assert_chipped_on_row_with(&app, &buf, &agent, "Agent:");
 }
 
 #[test]
@@ -884,6 +1341,7 @@ fn the_configure_dialog_chips_the_project() {
     let buf = open(
         &mut app,
         PromptState::ConfigureStartupCommand {
+            return_to: None,
             project_id: "p1".to_string(),
             project_name: "proj-cfg".to_string(),
             input: TextInput::with_text("npm install".to_string()).with_multiline(6),
@@ -932,11 +1390,112 @@ fn the_new_agent_dialog_chips_the_worktree_it_starts_in() {
             randomize_name: false,
             randomized_name: None,
             copy_changes: false,
+            review_copy: None,
             focus: NameNewAgentFocus::Input,
-            extras: Default::default(),
+            extras: Box::default(),
         },
     );
     assert_chipped(&app, &buf, "/srv/wt-na");
+}
+
+/// The clone form shows its names only inside its own fields, which are
+/// typed text rather than prose, so its body carries no name to chip.
+#[test]
+fn the_clone_dialog_shows_names_only_in_its_fields() {
+    let mut app = test_app(default_bindings());
+    let buf = open(
+        &mut app,
+        PromptState::CloneProject {
+            address: TextInput::with_text("https://example.com/acme/widget-cl".to_string()),
+            destination: TextInput::with_text("/srv/code/widget-cl".to_string()),
+            destination_edited: false,
+            start_folder: std::path::PathBuf::from("/srv/code"),
+            agent_name: TextInput::new(),
+            randomize_name: false,
+            randomized_name: None,
+            focus: CloneProjectFocus::Address,
+            pull_request: None,
+        },
+    );
+    let OverlayMouseLayout::CloneProject {
+        address,
+        destination,
+        ..
+    } = app.overlay_layout.active
+    else {
+        panic!("expected the clone form's layout");
+    };
+    let rows: Vec<u16> = occurrences(&buf, "widget-cl")
+        .into_iter()
+        .map(|(_, y)| y)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![address.expect("the address field").y, destination.y],
+        "the name appears outside the fields:\n{}",
+        screen(&buf)
+    );
+
+    // The pull request's form is prose: the repository, the pull request, its
+    // title and branch, the read-only address and the folder it adds are all
+    // chips, and the review copy warning chips the branch it names.
+    let warning = yaran_core::prose::Prose::new()
+        .text("Branch ")
+        .quoted("fix-docs-pr")
+        .text(" will be checked out in the project folder.")
+        .into_segments();
+    let offer = yaran_core::pr_reference::PullRequestCloneFacts {
+        address: "https://ghe.example/acme/widget-pr.git".to_string(),
+        host: "github.com".to_string(),
+        owner_repo: "acme/widget-pr".to_string(),
+        number: 3,
+        title: "Fix the \u{202e}docs-pr".to_string(),
+        state: "OPEN".to_string(),
+        head_branch: "fix-docs-pr".to_string(),
+        head_oid: None,
+        review_copy: yaran_core::status_text::ReviewCopyOutlook::Needed {
+            reason: "busy".to_string(),
+            branch: "fix-docs-pr".to_string(),
+            copy_branch: "fix-docs-pr-review".to_string(),
+            warning,
+        },
+    };
+    let mut app = test_app(default_bindings());
+    let buf = open(
+        &mut app,
+        PromptState::CloneProject {
+            address: TextInput::with_text(offer.address.clone()),
+            destination: TextInput::with_text("/srv/code/dest-pr".to_string()),
+            destination_edited: false,
+            start_folder: std::path::PathBuf::from("/srv/code"),
+            agent_name: TextInput::with_text("fix-docs-pr".to_string()),
+            randomize_name: false,
+            randomized_name: None,
+            focus: CloneProjectFocus::Destination,
+            pull_request: Some(Box::new(crate::app::PullRequestClone {
+                review_copy: offer.review_copy.clone(),
+                offer,
+                reference: "https://github.com/acme/widget-pr/pull/3".to_string(),
+                incomplete_summary: None,
+                has_projects: true,
+                folder: crate::app::PrFolder::Checkout {
+                    path: "/srv/code/checkout-pr".to_string(),
+                },
+                review_copy_agreed: false,
+                checked_review: None,
+                edits: 0,
+                check_purpose: crate::app::pr_clone::PrFolderCheck::Open,
+                checking: false,
+                error: None,
+            })),
+        },
+    );
+    assert_chipped(&app, &buf, "github.com/acme/widget-pr");
+    assert_chipped(&app, &buf, "/srv/code/checkout-pr");
+    assert_chipped(&app, &buf, "Fix the docs-pr");
+    assert_chipped(&app, &buf, "https://ghe.example/acme/widget-pr.git");
+    assert_chipped_on_row(&app, &buf, "from branch", "fix-docs-pr");
+    assert_chipped_on_row(&app, &buf, "will be checked out", "fix-docs-pr");
 }
 
 #[test]
@@ -1015,7 +1574,7 @@ fn code_only(source: &str) -> Vec<char> {
                     }
                 }
             }
-            'r' if matches!(next, Some('"') | Some('#'))
+            'r' if matches!(next, Some('"' | '#'))
                 && (i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')) =>
             {
                 let mut j = i + 1;
@@ -1127,16 +1686,11 @@ fn unreasoned_ratatui_wraps(source: &str) -> Vec<usize> {
         for (i, c) in code.iter().enumerate().skip(p) {
             match c {
                 '(' | '[' | '{' => depth += 1,
-                ')' | ']' => depth -= 1,
-                '}' if depth <= 0 => {
+                '}' | ';' if depth <= 0 => {
                     end = i;
                     break;
                 }
-                '}' => depth -= 1,
-                ';' if depth <= 0 => {
-                    end = i;
-                    break;
-                }
+                ')' | ']' | '}' => depth -= 1,
                 _ => {}
             }
         }
@@ -1249,7 +1803,7 @@ fn assert_body_text(app: &App, buf: &Buffer, words: &str) {
     let hits = occurrences(buf, words);
     let shown = screen(buf);
     assert!(!hits.is_empty(), "{words:?} is not on screen:\n{shown}");
-    let len = words.chars().count() as u16;
+    let len = usize_to_u16_wrapping(words.chars().count());
     for (x, y) in hits {
         for cx in x..x + len {
             let cell = &buf[(cx, y)];
@@ -1273,10 +1827,13 @@ fn dialog_body_text_is_the_themes_text_color_on_a_light_theme() {
     let buf = open(
         &mut app,
         PromptState::ConfirmDeleteProject {
+            attached: Vec::new(),
             project_id: project_id.clone(),
             project_name: "proj-light".to_string(),
             agent_count: 2,
             focus: ConfirmFocus::Cancel,
+            return_to: None,
+            worktree_files: Vec::new(),
         },
     );
     assert_body_text(&app, &buf, "This is irreversible.");
@@ -1285,11 +1842,13 @@ fn dialog_body_text_is_the_themes_text_color_on_a_light_theme() {
     let buf = open(
         &mut app,
         PromptState::ConfirmRemoveProject {
+            attached: Vec::new(),
             project_id,
             project_name: "proj-light".to_string(),
             agent_count: 2,
             orphaned: false,
             focus: ConfirmFocus::Cancel,
+            return_to: None,
         },
     );
     assert_body_text(&app, &buf, "This removes");

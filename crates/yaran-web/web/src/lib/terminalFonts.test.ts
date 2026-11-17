@@ -320,6 +320,18 @@ describe("Yaran Mono Fill subset contents", () => {
     }
   })
 
+  it("carries the terminal UI's default project and standalone marks", () => {
+    // The TUI's default icon set (theme::Glyphs::PLAIN) marks a managed
+    // agent's project with U+203B REFERENCE MARK and a standalone row with
+    // U+2737. The web terminal and the screenshot tool draw them from this
+    // face when the system font lacks them; a recut that drops one puts tofu
+    // on every agent row the browser shows. The opt-in Nerd Font set is not
+    // carried here: it needs the user's own patched font.
+    for (const cp of [0x203b, 0x2737]) {
+      expect(coverage.has(cp), `U+${cp.toString(16).toUpperCase()}`).toBe(true)
+    }
+  })
+
   it("carries every frame of the UI's glyph spinner", () => {
     // `.glyph-spinner` (index.css) names this face first precisely because no
     // other bundled face and no UI font has these six arcs; a recut that drops

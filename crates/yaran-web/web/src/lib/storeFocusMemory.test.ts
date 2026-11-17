@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import type { Spine } from "./workspaceApi"
 
 // Per-agent "remember last-focused tab": `selectSession` restores an agent's
@@ -46,6 +53,13 @@ let putCalls: { url: string; body: unknown }[] = []
 let replaceStateMock: ReturnType<typeof vi.fn>
 
 const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/workspace")) {
     return {
@@ -119,7 +133,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -161,7 +180,11 @@ describe("selectSession restores the remembered tab", () => {
       sessionId: "s1",
       tabId: "t2",
     })
-    expect(replaceStateMock).toHaveBeenCalledWith(null, "", "#/agent/s1/tab/t2")
+    expect(replaceStateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ yaranRoute: "#/agent/s1/tab/t2" }),
+      "",
+      "#/agent/s1/tab/t2",
+    )
   })
 
   it("falls back to the session-slot tab when the remembered tab was closed", async () => {
@@ -182,7 +205,11 @@ describe("selectSession restores the remembered tab", () => {
       sessionId: "s1",
       tabId: "s1",
     })
-    expect(replaceStateMock).toHaveBeenCalledWith(null, "", "#/agent/s1")
+    expect(replaceStateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ yaranRoute: "#/agent/s1" }),
+      "",
+      "#/agent/s1",
+    )
   })
 
   it("lands on the session-slot tab when there is no remembered tab", async () => {

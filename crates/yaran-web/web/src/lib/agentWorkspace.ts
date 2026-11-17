@@ -26,6 +26,27 @@ export type FolderRepoStatus =
    * way out is to recreate it at the same path. */
   | "missing"
 
+/** The running tabs of an agent whose working copy is gone, one provider per
+ * tab, sorted by what each does once the copy is back. Mirrors
+ * `yaran_core::working_copy::RunningTabs`. */
+export type RunningTabs = {
+  /** Follows the folder by itself: Claude. */
+  follows: string[]
+  /** Cannot follow it, and picks its conversation back up once restarted. */
+  restartable: string[]
+  /** Cannot follow it, and would lose its conversation if restarted. */
+  left_running: string[]
+}
+
+/** Mirrors `yaran_core::viewmodel::RecreateView`. */
+export type RecreateWire = {
+  /** The running tabs, or the slot tab alone when none is running. */
+  running: RunningTabs
+  /** The providers of the tabs the confirmation offers to restart, one per
+   * tab. Empty means no checkbox. */
+  restart_offer: string[]
+}
+
 /** The serialized workspace, exactly as it arrives on `SessionView.workspace`.
  * Field names are the server's (snake_case). */
 export type AgentWorkspaceWire =
@@ -56,6 +77,15 @@ export type AgentWorkspaceWire =
       /** Why the changes region is quiet, when it is. Empty or absent while the
        * working copy is there. */
       quiet_reason?: string
+      /** Whether the working copy has no branch checked out right now (a
+       * detached checkout, a rebase or a bisect in progress). `branch_name`
+       * still names the branch it was last on. Absent from a server that
+       * predates it, which reads as "a branch is checked out". */
+      no_branch_checked_out?: boolean
+      /** What the recreate confirmation says about the running tabs and offers
+       * to restart, decided on the server so the browser asks no CLI question
+       * of its own. Null or absent while the working copy is there. */
+      recreate?: RecreateWire | null
     }
   | {
       kind: "folder"
@@ -127,15 +157,81 @@ export function supportsBranchGit(workspace: AgentWorkspaceWire): boolean {
   return managedWorkspace(workspace) !== null
 }
 
-/** Why the changes region is quiet, or `null` when it is not, which doubles as
- * "does the changes panel work here". Deliberately the only spelling of that
- * question: a second one is how the two answers drift. */
-export function changesQuietReason(
+/** The branch yaran keeps showing while the agent's working copy has no branch
+ * checked out (a detached checkout, a rebase or a bisect in progress), or
+ * `null` while one is. A standalone agent has no branch to keep showing. */
+export function branchShownWithoutCheckout(
   workspace: AgentWorkspaceWire,
 ): string | null {
   return matchWorkspace(workspace, {
-    managed: (w) => (w.worktree_missing ? (w.quiet_reason ?? null) : null),
+    managed: (w) => (w.no_branch_checked_out === true ? w.branch_name : null),
+    folder: () => null,
+  })
+}
+
+/** Why the changes region is quiet, or `null` when it is not, which doubles as
+ * "does the changes panel work here". Never an empty string: an empty or absent
+ * sentence answers `null`. Deliberately the only spelling of that question, and
+ * every caller compares against `null`: the pane's body and its menu both read
+ * it, and a second spelling is how the two answers drift. */
+export function changesQuietReason(
+  workspace: AgentWorkspaceWire,
+): string | null {
+  const reason = matchWorkspace(workspace, {
+    managed: (w) => (w.worktree_missing ? w.quiet_reason : null),
     folder: (w) => (w.repo_status === "working_repo" ? null : w.quiet_reason),
+  })
+  // An empty or absent sentence is no answer, the same as an older server
+  // that sends none, so it reads as "not quiet" for every caller at once.
+  return reason ? reason : null
+}
+
+const WORKING_COPY_GONE = "This working copy no longer exists on disk."
+const FOLDER_GONE = "This folder no longer exists on disk."
+
+/** Why the Changes pane's own git items (commit, refresh, and push and pull
+ * where they exist) are greyed out, or `null` when they work. A short form of
+ * the quiet sentence the pane's body shows, for a menu row's reason.
+ *
+ * Non-null exactly when `changesQuietReason` is, because it asks that helper
+ * rather than re-deriving the verdict: the body and the menu cannot disagree
+ * about whether the pane is quiet, an empty sentence included. */
+export function changesGitBlockedReason(
+  workspace: AgentWorkspaceWire,
+): string | null {
+  if (changesQuietReason(workspace) === null) return null
+  return matchWorkspace(workspace, {
+    managed: () => WORKING_COPY_GONE,
+    folder: (w) => {
+      switch (w.repo_status) {
+        case "working_repo":
+          return null
+        case "inside_repo_rooted_elsewhere":
+          return "This folder sits inside a repository rooted elsewhere."
+        case "no_repo":
+          return "This folder has no git repository."
+        case "indeterminate":
+          return "yaran could not consult git about this folder."
+        case "unprobed":
+          return "yaran is still looking at this folder."
+        case "missing":
+          return FOLDER_GONE
+        default:
+          return assertNever(w.repo_status)
+      }
+    },
+  })
+}
+
+/** Why the agent's directory cannot be opened in the editor, or `null` when it
+ * can. The editor is rooted at that directory and needs no repository, so the
+ * one thing that takes it away is the directory itself being gone. */
+export function directoryGoneReason(
+  workspace: AgentWorkspaceWire,
+): string | null {
+  return matchWorkspace(workspace, {
+    managed: (w) => (w.worktree_missing ? WORKING_COPY_GONE : null),
+    folder: (w) => (w.repo_status === "missing" ? FOLDER_GONE : null),
   })
 }
 
@@ -231,9 +327,8 @@ export function workspaceLocation(
 }
 
 /** The name to show for an agent: its title when it has one, the branch it
- * tracks otherwise, and for a standalone agent its folder's own name. Creation
- * guarantees a standalone agent has a title, so that last fallback is belt and
- * braces rather than a path users reach.
+ * tracks otherwise, and for a standalone agent whose name was cleared, its
+ * folder's name converted into a valid agent name.
  *
  * Twin of `AgentSession::display_label` in yaran-core, pinned by shared vectors:
  * a twin that answers differently calls one agent two things. */
@@ -246,8 +341,36 @@ export function sessionLabel(session: {
   }
   return matchWorkspace(session.workspace, {
     managed: (w) => w.branch_name,
-    folder: (w) => folderName(w.folder_path) ?? w.folder_path,
+    folder: (w) => standaloneAgentDefaultName(w.folder_path),
   })
+}
+
+/**
+ * The name a standalone agent gets when nobody names it: its folder's name
+ * converted into a valid agent name. Every run of characters an agent name
+ * cannot hold becomes one `-`, separators are trimmed off both ends, and a
+ * name with nothing usable left falls back to `standalone-agent`. Twin of
+ * yaran-core's `git::standalone_agent_name_from_folder`, pinned by shared
+ * vectors, because the create dialog promises this name in its placeholder.
+ */
+export function standaloneAgentDefaultName(folderPath: string): string {
+  let out = ""
+  // Inside a run of characters a name cannot hold, so a literal dash beside it
+  // joins that run's one separator instead of doubling it.
+  let inSeparator = false
+  for (const ch of folderName(folderPath) ?? "") {
+    if (/^[A-Za-z0-9_]$/.test(ch)) {
+      out += ch
+      inSeparator = false
+    } else if (ch === "-") {
+      if (!inSeparator) out += "-"
+    } else {
+      if (!out.endsWith("-")) out += "-"
+      inSeparator = true
+    }
+  }
+  const trimmed = out.replace(/^[-_]+|[-_]+$/g, "")
+  return trimmed === "" ? "standalone-agent" : trimmed
 }
 
 /** The last NAMED component of a path, or null when it has none. Twin of Rust's

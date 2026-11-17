@@ -23,6 +23,8 @@
  * src/lib/native/accessSession.ts
  * ├── src/components/OfflineOverlay.dom.test.tsx
  * ├── src/components/OfflineOverlay.tsx
+ * ├── src/lib/accessRefusal.test.ts
+ * ├── src/lib/apiFetch.ts
  * ├── src/lib/eventsSocket.test.ts
  * ├── src/lib/eventsSocket.ts
  * ├── src/lib/jsonRequest.test.ts

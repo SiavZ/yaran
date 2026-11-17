@@ -11,12 +11,16 @@
  * src/popover.tsx
  * ├── src/cn.ts
  * ├── src/popupSheet.ts
+ * ├── src/use-back-dismiss.ts
  * └── src/use-mobile.ts
  * External: @base-ui/react, react
  *
  * Used by:
  * src/popover.tsx
- * └── web:src/components/MacroPopover.tsx
+ * ├── web:src/components/EditorBody.tsx
+ * ├── web:src/components/EditorStatusBar.tsx
+ * ├── web:src/components/MacroPopover.tsx
+ * └── web:src/components/StoppedAgentParts.tsx
  * <module-headers:end>
  */
 import * as React from "react"
@@ -24,14 +28,23 @@ import { Popover as PopoverPrimitive } from "@base-ui/react/popover"
 
 import { cn } from "./cn"
 import { useIsMobile } from "./use-mobile"
+import { useBackDismiss } from "./use-back-dismiss"
 import {
   SHEET_BACKDROP_CLASS,
   SHEET_POPUP_CLASS,
   SHEET_POSITIONER_STYLE,
 } from "./popupSheet"
 
+// A popover opened without a Trigger must name an `anchor`: the positioner
+// stays transparent until it has placed the popup against one, and that holds
+// for the phone sheet too, whose geometry overrides the placement but not the
+// transparency.
+//
+// An open popover (a bottom sheet on a phone) closes on the browser's Back, the
+// way Escape closes it (`useBackDismiss`).
 function Popover({ ...props }: PopoverPrimitive.Root.Props) {
-  return <PopoverPrimitive.Root data-slot="popover" {...props} />
+  const back = useBackDismiss(props)
+  return <PopoverPrimitive.Root data-slot="popover" {...props} {...back} />
 }
 
 function PopoverTrigger({ ...props }: PopoverPrimitive.Trigger.Props) {
@@ -44,11 +57,12 @@ function PopoverContent({
   alignOffset = 0,
   side = "bottom",
   sideOffset = 4,
+  anchor,
   ...props
 }: PopoverPrimitive.Popup.Props &
   Pick<
     PopoverPrimitive.Positioner.Props,
-    "align" | "alignOffset" | "side" | "sideOffset"
+    "align" | "alignOffset" | "side" | "sideOffset" | "anchor"
   >) {
   const isMobile = useIsMobile()
   // Sheet mode hands initial focus to the popup rather than the first tabbable
@@ -69,6 +83,7 @@ function PopoverContent({
           alignOffset={alignOffset}
           side={side}
           sideOffset={sideOffset}
+          anchor={anchor}
           className="isolate z-50"
           style={SHEET_POSITIONER_STYLE}
         >
@@ -90,6 +105,7 @@ function PopoverContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        anchor={anchor}
         className="isolate z-50"
       >
         <PopoverPrimitive.Popup

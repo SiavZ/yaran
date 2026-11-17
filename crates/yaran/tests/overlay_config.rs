@@ -127,6 +127,7 @@ fn paths_in(root: &Path) -> YaranPaths {
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
         lock_path: root.join("yaran.lock"),
+        socket_path: root.join("yaran.sock"),
     }
 }
 
@@ -165,7 +166,7 @@ fn run_overlay_sed(dir: &Path, input: &str) -> String {
 fn load(root: &Path, text: &str) -> Config {
     let paths = paths_in(root);
     std::fs::write(&paths.config_path, text).expect("write patched config");
-    load_config(&paths)
+    load_config(&paths).expect("the patched config loads")
 }
 
 fn assert_snippet_holds(config: &Config, what: &str) {
@@ -251,7 +252,7 @@ fn the_installer_sed_wraps_a_gemini_block_the_user_kept() {
 }
 
 /// Current yaran already renders `forward_mouse = false` for claude and codex,
-/// so a fresh config never exercises the overlay's forward_mouse rules. A
+/// so a fresh config never exercises the overlay's `forward_mouse` rules. A
 /// config the user edited can carry an explicit `true`; the overlay must still
 /// pin it off so plain drags stay in yaran and pane text can be copied
 /// (bc3a9eec). (A commented-out or absent key needs no rule: the loader fills
@@ -273,7 +274,7 @@ fn the_installer_sed_pins_forward_mouse_off_in_a_kept_config() {
                 _ => line,
             }
         })
-        .map(|line| format!("{line}\n"))
+        .flat_map(|line| [line, "\n"])
         .collect();
     assert_ne!(kept, stock, "the fixture must actually flip forward_mouse");
     let patched = run_overlay_sed(tmp.path(), &kept);

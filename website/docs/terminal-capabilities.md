@@ -10,10 +10,6 @@ tell what terminal it is really in, and anything it emits (a desktop notificatio
 clipboard write, a clickable link) stops at yaran. The `[capabilities]` section opens both
 directions.
 
-That same embedded terminal draws the diff view, which is why a very large file is diffed
-without syntax highlighting and an enormous one shows only the start of git's own diff; see
-[very large diffs in the terminal UI](/docs/introduction#very-large-diffs-in-the-terminal-ui).
-
 ## Terminal identity
 
 Agents decide whether to send desktop notifications by sniffing environment variables to
@@ -58,10 +54,9 @@ for yourself sees the same terminal an agent would. There are three kinds:
 - A **companion terminal** belongs to an agent and opens in that agent's worktree.
 - A **project terminal** belongs to a project and opens at its repo root.
 - A **standalone terminal** belongs to nothing. It opens in your home directory, so you
-  can have one before you have added a single project. Open one from the `⋯` menu beside
-  the launcher button at the bottom of the sidebar, under **Terminals**, or from the cog
-  menu's **New** submenu. Once you have one, the sidebar's Terminals divider grows a
-  **+**.
+  can have one before you have added a single project. Open one from the **▾** beside
+  **New agent…** at the bottom of the sidebar, under **Terminals**, or from the cog menu's **New**
+  submenu.
 
 > [!NOTE]
 > Environment is where the standalone kind differs: the two owned kinds merge your global
@@ -73,6 +68,11 @@ Nothing closes a standalone terminal for you. Removing a project closes that pro
 terminals and deleting an agent closes that agent's; neither touches one that belongs to
 nobody. It ends when you close it, or when yaran shuts down.
 
+Closing a terminal works like closing a terminal window: a job you disowned or started with
+`nohup` keeps running. Deleting an agent together with its worktree is the exception: every
+job started in that agent's terminals is stopped first, because the folder it runs in is
+about to be deleted.
+
 ## Forwarding what the agent emits
 
 A real identity means agents start emitting real notifications again. These switches
@@ -80,11 +80,11 @@ decide where those go.
 
 ```toml
 [capabilities]
-passthrough = true
-clipboard_passthrough = "focused"
+passthrough = true                # the default
+clipboard_passthrough = "focused" # the default
 ```
 
-- **`passthrough`** is the master switch for sending an agent's notification, progress,
+- **`passthrough`** (default `true`) is the master switch for sending an agent's notification, progress,
   and clipboard escape sequences **out of yaran**. In the terminal UI that is the whole
   host forward: turn it off and your terminal receives nothing the agent emits. In the
   web UI the only thing forwarded outward is the clipboard write, so turning it off seals
@@ -93,17 +93,21 @@ clipboard_passthrough = "focused"
   `"focused"` (only the agent tab you are looking at can write your clipboard, the safe
   default), `"always"` (any agent, background ones included), or `"off"` (never). It
   needs `passthrough = true`, and in the browser the write additionally only happens
-  while the tab has focus.
+  while the tab has focus (and lands only near a key press or click, as described
+  [below](#browser-notifications-web-ui)).
 
 > [!IMPORTANT]
 > `passthrough` does **not** switch off browser desktop notifications. `web_notifications`
 > below is the only setting for those. Clipboard **read** requests are never forwarded on
 > either surface, because the reply would be typed straight back into yaran.
 
-In the terminal UI, notifications and progress reports forward from **every** agent,
-background ones included, because a notification from an agent you are not watching is
-precisely the one you want. In the web UI only the agent whose view is open can raise a
-notification, and progress reports are not bridged at all.
+Which agents' notifications go out depends on the surface:
+
+- **Terminal UI:** notifications and progress reports forward from **every** agent,
+  background ones included, because a notification from an agent you are not watching is
+  precisely the one you want.
+- **Web UI:** only the agent whose view is open can raise a notification, and progress
+  reports are not bridged at all.
 
 > [!WARNING]
 > Under tmux, forwarded notifications reach your terminal only if tmux is told to let
@@ -120,7 +124,7 @@ notification, and progress reports are not bridged at all.
 
 ```toml
 [capabilities]
-web_notifications = true
+web_notifications = true   # the default
 ```
 
 In the web UI there is no host terminal to forward to, so yaran bridges an agent's
@@ -137,13 +141,16 @@ them, and it has no effect on the terminal UI. Two things gate them, on purpose:
 
 Clipboard writes work here too, under the same `clipboard_passthrough` switch: at
 `"focused"` or `"always"` with the tab focused, an agent's write lands on **your**
-browser's clipboard, not the server's.
+browser's clipboard, not the server's. The browser only accepts a write within a few seconds
+(about 5 in Chrome) of your last key press or click; otherwise yaran shows a **Copy** button
+instead. The details are in
+[the workspace page](/docs/web-workspace#clipboard-the-classic-terminal-model).
 
 ## Clickable hyperlinks
 
 ```toml
 [capabilities]
-hyperlinks = true
+hyperlinks = true   # the default
 ```
 
 Agents and plenty of CLI tools emit hyperlinks: text carrying a URL under the surface,
@@ -153,15 +160,19 @@ and in the web terminal. The web opens only `http` and `https` links, in a fresh
 no way to reach back into the app.
 
 In the terminal UI a click on a link opens it too, in the browser of the machine running
-yaran, and the agent never sees that click. It is the release that opens: press and let go
-on the same link and it opens, and a sweep that ends anywhere else opens nothing. A sweep
-that ends still on the link counts as a click on it, so to SELECT a URL under an agent
-that is tracking the mouse, hold `Shift` and drag, which is the same force-a-selection
-gesture that works anywhere else in the pane. Hold `Ctrl` to send that click to an agent
-that is tracking the mouse; with no such agent there is nothing to send it to, so `Ctrl`
-and a click just opens the link like any other. Your own terminal's link gesture still
-works as it always did: yaran holds the mouse, so in kitty that is `Shift` and a click, and
-on yaran's side `Shift` is the select-text modifier and never opens anything.
+yaran, and the agent never sees that click.
+
+- **Click:** the *release* opens it. Press and let go on the same link and it opens; a sweep
+  that ends anywhere else opens nothing. A sweep that ends still on the link counts as a
+  click on it.
+- **Select a URL** under an agent that is tracking the mouse: hold `Shift` and drag, the same
+  force-a-selection gesture that works anywhere else in the pane. On yaran's side `Shift` is the
+  select-text modifier and never opens anything.
+- **Send the click to the agent:** hold `Ctrl` to give that click to an agent that is
+  tracking the mouse. With no such agent there is nothing to send it to, so `Ctrl` and a
+  click just opens the link like any other.
+- **Your own terminal's link gesture** still works as it always did. yaran holds the mouse, so
+  in kitty that is `Shift` and a click.
 
 > [!IMPORTANT]
 > In the web terminal, yaran is the **only** thing that opens a link. While the agent has
@@ -180,17 +191,67 @@ When you paste into the terminal UI, yaran routes the text to whatever currently
 keys: a text field (a modal, a filter, the commit box, where single-line fields fold line
 breaks into spaces), or the agent when its pane is what you are typing into. If the
 agent's CLI has bracketed paste on, which agent CLIs do, the CLI sees a single paste
-rather than a burst of keystrokes. Otherwise the text arrives as plain typed input,
+rather than a burst of keystrokes.
+
+Otherwise the text arrives as plain typed input,
 exactly as in any other terminal.
+
+## Extended keys in the terminal UI
+
+A classic terminal sends the same bytes for keys you think of as different: Shift-Enter and
+Enter, Ctrl-i and Tab, Ctrl-Shift-l and Ctrl-l. With extended keys on, the terminal UI can tell
+them apart, so:
+
+- a binding on `ctrl-shift-l` or `ctrl-i` under `[keys]` works and stays apart from `ctrl-l`
+  and Tab;
+- **Shift-Enter gives the agent a new line instead of submitting**, as it does in the web UI.
+
+The setting is `extended_keys` under `[ui]`, or **Extended keys** in the web UI's Preferences
+dialog, in its Terminal UI section:
+
+| Value | What it does |
+|---|---|
+| `"auto"` | The default. yaran asks your terminal whether it speaks the Kitty keyboard protocol and turns it on when it says yes. Inside tmux, yaran turns on tmux's extended keys when tmux is set up for them. |
+| `"on"` | Turns the Kitty keyboard protocol on without asking. Inside tmux, the same as `"auto"`, plus a warning on the status line when tmux is not set up. |
+| `"off"` | Reads keys exactly as a classic terminal sends them. Nothing is switched on in your terminal or in tmux. |
+
+A change takes effect the next time the terminal UI starts. The `input-debugging` palette
+command shows what your terminal sends for each key.
+
+> [!TIP]
+> Inside tmux, yaran needs tmux 3.2 or newer and this line in your `tmux.conf`:
+>
+> ```tmux
+> set -s extended-keys on
+> ```
+>
+> On tmux 3.5 and newer, whose default format yaran cannot read, add this line too:
+>
+> ```tmux
+> set -s extended-keys-format csi-u
+> ```
+>
+> After reloading tmux's config, run the `force-redraw` palette command and yaran checks tmux's
+> settings again.
+
+> [!IMPORTANT]
+> Agents and shells inside yaran still receive classic keys, the bytes a classic terminal sends.
+> A program cannot tell Ctrl-i from Tab or Ctrl-Shift-l from Ctrl-l: those distinctions serve
+> yaran's own bindings. Shift-Enter reaches a program as the same byte as Ctrl-j, so a shell
+> treats it like Ctrl-j and runs the command line.
+
+> [!IMPORTANT]
+> In the windowed pane, Ctrl, Alt and Super chords (Ctrl-Enter included) still belong to yaran.
+> They reach the agent in fullscreen.
+
+> [!NOTE]
+> If yaran is killed with `kill -9`, your terminal or tmux pane can be left with extended keys on,
+> and your shell then sees escape codes for Ctrl chords. Running `reset` clears it.
 
 ## Getting a file to the agent
 
-Capabilities are about what an agent can reach out and do. The other direction, getting
-something from your machine into the agent, is file drop and image paste in the browser:
-drag a file onto the terminal, or paste a screenshot into it, and yaran saves it on the
-server and pastes its path. Web-only, because a real terminal emulator already types a
-dropped file's path in for you. See
-[Dropping and pasting files onto an agent](/docs/dropping-files).
+The other direction, getting something from your machine into the agent, is file drop and
+image paste in the browser. See [Dropping and pasting files onto an agent](/docs/dropping-files).
 
 ## The fine print
 

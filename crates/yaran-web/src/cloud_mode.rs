@@ -11,6 +11,7 @@
 //! - Also hands out the shared view snapshot and the ingress reader (for Phase 11).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_mode.rs
 //! ├── cloud_ingress
@@ -32,6 +33,7 @@
 //! ├── engine_actor
 //! ├── server
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;
@@ -82,6 +84,12 @@ pub struct CloudModeControl {
     view: SharedCloudView,
     ingress: CloudIngress,
     changed: tokio::sync::broadcast::Sender<()>,
+}
+
+impl std::fmt::Debug for CloudModeControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudModeControl").finish_non_exhaustive()
+    }
 }
 
 impl CloudModeControl {

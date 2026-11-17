@@ -11,6 +11,7 @@
 //! - `fetch_jwks` BLOCKS: callers run it on a blocking task, never a reactor thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/access_jwks.rs
 //! ├── cloud::access_jwks::tests
@@ -27,6 +28,7 @@
 //! ├── yaran-web::cloud_ingress
 //! ├── yaran-web::cloud_jwks_cache
 //! └── yaran-web::cloud_test_support
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;
@@ -61,6 +63,7 @@ impl TeamDomain {
         ok.then(|| Self(host.to_string()))
     }
 
+    /// The team domain.
     pub fn host(&self) -> &str {
         &self.0
     }
@@ -70,6 +73,7 @@ impl TeamDomain {
         format!("https://{}", self.0)
     }
 
+    /// Where the team publishes its signing keys.
     pub fn certs_url(&self) -> String {
         format!("https://{}/cdn-cgi/access/certs", self.0)
     }
@@ -78,8 +82,11 @@ impl TeamDomain {
 /// One RSA verification key; `n` and `e` are big-endian with no leading zeros.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RsaKey {
+    /// The key's id, which a token's header names.
     pub kid: String,
+    /// The modulus.
     pub n: Vec<u8>,
+    /// The public exponent.
     pub e: Vec<u8>,
 }
 
@@ -89,6 +96,7 @@ pub struct Jwks {
     keys: Vec<RsaKey>,
 }
 
+/// Why a key set document was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JwksError {
     /// Not JSON, or no `keys` array.
@@ -130,6 +138,10 @@ fn parse_key(k: &Value) -> Option<RsaKey> {
 impl Jwks {
     /// Keeps RSA keys whose `alg` is absent or RS256 and whose `use` is absent or sig,
     /// with a modulus of at least 2048 bits; anything else is skipped.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the body is not a key set, or no key in it is usable.
     pub fn parse(body: &str) -> Result<Self, JwksError> {
         let doc: Value = serde_json::from_str(body).map_err(|_| JwksError::Malformed)?;
         let entries = doc
@@ -155,10 +167,12 @@ impl Jwks {
         Ok(Self { keys })
     }
 
+    /// The key with id `kid`.
     pub fn get(&self, kid: &str) -> Option<&RsaKey> {
         self.keys.iter().find(|k| k.kid == kid)
     }
 
+    /// Every usable key's id.
     pub fn kids(&self) -> impl Iterator<Item = &str> {
         self.keys.iter().map(|k| k.kid.as_str())
     }
@@ -176,6 +190,10 @@ pub fn parse_max_age(cache_control: &str) -> Option<Duration> {
 }
 
 /// Downloads the team's JWKS. BLOCKING. Returns the keys and the response's `max-age`.
+///
+/// # Errors
+///
+/// Fails, saying why, when the keys cannot be fetched or parsed.
 pub fn fetch_jwks(
     team: &TeamDomain,
     timeout: Duration,
@@ -185,6 +203,10 @@ pub fn fetch_jwks(
 
 /// The fetch behind [`fetch_jwks`], with the URL open so tests can aim it at a fake.
 /// Every error string is sanitized, so a hostile body cannot reach a log raw.
+///
+/// # Errors
+///
+/// Fails, saying why, when the keys cannot be fetched or parsed.
 pub fn fetch_jwks_from(url: &str, timeout: Duration) -> Result<(Jwks, Option<Duration>), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(timeout))

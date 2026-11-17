@@ -19,6 +19,7 @@
 //!   in, a signal that asks yaran to quit is never just swallowed.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/hangup.rs
 //! ├── crate
@@ -29,6 +30,7 @@
 //! app/hangup.rs
 //! ├── app
 //! └── app::input
+//! ```
 //! <module-headers:end>
 
 use std::os::fd::AsFd;
@@ -108,15 +110,24 @@ pub(crate) enum WatchdogVerdict {
     Wedged,
 }
 
+/// Whether the run loop is still running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RunLoop {
+    /// It is.
+    Running,
+    /// It left.
+    Left,
+}
+
 /// The watchdog's rule, as a pure function of what it can see. `asked_at` is
 /// when it first saw the quit request still unanswered.
 pub(crate) fn watchdog_verdict(
-    run_loop_left: bool,
+    run_loop: RunLoop,
     asked_at: Option<Instant>,
     now: Instant,
     grace: Duration,
 ) -> WatchdogVerdict {
-    if run_loop_left {
+    if run_loop == RunLoop::Left {
         return WatchdogVerdict::Retire;
     }
     match asked_at {
@@ -157,7 +168,11 @@ impl QuitWatchdog {
                         asked_at = Some(Instant::now());
                     }
                     match watchdog_verdict(
-                        left.load(Ordering::Relaxed),
+                        if left.load(Ordering::Relaxed) {
+                            RunLoop::Left
+                        } else {
+                            RunLoop::Running
+                        },
                         asked_at,
                         Instant::now(),
                         grace,
@@ -221,8 +236,8 @@ mod tests {
         // optional arguments are allowed to be null.
         let rc = unsafe {
             libc::openpty(
-                &mut master,
-                &mut slave,
+                &raw mut master,
+                &raw mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -233,13 +248,14 @@ mod tests {
         // copy of the master, and the slave is not hung up until it exits.
         for fd in [master, slave] {
             // SAFETY: fd is one of the descriptors openpty just returned.
-            assert_eq!(
-                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
-                0
-            );
+            let set = unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+            assert_eq!(set, 0);
         }
-        // SAFETY: openpty returned two fresh descriptors this test owns.
-        unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
+        // SAFETY: openpty returned this fresh descriptor, and this test owns it.
+        let master = unsafe { OwnedFd::from_raw_fd(master) };
+        // SAFETY: openpty returned this fresh descriptor, and this test owns it.
+        let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+        (master, slave)
     }
 
     #[test]
@@ -297,22 +313,22 @@ mod tests {
 
         // Nothing asked for: nothing to do, however long it has been.
         assert_eq!(
-            watchdog_verdict(false, None, at(60), grace),
+            watchdog_verdict(RunLoop::Running, None, at(60), grace),
             WatchdogVerdict::Wait
         );
         // Asked, and the loop still has time.
         assert_eq!(
-            watchdog_verdict(false, Some(asked), at(4), grace),
+            watchdog_verdict(RunLoop::Running, Some(asked), at(4), grace),
             WatchdogVerdict::Wait
         );
         // Asked, and the time is up.
         assert_eq!(
-            watchdog_verdict(false, Some(asked), at(5), grace),
+            watchdog_verdict(RunLoop::Running, Some(asked), at(5), grace),
             WatchdogVerdict::Wedged
         );
         // The loop left: whatever else is true, the watchdog is done.
         assert_eq!(
-            watchdog_verdict(true, Some(asked), at(60), grace),
+            watchdog_verdict(RunLoop::Left, Some(asked), at(60), grace),
             WatchdogVerdict::Retire
         );
     }

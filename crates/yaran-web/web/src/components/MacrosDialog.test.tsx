@@ -65,6 +65,8 @@ vi.mock("@dnd-kit/sortable", async (importOriginal) => {
 })
 
 const persistMacroOrderMock = vi.fn<(macros: MacroView[]) => Promise<boolean>>()
+const reloadMacrosDraftMock = vi.fn<() => Promise<void>>()
+const dismissMacrosConflictMock = vi.fn<() => void>()
 let mockState: YaranState
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
@@ -74,6 +76,8 @@ vi.mock("@/lib/store", async (importOriginal) => {
     closeMacrosDialog: vi.fn(),
     saveMacros: vi.fn(),
     persistMacroOrder: (macros: MacroView[]) => persistMacroOrderMock(macros),
+    reloadMacrosDraft: () => reloadMacrosDraftMock(),
+    dismissMacrosConflict: () => dismissMacrosConflictMock(),
   }
 })
 
@@ -114,10 +118,18 @@ const seedMacros: MacroView[] = [
   { name: "Deploy", text: "deploy it", surface: "both" },
 ]
 
-function seed(macros: MacroView[], { bootstrap = true } = {}) {
+function seed(
+  macros: MacroView[],
+  {
+    bootstrap = true,
+    conflict = null,
+  }: { bootstrap?: boolean; conflict?: string | null } = {},
+) {
   mockState = {
     macrosDialogOpen: true,
     macrosDraft: macros,
+    macrosConflict: conflict,
+    macrosDraftEpoch: 0,
     bootstrap: bootstrap ? { macros } : null,
   } as unknown as YaranState
 }
@@ -150,6 +162,9 @@ beforeEach(() => {
   sortableDisabled.clear()
   persistMacroOrderMock.mockReset()
   persistMacroOrderMock.mockResolvedValue(true)
+  reloadMacrosDraftMock.mockReset()
+  reloadMacrosDraftMock.mockResolvedValue(undefined)
+  dismissMacrosConflictMock.mockReset()
 })
 
 afterEach(() => {
@@ -333,5 +348,50 @@ describe("macro save recovery", () => {
     vi.mocked(store.saveMacros).mockResolvedValueOnce(true)
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(store.closeMacrosDialog).toHaveBeenCalledOnce())
+  })
+})
+
+describe("MacrosDialog stale save", () => {
+  const stale =
+    "The macro list changed after this dialog read it, so nothing was saved. Reload to see the change, then make your edit again."
+
+  it("says the list changed and offers to reload it or keep editing", async () => {
+    seed(seedMacros, { conflict: stale })
+    render(<MacrosDialog />)
+
+    const notice = screen.getByRole("alert")
+    expect(notice.textContent).toContain("changed after this dialog read it")
+    // Reloading throws the edits away, so keeping them is what has focus.
+    const keep = screen.getByRole("button", { name: "Keep editing" })
+    expect(document.activeElement).toBe(keep)
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Reload macros" }).click()
+    })
+    expect(reloadMacrosDraftMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      keep.click()
+    })
+    expect(dismissMacrosConflictMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows no notice while nothing was refused", () => {
+    seed(seedMacros)
+    render(<MacrosDialog />)
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+})
+
+describe("MacrosDialog list", () => {
+  // The scrollbar must keep clear of the rows' Edit and Delete buttons.
+  it("keeps a gutter between the scrollbar and the rows' buttons", () => {
+    seed(seedMacros)
+    render(<MacrosDialog />)
+    const scroller = screen.getByTestId("macros-scroll")
+    expect(scroller.className).toContain("overflow-y-auto")
+    expect(scroller.className).toContain("[scrollbar-gutter:stable]")
+    expect(scroller.className).toMatch(/(^|\s)pr-\d/)
+    expect(scroller.contains(screen.getByLabelText("Delete Deploy"))).toBe(true)
   })
 })

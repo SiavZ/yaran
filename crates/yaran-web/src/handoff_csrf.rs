@@ -9,6 +9,7 @@
 //! - At most 64 pending, oldest evicted; each valid for 10 minutes on the injected clock.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! handoff_csrf.rs
 //! └── yaran-core::cloud::protocol::rules
@@ -19,6 +20,7 @@
 //! ├── cloud_handoff
 //! ├── cloud_ingress
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::collections::VecDeque;
@@ -40,12 +42,14 @@ pub(crate) struct CsrfBinding {
 }
 
 impl CsrfBinding {
-    pub(crate) fn new(state: &str, pk: &str, dk_fp24: &str, verified: bool) -> Self {
+    /// A binding whose device signature did not verify; a verified one sets
+    /// [`Self::verified`].
+    pub(crate) fn new(state: &str, pk: &str, dk_fp24: &str) -> Self {
         Self {
             state: state.to_string(),
             pk_hash: pk_hash(pk),
             dk_fp24: dk_fp24.to_string(),
-            verified,
+            verified: false,
         }
     }
 }
@@ -69,7 +73,10 @@ impl CsrfStore {
         let mut raw = [0u8; 32];
         SystemRandom::new().fill(&mut raw).ok()?;
         let token = yaran_core::cloud::protocol::rules::b64url_encode(&raw);
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while pending.len() >= CSRF_MAX_PENDING {
             pending.pop_front();
         }
@@ -87,7 +94,10 @@ impl CsrfStore {
         dk_fp24: &str,
         now: u64,
     ) -> Option<bool> {
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let at = pending.iter().position(|(t, _, _)| t == token)?;
         let (_, binding, minted) = pending.remove(at)?;
         let fresh = now >= minted && now - minted < CSRF_TTL_SECS;
@@ -103,29 +113,38 @@ mod tests {
 
     const STATE: &str = "aGFuZG9mZi1zdGF0ZS1maXh0dXJl";
 
-    fn mint(store: &CsrfStore, verified: bool, now: u64) -> String {
+    /// A token for a request whose device signature verified.
+    fn mint(store: &CsrfStore, now: u64) -> String {
+        let binding = CsrfBinding {
+            verified: true,
+            ..CsrfBinding::new(STATE, "PK", "FP")
+        };
+        store.mint(binding, now).unwrap()
+    }
+
+    fn mint_unverified(store: &CsrfStore, now: u64) -> String {
         store
-            .mint(CsrfBinding::new(STATE, "PK", "FP", verified), now)
+            .mint(CsrfBinding::new(STATE, "PK", "FP"), now)
             .unwrap()
     }
 
     #[test]
     fn a_token_is_43_characters_and_redeems_once_with_its_verdict() {
         let store = CsrfStore::default();
-        let token = mint(&store, true, 100);
+        let token = mint(&store, 100);
         assert_eq!(token.len(), 43);
         assert_eq!(store.redeem(&token, STATE, "PK", "FP", 100), Some(true));
         assert_eq!(store.redeem(&token, STATE, "PK", "FP", 100), None);
-        let token = mint(&store, false, 100);
+        let token = mint_unverified(&store, 100);
         assert_eq!(store.redeem(&token, STATE, "PK", "FP", 100), Some(false));
     }
 
     #[test]
     fn it_expires_at_ten_minutes() {
         let store = CsrfStore::default();
-        let token = mint(&store, true, 1_000);
+        let token = mint(&store, 1_000);
         assert_eq!(store.redeem(&token, STATE, "PK", "FP", 1_599), Some(true));
-        let token = mint(&store, true, 1_000);
+        let token = mint(&store, 1_000);
         assert_eq!(store.redeem(&token, STATE, "PK", "FP", 1_600), None);
     }
 
@@ -137,7 +156,7 @@ mod tests {
             (STATE, "PK2", "FP"),
             (STATE, "PK", "FP2"),
         ] {
-            let token = mint(&store, true, 0);
+            let token = mint(&store, 0);
             assert_eq!(store.redeem(&token, state, pk, fp, 0), None);
             assert_eq!(store.redeem(&token, STATE, "PK", "FP", 0), None);
         }
@@ -146,10 +165,8 @@ mod tests {
     #[test]
     fn the_oldest_is_evicted_past_64_pending() {
         let store = CsrfStore::default();
-        let first = mint(&store, true, 0);
-        let rest: Vec<_> = (0..CSRF_MAX_PENDING)
-            .map(|_| mint(&store, true, 0))
-            .collect();
+        let first = mint(&store, 0);
+        let rest: Vec<_> = (0..CSRF_MAX_PENDING).map(|_| mint(&store, 0)).collect();
         assert_eq!(store.redeem(&first, STATE, "PK", "FP", 0), None);
         assert_eq!(store.redeem(&rest[0], STATE, "PK", "FP", 0), Some(true));
         assert_eq!(store.redeem("never-minted", STATE, "PK", "FP", 0), None);

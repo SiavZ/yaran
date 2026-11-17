@@ -1,10 +1,12 @@
 //! The terminal UI's theme engine: every color and style the TUI paints comes from here.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! theme.rs
 //! ├── config
 //! ├── crate
+//! ├── numeric
 //! ├── yaran-core::theme
 //! └── yaran-core::working_cue
 //! External: anyhow, opaline, ratatui, std, tempfile
@@ -12,26 +14,41 @@
 //! Used by:
 //! theme.rs
 //! ├── app
+//! ├── app::cloud_render
 //! ├── app::cloud_tests
 //! ├── app::components::button
 //! ├── app::components::checkbox
 //! ├── app::components::hint_bar
 //! ├── app::components::name_chip
+//! ├── app::components::picker_list
+//! ├── app::components::scroll_view
 //! ├── app::components::wrap_lines
+//! ├── app::confirm_dialog
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::ellipsis_rows
+//! ├── app::first_load
+//! ├── app::hint_lines
+//! ├── app::human_board_dialog
 //! ├── app::input
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
+//! ├── app::no_branch_notice
+//! ├── app::picker_lists
 //! ├── app::redraw
 //! ├── app::render
 //! ├── app::sessions
 //! ├── app::test_support
+//! ├── app::workers
+//! ├── config
+//! ├── config_cli::plaintext_password_and_theme_tests
 //! ├── crate
 //! ├── diff
 //! └── server_screen
+//! ```
 //! <module-headers:end>
 
-#![allow(dead_code)]
-
+use crate::numeric::f32_to_u8_saturating;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -41,13 +58,14 @@ use ratatui::text::Span;
 
 use crate::config::YaranPaths;
 use yaran_core::theme::DEFAULT_THEME_NAME;
+pub(crate) use yaran_core::theme::{ThemeListing, discover_available};
 
 /// Broken-circle frames for spinner animations. Shared by the loading card,
 /// status line, and left-pane streaming indicator.
-pub const SPINNER_FRAMES: &[char] = &['◜', '◠', '◝', '◞', '◡', '◟'];
+pub(crate) const SPINNER_FRAMES: &[char] = &['◜', '◠', '◝', '◞', '◡', '◟'];
 /// Wall-clock milliseconds each spinner frame stays on screen. The event loop
 /// polls every 33ms while anything animates, which keeps this cadence honest.
-pub const SPINNER_FRAME_MS: u128 = 75;
+pub(crate) const SPINNER_FRAME_MS: u128 = 75;
 
 /// The RGB `into_ratatui` folded a color down from, for the nine canonical
 /// values it remaps to named ANSI colors. Those names exist so the terminal's
@@ -111,6 +129,72 @@ fn readable_on(background: Color, candidates: [Color; 4]) -> Color {
         .unwrap_or(candidates[0])
 }
 
+/// How far the part of a split without focus fades toward its pane's
+/// background, after it has gone grey: a terminal cell has no opacity, so this
+/// blend is the fade.
+pub(crate) const UNFOCUSED_PART_FADE: f32 = 0.2;
+
+/// A PTY cell color as the part of a split without focus draws it: grayscale,
+/// then blended [`UNFOCUSED_PART_FADE`] of the way toward `pane_bg`. Every
+/// color a terminal can name resolves to channels first: RGB as it is, a
+/// 256-color index through the standard xterm palette, a named ANSI color
+/// through its canonical channels. `None` for the terminal's own default
+/// (`Reset`), which has no channels to grey; the caller decides what stands in
+/// for it.
+pub(crate) fn unfocused_part_color(color: Color, pane_bg: Color) -> Option<Color> {
+    let (r, g, b) = cell_rgb(color)?;
+    let luma = f32_to_u8_saturating(
+        (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)).round(),
+    );
+    let grey = Color::Rgb(luma, luma, luma);
+    Some(match blendable_rgb(pane_bg) {
+        Some(bg) => blend_over(
+            grey,
+            Color::Rgb(bg.0, bg.1, bg.2),
+            1.0 - UNFOCUSED_PART_FADE,
+        ),
+        None => grey,
+    })
+}
+
+/// The channels behind any color a PTY cell can carry, or `None` for `Reset`.
+fn cell_rgb(color: Color) -> Option<(u8, u8, u8)> {
+    match color {
+        Color::Indexed(index) => Some(xterm256_rgb(index)),
+        Color::Gray => Some((192, 192, 192)),
+        Color::LightRed => Some((255, 85, 85)),
+        Color::LightGreen => Some((85, 255, 85)),
+        Color::LightYellow => Some((255, 255, 85)),
+        Color::LightBlue => Some((85, 85, 255)),
+        Color::LightMagenta => Some((255, 85, 255)),
+        Color::LightCyan => Some((85, 255, 255)),
+        other => blendable_rgb(other),
+    }
+}
+
+/// A xterm-256 palette index as (R, G, B).
+fn xterm256_rgb(index: u8) -> (u8, u8, u8) {
+    #[rustfmt::skip]
+    const BASIC: [(u8, u8, u8); 16] = [
+        (0, 0, 0),       (128, 0, 0),     (0, 128, 0),     (128, 128, 0),
+        (0, 0, 128),     (128, 0, 128),   (0, 128, 128),   (192, 192, 192),
+        (128, 128, 128), (255, 0, 0),     (0, 255, 0),     (255, 255, 0),
+        (0, 0, 255),     (255, 0, 255),   (0, 255, 255),   (255, 255, 255),
+    ];
+    match index {
+        0..=15 => BASIC[usize::from(index)],
+        16..=231 => {
+            let value = index - 16;
+            let level = |step: u8| if step == 0 { 0 } else { 55 + 40 * step };
+            (level(value / 36), level((value % 36) / 6), level(value % 6))
+        }
+        232..=255 => {
+            let level = 8 + 10 * (index - 232);
+            (level, level, level)
+        }
+    }
+}
+
 /// The working state word's shade at `step`, the quantized pulse cell from
 /// `yaran_core::working_cue::pulse_step`. Full `working` at the top of the pulse,
 /// blended toward `muted` by `working_cue::mute_blend` as the level falls, so
@@ -123,7 +207,7 @@ fn readable_on(background: Color, candidates: [Color; 4]) -> Color {
 /// the word spends most of its cycle at. Only the dimmed cells become RGB,
 /// because a blend cannot be named. A color with no RGB behind it at all cannot
 /// be blended, so it rests rather than being guessed at.
-pub fn working_word_color(working: Color, muted: Color, step: usize) -> Color {
+pub(crate) fn working_word_color(working: Color, muted: Color, step: usize) -> Color {
     let blend = yaran_core::working_cue::mute_blend(step);
     if blend <= f32::EPSILON {
         return working;
@@ -132,30 +216,180 @@ pub fn working_word_color(working: Color, muted: Color, step: usize) -> Color {
     else {
         return working;
     };
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * blend).round() as u8;
+    let mix = |a: u8, b: u8| {
+        f32_to_u8_saturating((f32::from(a) + (f32::from(b) - f32::from(a)) * blend).round())
+    };
     Color::Rgb(mix(wr, mr), mix(wg, mg), mix(wb, mb))
 }
 
 /// The one solid round dot yaran paints, reused by name so the glyph cannot
 /// drift between call sites.
-pub const DOT_GLYPH: &str = "●";
+pub(crate) const DOT_GLYPH: &str = "●";
 
 /// Glyph shown (blinking, in `session_attention`) in the sidebar when an agent
 /// needs attention. The same dot the status states use: the blink and the color
 /// are what read as "needs you", not a distinct shape.
-pub const ATTENTION_GLYPH: &str = DOT_GLYPH;
+pub(crate) const ATTENTION_GLYPH: &str = DOT_GLYPH;
 
 /// Glyph shown (in `session_typing`) on an agent or terminal row while the user
 /// is typing into that PTY. A slim left-half block reads as a caret, distinct
 /// from the round status and attention dots and from the arc spinner.
-pub const TYPING_GLYPH: &str = "▍";
+pub(crate) const TYPING_GLYPH: &str = "▍";
 
-/// The standalone identity glyph, worn (in `standalone_location_fg`) by every
-/// row whose subject lives in the user's own folder rather than a yaran-managed
-/// working copy. Its rendered width is pinned to one cell by a test against the
-/// same `CellWidth` machinery the row layout measures with; do not swap the
-/// glyph without re-pinning.
-pub const STANDALONE_GLYPH: &str = "✷";
+/// The terminal UI's icon set: every icon that has a sensible Nerd Font
+/// counterpart, in one place, so a row never names a literal glyph.
+///
+/// Two sets exist. `PLAIN` is the default and is what the docs and their
+/// screenshots show; it uses only ordinary Unicode a stock terminal font
+/// carries. `NERD` is the opt-in add-on (`[ui] nerd_font_icons`), drawn from
+/// Nerd Fonts v3 codepoints and only legible in a terminal whose font is Nerd
+/// Font patched. Rendering picks the set from the live config on every frame
+/// through [`Glyphs::for_config`], so a toggle or a reload takes effect on the
+/// next frame with no cached copy to refresh.
+///
+/// Every glyph in both sets is a single codepoint that the `CellWidth`
+/// machinery the row layout advances columns with measures as exactly one
+/// cell; a test loops over both sets. The Nerd codepoints all sit in the
+/// Private Use Areas, whose East Asian Width is ambiguous, which that
+/// machinery (like the plain set's own `※`) counts as one.
+///
+/// Deliberately NOT here, because they are the same in both sets: the
+/// working spinner, the status and attention dots, the typing caret, scroll
+/// markers, the ellipsis and box drawing. Those are state cues whose shape
+/// the working-cue and attention tenets pin, not icons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Glyphs {
+    /// Ahead of the project name on a managed agent row's second line.
+    pub project: &'static str,
+    /// The standalone identity mark, worn (in `standalone_location_fg`) by
+    /// every row whose subject lives in the user's own folder rather than a
+    /// yaran-managed working copy.
+    pub standalone: &'static str,
+    /// The "owned by" mark on a session- or project-owned terminal row.
+    pub owned_by: &'static str,
+    /// The pull-request mark: the sidebar badge and the PR banner.
+    pub pull_request: &'static str,
+    /// A warning: a missing project path, a removed project, a missing
+    /// working copy, an unavailable `gh`.
+    pub warning: &'static str,
+    /// A success check: the provider already in effect, a working `gh`.
+    pub check: &'static str,
+    /// A disclosure control that is closed (the Inactive divider, a folder in
+    /// the Changes tree, a resource-monitor row with a breakdown).
+    pub collapsed: &'static str,
+    /// The same disclosure control, open.
+    pub expanded: &'static str,
+    /// The resource monitor's row disclosure, closed. A heavier shape than
+    /// `collapsed` in the plain set, because it heads a table row.
+    pub monitor_collapsed: &'static str,
+    /// The resource monitor's row disclosure, open.
+    pub monitor_expanded: &'static str,
+    /// The header's serving chip.
+    pub serving: &'static str,
+    /// The header's running-terminals chip.
+    pub terminals: &'static str,
+    /// The pin on the agent's first tab: the tab that starts and resumes the
+    /// agent.
+    pub pin: &'static str,
+}
+
+/// Which glyph set the terminal UI draws its icons from (`[ui] nerd_font_icons`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IconSet {
+    /// The Nerd Fonts add-on.
+    Nerd,
+    /// The default set, which needs no special font.
+    Plain,
+}
+impl Glyphs {
+    /// The default set: plain Unicode a stock terminal font carries.
+    pub(crate) const PLAIN: Glyphs = Glyphs {
+        // U+203B REFERENCE MARK. The folder emoji (U+1F5C0) it replaced is
+        // missing from the stock macOS terminal fonts.
+        project: "\u{203B}",
+        // U+2737 EIGHT POINTED RECTILINEAR BLACK STAR.
+        standalone: "\u{2737}",
+        // U+21B3 DOWNWARDS ARROW WITH TIP RIGHTWARDS.
+        owned_by: "\u{21B3}",
+        // U+2387 ALTERNATIVE KEY SYMBOL: reads as a branch fork and stays one
+        // cell, where the letters "PR" would cost two.
+        pull_request: "\u{2387}",
+        // U+26A0 WARNING SIGN, bare (no emoji variation selector).
+        warning: "\u{26A0}",
+        // U+2713 CHECK MARK.
+        check: "\u{2713}",
+        // U+25B8 / U+25BE small right- and down-pointing triangles.
+        collapsed: "\u{25B8}",
+        expanded: "\u{25BE}",
+        // U+25B6 / U+25BC full-size triangles.
+        monitor_collapsed: "\u{25B6}",
+        monitor_expanded: "\u{25BC}",
+        serving: DOT_GLYPH,
+        terminals: DOT_GLYPH,
+        // U+26B2 NEUTER: a small ring with a stem, which reads as a pin and
+        // stays one cell.
+        pin: "\u{26B2}",
+    };
+
+    /// The opt-in Nerd Font set (Nerd Fonts v3). Each codepoint is named after
+    /// its entry in the official `glyphnames.json`; none sits in the
+    /// U+F500-U+FD46 range v3 retired.
+    pub(crate) const NERD: Glyphs = Glyphs {
+        // nf-fa-folder
+        project: "\u{F07B}",
+        // nf-fa-star
+        standalone: "\u{F005}",
+        // nf-md-subdirectory_arrow_right
+        owned_by: "\u{F060D}",
+        // nf-oct-git_pull_request
+        pull_request: "\u{F407}",
+        // nf-fa-triangle_exclamation (alias nf-fa-exclamation_triangle)
+        warning: "\u{F071}",
+        // nf-fa-check
+        check: "\u{F00C}",
+        // nf-oct-chevron_right / nf-oct-chevron_down
+        collapsed: "\u{F460}",
+        expanded: "\u{F47C}",
+        // The same chevrons: the Nerd set has one disclosure picture.
+        monitor_collapsed: "\u{F460}",
+        monitor_expanded: "\u{F47C}",
+        // nf-fa-server
+        serving: "\u{F233}",
+        // nf-oct-terminal
+        terminals: "\u{F489}",
+        // nf-md-pin
+        pin: "\u{F0403}",
+    };
+
+    /// The set the live `[ui] nerd_font_icons` value selects.
+    pub(crate) fn for_config(icons: IconSet) -> &'static Glyphs {
+        if icons == IconSet::Nerd {
+            &Self::NERD
+        } else {
+            &Self::PLAIN
+        }
+    }
+
+    /// Every glyph in the set, labelled, for tests that must cover them all.
+    #[cfg(test)]
+    pub(crate) fn all(&self) -> [(&'static str, &'static str); 13] {
+        [
+            ("project", self.project),
+            ("standalone", self.standalone),
+            ("owned_by", self.owned_by),
+            ("pull_request", self.pull_request),
+            ("warning", self.warning),
+            ("check", self.check),
+            ("collapsed", self.collapsed),
+            ("expanded", self.expanded),
+            ("monitor_collapsed", self.monitor_collapsed),
+            ("monitor_expanded", self.monitor_expanded),
+            ("serving", self.serving),
+            ("terminals", self.terminals),
+            ("pin", self.pin),
+        ]
+    }
+}
 
 /// The bundled `yaran_dark` theme TOML, embedded at compile time so the default
 /// path never depends on a file on disk.
@@ -164,15 +398,19 @@ const YARAN_DARK_TOML: &str = include_str!("../../../assets/themes/yaran_dark.to
 const GITHUB_PR_OPEN_BG: OpalineColor = OpalineColor::new(35, 134, 54);
 const GITHUB_PR_MERGED_BG: OpalineColor = OpalineColor::new(130, 80, 223);
 const GITHUB_PR_CLOSED_BG: OpalineColor = OpalineColor::new(110, 54, 48);
+// GitHub's draft gray: the tint for surfaces, and the lighter one for text on
+// a dark background.
+const GITHUB_PR_DRAFT_BG: OpalineColor = OpalineColor::new(110, 119, 129);
 const GITHUB_PR_OPEN_LABEL: OpalineColor = OpalineColor::new(0, 255, 0);
 const GITHUB_PR_MERGED_LABEL: OpalineColor = OpalineColor::new(170, 100, 220);
 const GITHUB_PR_CLOSED_LABEL: OpalineColor = OpalineColor::new(140, 80, 80);
+const GITHUB_PR_DRAFT_LABEL: OpalineColor = OpalineColor::new(139, 148, 158);
 
 /// Every field is a `Color`, so the whole palette is trivially copyable. That
 /// is what lets a background worker be handed the theme it must render with
 /// instead of borrowing the app's.
 #[derive(Clone, Copy)]
-pub struct Theme {
+pub(crate) struct Theme {
     /// Base surface color, pre-filled frame-wide so every cell no widget paints
     /// inherits the theme's background instead of the terminal default.
     pub app_bg: Color,
@@ -233,7 +471,6 @@ pub struct Theme {
     pub file_status_fg: Color,
     pub hint_key_fg: Color,
     pub hint_bracket_fg: Color,
-    pub hint_key_bg: Color,
     pub hint_desc_fg: Color,
     pub hint_dim_key_fg: Color,
     pub hint_dim_bracket_fg: Color,
@@ -252,7 +489,21 @@ pub struct Theme {
     /// `the_modal_refusal_flash_is_visible_in_every_loadable_theme` pins it.
     pub overlay_border_refused: Color,
     pub overlay_bg: Color,
+    /// The surface of an in-pane card (the quiet changes message, the dormant
+    /// tab's card): the fill inside its border ring. A pane card is not a modal,
+    /// so it does not take `overlay_bg`, which would draw a dialog where none
+    /// exists; it defaults to `app_bg`, the pane's own surface, and a theme may
+    /// set it explicitly to make the card stand off the pane.
+    pub pane_card_bg: Color,
     pub overlay_dim_bg: Color,
+    /// Never painted: the embedded-PTY caret is the host terminal's own cursor.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "a theme token a theme file may set, which no renderer reads"
+        )
+    )]
     pub prompt_cursor: Color,
     pub provider_label_fg: Color,
     pub branch_fg: Color,
@@ -260,6 +511,10 @@ pub struct Theme {
     pub scroll_indicator_fg: Color,
     pub scroll_indicator_bg: Color,
     pub warning_fg: Color,
+    /// Text that reports something went well: an OK line in the server log, a
+    /// 2xx status in its access log. The theme's own success color, so a
+    /// success never borrows a diff color that happens to be green.
+    pub success_fg: Color,
     /// Emphasis for the search-matched substring of a row label (BOLD is added
     /// at the render site). A foreground, not a background: the framed-row
     /// selection tints the row while keeping each span's fg, so the emphasis
@@ -294,10 +549,12 @@ pub struct Theme {
     pub pr_open_bg: Color,
     pub pr_merged_bg: Color,
     pub pr_closed_bg: Color,
+    pub pr_draft_bg: Color,
     pub pr_banner_fg: Color,
     pub pr_merged_label: Color,
     pub pr_closed_label: Color,
     pub pr_open_label: Color,
+    pub pr_draft_label: Color,
     pub help_banner_fg: Color,
     pub help_banner_bg: Color,
     pub help_body_fg: Color,
@@ -318,7 +575,7 @@ pub struct Theme {
 ///
 /// Returns an error if none of the above match. The caller is expected to fall
 /// back to [`Theme::fallback`] in that case.
-pub fn load(name: &str, paths: &YaranPaths) -> Result<Theme> {
+pub(crate) fn load(name: &str, paths: &YaranPaths) -> Result<Theme> {
     let user_path = paths.root.join("themes").join(format!("{name}.toml"));
     if user_path.exists() {
         return load_from_file(&user_path)
@@ -339,7 +596,7 @@ pub fn load(name: &str, paths: &YaranPaths) -> Result<Theme> {
     // lookup. The original form is also tried as a fallback to forgive any
     // legacy hyphenated id that may already live in someone's config.
     let candidates: [String; 2] = [name.replace('_', "-"), name.to_string()];
-    for candidate in candidates.iter() {
+    for candidate in &candidates {
         if let Some(mut theme) = opaline::load_by_name(candidate) {
             register_yaran_defaults(&mut theme);
             return Ok(Theme::from_opaline(&theme));
@@ -354,91 +611,10 @@ pub fn load(name: &str, paths: &YaranPaths) -> Result<Theme> {
     ))
 }
 
-/// Where a theme came from, used by the theme picker to label entries and
-/// disambiguate same-named user themes from built-ins.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThemeSource {
-    /// The bundled `yaran-dark` theme: always present, always first in the list.
-    Bundled,
-    /// A theme compiled into the opaline crate (e.g. `nord`, `catppuccin-mocha`).
-    Opaline,
-    /// A user-authored theme found at `<config_dir>/themes/<name>.toml`.
-    User,
-}
-
-/// Metadata about an available theme, used to populate the theme picker.
-#[derive(Clone, Debug)]
-pub struct ThemeListing {
-    /// Identifier passed to [`load`]: file stem for user themes, kebab-case
-    /// id for built-ins, `yaran-dark` for the bundled default.
-    pub id: String,
-    /// Human-readable label shown in the picker.
-    pub display_name: String,
-    pub source: ThemeSource,
-}
-
-/// Enumerate every theme reachable from the yaran runtime: the bundled
-/// `yaran-dark`, the opaline built-ins, and any TOML files the user has
-/// dropped in `<config_dir>/themes/`. Sorted with `yaran-dark` first, then
-/// user themes, then built-ins alphabetically, for predictable scrolling.
-pub fn discover_available(paths: &YaranPaths) -> Vec<ThemeListing> {
-    let mut themes = Vec::new();
-
-    themes.push(ThemeListing {
-        id: DEFAULT_THEME_NAME.to_string(),
-        display_name: format!("{DEFAULT_THEME_NAME} (bundled default)"),
-        source: ThemeSource::Bundled,
-    });
-
-    let user_dir = paths.root.join("themes");
-    if let Ok(entries) = std::fs::read_dir(&user_dir) {
-        let mut user_themes: Vec<ThemeListing> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.extension().is_none_or(|ext| ext != "toml") {
-                    return None;
-                }
-                let stem = path.file_stem()?.to_str()?.to_string();
-                if stem == DEFAULT_THEME_NAME {
-                    // yaran-dark stays the bundled entry; a user file with the
-                    // same name still loads first via `theme::load`, but we
-                    // don't show two "yaran-dark" rows in the picker.
-                    return None;
-                }
-                Some(ThemeListing {
-                    display_name: format!("{stem} (user)"),
-                    id: stem,
-                    source: ThemeSource::User,
-                })
-            })
-            .collect();
-        user_themes.sort_by(|a, b| a.id.cmp(&b.id));
-        themes.extend(user_themes);
-    }
-
-    let mut builtin: Vec<ThemeListing> = opaline::list_available_themes()
-        .into_iter()
-        .filter(|info| info.builtin)
-        .map(|info| ThemeListing {
-            // Match the opaline TOML filenames (underscored) for the
-            // user-facing id; `theme::load` reverses the conversion before
-            // calling opaline.
-            id: info.name.replace('-', "_"),
-            display_name: info.display_name.clone(),
-            source: ThemeSource::Opaline,
-        })
-        .collect();
-    builtin.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-    themes.extend(builtin);
-
-    themes
-}
-
 /// Load a theme by name and fall back to the bundled `yaran-dark` if the lookup
 /// fails. Returns the theme and an optional human-readable warning message
 /// suitable for the status line (`Some` only when a fallback occurred).
-pub fn load_or_fallback(name: &str, paths: &YaranPaths) -> (Theme, Option<String>) {
+pub(crate) fn load_or_fallback(name: &str, paths: &YaranPaths) -> (Theme, Option<String>) {
     match load(name, paths) {
         Ok(theme) => (theme, None),
         Err(err) => {
@@ -472,6 +648,10 @@ fn load_from_str(toml_str: &str) -> Result<Theme> {
 /// them. This lets generic Opaline built-ins (Nord, Catppuccin, …) drive the
 /// yaran UI without having to know the yaran token namespace, while still letting
 /// yaran-aware themes override every yaran token explicitly.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one default per yaran theme token, derived from the theme's semantic colors"
+)]
 fn register_yaran_defaults(theme: &mut OpalineTheme) {
     // Resolve the standard Opaline semantic tokens once. `theme.color()`
     // returns OpalineColor::FALLBACK (gray) for missing tokens, which keeps
@@ -590,7 +770,6 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     // Hint / footer bar
     theme.register_default_token("yaran.hint_key_fg", readable_body_color(accent_primary));
     theme.register_default_token("yaran.hint_bracket_fg", text_dim);
-    theme.register_default_token("yaran.hint_key_bg", bg_panel);
     theme.register_default_token("yaran.hint_desc_fg", text_muted);
     theme.register_default_token("yaran.hint_dim_key_fg", readable_dim);
     theme.register_default_token("yaran.hint_dim_bracket_fg", border_unfocused);
@@ -601,6 +780,10 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.overlay_border", border_focused);
     theme.register_default_token("yaran.overlay_border_refused", error);
     theme.register_default_token("yaran.overlay_bg", bg_panel);
+    // Read back rather than `bg_base`, so a theme that sets `yaran.app_bg` itself
+    // gets pane cards on that surface too.
+    let app_bg = theme.color("yaran.app_bg");
+    theme.register_default_token("yaran.pane_card_bg", app_bg);
     theme.register_default_token("yaran.overlay_dim_bg", bg_base);
     theme.register_default_token("yaran.overlay_dim_fg", text_dim);
     theme.register_default_token("yaran.prompt_cursor", accent_primary);
@@ -612,6 +795,7 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.scroll_indicator_fg", text_primary);
     theme.register_default_token("yaran.scroll_indicator_bg", bg_active);
     theme.register_default_token("yaran.warning_fg", warning);
+    theme.register_default_token("yaran.success_fg", success);
     // Search-hit emphasis: the warning hue doubles as a find/highlight accent
     // (the conventional "search match" yellow) and is defined by every theme.
     theme.register_default_token("yaran.search_match_fg", warning);
@@ -654,10 +838,12 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.pr_open_bg", GITHUB_PR_OPEN_BG);
     theme.register_default_token("yaran.pr_merged_bg", GITHUB_PR_MERGED_BG);
     theme.register_default_token("yaran.pr_closed_bg", GITHUB_PR_CLOSED_BG);
+    theme.register_default_token("yaran.pr_draft_bg", GITHUB_PR_DRAFT_BG);
     theme.register_default_token("yaran.pr_banner_fg", OpalineColor::WHITE);
     theme.register_default_token("yaran.pr_open_label", GITHUB_PR_OPEN_LABEL);
     theme.register_default_token("yaran.pr_merged_label", GITHUB_PR_MERGED_LABEL);
     theme.register_default_token("yaran.pr_closed_label", GITHUB_PR_CLOSED_LABEL);
+    theme.register_default_token("yaran.pr_draft_label", GITHUB_PR_DRAFT_LABEL);
 
     // The QR code stays black on white whatever the theme: a scanner reads
     // contrast, not taste. Overridable like every `yaran.*` token.
@@ -677,8 +863,9 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
 fn blend_over(top: Color, bottom: Color, alpha: f32) -> Color {
     match (top, bottom) {
         (Color::Rgb(tr, tg, tb), Color::Rgb(br, bg, bb)) => {
-            let mix =
-                |t: u8, b: u8| (f32::from(t) * alpha + f32::from(b) * (1.0 - alpha)).round() as u8;
+            let mix = |t: u8, b: u8| {
+                f32_to_u8_saturating((f32::from(t) * alpha + f32::from(b) * (1.0 - alpha)).round())
+            };
             Color::Rgb(mix(tr, br), mix(tg, bg), mix(tb, bb))
         }
         _ => bottom,
@@ -700,13 +887,62 @@ fn into_ratatui(color: OpalineColor) -> Color {
     }
 }
 
+/// Whether a pane, field or control has keyboard focus, which picks its
+/// focused or resting look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FocusState {
+    /// It has focus.
+    Focused,
+    /// It does not.
+    Unfocused,
+}
+
+impl From<bool> for FocusState {
+    /// `true` is focus.
+    fn from(focused: bool) -> Self {
+        if focused {
+            Self::Focused
+        } else {
+            Self::Unfocused
+        }
+    }
+}
+
+impl FocusState {
+    /// Whether the control at `stop` has focus while focus rests on `current`.
+    pub(crate) fn of<T: PartialEq + Copy>(current: T, stop: T) -> Self {
+        if current == stop {
+            Self::Focused
+        } else {
+            Self::Unfocused
+        }
+    }
+}
+
 impl Theme {
+    /// Whether the app background is lighter than the body text, which is what
+    /// decides how a QR code is drawn in the theme's own two colors: the darker
+    /// of them must be the code's dark modules. A color with no RGB behind it
+    /// (the terminal's own default) cannot be measured, and counts as the dark
+    /// background most terminals have.
+    pub(crate) fn background_is_lighter_than_text(&self) -> bool {
+        let luma = |color: Color| {
+            blendable_rgb(color).map(|(r, g, b)| {
+                0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b)
+            })
+        };
+        match (luma(self.app_bg), luma(self.text_fg)) {
+            (Some(bg), Some(text)) => bg > text,
+            _ => false,
+        }
+    }
+
     /// Build a [`Theme`] from a fully-resolved Opaline theme. Every field is
     /// looked up via the `yaran.<field>` namespace; defaults are injected by
     /// [`register_yaran_defaults`] before this is called, so missing tokens fall
     /// back to standard Opaline semantic colors rather than the `FALLBACK`
     /// gray.
-    pub fn from_opaline(theme: &OpalineTheme) -> Self {
+    pub(crate) fn from_opaline(theme: &OpalineTheme) -> Self {
         let pick = |token: &str| into_ratatui(theme.color(token));
         Self {
             app_bg: pick("yaran.app_bg"),
@@ -744,7 +980,6 @@ impl Theme {
             file_status_fg: pick("yaran.file_status_fg"),
             hint_key_fg: pick("yaran.hint_key_fg"),
             hint_bracket_fg: pick("yaran.hint_bracket_fg"),
-            hint_key_bg: pick("yaran.hint_key_bg"),
             hint_desc_fg: pick("yaran.hint_desc_fg"),
             hint_dim_key_fg: pick("yaran.hint_dim_key_fg"),
             hint_dim_bracket_fg: pick("yaran.hint_dim_bracket_fg"),
@@ -753,6 +988,7 @@ impl Theme {
             overlay_border: pick("yaran.overlay_border"),
             overlay_border_refused: pick("yaran.overlay_border_refused"),
             overlay_bg: pick("yaran.overlay_bg"),
+            pane_card_bg: pick("yaran.pane_card_bg"),
             overlay_dim_bg: pick("yaran.overlay_dim_bg"),
             prompt_cursor: pick("yaran.prompt_cursor"),
             provider_label_fg: pick("yaran.provider_label_fg"),
@@ -761,6 +997,7 @@ impl Theme {
             scroll_indicator_fg: pick("yaran.scroll_indicator_fg"),
             scroll_indicator_bg: pick("yaran.scroll_indicator_bg"),
             warning_fg: pick("yaran.warning_fg"),
+            success_fg: pick("yaran.success_fg"),
             search_match_fg: pick("yaran.search_match_fg"),
             button_active_fg: pick("yaran.button_active_fg"),
             button_confirm_border: pick("yaran.button_confirm_border"),
@@ -787,10 +1024,12 @@ impl Theme {
             pr_open_bg: pick("yaran.pr_open_bg"),
             pr_merged_bg: pick("yaran.pr_merged_bg"),
             pr_closed_bg: pick("yaran.pr_closed_bg"),
+            pr_draft_bg: pick("yaran.pr_draft_bg"),
             pr_banner_fg: pick("yaran.pr_banner_fg"),
             pr_merged_label: pick("yaran.pr_merged_label"),
             pr_closed_label: pick("yaran.pr_closed_label"),
             pr_open_label: pick("yaran.pr_open_label"),
+            pr_draft_label: pick("yaran.pr_draft_label"),
             help_banner_fg: pick("yaran.help_banner_fg"),
             help_banner_bg: pick("yaran.help_banner_bg"),
             help_body_fg: pick("yaran.help_body_fg"),
@@ -802,31 +1041,32 @@ impl Theme {
     /// Last-resort theme used when `theme::load` fails. Loads the bundled
     /// `yaran-dark.toml` which is embedded at compile time, so this never fails
     /// in a correctly-built binary.
-    pub fn fallback() -> Self {
+    pub(crate) fn fallback() -> Self {
         load_from_str(YARAN_DARK_TOML).expect("bundled yaran-dark theme must always parse")
     }
 
     /// The original yaran dark palette. Kept for tests, snapshots, and any
     /// future caller that wants the exact pre-Opaline default without
     /// going through the loader. Equivalent to [`Self::fallback`].
-    pub fn default_dark() -> Self {
+    #[cfg(test)]
+    pub(crate) fn default_dark() -> Self {
         Self::fallback()
     }
 
-    pub fn header_style(&self) -> Style {
+    pub(crate) fn header_style(&self) -> Style {
         Style::default().fg(self.header_fg).bg(self.header_bg)
     }
 
-    pub fn border_style(&self, focused: bool) -> Style {
-        if focused {
+    pub(crate) fn border_style(&self, focused: FocusState) -> Style {
+        if focused == FocusState::Focused {
             Style::default().fg(self.border_focused)
         } else {
             Style::default().fg(self.border_normal)
         }
     }
 
-    pub fn title_style(&self, focused: bool) -> Style {
-        if focused {
+    pub(crate) fn title_style(&self, focused: FocusState) -> Style {
+        if focused == FocusState::Focused {
             Style::default()
                 .fg(self.title_focused)
                 .add_modifier(Modifier::BOLD)
@@ -846,8 +1086,8 @@ impl Theme {
     /// so the two states differ in colour and weight even if a theme maps the
     /// colours together;
     /// `the_overlay_field_focus_is_visible_in_every_loadable_theme` pins it.
-    pub fn overlay_field_border_style(&self, focused: bool) -> Style {
-        if focused {
+    pub(crate) fn overlay_field_border_style(&self, focused: FocusState) -> Style {
+        if focused == FocusState::Focused {
             Style::default()
                 .fg(self.button_active_fg)
                 .add_modifier(Modifier::BOLD)
@@ -860,8 +1100,16 @@ impl Theme {
     /// modal background (`overlay_bg`). Every dialog surface is painted in it,
     /// so body prose that sets no color of its own reads in the theme's text
     /// color rather than the host terminal's default foreground.
-    pub fn overlay_surface_style(&self) -> Style {
+    pub(crate) fn overlay_surface_style(&self) -> Style {
         Style::default().fg(self.text_fg).bg(self.overlay_bg)
+    }
+
+    /// The pane card surface as a style: the body text (`text_fg`) on
+    /// `pane_card_bg`. The card shares a modal's ring and title, but it is part
+    /// of the pane it sits in, so it is filled with the pane's surface rather
+    /// than the modal one.
+    pub(crate) fn pane_card_surface_style(&self) -> Style {
+        Style::default().fg(self.text_fg).bg(self.pane_card_bg)
     }
 
     /// The style of a name chip: the dialog body's own colors swapped, the
@@ -880,7 +1128,7 @@ impl Theme {
     /// may share. Do not reuse this style for other text, or that text will
     /// refuse to wrap; a look that merely resembles a chip needs a style of its
     /// own.
-    pub fn name_style(&self) -> Style {
+    pub(crate) fn name_style(&self) -> Style {
         Style::default()
             .fg(self.overlay_bg)
             .bg(self.text_fg)
@@ -891,14 +1139,14 @@ impl Theme {
     /// colors: the quieter chip a dense view uses (the human board's card
     /// dialog), where several bright chips in a column outshout the text. The
     /// same unbreakable-chip marker as [`Theme::name_style`].
-    pub fn soft_name_style(&self) -> Style {
+    pub(crate) fn soft_name_style(&self) -> Style {
         Style::default()
             .fg(self.text_fg)
             .bg(self.selection_bar_tint())
             .remove_modifier(NAME_CHIP_MARKER)
     }
 
-    pub fn selection_style(&self) -> Style {
+    pub(crate) fn selection_style(&self) -> Style {
         Style::default()
             .fg(self.selection_fg)
             .bg(self.selection_bg)
@@ -909,7 +1157,7 @@ impl Theme {
     /// background, with whichever body color reads on it, so the pane that owns
     /// the keys reads at a glance without a token of its own. Deliberately not
     /// the selection colors, which mean "the selected row" inside a pane.
-    pub fn pane_focus_chip_style(&self) -> Style {
+    pub(crate) fn pane_focus_chip_style(&self) -> Style {
         Style::default()
             .fg(readable_on(
                 self.title_focused,
@@ -923,7 +1171,7 @@ impl Theme {
     /// state's own color as the background, with whichever of the theme's body
     /// colors reads on it. Typing is what the user is doing there, so it wears
     /// the same violet the sidebar's "Typing" word does.
-    pub fn pane_input_chip_style(&self) -> Style {
+    pub(crate) fn pane_input_chip_style(&self) -> Style {
         Style::default()
             .fg(readable_on(
                 self.session_typing,
@@ -938,11 +1186,11 @@ impl Theme {
     /// always tracks whatever accent the active theme uses (no hardcoded tint).
     /// Falls back to the plain app background when either color is not RGB (a
     /// named ANSI color can't be blended predictably).
-    pub fn selection_bar_tint(&self) -> Color {
+    pub(crate) fn selection_bar_tint(&self) -> Color {
         blend_over(self.selection_bg, self.app_bg, 0.16)
     }
 
-    pub fn status_dot(&self, tone: crate::statusline::StatusTone) -> (&'static str, Color) {
+    pub(crate) fn status_dot(&self, tone: crate::statusline::StatusTone) -> (&'static str, Color) {
         match tone {
             crate::statusline::StatusTone::Info => ("●", self.session_active),
             crate::statusline::StatusTone::Busy => ("●", self.session_detached),
@@ -951,7 +1199,7 @@ impl Theme {
         }
     }
 
-    pub fn session_dot(&self, status: &crate::model::SessionStatus) -> (&'static str, Color) {
+    pub(crate) fn session_dot(&self, status: crate::model::SessionStatus) -> (&'static str, Color) {
         match status {
             crate::model::SessionStatus::Active => ("●", self.session_active),
             crate::model::SessionStatus::Detached => ("◎", self.session_detached),
@@ -959,46 +1207,32 @@ impl Theme {
         }
     }
 
-    /// Render a key badge as `<key>` with the angle brackets in an accent color
-    /// and the key name in bold. Returns 3 spans.
-    pub fn dim_key_badge<'a>(&self, key: &'a str, bg: Color) -> Vec<Span<'a>> {
-        vec![
-            Span::styled("<", Style::default().fg(self.hint_dim_bracket_fg).bg(bg)),
-            Span::styled(
-                key,
-                Style::default()
-                    .fg(self.hint_dim_key_fg)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(">", Style::default().fg(self.hint_dim_bracket_fg).bg(bg)),
-        ]
+    /// A key badge with no background of its own: it takes the background of
+    /// whatever it is painted over (a dialog, a pane, the footer bar), exactly
+    /// as the description beside it does. Naming a background here would be
+    /// wrong on every surface but that one; `Color::Reset` would be wrong on
+    /// all of them, since it falls through to the terminal default.
+    pub(crate) fn key_badge_default<'a>(&self, key: &'a str) -> Vec<Span<'a>> {
+        badge_spans(key, self.hint_bracket_fg, self.hint_key_fg)
     }
 
-    pub fn key_badge<'a>(&self, key: &'a str, bg: Color) -> Vec<Span<'a>> {
-        vec![
-            Span::styled("<", Style::default().fg(self.hint_bracket_fg).bg(bg)),
-            Span::styled(
-                key,
-                Style::default()
-                    .fg(self.hint_key_fg)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(">", Style::default().fg(self.hint_bracket_fg).bg(bg)),
-        ]
+    /// [`Self::key_badge_default`] in the dimmed hint colors a pane's hint row
+    /// uses.
+    pub(crate) fn dim_key_badge_default<'a>(&self, key: &'a str) -> Vec<Span<'a>> {
+        badge_spans(key, self.hint_dim_bracket_fg, self.hint_dim_key_fg)
     }
+}
 
-    pub fn key_badge_default<'a>(&self, key: &'a str) -> Vec<Span<'a>> {
-        // Pass `app_bg` rather than `Color::Reset` so the badge background
-        // tracks the active theme: `Color::Reset` emits an SGR that overrides
-        // the surrounding pre-fill and falls through to the terminal default.
-        self.key_badge(key, self.app_bg)
-    }
-
-    pub fn dim_key_badge_default<'a>(&self, key: &'a str) -> Vec<Span<'a>> {
-        self.dim_key_badge(key, self.app_bg)
-    }
+/// `<key>`: the brackets in `bracket`, the key bold in `key_fg`, no background.
+fn badge_spans(key: &str, bracket: Color, key_fg: Color) -> Vec<Span<'_>> {
+    vec![
+        Span::styled("<", Style::default().fg(bracket)),
+        Span::styled(
+            key,
+            Style::default().fg(key_fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(">", Style::default().fg(bracket)),
+    ]
 }
 
 /// What makes a style a name chip's: this modifier in the style's REMOVE set.
@@ -1011,15 +1245,36 @@ impl Theme {
 /// as it would without the marker, and nothing else in yaran removes it. The
 /// marker survives `Style::patch`, so a caller that restyles a chip (dims it
 /// for a disabled row) still has a chip.
-pub const NAME_CHIP_MARKER: Modifier = Modifier::HIDDEN;
+pub(crate) const NAME_CHIP_MARKER: Modifier = Modifier::HIDDEN;
 
 /// Whether `style` is a name chip's: whether it carries [`NAME_CHIP_MARKER`].
-pub fn is_name_chip(style: Style) -> bool {
+pub(crate) fn is_name_chip(style: Style) -> bool {
     style.sub_modifier.contains(NAME_CHIP_MARKER)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unfocused_part_cell_goes_grey_and_fades_toward_the_pane_background() {
+        let pane = Color::Rgb(0, 0, 0);
+        // Pure red is luma 76; a fifth of the way to black is 61.
+        assert_eq!(
+            unfocused_part_color(Color::Rgb(255, 0, 0), pane),
+            Some(Color::Rgb(61, 61, 61))
+        );
+        // A palette index and a named color resolve to the same channels first.
+        assert_eq!(
+            unfocused_part_color(Color::Indexed(196), pane),
+            Some(Color::Rgb(61, 61, 61))
+        );
+        assert_eq!(
+            unfocused_part_color(Color::Red, pane),
+            Some(Color::Rgb(61, 61, 61))
+        );
+        // The terminal's own default has no channels to grey.
+        assert_eq!(unfocused_part_color(Color::Reset, pane), None);
+    }
+
     use super::*;
 
     #[test]
@@ -1032,6 +1287,7 @@ mod tests {
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
             root: root.to_path_buf(),
+            socket_path: root.join("yaran.sock"),
         };
         let expected = load(DEFAULT_THEME_NAME, &paths).unwrap();
         for name in ["dux_dark", "dux-dark", "yaran_dark"] {
@@ -1101,19 +1357,66 @@ mod tests {
         );
     }
 
-    /// The standalone star must occupy exactly one terminal cell, measured
-    /// through the same `CellWidth` trait the row layout advances columns
-    /// with (ratatui-core over unicode-width), not through an assumption
-    /// about the codepoint. A wide or ambiguous-wide glyph would shear every
-    /// row that carries it; this pin is the gate for ever changing the glyph.
+    /// Every icon in BOTH sets must be a single bare codepoint that occupies
+    /// exactly one terminal cell, measured through the same `CellWidth` trait
+    /// the row layout advances columns with (ratatui-core over unicode-width),
+    /// not through an assumption about the codepoint. A wide glyph, or a
+    /// variation selector asking the host for a two-cell emoji, would shear
+    /// every row that carries it; this pin is the gate for changing any glyph.
     #[test]
-    fn the_standalone_glyph_measures_one_cell_wide() {
+    fn every_glyph_in_both_sets_is_one_bare_codepoint_one_cell_wide() {
         use ratatui::buffer::CellWidth;
+        for (set_name, set) in [("plain", Glyphs::PLAIN), ("nerd", Glyphs::NERD)] {
+            for (name, glyph) in set.all() {
+                assert_eq!(
+                    glyph.chars().count(),
+                    1,
+                    "{set_name} {name} must be one bare codepoint: {glyph:?}"
+                );
+                assert_eq!(
+                    glyph.cell_width(),
+                    1,
+                    "{set_name} {name} must be one cell wide in the width machinery the rows trust"
+                );
+            }
+        }
+    }
+
+    /// The plain set is the default the docs describe, so its identity marks
+    /// are pinned by codepoint: the reference mark for a project (the folder
+    /// emoji it replaced does not render in the stock macOS fonts) and the
+    /// eight-pointed star for a standalone row.
+    #[test]
+    fn the_plain_set_marks_a_project_with_the_reference_mark() {
+        assert_eq!(Glyphs::PLAIN.project, "\u{203B}");
+        assert_eq!(Glyphs::PLAIN.standalone, "\u{2737}");
         assert_eq!(
-            STANDALONE_GLYPH.cell_width(),
-            1,
-            "the standalone glyph must be one cell wide in the width machinery the rows trust"
+            Glyphs::for_config(crate::theme::IconSet::Plain),
+            &Glyphs::PLAIN
         );
+    }
+
+    /// The Nerd set is pinned against the official glyph names, must stay
+    /// clear of U+F500-U+FD46 (the Material Design range Nerd Fonts v3
+    /// retired, which draws nothing in a current font), and must differ from
+    /// the plain set glyph for glyph, or that icon does not belong in the set.
+    #[test]
+    fn the_nerd_set_uses_current_nerd_font_codepoints() {
+        assert_eq!(Glyphs::NERD.project, "\u{F07B}", "nf-fa-folder");
+        assert_eq!(Glyphs::NERD.standalone, "\u{F005}", "nf-fa-star");
+        assert_eq!(
+            Glyphs::for_config(crate::theme::IconSet::Nerd),
+            &Glyphs::NERD
+        );
+        let plain = Glyphs::PLAIN.all();
+        for (index, (name, glyph)) in Glyphs::NERD.all().into_iter().enumerate() {
+            let cp = u32::from(glyph.chars().next().unwrap());
+            assert!(
+                !(0xF500..=0xFD46).contains(&cp),
+                "nerd {name} uses retired codepoint U+{cp:X}"
+            );
+            assert_ne!(glyph, plain[index].1, "nerd {name} matches the plain glyph");
+        }
     }
 
     /// A modal that refuses an outside click flashes its border ring from
@@ -1133,7 +1436,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         };
         let listings = discover_available(&paths);
@@ -1168,7 +1472,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         };
         let listings = discover_available(&paths);
@@ -1180,8 +1485,8 @@ mod tests {
         for listing in listings {
             let theme = load(&listing.id, &paths)
                 .unwrap_or_else(|err| panic!("theme {} failed to load: {err}", listing.id));
-            let focused = theme.overlay_field_border_style(true);
-            let unfocused = theme.overlay_field_border_style(false);
+            let focused = theme.overlay_field_border_style(FocusState::Focused);
+            let unfocused = theme.overlay_field_border_style(FocusState::Unfocused);
             assert_ne!(
                 focused, unfocused,
                 "theme {} renders a focused overlay field identically to an unfocused one \
@@ -1257,7 +1562,6 @@ mod tests {
             file_status_fg: Color::Yellow,
             hint_key_fg: Color::Cyan,
             hint_bracket_fg: Color::DarkGray,
-            hint_key_bg: Color::Rgb(35, 35, 35),
             hint_desc_fg: Color::Rgb(160, 160, 160),
             hint_dim_key_fg: Color::Rgb(80, 140, 160),
             hint_dim_bracket_fg: Color::Rgb(60, 60, 60),
@@ -1266,6 +1570,7 @@ mod tests {
             overlay_border: Color::Cyan,
             overlay_border_refused: Color::Red,
             overlay_bg: Color::Rgb(20, 20, 20),
+            pane_card_bg: Color::Rgb(20, 20, 20),
             overlay_dim_bg: Color::Rgb(10, 10, 10),
             prompt_cursor: Color::Cyan,
             provider_label_fg: Color::Rgb(160, 160, 160),
@@ -1274,6 +1579,7 @@ mod tests {
             scroll_indicator_fg: Color::Rgb(210, 210, 210),
             scroll_indicator_bg: Color::Rgb(55, 55, 55),
             warning_fg: Color::Yellow,
+            success_fg: Color::Green,
             search_match_fg: Color::Yellow,
             button_active_fg: Color::White,
             button_confirm_border: Color::Cyan,
@@ -1300,10 +1606,12 @@ mod tests {
             pr_open_bg: Color::Rgb(35, 134, 54),
             pr_merged_bg: Color::Rgb(130, 80, 223),
             pr_closed_bg: Color::Rgb(110, 54, 48),
+            pr_draft_bg: Color::Rgb(110, 119, 129),
             pr_merged_label: Color::Rgb(170, 100, 220),
             pr_banner_fg: Color::White,
             pr_closed_label: Color::Rgb(140, 80, 80),
             pr_open_label: Color::Green,
+            pr_draft_label: Color::Rgb(139, 148, 158),
             help_banner_fg: Color::Rgb(20, 20, 20),
             help_banner_bg: Color::Cyan,
             help_body_fg: Color::Rgb(180, 180, 180),
@@ -1316,6 +1624,10 @@ mod tests {
     /// field for field. If a token in `assets/themes/yaran-dark.toml` is
     /// retyped wrong, this test will pinpoint which one drifted.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one assertion per palette field, so a drifted token is named by its line"
+    )]
     fn yaran_dark_matches_intended_palette() {
         let actual = load_from_str(YARAN_DARK_TOML).expect("bundled yaran-dark must parse");
         let expected = default_dark_archived();
@@ -1368,7 +1680,6 @@ mod tests {
         assert_field!(file_status_fg);
         assert_field!(hint_key_fg);
         assert_field!(hint_bracket_fg);
-        assert_field!(hint_key_bg);
         assert_field!(hint_desc_fg);
         assert_field!(hint_dim_key_fg);
         assert_field!(hint_dim_bracket_fg);
@@ -1377,6 +1688,7 @@ mod tests {
         assert_field!(overlay_border);
         assert_field!(overlay_border_refused);
         assert_field!(overlay_bg);
+        assert_field!(pane_card_bg);
         assert_field!(overlay_dim_bg);
         assert_field!(prompt_cursor);
         assert_field!(provider_label_fg);
@@ -1385,6 +1697,7 @@ mod tests {
         assert_field!(scroll_indicator_fg);
         assert_field!(scroll_indicator_bg);
         assert_field!(warning_fg);
+        assert_field!(success_fg);
         assert_field!(search_match_fg);
         assert_field!(button_active_fg);
         assert_field!(button_confirm_border);
@@ -1411,10 +1724,12 @@ mod tests {
         assert_field!(pr_open_bg);
         assert_field!(pr_merged_bg);
         assert_field!(pr_closed_bg);
+        assert_field!(pr_draft_bg);
         assert_field!(pr_banner_fg);
         assert_field!(pr_merged_label);
         assert_field!(pr_closed_label);
         assert_field!(pr_open_label);
+        assert_field!(pr_draft_label);
         assert_field!(help_banner_fg);
         assert_field!(help_banner_bg);
         assert_field!(help_body_fg);
@@ -1493,6 +1808,12 @@ info = "info"
         )
         .expect("theme must parse");
 
+        // Success-toned text (an OK line in the server log) reads in the
+        // theme's own success color, not a borrowed diff color. This palette's
+        // success is unreadable on its base, so it arrives lifted to a readable
+        // body color, the same one the working state word uses.
+        assert_eq!(theme.success_fg, theme.session_working);
+        assert_ne!(theme.success_fg, theme.pr_open_bg);
         assert_eq!(theme.pr_open_bg, Color::Rgb(35, 134, 54));
         assert_eq!(theme.pr_merged_bg, Color::Rgb(130, 80, 223));
         assert_eq!(theme.pr_closed_bg, Color::Rgb(110, 54, 48));
@@ -1500,6 +1821,8 @@ info = "info"
         assert_eq!(theme.pr_open_label, Color::Green);
         assert_eq!(theme.pr_merged_label, Color::Rgb(170, 100, 220));
         assert_eq!(theme.pr_closed_label, Color::Rgb(140, 80, 80));
+        assert_eq!(theme.pr_draft_bg, Color::Rgb(110, 119, 129));
+        assert_eq!(theme.pr_draft_label, Color::Rgb(139, 148, 158));
 
         assert_ne!(theme.pr_open_bg, Color::Rgb(1, 1, 1));
         assert_ne!(theme.pr_merged_bg, Color::Rgb(171, 205, 239));
@@ -1522,6 +1845,8 @@ variant = "dark"
 "yaran.pr_open_label" = "#131415"
 "yaran.pr_merged_label" = "#161718"
 "yaran.pr_closed_label" = "#192021"
+"yaran.pr_draft_bg" = "#222324"
+"yaran.pr_draft_label" = "#252627"
 "##,
         )
         .expect("theme must parse");
@@ -1533,6 +1858,8 @@ variant = "dark"
         assert_eq!(theme.pr_open_label, Color::Rgb(19, 20, 21));
         assert_eq!(theme.pr_merged_label, Color::Rgb(22, 23, 24));
         assert_eq!(theme.pr_closed_label, Color::Rgb(25, 32, 33));
+        assert_eq!(theme.pr_draft_bg, Color::Rgb(34, 35, 36));
+        assert_eq!(theme.pr_draft_label, Color::Rgb(37, 38, 39));
     }
 
     /// The bundled yaran-dark theme's attention color must stay consistent with
@@ -1575,6 +1902,38 @@ variant = "dark"
         assert_ne!(nord.session_typing, Color::Rgb(128, 128, 128));
     }
 
+    /// A pane card sits on the pane's own surface unless the theme says
+    /// otherwise: `yaran.pane_card_bg` follows `yaran.app_bg` (the theme's own, when
+    /// it sets one, not merely `bg.base`), never the modal surface, and a theme
+    /// that sets the token gets exactly what it set.
+    #[test]
+    fn the_pane_card_surface_follows_the_app_surface_unless_a_theme_sets_it() {
+        // flexoki_dark is a theme whose modal surface differs from its base, so
+        // there the default is a real choice rather than a coincidence.
+        let mut flexoki = opaline::load_by_name("flexoki-dark").expect("flexoki-dark built-in");
+        register_yaran_defaults(&mut flexoki);
+        let flexoki = Theme::from_opaline(&flexoki);
+        assert_ne!(flexoki.overlay_bg, flexoki.app_bg);
+        assert_eq!(flexoki.pane_card_bg, flexoki.app_bg);
+
+        let app_bg_only = YARAN_DARK_TOML.replace(
+            "\"yaran.app_bg\"               = \"#141414\"",
+            "\"yaran.app_bg\"               = \"#202530\"",
+        );
+        assert_ne!(app_bg_only, YARAN_DARK_TOML, "the replacement must land");
+        let theme = load_from_str(&app_bg_only).expect("parses");
+        assert_eq!(theme.pane_card_bg, Color::Rgb(0x20, 0x25, 0x30));
+
+        let overridden = YARAN_DARK_TOML.replace(
+            "[tokens]\n",
+            "[tokens]\n\"yaran.pane_card_bg\" = \"#334455\"\n",
+        );
+        assert_ne!(overridden, YARAN_DARK_TOML, "the replacement must land");
+        let theme = load_from_str(&overridden).expect("parses");
+        assert_eq!(theme.pane_card_bg, Color::Rgb(0x33, 0x44, 0x55));
+        assert_eq!(theme.app_bg, Color::Rgb(20, 20, 20));
+    }
+
     /// The standalone agent's identity tone must resolve in every theme yaran can
     /// actually load: the bundled yaran-dark defines the token explicitly, and
     /// every built-in derives it from its own info hue rather than falling back
@@ -1591,7 +1950,8 @@ variant = "dark"
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         };
         let listings = discover_available(&paths);
@@ -1627,7 +1987,8 @@ variant = "dark"
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         };
         let listings = discover_available(&paths);
@@ -1723,7 +2084,8 @@ info = "info"
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         };
         (tmp, paths)
@@ -1848,6 +2210,32 @@ info = "info"
             assert!(
                 !chip.add_modifier.contains(Modifier::BOLD),
                 "theme {id}: a chip is never bold"
+            );
+        }
+    }
+
+    /// The flip's status screen draws QR codes in the theme's body text on its
+    /// background. A phone reads them only if the two stand apart, and only if
+    /// the darker of the two is drawn as the dark modules, in every theme.
+    #[test]
+    fn every_loadable_theme_can_draw_a_readable_qr_code() {
+        let (_tmp, paths) = scratch_paths();
+        for listing in &discover_available(&paths) {
+            let id = &listing.id;
+            let theme =
+                load(id, &paths).unwrap_or_else(|err| panic!("theme {id} failed to load: {err}"));
+            if blendable_rgb(theme.app_bg).is_none() || blendable_rgb(theme.text_fg).is_none() {
+                continue;
+            }
+            assert!(
+                contrast(theme.app_bg, theme.text_fg) >= 3.0,
+                "theme {id}: a QR code in its text on its background has only {:.2}:1",
+                contrast(theme.app_bg, theme.text_fg)
+            );
+            assert_eq!(
+                theme.background_is_lighter_than_text(),
+                relative_luminance(theme.app_bg) > relative_luminance(theme.text_fg),
+                "theme {id}: the polarity must follow which color is darker"
             );
         }
     }

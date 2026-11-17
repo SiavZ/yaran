@@ -29,10 +29,23 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react"
-import type { ComponentProps, CSSProperties, ReactNode } from "react"
-import { useMemo, useRef, useState } from "react"
+import type { ComponentProps, CSSProperties, ReactNode, RefObject } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 
 import { AgentVitalsTooltip } from "@/components/AgentVitalsTooltip"
+import { MatchHighlight } from "@/components/MatchHighlight"
+import { RowStateWord } from "@/components/RowStateWord"
+import { WorkingGlyph } from "@/components/WorkingGlyph"
+import { useWorkingPulseAnchor } from "@/hooks/use-working-cue"
+import {
+  agentRowKey,
+  selectedRowKey,
+  terminalRowKey,
+  useRevealSelectedRow,
+} from "@/hooks/use-reveal-selected-row"
+import { useScrollEdges } from "@/hooks/use-scroll-edges"
+import { useSearchPick } from "@/hooks/use-search-pick"
+import { ACTIVE_ROW_RING } from "@yaran/ui-kit/focusRing"
 import { PaneMenuBody } from "@/components/PaneMenu"
 import {
   quietTailManualChoice,
@@ -68,20 +81,21 @@ import {
   TOUCH_DRAG_ACTIVATION,
 } from "@/lib/dragActivation"
 import {
-  displayedSessionOrder,
   FLAT_SORT_LABELS,
-  partitionQuiet,
+  flatRowKey,
+  isListTerminal,
+  isQuietSession,
+  listDragBaseline,
+  orderFlatRows,
+  overlaidListInputs,
+  planListDrop,
   quietTailForcedOpen,
-  sortMainSessions,
-  sortQuietTail,
   stateWord,
+  type FlatRow,
   type FlatSortKey,
-  type StateWord,
 } from "@/lib/flatList"
 import {
   assembleFlatTerminals,
-  displayedTerminalOrder,
-  sortFlatTerminals,
   terminalStateWord,
   type FlatTerminal,
 } from "@/lib/flatTerminals"
@@ -90,11 +104,12 @@ import {
   prIconClass,
   prIconHoverClass,
   prStateLabel,
+  prBadgeTooltip,
+  sessionPrs,
 } from "@/lib/pr"
 import { ALWAYS_REVEALED_ON_TOUCH } from "@/lib/touchReveal"
 import { launcherVerb } from "@/lib/launcherVerb"
 import { partitionProjects } from "@/lib/projects"
-import { moveItem, ordersMatch, reorderById } from "@/lib/reorder"
 import {
   sessionLabel,
   workingCopyMissing,
@@ -102,9 +117,9 @@ import {
   workspaceProjectId, folderDisplayName } from "@/lib/agentWorkspace"
 import {
   agentSortValue,
-  createStandaloneTerminal,
   openAddProject,
   openNewAgentPicker,
+  placeTerminalsInList,
   reorderAgents,
   reorderTerminals,
   setAgentSearch,
@@ -114,7 +129,7 @@ import {
 import { terminalForeground, terminalTitle } from "@/lib/terminals"
 import type { YaranState, SelectedTarget, TerminalOwnerRef } from "@/lib/store"
 import { matchOwner } from "@/lib/terminalOwner"
-import type { SessionView, TerminalView } from "@/lib/types"
+import type { SessionView } from "@/lib/types"
 import { cn } from "@yaran/ui-kit/cn"
 
 // How a flat row's tap resolves. Desktop just selects; mobile also drives the
@@ -181,31 +196,6 @@ function RowLineTwo({ children }: { children: ReactNode }) {
   )
 }
 
-// The row's state word, shared by both row kinds and keyed on the label so a
-// change replays the swap. A fade only: motion drops it off line two's baseline.
-//
-// While the row is working the word IS the cue: it pulses on the same clock as
-// the glyph and carries the cycling ellipsis in a fixed slot behind it. The
-// pulse takes the place of the one-shot swap fade rather than joining it, since
-// both are the `animation` shorthand and only one of them can win; the word is
-// already at full opacity when the pulse starts, so nothing snaps.
-function RowStateWord({ word, working }: { word: StateWord; working: boolean }) {
-  return (
-    <span
-      className={cn(
-        "shrink-0 font-medium",
-        working
-          ? "motion-safe:animate-working-pulse"
-          : "motion-safe:animate-state-word",
-        word.className,
-      )}
-    >
-      {word.label}
-      {working ? <span aria-hidden className="working-dots" /> : null}
-    </span>
-  )
-}
-
 // The typing cue: a blinking caret in the typing token, shared by both row kinds.
 // Motion-reduce drops the blink and rests the caret fully opaque.
 function TypingCaret() {
@@ -217,21 +207,11 @@ function TypingCaret() {
   )
 }
 
-// A row label with the matched range wrapped in a token-styled emphasis span.
-// The range is computed against the DISPLAYED string only; Array.from keeps CJK intact.
+// A row label with its first match lit, computed against the DISPLAYED string
+// only, the same first range the terminal UI lights.
 function HighlightedText({ text, query }: { text: string; query: string }) {
   const range = matchCharRange(text, query)
-  if (!range) return <>{text}</>
-  const chars = Array.from(text)
-  return (
-    <>
-      {chars.slice(0, range.start).join("")}
-      <span className="rounded-[2px] bg-primary/25">
-        {chars.slice(range.start, range.end).join("")}
-      </span>
-      {chars.slice(range.end).join("")}
-    </>
-  )
+  return <MatchHighlight text={text} ranges={range ? [range] : []} />
 }
 
 // One home for the row's name. It never animates: the working cue is the glyph
@@ -261,6 +241,8 @@ function AgentFlatRow({
   handlers,
   sortable,
   query,
+  pickId,
+  picked = false,
 }: {
   session: SessionView
   projectName: string
@@ -269,6 +251,10 @@ function AgentFlatRow({
   sortable: boolean
   // The live search query, for the match highlight ("" renders plain).
   query: string
+  // The row's id for the search field's active descendant, and whether it is
+  // the row Enter there would pick, ringed as if focused.
+  pickId?: string
+  picked?: boolean
 }) {
   const label = sessionLabel(session)
   const agentSelected =
@@ -280,6 +266,11 @@ function AgentFlatRow({
     session.typing,
   )
   const word = stateWord(session)
+  // The glyph's frame and the state word, so the word's pulse stays in step
+  // with the glyph's bounce when work resumes mid-settle.
+  const frameRef = useRef<HTMLSpanElement>(null)
+  const wordRef = useRef<HTMLSpanElement>(null)
+  useWorkingPulseAnchor(working, frameRef, wordRef)
   // Which thing this agent is IN: its project, or a standalone agent's folder.
   // Tagged so the row picks the glyph without re-deriving the agent kind.
   const location = workspaceLocation(session.workspace)
@@ -290,7 +281,7 @@ function AgentFlatRow({
   const changesCount = changesCountFor(changes, session.id)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: session.id })
+    useSortable({ id: agentRowKey(session.id) })
   const style: CSSProperties = {
     // Lock the drag to Y: the scroll container is overflow-x visible, so a
     // sideways drag flies the row out over the center pane.
@@ -309,6 +300,7 @@ function AgentFlatRow({
     <div
       ref={setNodeRef}
       style={style}
+      data-sidebar-row={agentRowKey(session.id)}
       className={cn("flex flex-col", isDragging && "z-10 rounded-md shadow-lg")}
     >
       <div
@@ -319,6 +311,7 @@ function AgentFlatRow({
           "group/flat-row relative flex items-stretch rounded-md pr-1 transition-colors",
           "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
           agentSelected && "bg-sidebar-accent text-sidebar-accent-foreground",
+          picked && ACTIVE_ROW_RING,
         )}
       >
         <SimpleTooltip
@@ -338,6 +331,7 @@ function AgentFlatRow({
             {...dragProps}
             type="button"
             aria-current={agentSelected ? "true" : undefined}
+            id={pickId}
             onClick={() => handlers.onSelectSession(session.id)}
             className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-11"
           >
@@ -347,16 +341,22 @@ function AgentFlatRow({
                 "mt-0.5 inline-flex shrink-0",
                 // Dim the glyph only; fading the text drops muted labels below AA.
                 dimmed && "opacity-70",
-                attention
-                  ? "text-cyan-100 motion-safe:animate-attention-pulse motion-reduce:animate-none"
-                  : "text-sidebar-accent-foreground",
               )}
             >
-              <Bot
-                className={cn(
-                  "size-4.5 shrink-0 motion-safe:transition-opacity motion-safe:duration-300",
-                  working && "motion-safe:animate-working-pulse",
-                )}
+              {/* `working` is already resolved through the ladder, so a higher
+                  state taking over is a stop like any other: the pulse yields,
+                  the glyph lands at rest, and only then does the attention
+                  look ease in. The label above is there at once. */}
+              <WorkingGlyph
+                icon={Bot}
+                working={working}
+                look={
+                  attention
+                    ? "text-cyan-100 motion-safe:animate-attention-pulse motion-reduce:animate-none"
+                    : "text-sidebar-accent-foreground"
+                }
+                frameRef={frameRef}
+                className="size-4.5"
               />
             </span>
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -383,7 +383,12 @@ function AgentFlatRow({
                 {/* Keyed on the label so a state change (Working ⇄ Idle ⇄ Detached
                     …) remounts the span and replays the one-shot fade instead of
                     snapping the text. */}
-                <RowStateWord key={word.label} word={word} working={working} />
+                <RowStateWord
+                  key={word.label}
+                  ref={wordRef}
+                  word={word}
+                  working={working}
+                />
                 {/* No branch here, by decision: a drifted agent would put a
                     long mono branch inline on every row, noise, and worst on a
                     tablet. The branch's one home is the top bar's
@@ -402,35 +407,25 @@ function AgentFlatRow({
           </button>
         </SimpleTooltip>
 
-        {session.pr ? (
-          <SimpleTooltip
-            anchor={rowRef}
-            content={`#${session.pr.number} · ${session.pr.title} (${prStateLabel(session.pr.state)})`}
-            side="right"
-          >
-            {/* A sibling of the select button so keyboard and screen-reader
-                users can open the PR without activating the agent. */}
-            <a
-              href={session.pr.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={prAriaLabel(session.pr.number, session.pr.state)}
-              className={cn(
-                "ml-1 inline-flex h-8 shrink-0 self-center items-center gap-0.5 rounded px-1 text-xs font-medium tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-ring [@media(pointer:coarse)]:min-h-10 [@media(pointer:coarse)]:min-w-10",
-                prIconClass(session.pr.state),
-                prIconHoverClass(session.pr.state),
-              )}
-            >
-              <GitPullRequest aria-hidden className="size-3.5" />
-              <span>#{session.pr.number}</span>
-            </a>
-          </SimpleTooltip>
-        ) : null}
+        {/* A sibling of the select button so keyboard and screen-reader
+            users can open the PR without activating the agent. */}
+        {session.pr ? <AgentRowPrBadge session={session} anchor={rowRef} /> : null}
 
         <DropdownMenu>
+          {/* The row rule: revealed on hover or focus anywhere in the row, kept
+              while its menu is open, always shown on a coarse pointer, and
+              taking no width while idle. Every revealed cap is max-w-10, the
+              trigger's 40px coarse-pointer size: these md: caps outrank the
+              unprefixed pointer-coarse:max-w-none, so a narrower cap would clip
+              a focused or open trigger on a tablet at desktop width. The
+              overflow clip the width animation needs also shears the trigger's
+              focus ring (a box-shadow) off its sides while the row's full
+              height leaves the bands above and below, which is what drew a
+              wide bar instead of a ring; the wrapper lets the ring out while
+              the trigger has keyboard focus. */}
           <div
             className={cn(
-              "flex shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-200 ease-out motion-reduce:transition-none max-md:max-w-none md:max-w-0 md:opacity-0 md:group-hover/flat-row:max-w-8 md:group-hover/flat-row:opacity-100 md:group-focus-within/flat-row:max-w-8 md:group-focus-within/flat-row:opacity-100 md:has-[[data-popup-open]]:max-w-8 md:has-[[data-popup-open]]:opacity-100",
+              "flex shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-200 ease-out motion-reduce:transition-none max-md:max-w-none md:max-w-0 md:opacity-0 md:group-hover/flat-row:max-w-10 md:group-hover/flat-row:opacity-100 md:group-focus-within/flat-row:max-w-10 md:group-focus-within/flat-row:opacity-100 md:has-[[data-popup-open]]:max-w-10 md:has-[[data-popup-open]]:opacity-100 has-[:focus-visible]:overflow-visible",
               ALWAYS_REVEALED_ON_TOUCH,
             )}
           >
@@ -439,7 +434,11 @@ function AgentFlatRow({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-7 shrink-0 max-md:size-10"
+                  // 28px under a fine pointer, where the only neighbour on
+                  // either axis is this row's own button, whose click selects
+                  // the agent this menu is about; the 40px floor returns on a
+                  // phone and on any coarse pointer.
+                  className="size-7 shrink-0 max-md:size-10 pointer-coarse:size-10"
                   aria-label="Session actions"
                 />
               }
@@ -470,24 +469,24 @@ function AgentFlatRow({
 // The two-line terminal row, mirroring the agent row's shape: line two is
 // `↳ {ownerLabel} · {stateWord}`, with the standalone star in place of the arrow.
 function TerminalFlatRow({
-  terminal,
-  siblings,
-  owner,
-  ownerLabel,
+  entry: { terminal, siblings, owner, ownerLabel },
   active,
   onSelect,
   sortable,
   query,
+  pickId,
+  picked = false,
 }: {
-  terminal: TerminalView
-  siblings: readonly TerminalView[]
-  owner: TerminalOwnerRef
-  ownerLabel: string
+  entry: FlatTerminal
   active: boolean
   onSelect: (terminalId: string, owner: TerminalOwnerRef) => void
   sortable: boolean
   // The live search query, for the match highlight ("" renders plain).
   query: string
+  // The row's id for the search field's active descendant, and whether it is
+  // the row Enter there would pick, ringed as if focused.
+  pickId?: string
+  picked?: boolean
 }) {
   // An idle terminal reads a plain "Terminal" here; a running one shows its
   // foreground app. `terminalTitle` still names it for the other surfaces.
@@ -495,10 +494,13 @@ function TerminalFlatRow({
     terminalForeground(terminal) === null
       ? "Terminal"
       : terminalTitle(terminal, siblings)
-  const word = terminalStateWord(terminal)
   // The same working cue as the agent row, and only while streaming and NOT
   // typing (typing owns the caret) so the two read apart.
   const working = terminal.working && !terminal.typing
+  const word = terminalStateWord(terminal)
+  const frameRef = useRef<HTMLSpanElement>(null)
+  const wordRef = useRef<HTMLSpanElement>(null)
+  useWorkingPulseAnchor(working, frameRef, wordRef)
 
   // Whether this row wears the standalone star instead of the owned-by arrow,
   // decided by the exhaustive owner matcher so a new owner kind must answer.
@@ -512,7 +514,7 @@ function TerminalFlatRow({
   // activation keeps a plain click a select, and the wrapper is Y-locked.
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: terminal.id })
+    useSortable({ id: terminalRowKey(terminal.id) })
   const style: CSSProperties = {
     transform: transform
       ? `translate3d(0, ${Math.round(transform.y)}px, 0)`
@@ -526,10 +528,12 @@ function TerminalFlatRow({
     <div
       ref={setNodeRef}
       style={style}
+      data-sidebar-row={terminalRowKey(terminal.id)}
       className={cn(
         "group/flat-term relative flex items-stretch rounded-md pr-1 transition-colors",
         "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         active && "bg-sidebar-accent text-sidebar-accent-foreground",
+        picked && ACTIVE_ROW_RING,
         // The same drag-lift cue as the agent row wrapper.
         isDragging && "z-10 shadow-lg",
       )}
@@ -538,14 +542,16 @@ function TerminalFlatRow({
         {...dragProps}
         type="button"
         aria-current={active ? "true" : undefined}
+        id={pickId}
         onClick={() => onSelect(terminal.id, owner)}
         className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-10"
       >
-        <SquareTerminal
-          className={cn(
-            "mt-0.5 size-4 shrink-0 text-muted-foreground motion-safe:transition-opacity motion-safe:duration-300",
-            working && "motion-safe:animate-working-pulse",
-          )}
+        <WorkingGlyph
+          icon={SquareTerminal}
+          working={working}
+          frameRef={frameRef}
+          frameClassName="mt-0.5"
+          className="size-4 text-muted-foreground"
         />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex items-center gap-2">
@@ -575,14 +581,15 @@ function TerminalFlatRow({
               </span>
             )}
             <Dot className="text-muted-foreground" />
-            <RowStateWord key={word.label} word={word} working={working} />
+            <RowStateWord key={word.label} ref={wordRef} word={word} working={working} />
           </RowLineTwo>
         </span>
       </button>
       <DropdownMenu>
+        {/* The agent row's reveal rule and ring clearance, for the same reasons. */}
         <div
           className={cn(
-            "flex shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-200 ease-out motion-reduce:transition-none max-md:max-w-none md:max-w-0 md:opacity-0 md:group-hover/flat-term:max-w-8 md:group-hover/flat-term:opacity-100 md:group-focus-within/flat-term:max-w-8 md:group-focus-within/flat-term:opacity-100 md:has-[[data-popup-open]]:max-w-8 md:has-[[data-popup-open]]:opacity-100",
+            "flex shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-200 ease-out motion-reduce:transition-none max-md:max-w-none md:max-w-0 md:opacity-0 md:group-hover/flat-term:max-w-10 md:group-hover/flat-term:opacity-100 md:group-focus-within/flat-term:max-w-10 md:group-focus-within/flat-term:opacity-100 md:has-[[data-popup-open]]:max-w-10 md:has-[[data-popup-open]]:opacity-100 has-[:focus-visible]:overflow-visible",
             ALWAYS_REVEALED_ON_TOUCH,
           )}
         >
@@ -591,7 +598,8 @@ function TerminalFlatRow({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 shrink-0 max-md:size-10"
+                // Sized as the agent row's trigger, for the same neighbour.
+                className="size-7 shrink-0 max-md:size-10 pointer-coarse:size-10"
                 aria-label="Terminal actions"
               />
             }
@@ -617,110 +625,6 @@ function TerminalFlatRow({
   )
 }
 
-// The flat Terminals section, under a divider defaulting OPEN because a listed
-// terminal is a live PTY. Absent at zero terminals, so its + never creates the first.
-function TerminalsSection({
-  terminals,
-  selectedTarget,
-  onSelect,
-  sensors,
-  onDragEnd,
-  query,
-}: {
-  terminals: FlatTerminal[]
-  selectedTarget: SelectedTarget | null
-  onSelect: (terminalId: string, owner: TerminalOwnerRef) => void
-  sensors: ReturnType<typeof useSensors>
-  onDragEnd: (event: DragEndEvent) => void
-  // The live search query, forwarded to each row's match highlight.
-  query: string
-}) {
-  const [open, setOpen] = useState(true)
-  if (terminals.length === 0) return null
-  return (
-    <div className="mt-2 border-t border-border/50 pt-2">
-      {/* The divider is a ROW of two siblings, not one button with another
-          nested inside it (nested interactive elements are invalid HTML and
-          the click routing is a coin toss). Same shape as AgentFlatRow and
-          TerminalFlatRow: a full-width primary button plus its own control in
-          a flex wrapper. The word "Terminals" stays INSIDE the toggle, so the
-          whole label is still what expands the section. */}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:min-h-10"
-        >
-          <ChevronRight
-            className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")}
-          />
-          <span>Terminals</span>
-          <span className={SECTION_COUNT_PILL}>{terminals.length}</span>
-        </button>
-        {/* One tap, no dialog: a standalone terminal has nothing to confirm
-            (that is why its shared menu entry carries no trailing "…").
-
-            Variant: ghost, quieter than even the header's outline +, because
-            it lives inside a section divider whose whole row is muted chrome;
-            an outlined block here would outweigh the divider it decorates.
-
-            Sizing: 28px square on desktop, the per-axis exemption from the
-            40px floor. Its only neighbour on either axis is the collapse
-            toggle 8px to its left, which expands a section and executes
-            nothing; on touch it takes the floor on both axes anyway. */}
-        {/* Icon-only, so the tooltip and the accessible name are the only
-            place the location can be said; they carry the same sentence the
-            menu entries do. */}
-        <SimpleTooltip content="New standalone terminal in your home folder">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="New standalone terminal in your home folder"
-            onClick={() => createStandaloneTerminal()}
-            className="shrink-0 text-muted-foreground max-md:min-h-10 max-md:min-w-10"
-          >
-            <Plus />
-          </Button>
-        </SimpleTooltip>
-      </div>
-      {open ? (
-        // A separate DndContext holding ONLY terminal ids, so dnd-kit can never
-        // pick an agent row as a drop target for a terminal, or the reverse.
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={onDragEnd}
-        >
-          <SortableContext
-            items={terminals.map((ft) => ft.terminal.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            <div className="mt-1 flex flex-col gap-1">
-              {terminals.map((ft) => (
-                <TerminalFlatRow
-                  key={ft.terminal.id}
-                  terminal={ft.terminal}
-                  siblings={ft.siblings}
-                  owner={ft.owner}
-                  ownerLabel={ft.ownerLabel}
-                  active={
-                    selectedTarget?.kind === "terminal" &&
-                    selectedTarget.terminalId === ft.terminal.id
-                  }
-                  onSelect={onSelect}
-                  sortable
-                  query={query}
-                />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
-      ) : null}
-    </div>
-  )
-}
-
 // The Quiet tail: detached and exited agents, open only while the whole workspace
 // is dormant. Search auto-expand is derived, never a write to the collapse preference.
 function QuietTail({
@@ -729,13 +633,73 @@ function QuietTail({
   selectedTarget,
   handlers,
   query,
-  searchHit,
-  anyActive,
+  open,
+  onToggle,
+  pickedKey,
+  pickId,
 }: {
   sessions: SessionView[]
   projectName: (id: string) => string
   selectedTarget: SelectedTarget | null
   handlers: FlatSelectHandlers
+  query: string
+  // From `useQuietTailOpen`, held by the list, which needs to know which rows
+  // the search can reach.
+  open: boolean
+  onToggle: () => void
+  pickedKey: string | null
+  pickId: (key: string) => string
+}) {
+  if (sessions.length === 0) return null
+  return (
+    <div className="mt-2 border-t border-border/50 pt-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:min-h-10"
+      >
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        <span>Inactive</span>
+        {/* Right after the word; right edges carry controls only. The Inactive
+            divider deliberately gains NO button beside it: there is no such
+            thing as creating a dormant agent. */}
+        <span className={SECTION_COUNT_PILL}>{sessions.length}</span>
+      </button>
+      {open ? (
+        <div className="mt-1 flex flex-col gap-1">
+          {sessions.map((session) => (
+            <AgentFlatRow
+              key={session.id}
+              session={session}
+              projectName={projectName(
+                workspaceProjectId(session.workspace) ?? "",
+              )}
+              selectedTarget={selectedTarget}
+              handlers={handlers}
+              sortable={false}
+              query={query}
+              pickId={pickId(agentRowKey(session.id))}
+              picked={pickedKey === agentRowKey(session.id)}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+// Whether the Quiet tail is open, and its toggle.
+function useQuietTailOpen({
+  query,
+  searchHit,
+  anyActive,
+}: {
   query: string
   searchHit: boolean
   // Whether ANY agent in the workspace is active (pre-search, whole list).
@@ -773,58 +737,19 @@ function QuietTail({
       setManualChoice(true)
     }
   }
-  if (sessions.length === 0) return null
-  return (
-    <div className="mt-2 border-t border-border/50 pt-2">
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={effectiveOpen}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:min-h-10"
-      >
-        <ChevronRight
-          className={cn(
-            "size-3 shrink-0 transition-transform",
-            effectiveOpen && "rotate-90",
-          )}
-        />
-        <span>Inactive</span>
-        {/* Right after the word, like every other section count. The Inactive
-            divider deliberately gains NO button beside it: there is no such
-            thing as creating a dormant agent. */}
-        <span className={SECTION_COUNT_PILL}>{sessions.length}</span>
-      </button>
-      {effectiveOpen ? (
-        <div className="mt-1 flex flex-col gap-1">
-          {sessions.map((session) => (
-            <AgentFlatRow
-              key={session.id}
-              session={session}
-              projectName={projectName(
-                workspaceProjectId(session.workspace) ?? "",
-              )}
-              selectedTarget={selectedTarget}
-              handlers={handlers}
-              sortable={false}
-              query={query}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
+  return { open: effectiveOpen, toggle }
 }
 
 // The sort control: a small dropdown listing the flat-list sort options. Default
 // "active first"; "manual" is the only mode that enables drag-reorder.
 const SORT_KEYS: FlatSortKey[] = ["active", "updated", "created", "name", "manual"]
 
-// One height token for every control in the Agents header, set explicitly rather
+// One height token for every control in the list's header, set explicitly rather
 // than inherited, and lifted to the 40px floor where a finger is the pointer.
 const HEADER_CONTROL_SIZING = "h-7 max-md:min-h-10"
 
-// One counter pill for every section of the list: the count sits immediately
-// after the section word everywhere, and right edges carry controls only.
+// The Inactive divider's counter pill. It sits right after the section word,
+// and right edges carry controls only.
 const SECTION_COUNT_PILL =
   "rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none tabular-nums text-muted-foreground"
 
@@ -838,15 +763,10 @@ function SortControl() {
     <DropdownMenu>
       <SimpleTooltip content={`Sorted by ${FLAT_SORT_LABELS[agentSort]}`}>
         {/* The trigger reads "Sort" and never the mode name: the full label
-            plus the neighbouring + overflows a narrow sidebar and wraps, and a
-            control that changes width when you use it is its own small
-            annoyance. The mode lives in the tooltip and the menu instead.
-
-            The old 36px phone exemption is retired: this trigger now HAS a
-            horizontal neighbour (the new-agent + immediately to its left), so
-            the "no interactive neighbour on that axis" basis for the
-            relaxation is gone. It takes the 40px floor through the shared
-            header sizing token, same as the +. */}
+            overflows a narrow sidebar and wraps, and a control that changes
+            width when you use it is its own small annoyance. The mode lives in
+            the tooltip and the menu instead. It takes the 40px floor on a
+            phone through the shared header sizing token. */}
         <DropdownMenuTrigger
           render={
             <button
@@ -860,7 +780,10 @@ function SortControl() {
           }
         >
           <ArrowDownWideNarrow className="size-3 shrink-0" />
-          <span className="text-foreground/90">Sort</span>
+          {/* At the narrowest sidebar the word goes and the glyphs stay, so the
+              section title keeps its full width beside the trigger; the
+              accessible name and the tooltip still say what it is. */}
+          <span className="text-foreground/90 @max-[15rem]/list-header:hidden">Sort</span>
           <ChevronDown className="size-3 shrink-0 opacity-60" />
         </DropdownMenuTrigger>
       </SimpleTooltip>
@@ -876,21 +799,15 @@ function SortControl() {
   )
 }
 
-// The sessions a search query leaves on screen. Each is matched against its own
-// searchable location, so typing part of a project name or a standalone agent's
-// folder finds it.
-function matchingSessions(
-  sessions: SessionView[],
+// Whether a search query leaves this agent on screen. Each agent is matched
+// against its own searchable location, so typing part of a project name or a
+// standalone agent's folder finds it.
+function sessionMatches(
+  session: SessionView,
   projectName: (id: string) => string,
   query: string,
-): SessionView[] {
-  return sessions.filter((session) =>
-    matchesSessionQuery(
-      session,
-      agentSearchLocation(session, projectName),
-      query,
-    ),
-  )
+): boolean {
+  return matchesSessionQuery(session, agentSearchLocation(session, projectName), query)
 }
 
 // Which of the list's two blank screens is on, and what the onboarding one's
@@ -907,22 +824,14 @@ interface FlatListEmptyState {
 function flatListEmptyState(input: {
   // Null while the spine is unloaded, which is not yet a zero project count.
   projectCount: number | null
-  coreSessions: SessionView[]
-  quiet: SessionView[]
-  visibleMain: SessionView[]
-  visibleQuiet: SessionView[]
-  flatTerminals: FlatTerminal[]
+  agentCount: number
+  terminalCount: number
+  visibleRows: number
   query: string
 }): FlatListEmptyState {
-  const noTerminals = input.flatTerminals.length === 0
   return {
-    nothing:
-      input.coreSessions.length === 0 && noTerminals && input.quiet.length === 0,
-    nothingMatches:
-      input.query.trim() !== "" &&
-      input.visibleMain.length === 0 &&
-      input.visibleQuiet.length === 0 &&
-      noTerminals,
+    nothing: input.agentCount === 0 && input.terminalCount === 0,
+    nothingMatches: input.query.trim() !== "" && input.visibleRows === 0,
     emptyVerbIsAddProject: launcherVerb(input.projectCount) === "add-project",
   }
 }
@@ -930,79 +839,61 @@ function flatListEmptyState(input: {
 function flatAgentListModel(
   yaran: Pick<
     YaranState,
-    "spine" | "agentSearch" | "pendingAgentOrder" | "pendingTerminalOrder"
+    | "spine"
+    | "agentSearch"
+    | "pendingAgentOrder"
+    | "pendingTerminalOrder"
+    | "pendingTerminalPlacement"
   >,
   agentSort: FlatSortKey,
 ) {
-  const {
-    spine,
-    agentSearch: rawAgentSearch,
-    pendingAgentOrder,
-    pendingTerminalOrder,
-  } = yaran
-  const agentSearch = rawAgentSearch ?? ""
+  const { spine, agentSearch: rawAgentSearch } = yaran
+  const query = rawAgentSearch ?? ""
   const rawSessions = spine?.sessions ?? []
   const rawProjects = spine?.projects ?? []
-  const rawTerminals = spine?.terminals ?? []
-  const { withAgents, withoutAgents, projectName } = partitionProjects(
-    spine?.sidebar,
-    rawProjects,
-    rawSessions,
+  const { projectName } = partitionProjects(spine?.sidebar, rawProjects, rawSessions)
+  // Every drag still in flight laid over the spine, so the order on screen is
+  // the dropped one until the server confirms it.
+  const { sessions, terminals } = overlaidListInputs({
+    sessions: rawSessions,
+    terminals: spine?.terminals ?? [],
+    pendingAgentOrder: yaran.pendingAgentOrder,
+    pendingTerminalOrder: yaran.pendingTerminalOrder,
+    pendingTerminalPlacement: yaran.pendingTerminalPlacement,
+  })
+  const { main, inactive } = orderFlatRows(sessions, terminals, agentSort)
+  const decorated = new Map(
+    assembleFlatTerminals(terminals, sessions, rawProjects, projectName).map(
+      (entry) => [entry.terminal.id, entry],
+    ),
   )
-  const coreSessions: SessionView[] = pendingAgentOrder
-    ? reorderById(rawSessions, pendingAgentOrder)
-    : rawSessions
-  const { main, quiet } = partitionQuiet(coreSessions)
-  const sortedMain = sortMainSessions(main, agentSort)
-  const sortedQuiet = sortQuietTail(quiet, agentSort)
-  const query = agentSearch
-  const visibleMain = matchingSessions(sortedMain, projectName, query)
-  const visibleQuiet = matchingSessions(sortedQuiet, projectName, query)
-  const projectIds = new Set([...withAgents, ...withoutAgents])
-  const baseTerminals = assembleFlatTerminals(
-    rawTerminals,
-    coreSessions,
-    rawProjects.filter((project) => projectIds.has(project.id)),
-    projectName,
-  ).sort((left, right) => left.terminal.sort_order - right.terminal.sort_order)
-  const overlaidTerminals: FlatTerminal[] = pendingTerminalOrder
-    ? reorderById(
-        baseTerminals.map((terminal) => ({
-          id: terminal.terminal.id,
-          terminal,
-        })),
-        pendingTerminalOrder,
-      ).map((wrapped) => wrapped.terminal)
-    : baseTerminals
-  const flatTerminals = sortFlatTerminals(overlaidTerminals, agentSort).filter(
-    (terminal) =>
-      matchesTerminalQuery(
-        terminal.terminal,
-        terminal.ownerLabel,
-        terminal.projectName,
-        query,
-      ),
+  const rowMatches = (row: FlatRow) => {
+    if (row.kind === "agent") return sessionMatches(row.session, projectName, query)
+    const entry = decorated.get(row.terminal.id)!
+    return matchesTerminalQuery(entry.terminal, entry.ownerLabel, entry.projectName, query)
+  }
+  const visibleMain = main.filter(rowMatches)
+  const visibleQuiet = inactive.filter((session) =>
+    sessionMatches(session, projectName, query),
   )
-  const { nothing, nothingMatches, emptyVerbIsAddProject } =
-    flatListEmptyState({
-      projectCount: spine ? rawProjects.length : null,
-      coreSessions,
-      quiet,
-      visibleMain,
-      visibleQuiet,
-      flatTerminals,
-      query,
-    })
+  const agentCount = sessions.length
+  const terminalCount = terminals.filter(isListTerminal).length
+  const { nothing, nothingMatches, emptyVerbIsAddProject } = flatListEmptyState({
+    projectCount: spine ? rawProjects.length : null,
+    agentCount,
+    terminalCount,
+    visibleRows: visibleMain.length + visibleQuiet.length,
+    query,
+  })
 
   return {
-    agentSearch,
-    coreSessions,
+    sessions,
+    terminals,
+    decorated,
     projectName,
-    main,
     visibleMain,
     visibleQuiet,
-    overlaidTerminals,
-    flatTerminals,
+    hasRows: agentCount + terminalCount > 0,
     query,
     manual: agentSort === "manual",
     emptyVerbIsAddProject,
@@ -1010,6 +901,11 @@ function flatAgentListModel(
     nothingMatches,
   }
 }
+
+// A row Enter in the search field can pick.
+type SearchPickRow =
+  | { kind: "agent"; session: SessionView }
+  | { kind: "terminal"; terminal: FlatTerminal }
 
 export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
   const yaran = useYaran()
@@ -1019,17 +915,17 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     agentSearch: rawAgentSearch,
     pendingAgentOrder,
     pendingTerminalOrder,
+    pendingTerminalPlacement,
   } = yaran
   const agentSort = agentSortValue(yaran)
   const {
-    agentSearch,
-    coreSessions,
+    sessions,
+    terminals,
+    decorated,
     projectName,
-    main,
     visibleMain,
     visibleQuiet,
-    overlaidTerminals,
-    flatTerminals,
+    hasRows,
     query,
     manual,
     emptyVerbIsAddProject,
@@ -1037,10 +933,35 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     nothingMatches,
   } = useMemo(
     () => flatAgentListModel(
-      { spine, agentSearch: rawAgentSearch, pendingAgentOrder, pendingTerminalOrder },
+      {
+        spine,
+        agentSearch: rawAgentSearch,
+        pendingAgentOrder,
+        pendingTerminalOrder,
+        pendingTerminalPlacement,
+      },
       agentSort,
     ),
-    [spine, rawAgentSearch, pendingAgentOrder, pendingTerminalOrder, agentSort],
+    [
+      spine,
+      rawAgentSearch,
+      pendingAgentOrder,
+      pendingTerminalOrder,
+      pendingTerminalPlacement,
+      agentSort,
+    ],
+  )
+  const agentSearch = query
+  // A newly selected row is scrolled into view, a just-created one as soon as
+  // its row arrives, so a launch never happens out of sight below the fold.
+  const revealRef = useRevealSelectedRow(selectedRowKey(selectedTarget))
+  const { ref: edgesRef, moreAbove, moreBelow } = useScrollEdges<HTMLDivElement>()
+  const setListNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      revealRef(node)
+      edgesRef(node)
+    },
+    [revealRef, edgesRef],
   )
   // Mouse drags on a 6px pull; touch drags on a HOLD, or it fights the list's
   // scroll gesture. The values live in lib/dragActivation.ts.
@@ -1049,79 +970,80 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     useSensor(TouchSensor, { activationConstraint: TOUCH_DRAG_ACTIVATION }),
   )
 
-  // Move the dragged terminal to the slot the active sort DISPLAYS, over the
-  // complete order and never the filtered subset, then flip the sort to manual.
-  function handleTerminalDragEnd(event: DragEndEvent) {
-    const { active, over } = event
-    if (!over || active.id === over.id) return
-    const fullOrder = displayedTerminalOrder(overlaidTerminals, agentSort)
-    const next = moveItem(fullOrder, String(active.id), String(over.id))
-    if (ordersMatch(fullOrder, next)) return
-    if (!manual) setAgentSort("manual")
-    reorderTerminals(next)
-  }
+  const quietTail = useQuietTailOpen({
+    query,
+    // A live query with a quiet hit derives the section open (see the
+    // QuietTail doc); an empty query never forces anything.
+    searchHit: query.trim() !== "" && visibleQuiet.length > 0,
+    // Keyed on every agent, not the filtered rows: a search that hides every
+    // active agent must not resurrect the auto-open. Agents alone, as in the
+    // terminal UI: a running terminal does not hide a dormant workspace.
+    anyActive: sessions.some((session) => !isQuietSession(session)),
+  })
+  // Enter in the search field selects a row the way a click would, so it walks
+  // only the rows on screen, in the order they are shown.
+  const searchPick = useSearchPick<SearchPickRow>({
+    query,
+    items: [
+      ...visibleMain.map(
+        (row): SearchPickRow =>
+          row.kind === "agent"
+            ? row
+            : { kind: "terminal", terminal: decorated.get(row.terminal.id)! },
+      ),
+      ...(quietTail.open
+        ? visibleQuiet.map((session) => ({ kind: "agent" as const, session }))
+        : []),
+    ],
+    keyOf: (row) =>
+      row.kind === "agent"
+        ? agentRowKey(row.session.id)
+        : terminalRowKey(row.terminal.terminal.id),
+    onPick: (row) =>
+      row.kind === "agent"
+        ? handlers.onSelectSession(row.session.id)
+        : handlers.onSelectTerminal(row.terminal.terminal.id, row.terminal.owner),
+  })
 
+  // Move the dragged row to the slot the active sort DISPLAYS, over the complete
+  // row order and never the search-filtered subset. An agent moves among the
+  // agents; a terminal is placed after the agent row above where it landed, or
+  // first. A drag is an explicit request for manual control, so a drop out of a
+  // computed sort flips the sort to manual and the dropped position sticks.
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
-    if (!over || active.id === over.id) return
-    // Move the dragged agent to the slot the active sort DISPLAYS, over the
-    // complete session order and never the search-filtered subset.
-    const fullOrder = displayedSessionOrder(coreSessions, agentSort)
-    const next = moveItem(fullOrder, String(active.id), String(over.id))
-    if (ordersMatch(fullOrder, next)) return
-    // A drag is an explicit request for manual control, so a reorder out of a
-    // computed sort flips the sort to manual and the dropped position sticks.
+    if (!over) return
+    const plan = planListDrop(
+      listDragBaseline(sessions, terminals, agentSort),
+      String(active.id),
+      String(over.id),
+      sessions,
+      terminals,
+    )
+    if (!plan) return
     if (!manual) setAgentSort("manual")
-    reorderAgents(next)
+    if (plan.agentOrder) reorderAgents(plan.agentOrder)
+    if (Object.keys(plan.placements).length > 0) placeTerminalsInList(plan.placements)
+    if (plan.terminalOrder) reorderTerminals(plan.terminalOrder)
   }
 
   return (
     <nav aria-label="Agents and terminals" className="flex min-h-0 flex-1 flex-col">
-      {/* Header: the section word and its count on the left, the section's own
-          controls (new agent, sort) at the right edge, then search. px-2 matches
-          the sidebar header (the logo row's p-2) and the list below, so the search
-          box and the agent rows share one inset and none of it hugs the edge. */}
+      {/* Header: the section word on the left, the section's own controls
+          (sort) at the right edge, then search. px-2 matches the sidebar header
+          (the logo row's p-2) and the list below, so the search box and the
+          agent rows share one inset and none of it hugs the edge. */}
       <div className="flex flex-col gap-2 px-2 pt-2 pb-3">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold">Agents</span>
-          <span className={SECTION_COUNT_PILL}>{coreSessions.length}</span>
-          {coreSessions.length > 0 ? (
-            <div className="ml-auto flex items-center gap-2">
-              {/* The section's own + : one tap to the same picker the launcher
-                  corner's verb opens. A deliberate duplicate of that verb, and
-                  worth it, because this is where the eye already is when the
-                  thought "another one" arrives.
-
-                  Variant: outline, while the sort trigger beside it keeps its
-                  quieter borderless-until-hover styling. They are not two peers
-                  in one cluster: this one acts (it opens a creation dialog) and
-                  that one only reveals a menu.
-
-                  It rides the same `coreSessions.length > 0` gate as sort,
-                  because the empty state below carries its own hero button and
-                  two buttons offering the same click on one screen is one too
-                  many.
-
-                  Sizing: 28px square on desktop is the per-axis exemption from
-                  the 40px floor; its one horizontal neighbour is the Sort
-                  trigger 8px to the right, which only reveals a menu, so a
-                  misclick opens a list rather than executing anything. On
-                  touch both controls take the floor through the shared header
-                  token. */}
-              <SimpleTooltip content="New agent">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label="New agent"
-                  onClick={() => openNewAgentPicker("new")}
-                  className={cn(
-                    "w-7 px-0 max-md:min-w-10",
-                    HEADER_CONTROL_SIZING,
-                  )}
-                >
-                  <Plus />
-                </Button>
-              </SimpleTooltip>
+        <div className="@container/list-header flex items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+            Agents &amp; Terminals
+          </span>
+          {/* Sort rides the same gate as the list it sorts: with no row there
+              is nothing to order, and the empty state below carries its own
+              hero button. Creating lives behind the launcher corner, so the
+              header carries no + of its own. */}
+          {hasRows ? (
+            <div className="ml-auto flex shrink-0 items-center gap-2">
               <SortControl />
             </div>
           ) : null}
@@ -1131,13 +1053,16 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
           <input
             value={agentSearch}
             onChange={(event) => setAgentSearch(event.target.value)}
+            placeholder="Search agents and terminals"
+            aria-label="Search agents and terminals"
+            {...searchPick.fieldProps}
             onKeyDown={(event) => {
               if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                 setAgentSearch("")
+                return
               }
+              searchPick.fieldProps.onKeyDown(event)
             }}
-            placeholder="Search agents and terminals"
-            aria-label="Search agents and terminals"
             className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none placeholder:text-muted-foreground"
           />
           {agentSearch && (
@@ -1156,7 +1081,15 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 no-scrollbar">
+      {/* Fades out at its top edge while rows are hidden above and at its
+          bottom edge while more are hidden below; see `.yaran-list-fade` for
+          why that is a mask. */}
+      <div
+        ref={setListNode}
+        data-more-above={moreAbove ? "" : undefined}
+        data-more-below={moreBelow ? "" : undefined}
+        className="yaran-list-fade min-h-0 flex-1 overflow-y-auto px-2 pb-2 no-scrollbar"
+      >
         {!yaran.spine ? (
           <p role="status" className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
             <Loader2 aria-hidden className="size-4 motion-safe:animate-spin" />
@@ -1169,23 +1102,21 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
                 <Bot />
               </EmptyMedia>
               <EmptyTitle>No agents yet</EmptyTitle>
-              {/* Copy unchanged by the launcher overhaul: the button flips, the
-                  sentence does not (it is what was signed off, and it reads
-                  true either way). */}
+              {/* The button below flips on an empty workspace and this
+                  sentence does not: it reads true either way. */}
               <EmptyDescription>
                 Pick a project and yaran gives the agent its own worktree.
               </EmptyDescription>
             </EmptyHeader>
             {/* A real button, not a sentence pointing at one elsewhere: an
                 empty workspace is exactly where the next click should be on
-                screen. It doubles with the launcher corner's verb, which is
-                accepted: the duplicate costs a tap nobody needs, while the
-                missing one costs a hunt.
+                screen. It doubles with the launcher corner's New agent…, which is accepted:
+                the duplicate costs a tap nobody needs, while the missing one
+                costs a hunt.
 
-                It flips through the SAME pure helper the corner's verb reads,
-                so the two buttons on screen can never offer different next
-                steps. max-md:min-h-11 is the touch floor, matching the
-                corner. */}
+                On a confirmed-empty workspace it flips to Add project through
+                the pure helper in lib/launcherVerb.ts. max-md:min-h-11 is the
+                touch floor, matching the launcher. */}
             <EmptyContent>
               <Button
                 variant="outline"
@@ -1208,46 +1139,53 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
           </p>
         ) : (
           <>
+            {/* One context over every row of the main bucket, agents and
+                terminals alike: they sort together, so they drag together. */}
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
               onDragEnd={handleDragEnd}
             >
               <SortableContext
-                items={visibleMain.map((s) => s.id)}
+                items={visibleMain.map(flatRowKey)}
                 strategy={verticalListSortingStrategy}
               >
                 <div className="flex flex-col gap-1">
-                  {visibleMain.map((session) => (
-                    <AgentFlatRow
-                      key={session.id}
-                      session={session}
-                      projectName={projectName(
-                        workspaceProjectId(session.workspace) ?? "",
-                      )}
-                      selectedTarget={selectedTarget}
-                      handlers={handlers}
-                      sortable
-                      query={query}
-                    />
-                  ))}
+                  {visibleMain.map((row) => {
+                    const key = flatRowKey(row)
+                    return row.kind === "agent" ? (
+                      <AgentFlatRow
+                        key={key}
+                        session={row.session}
+                        projectName={projectName(
+                          workspaceProjectId(row.session.workspace) ?? "",
+                        )}
+                        selectedTarget={selectedTarget}
+                        handlers={handlers}
+                        sortable
+                        query={query}
+                        pickId={searchPick.rowId(key)}
+                        picked={searchPick.activeKey === key}
+                      />
+                    ) : (
+                      <TerminalFlatRow
+                        key={key}
+                        entry={decorated.get(row.terminal.id)!}
+                        active={
+                          selectedTarget?.kind === "terminal" &&
+                          selectedTarget.terminalId === row.terminal.id
+                        }
+                        onSelect={handlers.onSelectTerminal}
+                        sortable
+                        query={query}
+                        pickId={searchPick.rowId(key)}
+                        picked={searchPick.activeKey === key}
+                      />
+                    )
+                  })}
                 </div>
               </SortableContext>
             </DndContext>
-
-            {/* Terminals sit ABOVE the Inactive tail: a live terminal is worth
-                more prominence than dormant agents, and the default-open
-                Terminals section would otherwise render below a section that is
-                default-closed. Collapse defaults are unchanged (Terminals open,
-                Inactive closed, per the CLAUDE.md tenet). */}
-            <TerminalsSection
-              terminals={flatTerminals}
-              selectedTarget={selectedTarget}
-              onSelect={handlers.onSelectTerminal}
-              sensors={sensors}
-              onDragEnd={handleTerminalDragEnd}
-              query={query}
-            />
 
             <QuietTail
               sessions={visibleQuiet}
@@ -1255,16 +1193,68 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
               selectedTarget={selectedTarget}
               handlers={handlers}
               query={query}
-              // A live query with a quiet hit derives the section open (see the
-              // QuietTail doc); an empty query never forces anything.
-              searchHit={query.trim() !== "" && visibleQuiet.length > 0}
-              // Keyed on the FULL list, not the filtered one: a search that
-              // hides every active agent must not resurrect the auto-open.
-              anyActive={main.length > 0}
+              open={quietTail.open}
+              onToggle={quietTail.toggle}
+              pickedKey={searchPick.activeKey}
+              pickId={searchPick.rowId}
             />
           </>
         )}
       </div>
     </nav>
+  )
+}
+
+// The row's pull-request badge. One pull request keeps the `#N` it always
+// had; with several, the glyph carries the count, colored by the shown one.
+// Either way a click opens the shown pull request, and the tooltip says how
+// many more the banner steps through.
+function AgentRowPrBadge({
+  session,
+  anchor,
+}: {
+  session: SessionView
+  anchor: RefObject<HTMLDivElement | null>
+}) {
+  const prs = sessionPrs(session)
+  const shown = session.pr!
+  const many = prs.length > 1
+  return (
+    <SimpleTooltip
+      anchor={anchor}
+      content={
+        many
+          ? prBadgeTooltip(prs)
+          : `#${shown.number} · ${shown.title} (${prStateLabel(shown.state)})`
+      }
+      side="right"
+    >
+      <a
+        href={shown.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={
+          many
+            ? `${prAriaLabel(shown.number, shown.state)}, and ${prs.length - 1} more`
+            : prAriaLabel(shown.number, shown.state)
+        }
+        className={cn(
+          "ml-1 inline-flex h-8 shrink-0 self-center items-center gap-0.5 rounded px-1 text-xs font-medium tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-ring [@media(pointer:coarse)]:min-h-10 [@media(pointer:coarse)]:min-w-10",
+          prIconClass(shown.state),
+          prIconHoverClass(shown.state),
+        )}
+        onClick={(event) => {
+          // `preventDefault` keeps this to ONE tab, since the anchor's
+          // `target="_blank"` would open a second; `stopPropagation` keeps the
+          // click off the row.
+          event.preventDefault()
+          event.stopPropagation()
+          window.open(shown.url, "_blank", "noopener")
+        }}
+      >
+        <GitPullRequest aria-hidden className="size-3.5" />
+        <span>{many ? prs.length : `#${shown.number}`}</span>
+      </a>
+    </SimpleTooltip>
   )
 }

@@ -11,6 +11,7 @@
 //!   `publisher.json` (`YARAN_PUBLISHER_DOMAIN`, set by `build.rs`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/config.rs
 //! ├── cloud::protocol::rules
@@ -34,6 +35,7 @@
 //! ├── yaran-web::cloud_mode
 //! ├── yaran-web::cloud_routes
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};
@@ -52,6 +54,7 @@ pub enum CloudMode {
 }
 
 impl CloudMode {
+    /// Every mode, in the order the setting lists them.
     pub const ALL: [CloudMode; 3] = [Self::Auto, Self::Yes, Self::No];
 
     /// Parse a config string (case and surrounding whitespace ignored).
@@ -64,6 +67,7 @@ impl CloudMode {
         }
     }
 
+    /// The mode as config.toml spells it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -128,8 +132,11 @@ pub struct CloudConfig {
     pub metrics_port: u16,
     /// cloudflared `--grace-period`, seconds (max 180).
     pub grace_period_seconds: u64,
+    /// The first wait before restarting a cloudflared that stopped, in milliseconds.
     pub restart_backoff_initial_ms: u64,
+    /// The longest wait between restarts, in milliseconds.
     pub restart_backoff_max_ms: u64,
+    /// The random spread added to each wait, in milliseconds.
     pub restart_backoff_jitter_ms: u64,
     /// cloudflared `--loglevel`.
     pub cloudflared_loglevel: String,
@@ -145,9 +152,13 @@ pub struct CloudConfig {
     pub app_callback_urls: Vec<String>,
     /// Phase 11 §9: the Access JWT check and the handoff route, all read live.
     pub access_clock_skew_seconds: u64,
+    /// How often the Access team's signing keys are fetched again.
     pub access_jwks_refresh_seconds: u64,
+    /// How long after a failed key fetch the next one may run.
     pub access_jwks_retry_cooldown_seconds: u64,
+    /// The most phone sign-in handoffs the machine serves a minute.
     pub handoff_requests_per_minute: u32,
+    /// Whether a cloud connection's sockets close when its Access sign-in expires.
     pub close_sockets_at_access_expiry: bool,
     /// Phase 12: `push_coalesce_seconds` and `push_offline_ttl_seconds`.
     #[serde(flatten)]
@@ -177,7 +188,7 @@ impl Default for CloudConfig {
             access_jwks_retry_cooldown_seconds: 30,
             handoff_requests_per_minute: 12,
             close_sockets_at_access_expiry: true,
-            push: Default::default(),
+            push: super::push_config::PushKeys::default(),
         }
     }
 }
@@ -242,9 +253,18 @@ mod tests {
             callback_urls_for_domain("app.example.dev"),
             vec!["https://app.example.dev/auth/callback".to_string()]
         );
-        assert!(callback_urls_for_domain("<publisher-domain>").is_empty());
-        assert!(callback_urls_for_domain("").is_empty());
-        assert!(callback_urls_for_domain("evil/path").is_empty());
+        assert_eq!(
+            callback_urls_for_domain("<publisher-domain>"),
+            Vec::<std::string::String>::new()
+        );
+        assert_eq!(
+            callback_urls_for_domain(""),
+            Vec::<std::string::String>::new()
+        );
+        assert_eq!(
+            callback_urls_for_domain("evil/path"),
+            Vec::<std::string::String>::new()
+        );
         assert_eq!(
             CloudConfig::default().app_callback_urls,
             callback_urls_for_domain(PUBLISHER_DOMAIN)

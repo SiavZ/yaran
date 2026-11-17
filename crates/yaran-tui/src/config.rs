@@ -1,42 +1,86 @@
 //! The canonical, fully commented `config.toml` renderer and the TUI's config load/save orchestration.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! config.rs
 //! ├── config::config_schema_cloud
+//! ├── config::inline_section_start_tests
+//! ├── config::start_corpus_tests
 //! ├── crate
 //! ├── keybindings
+//! ├── numeric
+//! ├── theme
+//! ├── yaran-core::auth
 //! ├── yaran-core::config
+//! ├── yaran-core::config_effective
 //! ├── yaran-core::config_migrate
 //! ├── yaran-core::config_write
 //! ├── yaran-core::logger
+//! ├── yaran-core::start_check_fixtures
 //! └── yaran-core::watch
-//! External: anyhow, crokey, crossterm, indexmap, std, tempfile, toml, toml_edit
+//! External: anyhow, crokey, crossterm, indexmap, serde_json, std, tempfile, toml, toml_edit
 //!
 //! Used by:
 //! config.rs
 //! ├── app
+//! ├── app::confirm_dialog
+//! ├── app::diff_comments::tests
+//! ├── app::ellipsis_rows
 //! ├── app::grouped_sidebar_tests
+//! ├── app::hint_lines
 //! ├── app::human_board::tests
 //! ├── app::input
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::overlay_dismiss
+//! ├── app::picker_lists
+//! ├── app::pty_ownership
+//! ├── app::pull_requests
 //! ├── app::render
 //! ├── app::sessions
 //! ├── app::test_support
 //! ├── app::workers
 //! ├── cli
+//! ├── cli::plaintext_shape_preview_tests
+//! ├── cli::preview_leak_tests
 //! ├── config::config_schema_cloud
+//! ├── config::inline_section_start_tests
+//! ├── config::start_corpus_tests
+//! ├── config_cli
+//! ├── config_cli::appended_password_tests
+//! ├── config_cli::dotted_names_migrations_and_providers_tests
+//! ├── config_cli::effective_tables_and_secret_arguments_tests
+//! ├── config_cli::effective_values_and_array_names_tests
+//! ├── config_cli::get_keys_and_effective_tables_tests
+//! ├── config_cli::get_names_every_setting_in_use_tests
+//! ├── config_cli::get_never_prints_unknown_names_tests
+//! ├── config_cli::get_sources_and_refusing_surfaces_tests
+//! ├── config_cli::hidden_values_tests
+//! ├── config_cli::names_never_printed_property_tests
+//! ├── config_cli::names_under_unknown_keys_tests
+//! ├── config_cli::password_control_characters_tests
+//! ├── config_cli::plaintext_password_and_theme_tests
+//! ├── config_cli::plaintext_shape_get_tests
+//! ├── config_cli::restore_report_and_unknown_path_tests
+//! ├── config_cli::set_get_policy_projects_paths_tests
+//! ├── config_cli::sets_over_the_start_corpus_tests
+//! ├── config_cli::source_markers_and_path_echo_tests
+//! ├── config_cli::stdin_limits_tests
 //! ├── config_saver
 //! ├── crate
 //! ├── keybindings
 //! └── theme
+//! ```
 //! <module-headers:end>
 
+use crate::numeric::u32_to_usize;
+use crate::numeric::u64_to_usize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
+#[cfg(test)]
 use std::fs;
+#[cfg(test)]
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -47,79 +91,160 @@ use crate::keybindings;
 #[path = "config_schema_cloud.rs"]
 mod config_schema_cloud;
 
-pub use yaran_core::config::*;
+pub(crate) use yaran_core::config::*;
 
-#[allow(deprecated)] // blessed sync-direct: boot/first-creation path runs before the queue exists
-pub fn ensure_config(paths: &YaranPaths) -> Result<Config> {
+/// Whether config.toml is being read for a start or for a reload of a running
+/// yaran, which may neither create the file nor accept it gone or empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfigRead {
+    /// A start, which writes the commented template when there is no file.
+    Start,
+    /// A reload, which keeps the running settings when the file is unusable.
+    Reload,
+}
+
+pub(crate) fn ensure_config(paths: &YaranPaths) -> Result<Config> {
+    ensure_config_with(paths, ConfigRead::Start)
+}
+
+/// [`ensure_config`] for a reload: never creates the file, and refuses one
+/// that is gone or empty (judged on the text that is parsed, so a file
+/// truncated mid-read cannot load as the defaults, which have no password).
+pub(crate) fn ensure_config_for_reload(paths: &YaranPaths) -> Result<Config> {
+    ensure_config_with(paths, ConfigRead::Reload)
+}
+
+#[expect(
+    deprecated,
+    reason = "blessed sync-direct: the boot and first-creation path runs before the queue exists"
+)]
+fn ensure_config_with(paths: &YaranPaths, purpose: ConfigRead) -> Result<Config> {
     // Any core-side write that CREATES config.toml (bootstrap project-sync) must
     // emit the commented template, not a bare one.
     install_canonical_renderer();
     paths.ensure_dirs()?;
-    if !paths.config_path.exists() {
+    // A config.toml symlink to a file that is gone is not a first start: it
+    // stops the start, and nothing is created at the link or its target.
+    if let Some(target) = yaran_core::config::dangling_link_target(&paths.config_path) {
+        return Err(yaran_core::config::ConfigLoadError {
+            path: paths.config_path.clone(),
+            problem: yaran_core::config::ConfigLoadProblem::DanglingLink(target),
+        }
+        .into());
+    }
+    if purpose == ConfigRead::Start && !paths.config_path.exists() {
         yaran_core::config_write::write_config_secure(&paths.config_path, &render_default_config())
             .with_context(|| format!("failed to write {}", paths.config_path.display()))?;
     }
 
-    let raw = fs::read_to_string(&paths.config_path)
-        .with_context(|| format!("failed to read {}", paths.config_path.display()))?;
-    let mut doc: DocumentMut = raw
-        .parse()
-        .with_context(|| format!("failed to parse {}", paths.config_path.display()))?;
-    // The deprecated-key + retired-provider migrations are the core-owned
-    // `yaran_core::config_migrate::apply_load_migrations` (also applied in memory
-    // by `load_config`, so `yaran serve` honors them); the TUI ADDITIONALLY
-    // persists the migrated document. Retired KEYBINDING actions are pruned only
-    // here (they matter only to the TUI's `validate_keys`).
-    let migrations_changed = yaran_core::config_migrate::apply_load_migrations(&mut doc)?;
-    let retired_keys_changed = prune_retired_key_actions(&mut doc);
-    let folded_keys_changed = fold_legacy_key_actions(&mut doc);
-    let unbound_keys_changed = unbind_retired_default_keys(&mut doc);
-    if migrations_changed || retired_keys_changed || folded_keys_changed || unbound_keys_changed {
-        // blessed sync-direct: deprecation/retirement migration also runs at boot before the queue exists
-        yaran_core::config_write::write_config_secure(&paths.config_path, &doc.to_string())
-            .with_context(|| format!("failed to write {}", paths.config_path.display()))?;
-    }
+    // Fails closed BEFORE anything else, migrations included (they write the
+    // file): a config whose [server.auth] cannot be read stops the start, and
+    // stops a reload from changing the running config, rather than reading as
+    // "no password".
+    let load_error = |problem| yaran_core::config::ConfigLoadError {
+        path: paths.config_path.clone(),
+        problem,
+    };
+    // Read the file and run the migrations on it: the text to write when
+    // they changed something, and what was read and what it became.
+    let migrate =
+        |read: std::io::Result<String>| -> Result<(Option<String>, (String, String, bool))> {
+            let raw = read.map_err(|error| {
+                load_error(
+                    if purpose == ConfigRead::Reload && error.kind() == std::io::ErrorKind::NotFound
+                    {
+                        yaran_core::config::ConfigLoadProblem::Missing
+                    } else {
+                        yaran_core::config::ConfigLoadProblem::Unreadable(error.to_string())
+                    },
+                )
+            })?;
+            if purpose == ConfigRead::Reload && raw.trim().is_empty() {
+                return Err(load_error(yaran_core::config::ConfigLoadProblem::Empty).into());
+            }
+            yaran_core::config::auth_section_of(&raw).map_err(load_error)?;
+            let mut doc: DocumentMut = raw.parse().map_err(|e: toml_edit::TomlError| {
+                anyhow::anyhow!(
+                    "failed to parse {}: {}",
+                    paths.config_path.display(),
+                    yaran_core::config::describe_toml_edit_error(&raw, &e)
+                )
+            })?;
+            // The deprecated-key + retired-provider migrations are the
+            // core-owned `yaran_core::config_migrate::apply_load_migrations`
+            // (also applied in memory by `load_config`, so `yaran serve` honors
+            // them); the TUI ADDITIONALLY persists the migrated document.
+            // Retired KEYBINDING actions are pruned only here (they matter
+            // only to the TUI's `validate_keys`).
+            let migrations_changed = yaran_core::config_migrate::apply_load_migrations(&mut doc)?;
+            let retired_keys_changed = prune_retired_key_actions(&mut doc);
+            let folded_keys_changed = fold_legacy_key_actions(&mut doc);
+            let unbound_keys_changed = unbind_retired_default_keys(&mut doc);
+            let text = doc.to_string();
+            let migrated = migrations_changed
+                || retired_keys_changed
+                || folded_keys_changed
+                || unbound_keys_changed;
+            Ok((migrated.then(|| text.clone()), (raw, text, migrated)))
+        };
+    // Most starts migrate nothing, and those never take the write lock, so a
+    // lock file this user cannot open does not stop them. One that does
+    // migrate reads, migrates and writes again under the lock, so a `yaran
+    // config set` (or any other writer) landing meanwhile is part of what is
+    // migrated rather than overwritten by the copy read before it.
+    let (_, unlocked) = migrate(std::fs::read_to_string(&paths.config_path))?;
+    let (raw, text, migrated) = if unlocked.2 {
+        yaran_core::config_write::migrate_config_file(&paths.config_path, migrate)?
+    } else {
+        unlocked
+    };
 
-    let mut config: Config = toml::from_str(&doc.to_string())
-        .with_context(|| format!("failed to parse {}", paths.config_path.display()))?;
+    // The error gives a position and the kind of problem, never the file's
+    // text, which may hold a token. The position is in the user's own text
+    // whenever the problem is there too (it almost always is: migrations
+    // only rename and remove keys).
+    let mut config: Config = toml::from_str(&text).map_err(|e| {
+        let position = match toml::from_str::<Config>(&raw) {
+            Err(original) => yaran_core::config::describe_toml_error(&raw, &original),
+            Ok(_) => yaran_core::config::describe_toml_error(&text, &e),
+        };
+        anyhow::anyhow!(
+            "failed to parse {}: {}",
+            paths.config_path.display(),
+            position
+        )
+    })?;
+    // The text the file holds now: what the config writer compares saves with.
+    config.source_text = yaran_core::config::SourceText::of(if migrated { &text } else { &raw });
     config.providers.ensure_defaults();
-    validate_server_host(&config)?;
-    validate_project_envs(&config)?;
+    // The one list of start checks, the same `yaran config get`/`set` and `yaran
+    // server` ask: anything that stops the terminal UI stops it here, its
+    // own `[keys]` check included (installed above).
+    if let Some(refusal) =
+        yaran_core::config::start_refusal(&raw, yaran_core::config::Surface::TerminalUi)
+            .or_else(|| yaran_core::config::log_path_refusal(&config, paths))
+    {
+        anyhow::bail!("{}: {refusal}", paths.config_path.display());
+    }
     // A shared project runs in its real checkout, which must never sit inside
     // yaran's own state tree where a cleanup could remove it.
     yaran_core::config::validate_shared_project_paths(&config, paths)?;
-    // Warn once here (TUI startup and reload both funnel through ensure_config) on
-    // an unrecognized clipboard_passthrough so the per-tick host forward can parse
-    // silently. The warning is from_config_str's side effect.
-    let _ = ClipboardPassthroughMode::from_config_str(&config.capabilities.clipboard_passthrough);
-    // Same idea for an out-of-range `gh` re-check interval: warn once here and
-    // correct it in memory. Its read path is the engine tick, which this surface
-    // runs tens of times a second on the thread that draws, so a warning left to
-    // the read would be a log flood for the whole run.
-    yaran_core::config::correct_github_probe_interval(&mut config.ui);
-    Ok(config)
-}
-
-/// Reject a `[server] host` that is not an IP literal before the TUI starts.
-/// The TUI flip reads `host` too, so a bad value gets a clear message here
-/// rather than failing later. Delegates to `yaran_core::config::parse_server_host`
-/// so this and `resolve_server_plan` accept exactly the same values.
-fn validate_server_host(config: &Config) -> Result<()> {
-    yaran_core::config::parse_server_host(&config.server.host).map_err(|e| anyhow::anyhow!(e))?;
-    Ok(())
-}
-
-fn validate_project_envs(config: &Config) -> Result<()> {
-    for project in &config.projects {
-        resolve_agent_env(&config.env, &project.env).with_context(|| {
-            format!(
-                "invalid env for project {}",
-                project.name.as_deref().unwrap_or(&project.path)
-            )
-        })?;
+    // A binding that loads but never runs is said once per read, like the
+    // load corrections below.
+    let extended_keys =
+        yaran_core::config::ExtendedKeysMode::parse(&config.ui.extended_keys).unwrap_or_default();
+    for warning in key_binding_warnings(&config.keys, extended_keys) {
+        yaran_core::logger::warn(&format!("{}: {warning}", paths.config_path.display()));
     }
-    resolve_project_env(&config.env).context("invalid global env")?;
-    Ok(())
+    // The load's in-memory corrections, the same every surface makes (an
+    // out-of-range `gh` re-check interval among them, whose read path is the
+    // engine tick, run tens of times a second on the thread that draws), each
+    // warned about once. Memory then starts as the config writer's base does,
+    // so a correction is never written over what the file says.
+    let source_text = config.source_text.clone();
+    let mut config = yaran_core::config::correct_loaded(config);
+    config.source_text = source_text;
+    Ok(config)
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +270,13 @@ const RETIRED_KEY_ACTIONS: &[&str] = &[
     "sort_agents_by_updated",
     "sort_agents_by_created",
     "sort_agents_by_name",
+    // An agent's pull requests are hidden one at a time now; there is no
+    // whole-agent detection switch to resume.
+    "resume_pull_request_autodetection",
+    // Attaching and detaching moved into the one Pull requests modal, whose
+    // keys are bindable on their own.
+    "attach_pull_request",
+    "detach_pull_request",
 ];
 
 /// Remove `[keys]` entries for retired actions so an old config that still binds
@@ -170,6 +302,9 @@ fn prune_retired_key_actions(doc: &mut DocumentMut) -> bool {
 // action was merged into an action that still does its job, so its binding
 // survives under the new name instead of being thrown away.
 //
+// `delete_terminal` folds into `close_terminal`, its new name: the command
+// closes a terminal rather than deleting anything.
+//
 // `exit_interactive` folds into `toggle_fullscreen`, which now minimizes as
 // well as maximizes. Configs written by an older yaran carry it as an active row
 // (yaran stores resolved defaults as real values) with the same default ctrl-g
@@ -182,7 +317,46 @@ fn prune_retired_key_actions(doc: &mut DocumentMut) -> bool {
 /// moved to the new name on load (and the migrated document is persisted, like
 /// every other load migration) so the file converges and never has to be
 /// understood twice.
-const FOLDED_KEY_ACTIONS: &[(&str, &str)] = &[("exit_interactive", "toggle_fullscreen")];
+const FOLDED_KEY_ACTIONS: &[FoldedKeyAction] = &[
+    FoldedKeyAction {
+        legacy: "exit_interactive",
+        current: "toggle_fullscreen",
+        relation: "is now part of",
+        does: "toggles the agent pane fullscreen in both directions",
+    },
+    FoldedKeyAction {
+        legacy: "delete_terminal",
+        current: "close_terminal",
+        relation: "is now called",
+        does: "closes the selected terminal",
+    },
+];
+
+impl FoldedKeyAction {
+    /// What the load log says when the legacy row is moved, value and all.
+    fn rename_sentence(&self) -> String {
+        let Self {
+            legacy,
+            current,
+            relation,
+            does,
+        } = self;
+        format!(
+            "[keys] \"{legacy}\" {relation} \"{current}\"; renamed your binding to \
+             \"{current}\", which {does}"
+        )
+    }
+}
+
+/// One folded `[keys]` action, with the words the load log uses for it.
+struct FoldedKeyAction {
+    legacy: &'static str,
+    current: &'static str,
+    /// How the old name relates to the new one, in a sentence.
+    relation: &'static str,
+    /// What the surviving action does, for the rename's log line.
+    does: &'static str,
+}
 
 /// Read a `[keys]` value as a list of key strings. `None` for any other shape,
 /// which is left for `validate_keys` to report in its own words.
@@ -207,7 +381,13 @@ fn fold_legacy_key_actions(doc: &mut DocumentMut) -> bool {
         return false;
     };
     let mut changed = false;
-    for (legacy, current) in FOLDED_KEY_ACTIONS {
+    for fold in FOLDED_KEY_ACTIONS {
+        let FoldedKeyAction {
+            legacy,
+            current,
+            relation,
+            ..
+        } = fold;
         let Some(legacy_item) = keys.remove(legacy) else {
             continue;
         };
@@ -221,7 +401,7 @@ fn fold_legacy_key_actions(doc: &mut DocumentMut) -> bool {
         // nothing else happens.
         if legacy_keys.as_ref().is_some_and(Vec::is_empty) {
             yaran_core::logger::info(&format!(
-                "[keys] \"{legacy}\" is now part of \"{current}\"; dropped the empty legacy row \
+                "[keys] \"{legacy}\" {relation} \"{current}\"; dropped the empty legacy row \
                  and left \"{current}\" alone"
             ));
             continue;
@@ -246,7 +426,7 @@ fn fold_legacy_key_actions(doc: &mut DocumentMut) -> bool {
                 }
                 keys[current] = toml_edit::value(array);
                 yaran_core::logger::info(&format!(
-                    "[keys] \"{legacy}\" is now part of \"{current}\"; merged its keys in, \
+                    "[keys] \"{legacy}\" {relation} \"{current}\"; merged its keys in, \
                      leaving {current} = {merged:?}"
                 ));
             }
@@ -255,10 +435,12 @@ fn fold_legacy_key_actions(doc: &mut DocumentMut) -> bool {
             // rather than silently vanishing here.
             (_, None) if !keys.contains_key(current) => {
                 keys.insert(current, legacy_item);
-                yaran_core::logger::info(&format!(
-                    "[keys] \"{legacy}\" is now part of \"{current}\"; renamed your binding to \
-                     \"{current}\", which toggles the agent pane fullscreen in both directions"
-                ));
+                yaran_core::logger::info(
+                    &FOLDED_KEY_ACTIONS
+                        .iter()
+                        .find(|fold| fold.legacy == *legacy)
+                        .map_or_default(FoldedKeyAction::rename_sentence),
+                );
             }
             // The new name is present but is not a key list (or the legacy value
             // is not one). Keep what the user wrote under the surviving name and
@@ -266,7 +448,7 @@ fn fold_legacy_key_actions(doc: &mut DocumentMut) -> bool {
             // invent a binding nobody asked for.
             _ => {
                 yaran_core::logger::warn(&format!(
-                    "[keys] \"{legacy}\" is now part of \"{current}\"; dropped the legacy row \
+                    "[keys] \"{legacy}\" {relation} \"{current}\"; dropped the legacy row \
                      because it could not be merged into the \"{current}\" value already there"
                 ));
             }
@@ -377,6 +559,10 @@ enum ConfigEntry {
 /// this table's `comment` text. A field's default, zero-value meaning or comment
 /// changing here needs the matching entry there checked, and vice versa; there
 /// is no codegen linking the two.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the config schema: one entry per setting, in the order the file prints them"
+)]
 fn config_schema() -> Vec<ConfigEntry> {
     let mut schema = vec![
         ConfigEntry::Comment("# yaran configuration"),
@@ -401,9 +587,12 @@ fn config_schema() -> Vec<ConfigEntry> {
              #\n\
              # yaran leaves the worktrees/ directory, yaran.lock, and a themes/ directory you\n\
              # create alone; they are covered by the 0700 on the directory above them.\n\
-             # It never follows a symlink when setting a mode, so if this file is a link\n\
-             # into a dotfiles repository the file in that repository is untouched. And a\n\
-             # mode it cannot set is a warning in yaran.log, not an error: yaran still starts.",
+             # If this file is a symlink (into a dotfiles repository, say), saves write\n\
+             # through it to the file it points at, and the link stays. If that file is\n\
+             # missing, yaran does not start and a reload keeps the running settings; it\n\
+             # never creates the file or replaces the link. The startup pass that sets\n\
+             # modes never follows a symlink. And a mode it cannot set is a warning in\n\
+             # yaran.log, not an error: yaran still starts.",
         ),
         ConfigEntry::Blank,
         ConfigEntry::Field {
@@ -423,6 +612,22 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # about quitting the server rather than detaching one agent while it runs.",
             )),
             value_fn: |c| FieldValue::U16(c.shutdown_timeout_seconds),
+        },
+        ConfigEntry::Blank,
+        ConfigEntry::Field {
+            key: "removal_wait_seconds",
+            comment: Some(CommentSource::Static(
+                "# Seconds a worktree removal waits for work still running in that worktree\n\
+                 # (a pull, a push, a commit, a branch rename, a save from the web editor,\n\
+                 # the working copy being recreated) to finish before it gives up and keeps\n\
+                 # the worktree. Deleting an agent with its worktree, deleting a project, and\n\
+                 # the worktree manager all wait this long, and the status line says what\n\
+                 # they are waiting for. Deleting a project also waits this long for an agent\n\
+                 # still being created in it. The wait happens in the background, so nothing\n\
+                 # freezes while it runs. A worktree kept this way can be removed later from\n\
+                 # the worktree manager.",
+            )),
+            value_fn: |c| FieldValue::U16(c.removal_wait_seconds),
         },
         ConfigEntry::Blank,
         ConfigEntry::Section("defaults"),
@@ -487,6 +692,27 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::Bool(c.defaults.auto_resume_on_start),
         },
+        ConfigEntry::Field {
+            key: "diff_comment_prompt_template",
+            comment: Some(CommentSource::Static(
+                "# What each queued diff comment becomes when you send the comments to an\n\
+                 # agent (the diff view's send key, or send-diff-comments in the palette).\n\
+                 # They are typed into the agent's prompt for you to review; nothing is\n\
+                 # submitted until you press Enter there.\n\
+                 # Placeholders: {filename}, {line_number}, {line_content}, {message}.\n\
+                 # Empty uses the built-in template; one without {message} still gets the\n\
+                 # comment appended, so what you wrote is never dropped.",
+            )),
+            value_fn: |c| FieldValue::Str(c.defaults.diff_comment_prompt_template.clone()),
+        },
+        ConfigEntry::Field {
+            key: "diff_comment_prompt_separator",
+            comment: Some(CommentSource::Static(
+                "# The line placed between two queued diff comments when they are sent.\n\
+                 # Empty puts them one after the other with only a line break between.",
+            )),
+            value_fn: |c| FieldValue::Str(c.defaults.diff_comment_prompt_separator.clone()),
+        },
         ConfigEntry::Blank,
         ConfigEntry::Env,
         ConfigEntry::Blank,
@@ -517,11 +743,15 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Providers,
         ConfigEntry::Terminal,
         ConfigEntry::StartupCommandTerminal,
+        ConfigEntry::Keys,
+        ConfigEntry::Macros,
+        ConfigEntry::Blank,
         ConfigEntry::Section("logging"),
         ConfigEntry::Field {
             key: "level",
             comment: Some(CommentSource::Static(
-                "# Log level can be error, warn, info, or debug.\n\
+                "# Log level: \"error\", \"warn\", \"info\" or \"debug\", in lowercase. Anything\n\
+                 # else logs at info, with a note in yaran.log.\n\
                  # A config reload applies a new level right away; the path below\n\
                  # is read only at startup.",
             )),
@@ -536,7 +766,10 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # similar keys where yaran has them), so jq can filter it.\n\
                  # The log file is opened once, so changing this needs a restart.\n\
                  # A symlink here is followed once at startup: the log and its rotated\n\
-                 # copies live beside the file it points at, and the link is left alone.",
+                 # copies live beside the file it points at, and the link is left alone.\n\
+                 # It may not point at a file yaran keeps for itself (config.toml, the\n\
+                 # sessions database, dux.lock, remotes.toml, the control socket): yaran\n\
+                 # refuses to start or reload with such a path.",
             )),
             value_fn: |c| FieldValue::Str(c.logging.path.clone()),
         },
@@ -589,11 +822,14 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::U16(c.ui.right_width_pct),
         },
         ConfigEntry::Field {
-            key: "terminal_pane_height_pct",
+            key: "terminal_dock_pct",
             comment: Some(CommentSource::Static(
-                "# Maximum height percentage of the left pane used by the companion terminals list.",
+                "# Percentage of the center pane's height an agent's terminal dock takes in the\n\
+                 # terminal UI when the agent and its terminals share it (10-80). Drag the\n\
+                 # divider between them to change it; dragging it to an edge shows the agent or\n\
+                 # the terminal alone. The web UI remembers its own split in each browser.",
             )),
-            value_fn: |c| FieldValue::U16(c.ui.terminal_pane_height_pct),
+            value_fn: |c| FieldValue::U16(c.ui.terminal_dock_pct),
         },
         ConfigEntry::Field {
             key: "empty_project_separator_min_projects",
@@ -645,7 +881,7 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "status_clear_seconds",
             comment: Some(CommentSource::Static(
-                "# Seconds before a transient status message auto-clears.\n# In the TUI status line this is the base window, graded by severity: a\n# success/info confirmation clears after it and a warning after three times it,\n# while a busy/pending message stays until the operation finishes and an error\n# stays until the next message arrives. A few warnings about something still\n# waiting on you (a project path that is gone, a theme that will not load, a\n# restart the new settings need) also stay until replaced.\n# The TUI has one status line, so messages take turns on it rather than\n# overwriting each other: each confirmation gets this window to itself and the\n# next one waits, while a warning or an error jumps the queue and drops the\n# confirmations still waiting behind it, since they have been overtaken.\n# In the web UI the browser owns how long a message stays on screen, and it\n# grades the same base window the same way: warnings stay up three times as long\n# and errors four times as long, so this one number moves all of them. A handful\n# of web messages wait for you instead, the ones holding something you would\n# otherwise lose (a file that was saved but never handed to the agent, say);\n# those are unaffected by this setting.\n# Set to 0 to disable auto-clear. In the TUI there is then no window to wait\n# out, so messages stop queueing and the line simply shows the most recent one\n# until the next arrives; in the web UI they stay until you dismiss them.",
+                "# Seconds before a transient status message auto-clears.\n# In the TUI status line this is the base window, graded by severity: a\n# success/info confirmation clears after it and a warning after three times it,\n# while a busy/pending message stays until the operation finishes and an error\n# stays until the next message arrives. A few warnings about something still\n# waiting on you (a project path that is gone, a theme that will not load, a\n# restart the new settings need) also stay until replaced.\n# The TUI has one status line, so messages take turns on it rather than\n# overwriting each other: each confirmation gets this window to itself and the\n# next one waits, while a warning or an error jumps the queue and drops the\n# confirmations still waiting behind it, since they have been overtaken.\n# A message that clears itself shows the seconds it has left at the right end\n# of the line, and the palette's clear-status-line command takes the message on\n# screen down early.\n# In the web UI the browser owns how long a message stays on screen, and it\n# grades the same base window the same way: warnings stay up three times as long\n# and errors four times as long, so this one number moves all of them. A handful\n# of web messages wait for you instead, the ones holding something you would\n# otherwise lose (a file that was saved but never handed to the agent, say);\n# those are unaffected by this setting.\n# Set to 0 to disable auto-clear. In the TUI there is then no window to wait\n# out, so messages stop queueing and the line simply shows the most recent one\n# until the next arrives; in the web UI they stay until you dismiss them.",
             )),
             value_fn: |c| FieldValue::U16(c.ui.status_clear_seconds),
         },
@@ -678,6 +914,13 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::U16(c.ui.diff_tab_width),
         },
         ConfigEntry::Field {
+            key: "diff_comment_editor_max_lines",
+            comment: Some(CommentSource::Static(
+                "# Rows of text the diff comment editor shows before it scrolls.\n# Values below 1 count as 1.",
+            )),
+            value_fn: |c| FieldValue::U16(c.ui.diff_comment_editor_max_lines),
+        },
+        ConfigEntry::Field {
             key: "github_integration",
             comment: Some(CommentSource::Static(
                 "# Enable GitHub PR tracking for agent sessions.\n# Requires the `gh` CLI installed and authenticated (`gh auth login`).\n# When enabled, a PR pill is shown in the agent pane for branches with\n# an open, merged, or closed pull request. Toggle at runtime from the TUI\n# command palette, or the web UI's Preferences dialog.",
@@ -694,14 +937,14 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "pr_poll_interval_seconds",
             comment: Some(CommentSource::Static(
-                "# Seconds between blind GitHub PR-status safety polls.\n# Most PR updates arrive from events (pushing a branch, or focusing an\n# agent), so this is only the backstop for changes made on GitHub itself.\n# Each cycle is batched into as few GraphQL requests as possible (one per\n# host, up to ~100 PRs each) to stay cheap on your API quota.\n# Set to 0 to disable the blind poll (updates then come only from events).\n# That switches off the inactive poll below as well: it rides these same\n# cycles, so with no cycles there is nothing for it to ride.",
+                "# Seconds between blind GitHub PR-status safety polls.\n# Some PR checks run on events (focusing an agent, creating one, or an\n# agent exiting); this poll is what notices a push, and changes made on\n# GitHub itself.\n# Each cycle is batched into as few GraphQL requests as possible (one per\n# host, up to ~100 PRs each) to stay cheap on your API quota.\n# Set to 0 to disable the blind poll (updates then come only from events).\n# That switches off the inactive poll below as well: it rides these same\n# cycles, so with no cycles there is nothing for it to ride.",
             )),
             value_fn: |c| FieldValue::U16(c.ui.pr_poll_interval_seconds),
         },
         ConfigEntry::Field {
             key: "pr_poll_inactive_interval_seconds",
             comment: Some(CommentSource::Static(
-                "# Seconds between blind GitHub PR-status polls for INACTIVE agents: the\n# ones the agent list puts under \"Inactive\" (detached, or whose process\n# exited). Nobody is working in one, so its pull request is polled on this\n# much slower clock instead of the one above; the default is 12 hours.\n# An agent that becomes active again is checked right away, and the\n# deliberate triggers (opening an agent, an agent exit, a branch push)\n# ignore which section an agent is in.\n# The slow sweep rides the cycles of the poll above rather than running a\n# timer of its own, so its real period rounds up to the next of those\n# cycles, and a value below pr_poll_interval_seconds behaves as that\n# interval. Setting pr_poll_interval_seconds to 0 stops this poll too.\n# Set to 0 to stop polling inactive agents entirely.\n# Any other value is clamped to between 30 seconds and 604800 seconds\n# (7 days), and yaran logs a warning when it clamps one.",
+                "# Seconds between blind GitHub PR-status polls for INACTIVE agents: the\n# ones the agent list puts under \"Inactive\" (detached, or whose process\n# exited). Nobody is working in one, so its pull request is polled on this\n# much slower clock instead of the one above; the default is 12 hours.\n# An agent that becomes active again is checked right away, and the\n# deliberate triggers (opening an agent, creating one, an agent exit)\n# ignore which section an agent is in.\n# The slow sweep rides the cycles of the poll above rather than running a\n# timer of its own, so its real period rounds up to the next of those\n# cycles, and a value below pr_poll_interval_seconds behaves as that\n# interval. Setting pr_poll_interval_seconds to 0 stops this poll too.\n# Set to 0 to stop polling inactive agents entirely.\n# Any other value is clamped to between 30 seconds and 604800 seconds\n# (7 days), and yaran logs a warning when it clamps one.",
             )),
             value_fn: |c| FieldValue::U32(c.ui.pr_poll_inactive_interval_seconds),
         },
@@ -713,6 +956,20 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::Usize(c.ui.max_concurrent_pr_checks),
         },
         ConfigEntry::Field {
+            key: "pr_history_branches_per_cycle",
+            comment: Some(CommentSource::Static(
+                "# How many of an agent's earlier branches each pull-request poll asks\n# GitHub about, beside the branch it is on now. yaran tracks the pull\n# requests of every branch an agent's worktree has been on; the earlier\n# branches take turns, least recently asked first, so each one is asked\n# again within a bounded number of polls. The project's default branch is\n# never one of them. Set to 0 to ask only about the current branch.\n# Any other value is clamped to at most 50, and yaran logs a warning when it\n# clamps one.",
+            )),
+            value_fn: |c| FieldValue::U16(c.ui.pr_history_branches_per_cycle),
+        },
+        ConfigEntry::Field {
+            key: "pr_settled_recheck_seconds",
+            comment: Some(CommentSource::Static(
+                "# Seconds before yaran asks GitHub again about an earlier branch whose pull\n# requests are all merged, and about a closed pull request or an earlier\n# branch of an agent whose process exited. Such a pull request rarely moves, but a branch name\n# can be reused for a new pull request and a closed one can be reopened,\n# so neither is left alone for good. The default is 12 hours. The value is\n# clamped to between 30 seconds and 604800 seconds (7 days), and yaran logs a\n# warning when it clamps one.",
+            )),
+            value_fn: |c| FieldValue::U32(c.ui.pr_settled_recheck_seconds),
+        },
+        ConfigEntry::Field {
             key: "copy_on_select",
             comment: Some(CommentSource::Static(
                 "# Web UI only: auto-copy selected terminal text to the clipboard\n# (X11-style \"highlight to copy\"). When enabled, dragging a selection in\n# the browser terminal copies it, and so does lifting your finger after a\n# press-and-hold selection on a touch screen; Ctrl-Shift-c / Ctrl-Insert (or\n# Cmd-c on a Mac) copy regardless. Change it at runtime from the web UI's\n# Preferences dialog.",
@@ -722,7 +979,7 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "terminal_font_family",
             comment: Some(CommentSource::Static(
-                "# Web UI only: name a font installed on the VIEWING device (the browser's\n# machine, not the server's) to use in the web terminal, e.g. \"Fira Code\" or\n# \"Cascadia Code\". It is placed AHEAD of yaran's own bundled terminal font, so\n# the bundled font still fills in any glyph (box drawing, blocks, braille,\n# arrows, powerline) your chosen font lacks. Leave empty (the default) to use\n# only the bundled font. The TUI is unaffected: it always uses your host\n# terminal's own font. Change it at runtime from the web UI's Preferences\n# dialog.",
+                "# Web UI only: name a font installed on the VIEWING device (the browser's\n# machine, not the server's) to use in the web terminal, e.g. \"Fira Code\" or\n# \"Cascadia Code\". It is placed AHEAD of yaran's own bundled terminal font, so\n# the bundled font still fills in any glyph (box drawing, blocks, braille,\n# arrows, powerline) your chosen font lacks. Leave empty (the default) to use\n# only the bundled font. Only letters, digits, spaces and _ - , ' \" are kept\n# in the name, up to 200 characters; anything else is left out. The TUI is\n# unaffected: it always uses your host terminal's own font. Change it at\n# runtime from the web UI's Preferences dialog.",
             )),
             value_fn: |c| FieldValue::Str(c.ui.terminal_font_family.clone()),
         },
@@ -736,14 +993,14 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "compose_bar",
             comment: Some(CommentSource::Static(
-                "# Web UI only: on a touch device, show a compose box below the terminal\n# keys. You type into it with your keyboard's autocorrect and swipe input,\n# then the Send button delivers the whole message and presses Enter for you\n# (Enter inside the box just adds a newline). While it is up, tapping the\n# terminal focuses the compose box so the soft keyboard always types into\n# it; otherwise a tap types straight into the terminal.\n#\n#   \"auto\"   show it when your browser reports touch as the primary way you\n#            point at the screen. The default.\n#   \"always\" show it whatever you are on.\n#   \"never\"  hide it and always type directly into the terminal.\n#\n# \"auto\" is a capability check, not a screen-width one, so rotating a tablet\n# no longer changes your typing surface mid-session. It cannot tell a tablet\n# with a keyboard case from one without (the browser reports them\n# identically), which is what \"always\" and \"never\" are for. An older config\n# holding true/false still loads: true means \"auto\", false means \"never\".\n# Change it at runtime from the web UI's Preferences dialog.",
+                "# Web UI only: on a touch device, show a compose box below the terminal\n# keys. You type into it with your keyboard's autocorrect and swipe input,\n# then the Send button delivers the whole message and presses Enter for you\n# (Enter inside the box just adds a newline). While it is up, tapping the\n# terminal focuses the compose box so the soft keyboard always types into\n# it; otherwise a tap types straight into the terminal.\n#\n#   \"auto\"   show it when your browser reports touch as the primary way you\n#            point at the screen. The default.\n#   \"always\" show it whatever you are on.\n#   \"never\"  hide it and always type directly into the terminal.\n#\n# \"auto\" is a capability check, not a screen-width one, so rotating a tablet\n# no longer changes your typing surface mid-session. It cannot tell a tablet\n# with a keyboard case from one without (the browser reports them\n# identically), which is what \"always\" and \"never\" are for.\n# Change it at runtime from the web UI's Preferences dialog.",
             )),
             value_fn: |c| FieldValue::Str(c.ui.compose_bar.clone()),
         },
         ConfigEntry::Field {
             key: "mobile_accessory_bar",
             comment: Some(CommentSource::Static(
-                "# Web UI only: on a phone, show the terminal-keys bar (Esc, Tab, Ctrl,\n# Alt, the arrows and paging keys) above the compose box. Set to false to\n# hide it and give those rows back to the terminal. Bring it back from the\n# input ... menu below the terminal, or from the web UI's Preferences\n# dialog.",
+                "# Web UI only: on a phone, show the terminal-keys bar (Esc, Tab, Ctrl,\n# Alt, the arrows and paging keys) above the compose box. Set to false to\n# hide it and give those rows back to the terminal. Bring it back from the\n# keys button in a phone's action flap, from the Input group of the pane's\n# top ... menu on a computer, or from the web UI's Preferences dialog.",
             )),
             value_fn: |c| FieldValue::Bool(c.ui.mobile_accessory_bar),
         },
@@ -832,7 +1089,7 @@ fn config_schema() -> Vec<ConfigEntry> {
             comment: Some(CommentSource::Static(
                 "# Seconds the attention indicators stay visible after yaran regains your\n# attention, before the focused agent's needs-attention flag clears. Applies\n# when you return to the yaran browser tab (web UI) and when your terminal\n# window regains focus (TUI). Gives you time to see which agent(s) wanted you\n# before the indicator vanishes. Set to 0 to clear the indicator immediately.\n# TUI note: requires a terminal that reports focus; under tmux, set\n# `focus-events on`. Without focus reports the grace never applies: the\n# focused agent's indicator clears right away.",
             )),
-            value_fn: |c| FieldValue::Usize(c.ui.attention_grace_seconds as usize),
+            value_fn: |c| FieldValue::Usize(u64_to_usize(c.ui.attention_grace_seconds)),
         },
         ConfigEntry::Field {
             key: "auto_reopen_agents",
@@ -851,16 +1108,23 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "always_show_tab_strip",
             comment: Some(CommentSource::Static(
-                "# Always show the agent tab strip, even when a session has only one tab.\n# Default false shows it only once a session has two or more tabs.\n# Toggle at runtime from the TUI command palette, or the web UI's\n# Preferences dialog.",
+                "# Always show the agent tab strip, even when a session has only one tab.\n# It covers the strip of an agent's terminal dock too, on both surfaces: the\n# two show together. Default false shows them only once the agent has two or\n# more tabs or two or more terminals.\n# Toggle at runtime from the TUI command palette, or the web UI's\n# Preferences dialog.",
             )),
             value_fn: |c| FieldValue::Bool(c.ui.always_show_tab_strip),
         },
         ConfigEntry::Field {
             key: "tab_reaches_agent",
             comment: Some(CommentSource::Static(
-                "# Send Tab and Shift-Tab to the agent in the center pane instead of moving\n# between panes with them. Default false: Tab has cycled panes since yaran's\n# first version. Turn it on for agents that use Tab to autocomplete and\n# Shift-Tab to cycle modes. Panes still move either way, with the chords bound\n# under [keys] as focus_next and focus_prev (Ctrl-o and Ctrl-y by default).\n# Toggle at runtime from the TUI command palette, or the web UI's Preferences\n# dialog.",
+                "# Send Tab and Shift-Tab to the agent in the center pane instead of moving\n# between panes with them. Default false: Tab has cycled panes since yaran's\n# first version. Turn it on for agents that use Tab to autocomplete and\n# Shift-Tab to cycle modes. In the terminal UI it also hands Tab to an agent's\n# docked terminal while you type into it. Panes still move either way, with the chords bound\n# under [keys] as focus_next and focus_prev (Ctrl-o and Ctrl-y by default).\n# Toggle at runtime from the TUI command palette, or the web UI's Preferences\n# dialog.",
             )),
             value_fn: |c| FieldValue::Bool(c.ui.tab_reaches_agent),
+        },
+        ConfigEntry::Field {
+            key: "extended_keys",
+            comment: Some(CommentSource::Static(
+                "# Extended keys in the terminal UI: let yaran tell apart keys a classic terminal\n# sends identically, such as Shift-Enter and Enter, Ctrl-i and Tab, or\n# Ctrl-Shift-l and Ctrl-l, so each can have its own binding.\n#   \"auto\"  ask your terminal and turn on the Kitty keyboard protocol when it\n#           says yes; inside tmux, turn on tmux's extended keys when tmux is\n#           set up for them (see below). The default.\n#   \"on\"    turn the Kitty keyboard protocol on without asking first; inside\n#           tmux, the same as \"auto\", plus a warning when tmux is not set up.\n#   \"off\"   read keys exactly as yaran did before this setting existed: nothing\n#           is switched on in your terminal or in tmux.\n# Programs inside yaran (agents and shells) always receive classic keys, the\n# bytes a classic terminal sends. With extended keys on, Shift-Enter reaches\n# them as a new line that does not submit (the same byte as Ctrl-j), as it does\n# in the web UI.\n# Inside tmux, yaran needs tmux 3.2 or newer and this line in your tmux.conf:\n#   set -s extended-keys on\n# On tmux 3.5 and newer, whose default format yaran cannot read, add this too:\n#   set -s extended-keys-format csi-u\n# Takes effect the next time the terminal UI starts. The force-redraw palette\n# command checks tmux's settings again. The input-debugging palette command\n# shows what your terminal sends for each key. The web UI's keys are\n# unaffected.",
+            )),
+            value_fn: |c| FieldValue::Str(c.ui.extended_keys.clone()),
         },
         ConfigEntry::Field {
             key: "attention_indicator",
@@ -891,16 +1155,23 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::Bool(c.ui.disable_release_notes),
         },
         ConfigEntry::Field {
+            key: "disable_startup_warnings",
+            comment: Some(CommentSource::Static(
+                "# Hide the non-critical warnings the terminal UI shows at startup: a theme\n# that would not load, or a pane key your terminal swallows. Warnings and\n# errors raised while yaran runs still appear.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.ui.disable_startup_warnings),
+        },
+        ConfigEntry::Field {
             key: "pr_banner_position",
             comment: Some(CommentSource::Static(
-                "# Position of the PR banner in the agent pane: \"top\" or \"bottom\".\n# Toggle at runtime from the TUI command palette, or the web UI's\n# Preferences dialog.",
+                "# Position of the PR banner in the agent pane: \"top\" or \"bottom\". Anything\n# else shows it at the bottom, with a note in yaran.log.\n# Toggle at runtime from the TUI command palette, or the web UI's\n# Preferences dialog.",
             )),
             value_fn: |c| FieldValue::Str(c.ui.pr_banner_position.clone()),
         },
         ConfigEntry::Field {
             key: "agent_sort",
             comment: Some(CommentSource::Static(
-                "# Agent-list sort mode, persisted across restarts and shared by the TUI\n# and the web. One of:\n#   \"active\"    (default) working / needs-attention agents float to the top\n#   \"updated\"   most recently updated first\n#   \"created\"   most recently created first\n#   \"name\"      by name, A to Z\n#   \"name_desc\" by name, Z to A\n#   \"manual\"    the hand-placed order (the stored global order)\n# The TUI cycles the five non-manual modes via the \"sort-agents\" palette\n# command and hand-places rows with the \"move-agent-*\" and\n# \"move-terminal-*\" commands; the web sets the mode from its sidebar sort\n# control and hand-places rows by dragging. Either surface's hand-placing\n# switches the mode to \"manual\" automatically. Each surface offers its own\n# subset but displays whatever value the other set.",
+                "# Agent-list sort mode, persisted across restarts and shared by the TUI\n# and the web. One of:\n#   \"active\"    (default) working / needs-attention agents float to the top\n#   \"updated\"   most recently updated first\n#   \"created\"   most recently created first\n#   \"name\"      by name, A to Z\n#   \"name_desc\" by name, Z to A\n#   \"manual\"    the hand-placed order (the stored global order)\n# The TUI cycles the five non-manual modes via the \"sort-agents\" palette\n# command and hand-places rows with the \"move-agent-*\" and\n# \"move-terminal-*\" commands; the web sets the mode from its sidebar sort\n# control and hand-places rows by dragging. Either surface's hand-placing\n# switches the mode to \"manual\" automatically. Each surface offers its own\n# subset but displays whatever value the other set. Anything else sorts as\n# \"active\", with a note in yaran.log.",
             )),
             value_fn: |c| FieldValue::Str(c.ui.agent_sort.clone()),
         },
@@ -945,6 +1216,13 @@ fn config_schema() -> Vec<ConfigEntry> {
                 "# Visual theme for the yaran interface.\n# Built-in options include \"yaran_dark\" (the default), plus any theme\n# bundled with the opaline engine, for example: \"catppuccin_mocha\",\n# \"catppuccin_frappe\", \"nord\", \"dracula\", \"gruvbox_dark\",\n# \"tokyo_night\", \"solarized_dark\", \"one_dark\", \"rose_pine\", and others.\n# To use a custom theme, drop a TOML file into <config_dir>/themes/<name>.toml\n# (with the same token format as opaline themes) and reference it here\n# by file stem. Unknown names fall back to yaran_dark with a warning.\n# Use the `change-theme` command in the palette (Ctrl-p) for an interactive picker.",
             )),
             value_fn: |c| FieldValue::Str(c.ui.theme.clone()),
+        },
+        ConfigEntry::Field {
+            key: "nerd_font_icons",
+            comment: Some(CommentSource::Static(
+                "# Draw the terminal UI's icons from a Nerd Font instead of the plain\n# Unicode set: the project folder, the standalone star, the pull-request\n# mark, warnings, disclosure chevrons and the header chips. Default false.\n# It needs a Nerd Font (a patched font, see nerdfonts.com) set as your\n# terminal's font; without one the icons render as empty boxes. The web UI\n# draws its own icons and is unaffected. Toggle it at runtime from the TUI\n# command palette (`toggle-nerd-font-icons`), or the web UI's Preferences\n# dialog.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.ui.nerd_font_icons),
         },
         ConfigEntry::Blank,
         ConfigEntry::Section("capabilities"),
@@ -1058,20 +1336,65 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::U64(c.auto_resume.stagger_ms),
         },
         ConfigEntry::Blank,
+        ConfigEntry::Section("cli"),
+        ConfigEntry::Field {
+            key: "wait_timeout_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long a change made with the yaran command line (yaran agents rm, yaran\n\
+                 # projects add and the rest) waits for its outcome, in seconds, before it\n\
+                 # stops waiting and says the outcome is unknown. The change keeps running\n\
+                 # either way; \"yaran operations show <id>\" looks it up later. --wait-timeout\n\
+                 # overrides this for one command and --no-wait skips the wait. yaran config\n\
+                 # set waits this long too, for the running yaran to say whether its reload\n\
+                 # worked. Read by the command line on this machine only. At most 86400\n\
+                 # (one day); a longer value waits a day. Default 600 (10 minutes).",
+            )),
+            value_fn: |c| FieldValue::U64(c.cli.wait_timeout_seconds),
+        },
+        ConfigEntry::Blank,
+        ConfigEntry::Section("git"),
+        ConfigEntry::Field {
+            key: "clone_stall_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long \"Clone a repository\" lets git go without printing any progress,\n\
+                 # in seconds, before yaran stops the clone and says so. There is no limit on\n\
+                 # how long a whole clone takes, because a big repository is slow rather than\n\
+                 # stuck; a clone that stops printing progress is the stuck one. Raise this\n\
+                 # for a remote that is slow to start sending. Values below 1 count as 1.\n\
+                 # Default 300 (5 minutes).",
+            )),
+            value_fn: |c| FieldValue::U64(c.git.clone_stall_seconds),
+        },
+        ConfigEntry::Field {
+            key: "network_timeout_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long a push, a pull's fetch, a pull request fetch or an ls-remote that\n\
+                 # yaran runs for you may take, in seconds, before yaran stops the whole command\n\
+                 # and says so. None of them can ask anything on a terminal, so this catches a\n\
+                 # remote or a credential helper that stopped answering. Raise it for a long\n\
+                 # pre-push hook or a large Git LFS upload; 0 means no limit at all. Takes\n\
+                 # effect for the next command. Default 600 (10 minutes).",
+            )),
+            value_fn: |c| FieldValue::U64(c.git.network_timeout_seconds),
+        },
+        ConfigEntry::Blank,
         ConfigEntry::Section("server"),
         ConfigEntry::Comment(
-            "# The yaran web UI is a trusted-local tool: there is no login gate. It binds\n\
-             # host:port (loopback by default) and, unless you turn it off, also this\n\
-             # machine's Tailscale address so your other tailnet devices can reach it\n\
-             # (traffic is WireGuard-encrypted in transit). The in-app \"start web\n\
+            "# The yaran web UI: one workspace for one owner, with one optional password\n\
+             # (see [server.auth] below, which also decides who is asked for it). It\n\
+             # binds host:port (loopback by default) and, unless you turn it off, also\n\
+             # this machine's Tailscale address so your other tailnet devices can reach\n\
+             # it (traffic is WireGuard-encrypted in transit). The in-app \"start web\n\
              # server\" flip always serves on loopback (plus Tailscale) regardless of\n\
-             # host. Only run a non-loopback host on a network you trust.\n\
+             # host. With no password set, anyone who can reach an address yaran listens\n\
+             # on drives your agents and terminals, and yaran warns about it loudly.\n\
              #\n\
              # Three settings below decide where yaran listens and who it answers.\n\
              # They do NOT override each other; they stack, and they are checked in\n\
              # this order:\n\
-             #   1. host + port:      the one address yaran binds. `yaran server --bind\n\
-             #                        IP:port` overrides both for that run.\n\
+             #   1. host + port:      the address yaran binds (127.0.0.1 brings [::1]\n\
+             #                        along). `yaran server --bind IP:port`\n\
+             #                        overrides both for that run.\n\
              #   2. tailscale:        binds an ADDITIONAL address (this machine's\n\
              #                        Tailscale IP, same port). Never replaces host;\n\
              #                        best-effort, so a failure only warns. On \"auto\"\n\
@@ -1087,6 +1410,9 @@ fn config_schema() -> Vec<ConfigEntry> {
             comment: Some(CommentSource::Static(
                 "# Bind host for `yaran server`. Must be an IP literal, not a hostname:\n\
                  #   \"127.0.0.1\": loopback only (the safe default; only this machine).\n\
+                 #                yaran also binds [::1] on the same port, because\n\
+                 #                `localhost` can mean either; a machine without\n\
+                 #                IPv6 just uses 127.0.0.1.\n\
                  #   \"0.0.0.0\":   every interface (reachable from the network).\n\
                  # Serving from inside the TUI ignores this and always binds loopback\n\
                  # (+ Tailscale), both the flip and `serve_while_tui`.\n\
@@ -1124,15 +1450,27 @@ fn config_schema() -> Vec<ConfigEntry> {
                  #                    configured host only until the mode changes.\n\
                  #   \"no\":            never bind it and never run the detection.\n\
                  # If the CLI is missing, the daemon is down, or something else already\n\
-                 # holds that port, yaran WARNS and keeps serving. A Tailscale problem\n\
-                 # never stops yaran from starting. `yaran server --no-tailscale` forces\n\
-                 # \"no\" for a single run, and refuses a live change back.\n\
+                 # holds that port, yaran WARNS and keeps listening. A Tailscale problem\n\
+                 # never stops yaran from starting.\n\
+                 # Unless this is \"no\", yaran also looks for a Tailscale Funnel or TCP\n\
+                 # forward that could relay the internet onto its port, because such a\n\
+                 # relay arrives over loopback and would look like this machine. While\n\
+                 # one stands, or while yaran cannot tell (the CLI fails, or is missing\n\
+                 # while a tailscaled runs, or the first look has not finished), yaran\n\
+                 # counts loopback as the network: with a password set, everyone,\n\
+                 # this machine included, signs in; with none, yaran serves and warns\n\
+                 # loudly. Funnel visitors get the login page. On \"no\" yaran cannot\n\
+                 # check at all, so it counts loopback as the network the whole time:\n\
+                 # with a password set, someone on this machine signs in too, whatever\n\
+                 # [server.auth] require says. `yaran server --no-tailscale` forces \"no\"\n\
+                 # for a single run, and refuses a live change back.\n\
                  # You do not need to edit this file to change your mind: the palette\n\
                  # command set-tailscale-mode and the web Preferences dialog change this\n\
                  # while yaran runs, apply it to the listener that is serving, and save the\n\
                  # choice back here.\n\
-                 # NOTE: a shared tailnet means OTHER people's devices can reach yaran, and\n\
-                 # there is no login gate.",
+                 # NOTE: a shared tailnet means OTHER people's devices can reach yaran.\n\
+                 # Under the default [server.auth] require = \"network\" they need no\n\
+                 # password; set it to \"tailnet\" to ask them for it.",
             )),
             value_fn: |c| FieldValue::Str(c.server.tailscale.clone()),
         },
@@ -1141,12 +1479,18 @@ fn config_schema() -> Vec<ConfigEntry> {
             comment: Some(CommentSource::Static(
                 "# Extra Host header values to accept on NON-same-origin requests. yaran\n\
                  # always serves on host:port and accepts same-origin requests; list any\n\
-                 # additional hostnames a reverse proxy or tailnet name forwards under\n\
-                 # so the host guard does not reject them. Hostnames only, no scheme or\n\
-                 # port. Examples:\n\
-                 #   allowed_hosts = [\"box.tailnet.ts.net\"]\n\
+                 # additional hostnames a reverse proxy forwards under so the host\n\
+                 # guard does not reject them. Hostnames only, no scheme or port.\n\
+                 # Examples:\n\
                  #   allowed_hosts = [\"yaran.example.com\"]\n\
-                 # Leave empty for a plain loopback or proxy-fronted deployment.",
+                 #   allowed_hosts = [\"yaran.example.com\", \"yaran.lan\"]\n\
+                 # THIS machine's own Tailscale MagicDNS name (box.your-tailnet.ts.net)\n\
+                 # needs no entry: while tailscale is not \"no\", yaran reads it from the\n\
+                 # tailscale CLI, accepts it on any port (so `tailscale serve` works),\n\
+                 # and follows it if the tailnet is renamed. Every other ts.net name is\n\
+                 # still refused unless you list it here.\n\
+                 # Leave empty for a plain loopback or proxy-fronted deployment.\n\
+                 # A config reload applies this to a running server right away.",
             )),
             value_fn: |c| FieldValue::StrList(c.server.allowed_hosts.clone()),
         },
@@ -1170,14 +1514,97 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "access_log",
             comment: Some(CommentSource::Static(
-                "# Print a per-request access log line (method, path, status, latency) to\n\
-                 # the `yaran server` console. The /healthz probe is always skipped so a\n\
-                 # health checker does not flood the log. This output is console-ONLY and\n\
-                 # never written to yaran.log, so piping `yaran server`'s stdout captures the\n\
-                 # access log. Set false to silence it.\n\
+                "# Log a per-request access line (method, path, status, latency) to the\n\
+                 # server's log: the terminal `yaran server` prints to, the log viewer of\n\
+                 # the in-app \"start web server\" flip, and server.log, which every way\n\
+                 # of serving writes. The /healthz probe is always skipped so a health\n\
+                 # checker does not flood the log. It is never written to yaran.log.\n\
+                 # server.log is readable only by you, and it records the addresses\n\
+                 # that connected: set false to keep them off disk and off the screen.\n\
                  # A config reload applies this to a running server right away.",
             )),
             value_fn: |c| FieldValue::Bool(c.server.access_log),
+        },
+        ConfigEntry::Field {
+            key: "log_viewer_lines",
+            comment: Some(CommentSource::Static(
+                "# How many lines the in-app log viewers keep for scrolling back: the\n\
+                 # \"start web server\" flip's, and the view-server-log palette command's,\n\
+                 # which opens with the last this-many lines of server.log and then\n\
+                 # follows it while the server runs in the background. The viewers show\n\
+                 # the same lines `yaran server` prints to its terminal; older lines are\n\
+                 # dropped once one holds this many.\n\
+                 # `yaran server` itself has no such cap: its scrollback is your terminal's.\n\
+                 # 0 is read as 1 and values above 20000 as 20000. A negative value is\n\
+                 # not valid here: yaran resets it to the default (2000) and says so in\n\
+                 # yaran.log.\n\
+                 # Applies the next time the flip starts.",
+            )),
+            value_fn: |c| FieldValue::Usize(c.server.log_viewer_lines),
+        },
+        ConfigEntry::Field {
+            key: "log_path",
+            comment: Some(CommentSource::Static(
+                "# Where the server's own log is written: the same lines `yaran server`\n\
+                 # prints (the startup banner, who connected, the access log, the\n\
+                 # shutdown), kept by `yaran server`, by the in-app \"start web server\"\n\
+                 # flip and by the background server alike, so the log of a server that\n\
+                 # ran with no terminal in front of it can still be read. yaran.log keeps\n\
+                 # the debugging trail and is not affected. Relative paths are resolved\n\
+                 # from the yaran config directory. The file is readable only by you.\n\
+                 # It may not be yaran.log or a file yaran keeps for itself (config.toml, the\n\
+                 # sessions database, dux.lock, remotes.toml, the control socket): yaran\n\
+                 # refuses to start or reload with such a path. Read when a server starts.",
+            )),
+            value_fn: |c| FieldValue::Str(c.server.log_path.clone()),
+        },
+        ConfigEntry::Field {
+            key: "log_max_bytes",
+            comment: Some(CommentSource::Static(
+                "# Size in bytes the server log may reach before yaran rotates it. Default\n\
+                 # 10485760 (10 MiB). Rotation is by size only, and a line is always\n\
+                 # written whole, exactly as for [logging] max_bytes. Set to 0 to never\n\
+                 # rotate. Read when a server starts.",
+            )),
+            value_fn: |c| FieldValue::U64(c.server.log_max_bytes),
+        },
+        ConfigEntry::Field {
+            key: "log_keep",
+            comment: Some(CommentSource::Static(
+                "# How many rotated copies of the server log to keep beside the live\n\
+                 # one. Default 5. On each rotation server.log becomes server.log.1, the\n\
+                 # previous server.log.1 becomes server.log.2, and so on; anything past\n\
+                 # this count is deleted, which is how the log stays from growing without\n\
+                 # end. Set to 0 to rotate and throw the old log away. Values above 1000\n\
+                 # are clamped. Read when a server starts.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.log_keep),
+        },
+        ConfigEntry::Field {
+            key: "log_compress",
+            comment: Some(CommentSource::Static(
+                "# Gzip rotated copies of the server log in the background, so they are\n\
+                 # named server.log.1.gz, server.log.2.gz and so on. Default true. Set to\n\
+                 # false to keep them as plain text. Read when a server starts.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.server.log_compress),
+        },
+        ConfigEntry::Field {
+            key: "qr_codes",
+            comment: Some(CommentSource::Static(
+                "# Show QR codes for this machine's tailnet addresses, so a phone can\n\
+                 # open yaran by pointing its camera at the screen: one for the Tailscale\n\
+                 # IP and one for the MagicDNS name (the https URL when `tailscale\n\
+                 # serve` points at yaran), side by side when the window is wide enough\n\
+                 # and stacked when it is not, each with its URL under it.\n\
+                 # They appear in `yaran server` (only when its output is a terminal, so\n\
+                 # piped logs stay clean) and in the start-web-server flip, when the\n\
+                 # server starts and again whenever those addresses appear or change.\n\
+                 # The background server (serve_while_tui) never shows them, because\n\
+                 # the TUI stays on screen. Set false to hide them.\n\
+                 # Read when a server starts, so a change applies the next time one does.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.server.qr_codes),
         },
         ConfigEntry::Field {
             key: "serve_while_tui",
@@ -1190,10 +1617,12 @@ fn config_schema() -> Vec<ConfigEntry> {
                  #   true:            yaran starts serving as soon as the TUI does, on\n\
                  #                    loopback plus the Tailscale address (per tailscale\n\
                  #                    above), exactly like the flip binds.\n\
-                 # TRUST: there is no login. With this on, a listener exists for as long\n\
-                 # as yaran runs, and anyone who can reach it drives your agents and\n\
-                 # worktrees. That is the same trust model as the rest of this section;\n\
-                 # what changes is that it now applies whenever the TUI is open.\n\
+                 # TRUST: with this on, a listener exists for as long as yaran runs, and\n\
+                 # everyone it lets in drives your agents and worktrees: with no\n\
+                 # password set, that is anyone who can reach it ([server.auth] decides\n\
+                 # who is asked for one). That is the same trust model as the rest of\n\
+                 # this section; what changes is that it now applies whenever the TUI is\n\
+                 # open.\n\
                  # ONE DRIVER AT A TIME: the TUI and every browser take part in the same\n\
                  # input-ownership model, so a terminal is driven by whichever device\n\
                  # claimed it and the others watch. A watcher still sees the live output\n\
@@ -1210,6 +1639,23 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::Bool(c.server.serve_while_tui),
         },
         ConfigEntry::Field {
+            key: "control_socket",
+            comment: Some(CommentSource::Static(
+                "# Where yaran answers command-line clients on this machine: a socket\n\
+                 # file that only your user can open, served by every running yaran (the\n\
+                 # terminal UI, the flip, background serving and `yaran server` alike).\n\
+                 # It carries no password; your user account is the credential. A\n\
+                 # relative path is read from this config folder, an absolute one is\n\
+                 # used as written, but its folder must be yours alone (owned by you,\n\
+                 # and nobody else can write to it), as this config folder is. A\n\
+                 # leftover socket from a yaran that crashed is replaced when yaran starts. A path longer than the system allows (103\n\
+                 # bytes on macOS, 107 on Linux) starts yaran without the socket, and yaran\n\
+                 # says why on its status line and in yaran.log; pick a shorter path here.\n\
+                 # Read once when yaran starts, so a change applies the next time it does.",
+            )),
+            value_fn: |c| FieldValue::Str(c.server.control_socket.clone()),
+        },
+        ConfigEntry::Field {
             key: "max_websocket_events_connections",
             comment: Some(CommentSource::Static(
                 "# Maximum number of concurrent EVENTS WebSocket (/ws) connections to\n\
@@ -1223,7 +1669,9 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # Changing this needs a server restart to take effect (a reload of the\n\
                  # running server cannot resize the cap).",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.max_websocket_events_connections as usize),
+            value_fn: |c| {
+                FieldValue::Usize(u32_to_usize(c.server.max_websocket_events_connections))
+            },
         },
         ConfigEntry::Field {
             key: "max_websocket_agent_connections",
@@ -1236,7 +1684,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # server restart to take effect (a reload of the running server cannot\n\
                  # resize the cap).",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.max_websocket_agent_connections as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.max_websocket_agent_connections)),
         },
         ConfigEntry::Field {
             key: "max_websocket_terminal_connections",
@@ -1248,7 +1696,9 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # class until the server restarts. Changing this needs a server restart\n\
                  # to take effect (a reload of the running server cannot resize the cap).",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.max_websocket_terminal_connections as usize),
+            value_fn: |c| {
+                FieldValue::Usize(u32_to_usize(c.server.max_websocket_terminal_connections))
+            },
         },
         ConfigEntry::Field {
             key: "max_websocket_tab_connections",
@@ -1261,7 +1711,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # blocks all tab streams until the server restarts. Changing this needs a\n\
                  # server restart to take effect.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.max_websocket_tab_connections as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.max_websocket_tab_connections)),
         },
         ConfigEntry::Field {
             key: "max_websocket_tabs_per_agent",
@@ -1277,13 +1727,14 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # agent may have; that is [ui] agent_tabs_max (default 20). The two\n\
                  # differ on purpose: creating a tab is cheap, streaming one is not.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.max_websocket_tabs_per_agent as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.max_websocket_tabs_per_agent)),
         },
         ConfigEntry::Field {
             key: "title",
             comment: Some(CommentSource::Static(
                 "# Display name for THIS yaran instance in the web UI. It is shown as\n\
-                 # the browser tab title and as the brand wordmark at the top of the\n\
+                 # the end of the browser tab title, after the agent, terminal or\n\
+                 # file the tab is on, and as the brand wordmark at the top of the\n\
                  # projects pane (the version stays on the line below). Give each\n\
                  # instance a distinct value (for example \"yaran #1\" or \"yaran (prod)\")\n\
                  # so several yaran tabs/servers are easy to tell apart. An empty or\n\
@@ -1310,7 +1761,8 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # waits for agents and companion terminals to exit after SIGTERM on\n\
                  # shutdown, before force-killing (SIGKILL) any stragglers. Set to 0 to\n\
                  # skip the wait and force-kill immediately; values above 600 are clamped.\n\
-                 # A second Ctrl-c/SIGTERM during the wait forces an immediate exit.\n\
+                 # A second Ctrl-c/SIGTERM during the wait stops it: what is still running is\n\
+                 # killed at once and yaran exits.\n\
                  # The TUI quit path uses the top-level shutdown_timeout_seconds instead.",
             )),
             value_fn: |c| FieldValue::U16(c.server.shutdown_timeout_seconds),
@@ -1340,7 +1792,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # way out. Default 8.\n\
                  # A config reload applies this to every open browser tab right away.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.replay_wait_seconds as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.replay_wait_seconds)),
         },
         ConfigEntry::Field {
             key: "reconnect_backoff_cap_seconds",
@@ -1353,7 +1805,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # large and coming back into coverage takes a while to notice. Default 10.\n\
                  # A config reload applies this to every open browser tab right away.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.reconnect_backoff_cap_seconds as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.reconnect_backoff_cap_seconds)),
         },
         ConfigEntry::Field {
             key: "reconnect_attempts",
@@ -1364,11 +1816,10 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # tab, unlocking the phone or the network returning all start it over, so\n\
                  # this only runs out on a page left sitting in front of a server that is\n\
                  # not there. Set to 0 to keep trying forever, though each attempt is\n\
-                 # still abandoned on the deadline below: yaran's older behaviour was\n\
-                 # 0 attempts with that deadline at 30. Default 8.\n\
+                 # still abandoned on the deadline below. Default 8.\n\
                  # A config reload applies this to every open browser tab right away.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.reconnect_attempts as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.reconnect_attempts)),
         },
         ConfigEntry::Field {
             key: "reconnect_attempt_timeout_seconds",
@@ -1383,7 +1834,24 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # notice. Default 10.\n\
                  # A config reload applies this to every open browser tab right away.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.reconnect_attempt_timeout_seconds as usize),
+            value_fn: |c| {
+                FieldValue::Usize(u32_to_usize(c.server.reconnect_attempt_timeout_seconds))
+            },
+        },
+        ConfigEntry::Field {
+            key: "changes_request_timeout_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long the web UI's Changes pane waits for the list of changed files\n\
+                 # before it gives up and shows an error with a Refresh button. A\n\
+                 # connection that silently died never answers, and without this the\n\
+                 # pane would sit on \"Loading changes\" forever. The list for a worktree\n\
+                 # with tens of thousands of changed files can be several megabytes, so\n\
+                 # too small and a slow connection never finishes loading it; too large\n\
+                 # and a stalled one takes longer to notice. 0 means the default; values\n\
+                 # above 600 are treated as 600. Default 30.\n\
+                 # A config reload applies this to every open browser tab right away.",
+            )),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.changes_request_timeout_seconds)),
         },
         ConfigEntry::Field {
             key: "heartbeat_seconds",
@@ -1396,7 +1864,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # a dead terminal takes longer to come back. Default 15.\n\
                  # A config reload applies this to every open browser tab right away.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.heartbeat_seconds as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.heartbeat_seconds)),
         },
         ConfigEntry::Field {
             key: "heartbeat_deadline_seconds",
@@ -1412,7 +1880,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # Default 30.\n\
                  # A config reload applies this to every open browser tab right away.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.heartbeat_deadline_seconds as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.heartbeat_deadline_seconds)),
         },
         ConfigEntry::Field {
             key: "pty_send_timeout_seconds",
@@ -1428,21 +1896,62 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # Default 60.\n\
                  # A config reload applies this to the next terminal connection.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.pty_send_timeout_seconds as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.pty_send_timeout_seconds)),
+        },
+        ConfigEntry::Field {
+            key: "operation_unknown_after_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long a change a client is waiting on (deleting an agent, creating\n\
+                 # one, removing a project) may keep running before yaran reports its outcome\n\
+                 # as unknown. This never stops the change and never calls it failed: the\n\
+                 # change keeps running, and once it ends its real outcome replaces\n\
+                 # unknown. Default 1800 (30 minutes).\n\
+                 # A config reload applies this to the changes started after it.",
+            )),
+            value_fn: |c| FieldValue::Usize(u64_to_usize(c.server.operation_unknown_after_seconds)),
+        },
+        ConfigEntry::Field {
+            key: "operation_retention_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long yaran keeps the outcome of a finished change so a client can still\n\
+                 # look it up. After this the outcome is forgotten, and asking about it says\n\
+                 # yaran knows no such change. Outcomes live in memory only, so a restart\n\
+                 # forgets them all. Default 1800 (30 minutes).\n\
+                 # A config reload applies this to the changes started after it.",
+            )),
+            value_fn: |c| FieldValue::Usize(u64_to_usize(c.server.operation_retention_seconds)),
+        },
+        ConfigEntry::Field {
+            key: "presence_grace_seconds",
+            comment: Some(CommentSource::Static(
+                "# Deleting, stopping or restarting an agent, closing a tab or a terminal,\n\
+                 # and removing a project are refused while somebody else is connected to\n\
+                 # what they would end, unless whoever asks says to go ahead anyway. A\n\
+                 # browser tab keeps counting as connected to a terminal for this many\n\
+                 # seconds after the last moment it showed it, when the terminal's\n\
+                 # connection was lost rather than closed, even once the tab's own\n\
+                 # connection is lost too: a phone in a pocket still protects the agent its\n\
+                 # owner is working in. Closing the tab, navigating away, opening something\n\
+                 # else in it, signing out or going ahead anyway ends it at once. 0 stops\n\
+                 # counting the moment the connection is lost. Default 300.\n\
+                 # A config reload applies this to the next connection that is lost.",
+            )),
+            value_fn: |c| FieldValue::Usize(u64_to_usize(c.server.presence_grace_seconds)),
         },
         ConfigEntry::Field {
             key: "tree_list_max_concurrency",
             comment: Some(CommentSource::Static(
-                "# Maximum number of /files/tree directory listings the web editor may run\n\
-                 # concurrently across all sessions. Each listing does one blocking read_dir\n\
-                 # off the server's async reactor; this protects the server's blocking-thread\n\
-                 # pool from a burst of tree requests (for example several tabs expanding\n\
-                 # directories at once) starving other blocking work such as git operations\n\
+                "# Maximum number of directory listings, file-search walks and markdown\n\
+                 # preview image reads the web editor may run concurrently across all\n\
+                 # sessions. Each one does blocking filesystem work off the server's async\n\
+                 # reactor; this protects the server's blocking-thread pool from a burst\n\
+                 # (for example several tabs expanding directories at once, or a preview\n\
+                 # full of images) starving other blocking work such as git operations\n\
                  # and file reads/writes. A request beyond the limit waits for a free slot\n\
                  # rather than being refused. Set to 0 to disable the bound entirely.\n\
                  # The limit is sized at startup, so changing it needs a restart.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.tree_list_max_concurrency as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.tree_list_max_concurrency)),
         },
         ConfigEntry::Field {
             key: "release_notes_max_concurrency",
@@ -1459,7 +1968,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # the bound entirely.\n\
                  # The limit is sized at startup, so changing it needs a restart.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.release_notes_max_concurrency as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.release_notes_max_concurrency)),
         },
         ConfigEntry::Field {
             key: "file_drop_max_bytes",
@@ -1488,7 +1997,7 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # all would stall every drop forever; use file_drop_max_bytes = 0 to switch\n\
                  # the feature off. Read at startup, so a change needs a server restart.",
             )),
-            value_fn: |c| FieldValue::Usize(c.server.file_drop_max_concurrency as usize),
+            value_fn: |c| FieldValue::Usize(u32_to_usize(c.server.file_drop_max_concurrency)),
         },
         ConfigEntry::Blank,
         ConfigEntry::Comment(
@@ -1678,10 +2187,6 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::Str(c.amq.orchestrator.checkpoint_prompt.clone()),
         },
-        ConfigEntry::Blank,
-        ConfigEntry::Keys,
-        ConfigEntry::Blank,
-        ConfigEntry::Macros,
         ConfigEntry::Blank,
         ConfigEntry::Section("limits"),
         ConfigEntry::Comment(
@@ -1876,6 +2381,273 @@ fn config_schema() -> Vec<ConfigEntry> {
         },
     ];
     schema.extend(config_schema_cloud::entries());
+    // `[server.auth]` stays the file's last table (see below).
+    schema.push(ConfigEntry::Blank);
+    schema.extend(vec![
+        ConfigEntry::Section("server.auth"),
+        ConfigEntry::Comment(
+            "# The web UI's optional password: one password for one owner, the same\n\
+             # single workspace as always. With no password, anyone who can reach the\n\
+             # web UI controls your agents and terminals, so set one before serving\n\
+             # beyond this machine:\n\
+             #\n\
+             #   yaran config set server.auth.password\n\
+             #\n\
+             # That asks for the password twice without echoing it, shows how strong\n\
+             # it is, and stores only its hash below (`--stdin` reads it from a pipe\n\
+             # for scripts, dropping one trailing line break). A password cannot hold a\n\
+             # line break, a tab or another control character, which a browser's\n\
+             # password field cannot type. A running yaran is asked to reload after each\n\
+             # `yaran config set`.\n\
+             #\n\
+             # yaran refuses to start, and a reload refuses to change anything, while\n\
+             # this section is invalid: a misspelled key, a value of the wrong type,\n\
+             # or a password_hash yaran will not use. A mistake here is never read as\n\
+             # \"no password\".",
+        ),
+        ConfigEntry::Field {
+            key: "password_hash",
+            comment: Some(CommentSource::Static(
+                "# The password's Argon2id hash (a string starting $argon2id$v=19$), or \"\"\n\
+                 # for no password. Not the password itself, so this file can live in a\n\
+                 # dotfiles repository, but a published hash lets anyone try guesses\n\
+                 # offline as fast as their hardware allows, which no ban can slow down:\n\
+                 # use a long, unique, generated password. Set it with the command\n\
+                 # above rather than by hand. A hash you paste here is checked for its\n\
+                 # format and cost, but its password is only measured against the\n\
+                 # minimums below when you first log in with it. Changing or clearing it\n\
+                 # signs every browser out.",
+            )),
+            value_fn: |c| FieldValue::Str(c.server.auth.password_hash.clone()),
+        },
+        ConfigEntry::Field {
+            key: "require",
+            comment: Some(CommentSource::Static(
+                "# Where the password is asked for, once one is set:\n\
+                 #   \"network\"    everyone except this machine and your own tailnet (default)\n\
+                 #   \"tailnet\"    everyone except this machine\n\
+                 #   \"everywhere\" every request, this machine included\n\
+                 # A reverse proxy on this machine makes outside visitors look local, so\n\
+                 # use \"everywhere\" behind one. No effect while password_hash is empty.",
+            )),
+            value_fn: |c| FieldValue::Str(c.server.auth.require.as_str().to_string()),
+        },
+        ConfigEntry::Field {
+            key: "minimum_password_length",
+            comment: Some(CommentSource::Static(
+                "# The fewest characters a new password may have. Checked whenever yaran sees\n\
+                 # the password itself: `yaran config set` and the web UI refuse a shorter\n\
+                 # one, and logging in with one still works but shows a warning until it\n\
+                 # is changed. Default 12.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.minimum_password_length),
+        },
+        ConfigEntry::Field {
+            key: "minimum_password_score",
+            comment: Some(CommentSource::Static(
+                "# The lowest strength a new password may have, from 0 to 4: weak, fair,\n\
+                 # good, strong, excellent. The strength is an estimate of how many guesses\n\
+                 # it would take (dictionary words, names, dates, keyboard runs and l33t\n\
+                 # spellings all count against it), which is why there are no rules about\n\
+                 # symbols or capitals. Checked at the same moments as the length above.\n\
+                 # Default 2.",
+            )),
+            value_fn: |c| FieldValue::U16(u16::from(c.server.auth.minimum_password_score)),
+        },
+        ConfigEntry::Field {
+            key: "max_failed_logins",
+            comment: Some(CommentSource::Static(
+                "# Failed logins one address may make within failed_login_window_seconds\n\
+                 # before yaran adds it to blocked_addresses below and says so in its log.\n\
+                 # One device can send from any address in its IPv6 /64, so an IPv6\n\
+                 # client on your network is also counted by its /64: when its addresses\n\
+                 # together reach the limit, the whole /64 is added as one range. Never\n\
+                 # grouped, so slowed and added one address at a time: this machine's\n\
+                 # own network (every device on your LAN shares its /64), link-local\n\
+                 # fe80:: addresses, your tailnet, and IPv4.\n\
+                 # yaran only adds an address it can verify: a client connected to it\n\
+                 # directly, or one that came through your tailscale serve. Behind any\n\
+                 # other proxy the address is only what the request claims, so yaran\n\
+                 # writes nothing, keeps slowing those logins down (all such traffic\n\
+                 # together, too, so changing the claim does not help), and its log\n\
+                 # names the address for you to add by hand if you trust the proxy.\n\
+                 # This machine is never blocked, only slowed down. Everyone behind one\n\
+                 # shared address (an office, a phone carrier) is blocked together. 0\n\
+                 # never blocks anyone automatically (use it behind a proxy many people\n\
+                 # share an address through); the slow-down below still applies.\n\
+                 # Default 5.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.max_failed_logins),
+        },
+        ConfigEntry::Field {
+            key: "blocked_addresses",
+            comment: Some(CommentSource::Static(
+                "# Addresses and ranges yaran refuses before anything else, with or without a\n\
+                 # password: single addresses (\"203.0.113.7\", \"2001:db8::1\") or CIDR\n\
+                 # ranges (\"203.0.113.0/24\"). A request is refused when ANY address it\n\
+                 # names matches: where it connected from, and every address in its\n\
+                 # X-Forwarded-For, X-Real-IP and Forwarded headers, so an entry works\n\
+                 # behind a proxy too. Loopback and this machine's own addresses never\n\
+                 # match: they are this machine, and tailscale serve relays your tailnet\n\
+                 # through loopback, so the part of an entry covering them is accepted,\n\
+                 # warned about, and ignored; the rest of a range still applies. yaran adds\n\
+                 # single addresses after failed logins, or an IPv6 /64 as one range\n\
+                 # (\"2001:db8:1:2::/64\"), which then replaces the addresses of that /64\n\
+                 # already listed; it adds nothing an entry already covers. Yours to\n\
+                 # edit: add a scanner you keep seeing, or remove an entry yaran added\n\
+                 # (yours, if you mistyped). An entry that does not parse makes this\n\
+                 # section invalid. Default empty.",
+            )),
+            value_fn: |c| FieldValue::StrList(c.server.auth.blocked_addresses.clone()),
+        },
+        ConfigEntry::Field {
+            key: "session_idle_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long a signed-in browser stays signed in with nothing happening.\n\
+                 # Any request, and any open yaran tab (its live connection counts),\n\
+                 # keeps the session alive, so a tab left open waiting on an agent never\n\
+                 # signs out; close every tab and the session ends this many seconds\n\
+                 # later. Sessions survive a quick restart of yaran. At least 1. Default 60.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.session_idle_seconds),
+        },
+        ConfigEntry::Field {
+            key: "cli_token_idle_days",
+            comment: Some(CommentSource::Static(
+                "# How many days the yaran command line stays signed in to this server\n\
+                 # with nothing using it. Signing in from the command line gives that\n\
+                 # machine a token instead of a browser session, so daily use never asks\n\
+                 # for the password again; a token nobody uses for this many days stops\n\
+                 # working on its own. A password change ends every token at once; a\n\
+                 # command-line sign-out ends only the token it was sent with.\n\
+                 # At least 1. Default 30.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.cli_token_idle_days),
+        },
+        ConfigEntry::Field {
+            key: "disable_no_auth_warning",
+            comment: Some(CommentSource::Static(
+                "# Hide the red warning the web UI shows when yaran is reachable beyond this\n\
+                 # machine with no password set. The warning's \"don't show again\" sets\n\
+                 # this to true. Default false.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.server.auth.disable_no_auth_warning),
+        },
+        ConfigEntry::Field {
+            key: "cookie_secure",
+            comment: Some(CommentSource::Static(
+                "# Whether the sign-in cookie is marked Secure, which stops a browser from\n\
+                 # ever sending it over plain HTTP:\n\
+                 #   \"auto\"   only when yaran knows the browser reached it over HTTPS: a\n\
+                 #            tailscale serve HTTPS route, or a Tailscale Funnel (default)\n\
+                 #   \"always\" always; a browser on plain HTTP then cannot stay signed in\n\
+                 #   \"never\"  never\n\
+                 # Use \"always\" when an HTTPS proxy yaran cannot see is in front of it.\n\
+                 # \"always\" also tells yaran that browsers reach it over HTTPS, so the login\n\
+                 # page drops its warning that a password typed over plain HTTP can be\n\
+                 # overheard.",
+            )),
+            value_fn: |c| FieldValue::Str(c.server.auth.cookie_secure.as_str().to_string()),
+        },
+        ConfigEntry::Field {
+            key: "max_concurrent_password_checks",
+            comment: Some(CommentSource::Static(
+                "# Password checks yaran runs at once, across every visitor. Each takes about\n\
+                 # 19 MiB of memory and a few dozen milliseconds of CPU on purpose, so this\n\
+                 # bounds what a flood of login attempts can cost. At least 1. Default 2.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.max_concurrent_password_checks),
+        },
+        ConfigEntry::Field {
+            key: "password_check_queue",
+            comment: Some(CommentSource::Static(
+                "# Logins that may wait for a free check when all of them are busy. Any\n\
+                 # more are answered \"too many requests, try again shortly\" at once,\n\
+                 # without checking anything. Default 8.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.password_check_queue),
+        },
+        ConfigEntry::Field {
+            key: "max_password_bytes",
+            comment: Some(CommentSource::Static(
+                "# The longest password the login accepts, in bytes; a longer attempt is\n\
+                 # refused before any check runs, and `yaran config set` refuses to set one.\n\
+                 # 1 to 65536, and no smaller than minimum_password_length. Default 1024.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.max_password_bytes),
+        },
+        ConfigEntry::Field {
+            key: "failed_login_window_seconds",
+            comment: Some(CommentSource::Static(
+                "# How long a failed login counts against its address. An address's count\n\
+                 # starts over once this long has passed since its last failure.\n\
+                 # Default 900 (15 minutes).",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.failed_login_window_seconds),
+        },
+        ConfigEntry::Field {
+            key: "failed_login_delay_seconds",
+            comment: Some(CommentSource::Static(
+                "# After a failed login (or a wrong current password when changing it),\n\
+                 # how long that address must wait before its next attempt is checked.\n\
+                 # The wait doubles with each further failure in the window, up to\n\
+                 # failed_login_max_delay_seconds. This machine waits too. 0 turns the\n\
+                 # wait off. Default 1.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.failed_login_delay_seconds),
+        },
+        ConfigEntry::Field {
+            key: "failed_login_max_delay_seconds",
+            comment: Some(CommentSource::Static(
+                "# The longest that doubling wait can grow. Default 30.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.failed_login_max_delay_seconds),
+        },
+        ConfigEntry::Field {
+            key: "max_failed_logins_per_minute",
+            comment: Some(CommentSource::Static(
+                "# Failed logins per minute from many addresses together. Past it, they\n\
+                 # are told \"too many requests\" until the minute is over, which stops a\n\
+                 # guesser that keeps changing address. Counted apart for each kind of\n\
+                 # visitor, so a flood from one never locks out another: the internet and\n\
+                 # anything behind a proxy yaran cannot verify share one count, devices on\n\
+                 # your network another. Your tailnet devices and this machine are only\n\
+                 # slowed one address at a time. While yaran cannot vouch for loopback (a\n\
+                 # Funnel, tailscale = \"no\"), sign-ins on this machine keep counts of\n\
+                 # their own that internet and proxied visitors never touch, except through\n\
+                 # a tailscale serve TCP forward: visitors through one arrive exactly like\n\
+                 # this machine and share its count. Wrong current passwords when changing\n\
+                 # the password count like failed logins everywhere here. 0 turns this\n\
+                 # limit off. Default 30.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.max_failed_logins_per_minute),
+        },
+        ConfigEntry::Field {
+            key: "max_tracked_addresses",
+            comment: Some(CommentSource::Static(
+                "# How many addresses yaran remembers failed logins for at once; past it, the\n\
+                 # one forgotten is the address whose last failure is oldest. Bounds the\n\
+                 # memory a guesser with many addresses can make yaran use. At least 1.\n\
+                 # Default 10000.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.max_tracked_addresses),
+        },
+        ConfigEntry::Field {
+            key: "max_blocked_addresses",
+            comment: Some(CommentSource::Static(
+                "# How many entries blocked_addresses may hold before yaran stops adding to\n\
+                 # it. The whole list counts, entries you added yourself included. Past\n\
+                 # it, a newly blocked address stays blocked until yaran restarts but is not\n\
+                 # written here, and yaran says so in its log. Entries you add yourself are\n\
+                 # never refused. Default 1000.",
+            )),
+            value_fn: |c| FieldValue::U32(c.server.auth.max_blocked_addresses),
+        },
+        // The file ends in `[server.auth]`, never in a map of names
+        // (`[keys]`, `[macros]`): a line added at the end lands in the last
+        // table, and in a map of names a setting would silently become an
+        // entry, while here a misplaced one stops the start and names itself.
+    ]);
     schema
 }
 
@@ -1903,10 +2675,7 @@ fn render_config(config: &Config, bindings: &crate::keybindings::RuntimeBindings
                     out.push('\n');
                 }
                 match value_fn(config) {
-                    FieldValue::Str(s) => {
-                        let _ = writeln!(out, "{key} = \"{}\"", escape_toml_string(&s));
-                    }
-                    FieldValue::OptStr(Some(s)) => {
+                    FieldValue::Str(s) | FieldValue::OptStr(Some(s)) => {
                         let _ = writeln!(out, "{key} = \"{}\"", escape_toml_string(&s));
                     }
                     FieldValue::OptStr(None) => {
@@ -1946,13 +2715,13 @@ fn render_config(config: &Config, bindings: &crate::keybindings::RuntimeBindings
     out
 }
 
-pub fn render_default_config() -> String {
+pub(crate) fn render_default_config() -> String {
     let bindings = crate::keybindings::RuntimeBindings::from_keys_config(&KeysConfig::default());
     render_config(&Config::default(), &bindings)
 }
 
 /// Render a config through the canonical renderer (public for CLI diff).
-pub fn render_config_with(
+pub(crate) fn render_config_with(
     config: &Config,
     bindings: &crate::keybindings::RuntimeBindings,
 ) -> String {
@@ -1966,7 +2735,7 @@ pub fn render_config_with(
 /// This is the function handed to `yaran_core::config_write::set_canonical_renderer`,
 /// which is how `yaran serve`, a surface with no access to `RuntimeBindings`,
 /// still creates a fully-commented config on first run.
-pub fn render_config_documented(config: &Config) -> String {
+pub(crate) fn render_config_documented(config: &Config) -> String {
     let bindings = crate::keybindings::RuntimeBindings::from_keys_config(&config.keys);
     render_config(config, &bindings)
 }
@@ -1978,6 +2747,139 @@ pub fn render_config_documented(config: &Config) -> String {
 /// bootstrap project-sync. Idempotent.
 pub fn install_canonical_renderer() {
     yaran_core::config_write::set_canonical_renderer(render_config_documented);
+    // The terminal UI's own start check joins the one list of start checks
+    // (`yaran_core::config::check_start`), so every surface and `yaran config
+    // get`/`set` judge `[keys]` the same way.
+    yaran_core::config::install_terminal_ui_check(keys_start_problems);
+    yaran_core::config::install_terminal_ui_migration(|doc| {
+        prune_retired_key_actions(doc);
+        fold_legacy_key_actions(doc);
+    });
+    yaran_core::config::install_terminal_ui_key_resolution(terminal_ui_keys);
+    yaran_core::config::install_terminal_ui_key_actions(is_key_action);
+    // `get` and `set` judge `[ui] theme` by the terminal UI's own loader.
+    yaran_core::config_effective::install_theme_resolver(|name, root| {
+        let paths = YaranPaths {
+            root: root.to_path_buf(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+        crate::theme::load(name, &paths).is_ok()
+    });
+}
+
+/// Whether `name` is an action `[keys]` may bind: one the binding parser
+/// knows (`BINDING_DEFS`, the list `validate_keys` checks), or a retired or
+/// folded name its load still takes.
+fn is_key_action(name: &str) -> bool {
+    keybindings::BINDING_DEFS
+        .iter()
+        .any(|def| def.action.config_name() == name)
+        || RETIRED_KEY_ACTIONS.contains(&name)
+        || FOLDED_KEY_ACTIONS.iter().any(|fold| fold.legacy == name)
+}
+
+/// The `[keys]` the terminal UI runs with for a whole config file, by its
+/// own resolution: its key migrations, then each action's binding from the
+/// file or, where the file has none, the action's default, written as the
+/// config writes keys. `None` for a `[keys]` it cannot read.
+fn terminal_ui_keys(raw: &str) -> Option<toml::Table> {
+    let mut doc = raw.parse::<DocumentMut>().ok()?;
+    prune_retired_key_actions(&mut doc);
+    fold_legacy_key_actions(&mut doc);
+    let mut keys_only = DocumentMut::new();
+    if let Some(keys) = doc.get("keys") {
+        keys_only["keys"] = keys.clone();
+    }
+    let keys = toml::from_str::<Config>(&keys_only.to_string()).ok()?.keys;
+    let bindings = crate::keybindings::RuntimeBindings::from_keys_config(&keys);
+    let mut table = toml::Table::new();
+    table.insert(
+        "show_terminal_keys".to_string(),
+        toml::Value::Boolean(keys.show_terminal_keys),
+    );
+    for binding in bindings.bindings() {
+        let combos = binding
+            .keys
+            .iter()
+            .map(|combo| toml::Value::String(crate::keybindings::format_key_for_config(*combo)))
+            .collect();
+        table.insert(
+            binding.action.config_name().to_string(),
+            toml::Value::Array(combos),
+        );
+    }
+    Some(table)
+}
+
+/// What the terminal UI's start refuses in a whole config file's `[keys]`:
+/// the key migrations its start applies first (retired actions pruned,
+/// legacy ones folded), then [`validate_keys`]. A `[keys]` that does not
+/// read at all is a wrong-typed setting, which the start checks list on
+/// their own.
+fn keys_start_problems(raw: &str) -> Vec<String> {
+    let Ok(mut doc) = raw.parse::<DocumentMut>() else {
+        return Vec::new();
+    };
+    prune_retired_key_actions(&mut doc);
+    fold_legacy_key_actions(&mut doc);
+    // A name that is no action name at all may be a token pasted in the
+    // wrong place: it is placed by its line through the one formatter and
+    // never reaches `validate_keys`, whose message would repeat it.
+    let mut problems = Vec::new();
+    if let Some(keys) = doc
+        .get_mut("keys")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        let hidden: Vec<String> = keys
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .filter(|name| {
+                yaran_core::config::name_is_hidden(raw, &["keys".to_string(), name.clone()])
+            })
+            .collect();
+        for name in hidden {
+            let shown = yaran_core::config::shown_path(raw, &["keys".to_string(), name.clone()]);
+            problems.push(format!("[keys] {shown}: unknown action"));
+            keys.remove(&name);
+        }
+        // A binding that is not a key yaran understands is placed by its line
+        // and named by its action, never repeated (see
+        // `not_a_key_sentence`), and taken out so nothing below repeats it.
+        let invalid: Vec<String> = keys
+            .iter()
+            .filter(|(_, item)| {
+                item.as_value()
+                    .and_then(toml_edit::Value::as_array)
+                    .is_some_and(|bindings| {
+                        bindings.iter().any(|binding| {
+                            binding
+                                .as_str()
+                                .is_some_and(|text| !binding_is_understood(text))
+                        })
+                    })
+            })
+            .map(|(name, _)| name.to_string())
+            .collect();
+        for name in invalid {
+            let line = yaran_core::config::line_of_setting(raw, &["keys", &name]);
+            problems.push(not_a_key_sentence(&name, line));
+            keys.remove(&name);
+        }
+    }
+    let mut keys_only = DocumentMut::new();
+    if let Some(keys) = doc.get("keys") {
+        keys_only["keys"] = keys.clone();
+    }
+    if let Ok(config) = toml::from_str::<Config>(&keys_only.to_string()) {
+        problems.extend(key_binding_problems(&config.keys, &|action| {
+            yaran_core::config::line_of_setting(raw, &["keys", action])
+        }));
+    }
+    problems
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,7 +2888,7 @@ pub fn install_canonical_renderer() {
 
 /// The result of re-applying the commented template to an existing config.
 #[derive(Debug)]
-pub struct RestoredConfig {
+pub(crate) struct RestoredConfig {
     /// The full text of the restored file. Not yet written anywhere.
     pub text: String,
     /// Orphaned sections that were removed, as dotted paths.
@@ -2001,7 +2903,7 @@ pub struct RestoredConfig {
 
 impl RestoredConfig {
     /// Whether restoring would leave the file byte-identical.
-    pub fn is_noop(&self, original_raw: &str) -> bool {
+    pub(crate) fn is_noop(&self, original_raw: &str) -> bool {
         self.text == original_raw
     }
 }
@@ -2023,18 +2925,41 @@ impl RestoredConfig {
 /// * The result is re-parsed and compared against the config parsed from the
 ///   input. A mismatch aborts with an error rather than writing, so a renderer
 ///   bug can never silently rewrite a user's settings.
-pub fn restore_documentation(raw: &str) -> Result<RestoredConfig> {
-    let original: DocumentMut = raw
-        .parse()
-        .context("config.toml is not valid TOML, so its values cannot be read back safely")?;
+pub(crate) fn restore_documentation(raw: &str) -> Result<RestoredConfig> {
+    let original: DocumentMut = raw.parse().map_err(|e: toml_edit::TomlError| {
+        anyhow::anyhow!(
+            "config.toml is not valid TOML, so its values cannot be read back safely: {}",
+            yaran_core::config::describe_toml_edit_error(raw, &e)
+        )
+    })?;
 
-    let config: Config = toml::from_str(raw)
-        .context("config.toml parses as TOML but not as a yaran config, so its values cannot be read back safely")?;
+    let config: Config = toml::from_str(raw).map_err(|e| {
+        anyhow::anyhow!(
+            "config.toml parses as TOML but not as a yaran config, so its values cannot be read \
+             back safely: {}",
+            yaran_core::config::describe_toml_error(raw, &e)
+        )
+    })?;
+    // A password in a place yaran does not read is refused, never cleaned up:
+    // a top-level `[auth]` is an orphaned section, and dropping it would
+    // lose the hash the user meant to set.
+    if let Some(problem) = yaran_core::config::misplaced_auth_problems(raw)
+        .into_iter()
+        .next()
+    {
+        anyhow::bail!("{problem}. Nothing was changed.");
+    }
 
     let rendered_text = render_config_documented(&config);
-    let mut rendered: DocumentMut = rendered_text
-        .parse()
-        .context("the canonical config template did not render valid TOML (this is a yaran bug)")?;
+    // The rendered text carries every value, `[env]` secrets included, and a
+    // raw parser error quotes the offending line, so only the described form
+    // (position and kind of problem) may reach the message.
+    let mut rendered: DocumentMut = rendered_text.parse().map_err(|e: toml_edit::TomlError| {
+        anyhow::anyhow!(
+            "the canonical config template did not render valid TOML (this is a yaran bug): {}",
+            yaran_core::config::describe_toml_edit_error(&rendered_text, &e)
+        )
+    })?;
 
     let report = yaran_core::config_write::merge_unmanaged_keys(&mut rendered, &original);
     let text = rendered.to_string();
@@ -2049,9 +2974,12 @@ pub fn restore_documentation(raw: &str) -> Result<RestoredConfig> {
     // flag those and refuse every real restore. The fixed-point check tolerates
     // them and still catches an altered or lost value, which renders
     // differently.
-    let reparsed: Config = toml::from_str(&text).context(
-        "the restored config did not parse back as a yaran config; refusing to write it",
-    )?;
+    let reparsed: Config = toml::from_str(&text).map_err(|e| {
+        anyhow::anyhow!(
+            "the restored config did not parse back as a yaran config; refusing to write it: {}",
+            yaran_core::config::describe_toml_error(&text, &e)
+        )
+    })?;
     if render_config_documented(&reparsed) != rendered_text {
         anyhow::bail!(
             "restoring the documentation would have changed a setting's value; refusing to write. \
@@ -2073,15 +3001,18 @@ pub fn restore_documentation(raw: &str) -> Result<RestoredConfig> {
 /// from the on-disk version are updated, preserving user comments, formatting
 /// and unknown keys; a missing file gets a fresh canonical config.
 ///
-/// Deprecated: this bypasses the `ConfigWriteQueue` gate every runtime write
-/// must route through. Its only legitimate callers are the TUI bootstrap
-/// helpers (`persist_runtime_projects_to_config_and_store`,
-/// `sync_config_projects_with_store`), which are sync-direct by design.
+/// Test-only now: the TUI bootstrap helpers that used it write three-way
+/// through `yaran_core::config_write::save_config_three_way`, so only the
+/// tests that pin the first-creation render and the patch shape call it.
+#[cfg(test)]
 #[deprecated(
-    note = "route config writes through ConfigWriteQueue; sync-direct callers must #[allow(deprecated)]"
+    note = "route config writes through ConfigWriteQueue; sync-direct callers must #[expect(deprecated)] with a reason"
 )]
-#[allow(deprecated)] // internal delegation: body calls deprecated core fns (patch_config_file, write_config_secure)
-pub fn save_config(
+#[expect(
+    deprecated,
+    reason = "internal delegation: the body calls the deprecated core patch_config_file and write_config_secure"
+)]
+pub(crate) fn save_config(
     config_path: &Path,
     config: &Config,
     _bindings: &crate::keybindings::RuntimeBindings,
@@ -2131,10 +3062,8 @@ fn render_keys_config(
         // palette and stay out of the template. A key-scoped action that ships
         // unbound is a commented-out row rather than an omission: the config
         // file is the documentation. A user who bound it gets a real row.
-        let user_bound = keys
-            .bindings
-            .get(config_name)
-            .is_some_and(|combos| !combos.is_empty());
+        let user_bound =
+            keybindings::configured_keys(keys, def.action).is_some_and(|combos| !combos.is_empty());
         if def.default_keys.is_empty() && !user_bound {
             if !def.scopes.is_empty() {
                 let section = def.action.help_section().unwrap_or("Other");
@@ -2176,12 +3105,14 @@ fn render_keys_config(
         let _ = writeln!(out, "# {desc}");
 
         // Value from config (or defaults if missing).
-        let key_strs = keys.bindings.get(config_name).cloned().unwrap_or_else(|| {
-            def.default_keys
-                .iter()
-                .map(|k| keybindings::format_key_for_config(*k))
-                .collect()
-        });
+        let key_strs = keybindings::configured_keys(keys, def.action)
+            .cloned()
+            .unwrap_or_else(|| {
+                def.default_keys
+                    .iter()
+                    .map(|k| keybindings::format_key_for_config(*k))
+                    .collect()
+            });
         let _ = writeln!(out, "{config_name} = {}", render_string_list(&key_strs));
     }
     out.push('\n');
@@ -2203,7 +3134,10 @@ fn render_macros_config(
          # surface = \"both\":     shown on both surfaces.\n\
          # Newlines in text values are translated to Alt+Enter (ESC + CR) so\n\
          # multi-line macros are entered as a single prompt; press Enter yourself\n\
-         # to submit afterwards.",
+         # to submit afterwards.\n\
+         # Macros are listed in the order they are written here. A macro written\n\
+         # as its own [macros.<name>] section always comes after every\n\
+         # name = {{ ... }} line, so keep all macros in one form to choose any order.",
     );
     if macros.entries.is_empty() {
         out.push_str(
@@ -2240,7 +3174,7 @@ fn escape_toml_string(value: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if c.is_control() => {
-                out.push_str(&format!("\\u{:04X}", c as u32));
+                let _ = write!(out, "\\u{:04X}", u32::from(c));
             }
             c => out.push(c),
         }
@@ -2296,28 +3230,23 @@ fn render_project_configs(out: &mut String, projects: &[ProjectConfig]) {
 
     for project in projects {
         out.push_str("[[projects]]\n");
-        out.push_str(&format!("id = \"{}\"\n", escape_toml_string(&project.id)));
-        out.push_str(&format!(
-            "path = \"{}\"\n",
-            escape_toml_string(&project.path)
-        ));
+        let _ = writeln!(out, "id = \"{}\"", escape_toml_string(&project.id));
+        let _ = writeln!(out, "path = \"{}\"", escape_toml_string(&project.path));
         if let Some(name) = &project.name {
-            out.push_str(&format!("name = \"{}\"\n", escape_toml_string(name)));
+            let _ = writeln!(out, "name = \"{}\"", escape_toml_string(name));
         }
         if let Some(provider) = &project.default_provider {
-            out.push_str(&format!(
-                "default_provider = \"{}\"\n",
+            let _ = writeln!(
+                out,
+                "default_provider = \"{}\"",
                 escape_toml_string(provider)
-            ));
+            );
         }
         if let Some(auto_reopen_agents) = project.auto_reopen_agents {
-            out.push_str(&format!("auto_reopen_agents = {auto_reopen_agents}\n"));
+            let _ = writeln!(out, "auto_reopen_agents = {auto_reopen_agents}");
         }
         if let Some(command) = &project.startup_command {
-            out.push_str(&format!(
-                "startup_command = \"{}\"\n",
-                escape_toml_string(command)
-            ));
+            let _ = writeln!(out, "startup_command = \"{}\"", escape_toml_string(command));
         }
         if !project.env.is_empty() {
             out.push_str("env = { ");
@@ -2325,12 +3254,17 @@ fn render_project_configs(out: &mut String, projects: &[ProjectConfig]) {
                 if index > 0 {
                     out.push_str(", ");
                 }
-                out.push_str(&format!("{} = \"{}\"", key, escape_toml_string(value)));
+                let _ = write!(
+                    out,
+                    "{} = \"{}\"",
+                    toml_edit::Key::new(key.as_str()),
+                    escape_toml_string(value)
+                );
             }
             out.push_str(" }\n");
         }
         if let Some(mode) = project.workspace_mode {
-            out.push_str(&format!("workspace_mode = \"{}\"\n", mode.as_str()));
+            let _ = writeln!(out, "workspace_mode = \"{}\"", mode.as_str());
         }
         out.push('\n');
     }
@@ -2357,7 +3291,12 @@ fn render_env_config(out: &mut String, env: &BTreeMap<String, String>) {
         return;
     }
     for (name, value) in env {
-        out.push_str(&format!("{} = \"{}\"\n", name, escape_toml_string(value)));
+        let _ = writeln!(
+            out,
+            "{} = \"{}\"",
+            toml_edit::Key::new(name.as_str()),
+            escape_toml_string(value)
+        );
     }
     out.push('\n');
 }
@@ -2367,17 +3306,15 @@ fn render_terminal_config(out: &mut String, terminal: &TerminalConfig) {
     out.push_str(
         "# CLI command yaran should use for the companion terminal bound to an agent session.\n",
     );
-    out.push_str(&format!(
-        "command = \"{}\"\n",
+    let _ = writeln!(
+        out,
+        "command = \"{}\"",
         escape_toml_string(&terminal.command)
-    ));
+    );
     out.push_str(
         "# Arguments for the companion terminal command. The default [\"-l\"] launches a login\n# shell so your profile, aliases, and prompt are loaded.\n",
     );
-    out.push_str(&format!(
-        "args = {}\n\n",
-        render_string_list(&terminal.args)
-    ));
+    let _ = writeln!(out, "args = {}\n", render_string_list(&terminal.args));
 }
 
 fn render_startup_command_terminal_config(
@@ -2389,48 +3326,53 @@ fn render_startup_command_terminal_config(
         "# Shell used to run project startup commands before launching a new agent.\n\
          # \"$SHELL\" is expanded when the command runs and falls back to /bin/sh if unset.\n",
     );
-    out.push_str(&format!(
-        "command = \"{}\"\n",
+    let _ = writeln!(
+        out,
+        "command = \"{}\"",
         escape_toml_string(&terminal.command)
-    ));
+    );
     out.push_str(
         "# Arguments passed before the configured project startup command.\n\
          # The default [\"-l\", \"-c\"] runs a login shell without interactive job-control warnings.\n",
     );
-    out.push_str(&format!(
-        "args = {}\n\n",
-        render_string_list(&terminal.args)
-    ));
+    let _ = writeln!(out, "args = {}\n", render_string_list(&terminal.args));
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "every provider key with its comment, in the order config.toml shows them"
+)]
 fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommandConfig) {
-    out.push_str(&format!("[providers.{name}]\n"));
-    out.push_str(&format!("# CLI command for {name} sessions.\n"));
-    out.push_str(&format!(
-        "command = \"{}\"\n",
-        escape_toml_string(&config.command)
-    ));
+    // A provider name is free text: the key form quotes it wherever a bare
+    // key would not parse, and it keeps a newline in the name out of the
+    // comment line too.
+    let key = toml_edit::Key::new(name);
+    let _ = writeln!(out, "[providers.{key}]");
+    let _ = writeln!(out, "# CLI command for {key} sessions.");
+    let _ = writeln!(out, "command = \"{}\"", escape_toml_string(&config.command));
     out.push_str(
         "# Arguments passed to the provider command when launching an interactive PTY session.\n",
     );
-    out.push_str(&format!("args = {}\n", render_string_list(&config.args)));
+    let _ = writeln!(out, "args = {}", render_string_list(&config.args));
     out.push_str(
         "# Optional args yaran should use when reconnecting a detached session.\n\
          # Leave this empty for CLIs that do not support cwd/repo-scoped session resume.\n",
     );
-    out.push_str(&format!(
-        "resume_args = {}\n",
+    let _ = writeln!(
+        out,
+        "resume_args = {}",
         render_string_list(config.resume_args.as_deref().unwrap_or(&[]))
-    ));
+    );
     out.push_str(
         "# Optional timeout for resumed sessions that produce no visible output.\n\
          # If resume hangs before rendering anything, yaran kills it and retries fresh after this many milliseconds.\n\
          # Set to 0 to disable the timeout.\n",
     );
-    out.push_str(&format!(
-        "resume_wait_timeout_ms = {}\n",
+    let _ = writeln!(
+        out,
+        "resume_wait_timeout_ms = {}",
         config.resume_wait_timeout_ms.unwrap_or(0)
-    ));
+    );
     out.push_str(
         "# Optional args that resume ONE specific conversation by its id. yaran replaces the\n\
          # exact token \"{session_id}\" with the id it recorded for this agent, so several\n\
@@ -2440,18 +3382,14 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
          # Leave the key absent for CLIs with no resume-by-id; set [] to opt out.\n",
     );
     match &config.resume_by_id_args {
-        Some(args) => out.push_str(&format!(
-            "resume_by_id_args = {}\n",
-            render_string_list(args)
-        )),
+        Some(args) => {
+            let _ = writeln!(out, "resume_by_id_args = {}", render_string_list(args));
+        }
         None => out.push_str("# resume_by_id_args = [\"--resume\", \"{session_id}\"]\n"),
     }
     if let Some(hint) = &config.install_hint {
         out.push_str("# Hint shown to the user when the provider command is not found on PATH.\n");
-        out.push_str(&format!(
-            "install_hint = \"{}\"\n",
-            escape_toml_string(hint)
-        ));
+        let _ = writeln!(out, "install_hint = \"{}\"", escape_toml_string(hint));
     }
     out.push_str(
         "# Controls whether the mouse wheel and PgUp/PgDn scroll yaran's own host\n\
@@ -2466,7 +3404,9 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
          # Leave this key absent for auto. Uncomment to pin a value.\n",
     );
     match config.forward_scroll {
-        Some(value) => out.push_str(&format!("forward_scroll = {value}\n")),
+        Some(value) => {
+            let _ = writeln!(out, "forward_scroll = {value}");
+        }
         None => out.push_str("# forward_scroll = true\n"),
     }
     out.push_str(
@@ -2481,7 +3421,9 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
          # forward_scroll above, not by this key.\n",
     );
     match config.forward_mouse {
-        Some(value) => out.push_str(&format!("forward_mouse = {value}\n")),
+        Some(value) => {
+            let _ = writeln!(out, "forward_mouse = {value}");
+        }
         None => out.push_str("# forward_mouse = false\n"),
     }
     out.push_str(
@@ -2520,10 +3462,13 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
          # An absent key, or a value yaran does not recognize, means bare.\n",
     );
     match &config.web_dragdrop_paste {
-        Some(value) => out.push_str(&format!(
-            "web_dragdrop_paste = \"{}\"\n",
-            escape_toml_string(value)
-        )),
+        Some(value) => {
+            let _ = writeln!(
+                out,
+                "web_dragdrop_paste = \"{}\"",
+                escape_toml_string(value)
+            );
+        }
         None => out.push_str("# web_dragdrop_paste = \"bare\"\n"),
     }
     out.push('\n');
@@ -2534,7 +3479,6 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
 /// configured. Claude ships copy-pasteable commented examples tailored to
 /// Anthropic's transient errors. They stay commented because a rule types into
 /// the agent's PTY unprompted, so yaran opts users in explicitly.
-///
 /// Configured rules are rendered as real array-of-tables entries (with nested
 /// tables inline) so `yaran config restore-docs`, which re-renders the whole file
 /// from the parsed config, keeps them.
@@ -2543,7 +3487,8 @@ fn render_provider_watch_rules(
     name: &str,
     rules: &[yaran_core::watch::WatchRule],
 ) {
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "# Watch rules. Each rule pairs a regex against this provider's recent\n\
          # output with an action; configure as `[[providers.{name}.watch]]` array\n\
          # entries. Fields:\n\
@@ -2564,7 +3509,7 @@ fn render_provider_watch_rules(
          # Patterns run against output that may include content from the project\n\
          # under edit, so the engine caps regex size and caps each rule's fires by\n\
          # default. Rules are disarmed and re-armed from the \"watch-rules\" palette.\n"
-    ));
+    );
     if name == "claude" {
         out.push_str(
             "#\n\
@@ -2631,7 +3576,7 @@ fn render_provider_watch_rules(
     }
     out.push('\n');
     for rule in rules {
-        out.push_str(&format!("[[providers.{name}.watch]]\n"));
+        let _ = writeln!(out, "[[providers.{name}.watch]]");
         out.push_str(&render_watch_rule_body(rule));
         out.push('\n');
     }
@@ -2646,9 +3591,30 @@ fn render_watch_rule_body(rule: &yaran_core::watch::WatchRule) -> String {
     };
     let mut out = String::new();
     for (key, value) in &table {
-        out.push_str(&format!("{key} = {value}\n"));
+        let _ = writeln!(out, "{key} = {value}");
     }
     out
+}
+
+/// Whether `binding` is a key yaran understands: the one parser both
+/// [`validate_keys`] and the start check read a binding with.
+pub(crate) fn binding_is_understood(binding: &str) -> bool {
+    crokey::parse(&keybindings::normalize_key_string(binding)).is_ok()
+}
+
+/// The sentence for a binding of `action` that is not a key yaran understands.
+/// It never repeats the binding: a value pasted in the wrong place (a token)
+/// may be what is there. `at` places it, by its line where the file's text
+/// is at hand.
+fn not_a_key_sentence(action: &str, at: Option<usize>) -> String {
+    match at {
+        Some(line) => {
+            format!(
+                "[keys] the binding on line {line} for action {action} is not a key yaran understands"
+            )
+        }
+        None => format!("[keys] a binding for action {action} is not a key yaran understands"),
+    }
 }
 
 /// Validate all key bindings in the config. Returns a descriptive error on failure.
@@ -2656,49 +3622,134 @@ fn render_watch_rule_body(rule: &yaran_core::watch::WatchRule) -> String {
 /// Checks:
 /// 1. Every action name is known (present in `BINDING_DEFS`).
 /// 2. Every key string parses successfully after normalization
-///    (bare uppercase letters like `"P"` are rewritten to `"shift-p"`).
-/// 3. No two actions bind the same normalized key in overlapping scopes.
-pub fn validate_keys(keys: &KeysConfig) -> Result<(), String> {
+///    (bare uppercase letters like `"P"` are rewritten to `"shift-p"`); a
+///    binding that does not is named by its action, never repeated.
+/// 3. No two actions bind the same normalized key in one lookup (a global
+///    binding shadowing a pane's is a warning instead, see
+///    [`key_binding_warnings`]).
+pub(crate) fn validate_keys(keys: &KeysConfig) -> Result<(), String> {
+    let problems = key_binding_problems(keys, &|_| None);
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// Every binding in `keys` that loads but never runs on its key: a pane
+/// action whose key a global action also holds, which the main key handler
+/// answers first, and an interactive-mode key the terminal sends no bytes of
+/// its own for. Each is named by its actions and never by the user's key.
+/// Also every newer default that starts unbound because the file already
+/// binds its key elsewhere, which names that default key, yaran's own. These
+/// warn rather than refuse, because a file holding one used to load.
+///
+/// The interactive warning is worded by `extended_keys`: the config is read
+/// before yaran knows what the host terminal sends, so with extended keys
+/// possible the chord may yet arrive, and with them off it never will.
+pub(crate) fn key_binding_warnings(
+    keys: &KeysConfig,
+    extended_keys: yaran_core::config::ExtendedKeysMode,
+) -> Vec<String> {
+    let shadowed = keybindings::detect_conflicts(keys)
+        .into_iter()
+        .filter(|conflict| conflict.kind == keybindings::ConflictKind::Shadowed)
+        .map(|conflict| {
+            format!(
+                "[keys] {pane} never runs on its key in the {scope}: the global {global} binds \
+                 the same key and is answered first; give one of them a different key in [keys]",
+                pane = conflict.action_b,
+                global = conflict.action_a,
+                scope = conflict.scope.display_name(),
+            )
+        });
+    let unmatchable = keybindings::unmatchable_interactive_bindings(keys)
+        .into_iter()
+        .map(move |action| {
+            let scope = keybindings::BindingScope::Interactive.display_name();
+            match extended_keys {
+                yaran_core::config::ExtendedKeysMode::Auto
+                | yaran_core::config::ExtendedKeysMode::On => {
+                    format!(
+                        "[keys] a key bound to {action} cannot be matched in {scope} on a \
+                         terminal without extended keys: a classic terminal sends no bytes of \
+                         its own for that chord while you type into a pane. It works when your \
+                         terminal or tmux sends extended keys ([ui] extended_keys); otherwise \
+                         give it a different key in [keys]"
+                    )
+                }
+                yaran_core::config::ExtendedKeysMode::Off => format!(
+                    "[keys] a key bound to {action} cannot be matched in {scope}: extended keys \
+                     are off ([ui] extended_keys), and a classic terminal sends no bytes of its \
+                     own for that chord while you type into a pane; give it a different key in \
+                     [keys]"
+                ),
+            }
+        });
+    shadowed
+        .chain(unmatchable)
+        .chain(keybindings::late_default_warnings(keys))
+        .collect()
+}
+
+/// Every problem with the bindings in `keys`, none of them repeating a
+/// binding (a value pasted in the wrong place, a token, may be what is
+/// there): an action yaran does not have, a binding that is not a key, and two
+/// actions binding the same key in a shared scope, each named by its action.
+/// `line_of` places an action's binding by its line where the file's text is
+/// at hand; an action the file leaves out binds its default key.
+fn key_binding_problems(keys: &KeysConfig, line_of: &dyn Fn(&str) -> Option<usize>) -> Vec<String> {
+    let mut problems = Vec::new();
     for (name, key_strs) in &keys.bindings {
         let valid = keybindings::BINDING_DEFS
             .iter()
             .any(|d| d.action.config_name() == name);
         if !valid {
-            return Err(format!("[keys] unknown action: \"{name}\""));
-        }
-        for s in key_strs {
-            let normalized = keybindings::normalize_key_string(s);
-            crokey::parse(&normalized)
-                .map_err(|_| format!("[keys] invalid key \"{s}\" for action \"{name}\""))?;
+            problems.push(format!("[keys] unknown action: \"{name}\""));
+        } else if !key_strs
+            .iter()
+            .all(|binding| binding_is_understood(binding))
+        {
+            problems.push(not_a_key_sentence(name, line_of(name)));
         }
     }
-
-    // Detect conflicting bindings (same key in overlapping scopes).
-    let conflicts = keybindings::detect_conflicts(keys);
-    if !conflicts.is_empty() {
-        let mut msg = String::from("[keys] conflicting keybindings detected:");
-        for c in &conflicts {
-            msg.push_str(&format!(
-                "\n  - \"{}\" is bound to both \"{}\" and \"{}\" in {}",
-                c.key_label,
-                c.action_a,
-                c.action_b,
-                c.scope.display_name(),
-            ));
-        }
-        msg.push_str(
-            "\nCheck your [keys.bindings] configuration and ensure each key is unique within its scope.",
-        );
-        return Err(msg);
+    // Conflicts are judged once every binding is a key yaran understands.
+    if !problems.is_empty() {
+        return problems;
     }
-
-    Ok(())
+    let placed = |action: &str| {
+        if keys.bindings.contains_key(action) {
+            match line_of(action) {
+                Some(line) => format!("{action} (line {line})"),
+                None => action.to_string(),
+            }
+        } else {
+            format!("{action} (its default key)")
+        }
+    };
+    for conflict in keybindings::detect_conflicts(keys)
+        .into_iter()
+        .filter(|conflict| conflict.kind == keybindings::ConflictKind::Collision)
+    {
+        problems.push(format!(
+            "[keys] two actions bind the same key: {} and {} in the {}; give one of them a \
+             different key in [keys]",
+            placed(conflict.action_a),
+            placed(conflict.action_b),
+            conflict.scope.display_name(),
+        ));
+    }
+    problems
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // tests call the deprecated save_config wrapper directly to verify its behaviour
+#[expect(
+    deprecated,
+    reason = "the tests call the deprecated save_config wrapper directly to verify its behaviour"
+)]
 mod tests {
     use indexmap::IndexMap;
+    use yaran_core::config::ExtendedKeysMode;
 
     use super::*;
 
@@ -3020,7 +4071,7 @@ mod tests {
             assert_eq!(after.auto_resume_shared(), before.auto_resume_shared());
             normalized.workspace = None;
         }
-        for (name, provider) in normalized.providers.commands.iter_mut() {
+        for (name, provider) in &mut normalized.providers.commands {
             if before.providers.commands[name]
                 .resume_wait_timeout_ms
                 .is_none()
@@ -3153,10 +4204,20 @@ mod tests {
                 restored.text
             );
         }
+        // Reported by line: a key the schema does not know is never named.
         assert!(
             restored
                 .preserved
-                .contains(&"server.listen_addrs".to_string()),
+                .iter()
+                .any(|path| path.starts_with("the entry on line") && path.ends_with("of [server]")),
+            "preserved list: {:?}",
+            restored.preserved
+        );
+        assert!(
+            !restored
+                .preserved
+                .iter()
+                .any(|path| path.contains("listen_addrs")),
             "preserved list: {:?}",
             restored.preserved
         );
@@ -3187,6 +4248,20 @@ mod tests {
     }
 
     #[test]
+    fn restore_docs_keeps_names_that_are_not_bare_keys() {
+        let raw = "[env]\n\"MY KEY\" = \"sk-live-123\"\n\"A.B\" = \"two\"\n\n\
+                   [providers.\"my cli\"]\ncommand = \"my-cli\"\n\n\
+                   [[projects]]\nid = \"p1\"\npath = \"/tmp/p\"\n\
+                   env = { \"TOKEN X\" = \"sk-proj-456\" }\n";
+        let restored = restore_documentation(raw).expect("restore");
+        let after: Config = toml::from_str(&restored.text).expect("restored parses");
+        assert_eq!(after.env["MY KEY"], "sk-live-123");
+        assert_eq!(after.env["A.B"], "two");
+        assert_eq!(after.providers.commands["my cli"].command, "my-cli");
+        assert_eq!(after.projects[0].env["TOKEN X"], "sk-proj-456");
+    }
+
+    #[test]
     fn restore_docs_is_a_noop_on_an_already_canonical_config() {
         // The existing behaviour must not regress: a file the canonical renderer
         // produced is already fully documented, so there is nothing to restore.
@@ -3196,8 +4271,8 @@ mod tests {
             restored.is_noop(&raw),
             "a canonical config should restore to itself"
         );
-        assert!(restored.dropped.is_empty());
-        assert!(restored.preserved.is_empty());
+        assert_eq!(restored.dropped, Vec::<String>::new());
+        assert_eq!(restored.preserved, Vec::<String>::new());
     }
 
     #[test]
@@ -3372,6 +4447,18 @@ mod tests {
     /// There is deliberately NO experimental marker to require: the TUI takes
     /// part in the ownership model, so the comment describes one driver at a time
     /// rather than warning about a redraw fight.
+    /// No serve-related comment still says there is no login: the password
+    /// exists, and the comments are the documentation.
+    #[test]
+    fn no_comment_says_there_is_no_login() {
+        let toml = render_default_config().to_lowercase();
+        for stale in ["no login", "login gate", "is refused with a page"] {
+            assert!(!toml.contains(stale), "{stale}");
+        }
+        let tailscale = render_default_config();
+        assert!(tailscale.contains("On \"no\" yaran cannot"), "{tailscale}");
+    }
+
     #[test]
     fn serve_while_tui_comment_states_what_trust_ownership_and_how_to_stop() {
         let toml = render_default_config();
@@ -3388,7 +4475,7 @@ mod tests {
             // what it does
             "keeps running",
             // the trust consequence
-            "no login",
+            "anyone who can reach it",
             // what happens when two devices want the same terminal
             "take over",
             // how to stop it
@@ -3410,7 +4497,8 @@ mod tests {
     fn ensure_config_rejects_non_ip_host() {
         let mut config = Config::default();
         config.server.host = "example.com".to_string();
-        let err = validate_server_host(&config).expect_err("a non-IP host must be rejected");
+        let err =
+            yaran_core::config::start_check(&config).expect_err("a non-IP host must be rejected");
         assert!(
             err.to_string().contains("example.com"),
             "the error must name the bad host: {err}"
@@ -3421,9 +4509,9 @@ mod tests {
     fn ensure_config_accepts_ip_hosts() {
         let mut config = Config::default();
         config.server.host = "0.0.0.0".to_string();
-        validate_server_host(&config).expect("0.0.0.0 is a valid host");
+        yaran_core::config::start_check(&config).expect("0.0.0.0 is a valid host");
         config.server.host = "127.0.0.1".to_string();
-        validate_server_host(&config).expect("loopback is a valid host");
+        yaran_core::config::start_check(&config).expect("loopback is a valid host");
     }
 
     /// Every shipped provider's targeted-resume args survive the documented
@@ -3466,6 +4554,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one assertion per line the default config must carry"
+    )]
     fn default_config_is_commented_and_complete() {
         let rendered = render_default_config();
         assert!(rendered.contains("# yaran configuration"));
@@ -3502,6 +4594,13 @@ mod tests {
         assert!(rendered.contains("terminal_font_family = \"\""));
         assert!(rendered.contains("terminal_font_size = 14"));
         assert!(rendered.contains("compose_bar = \"auto\""));
+        assert!(rendered.contains(
+            "# Extended keys in the terminal UI: let yaran tell apart keys a classic terminal\n"
+        ));
+        assert!(rendered.contains(
+            "#   set -s extended-keys-format csi-u\n# Takes effect the next time the terminal UI starts."
+        ));
+        assert!(rendered.contains("extended_keys = \"auto\""));
         assert!(rendered.contains("mobile_accessory_bar = true"));
         assert!(rendered.contains("attention_grace_seconds = 3"));
         assert!(rendered.contains("auto_reopen_agents = false"));
@@ -3536,6 +4635,12 @@ mod tests {
         assert!(!rendered.contains("dangerously_listen_http"));
         assert!(rendered.contains("color = \"auto\""));
         assert!(rendered.contains("access_log = true"));
+        assert!(rendered.contains("log_viewer_lines = 2000"));
+        assert!(rendered.contains("log_path = \"server.log\""));
+        assert!(rendered.contains("log_max_bytes = 10485760"));
+        assert!(rendered.contains("log_keep = 5"));
+        assert!(rendered.contains("log_compress = true"));
+        assert!(rendered.contains("qr_codes = true"));
         assert!(rendered.contains("serve_while_tui = false"));
         assert!(rendered.contains("max_websocket_events_connections = 32"));
         assert!(rendered.contains("max_websocket_agent_connections = 32"));
@@ -3553,6 +4658,7 @@ mod tests {
         assert!(rendered.contains("pty_send_timeout_seconds = 60"));
         assert!(rendered.contains("reconnect_attempts = 8"));
         assert!(rendered.contains("reconnect_attempt_timeout_seconds = 10"));
+        assert!(rendered.contains("changes_request_timeout_seconds = 30"));
         assert!(rendered.contains("agent_tabs_max = 20"));
         assert!(rendered.contains("title = \"yaran\""));
         // Assert the active key (not a commented-out line) so a regression that
@@ -3664,13 +4770,13 @@ mod tests {
         config
             .keys
             .bindings
-            .insert("select_tab_4".to_string(), vec!["ctrl-t".to_string()]);
+            .insert("select_tab_4".to_string(), vec!["alt-4".to_string()]);
         let bindings = crate::keybindings::RuntimeBindings::from_keys_config(&config.keys);
         let rendered = render_config(&config, &bindings);
         assert!(
             rendered
                 .lines()
-                .any(|l| l.trim() == "select_tab_4 = [\"ctrl-t\"]"),
+                .any(|l| l.trim() == "select_tab_4 = [\"alt-4\"]"),
             "a user-bound action must render as an active row; got:\n{}",
             rendered
                 .lines()
@@ -3686,14 +4792,41 @@ mod tests {
         assert!(validate_keys(&keys).is_ok());
     }
 
+    /// The start check places a binding that is not a key by its line and
+    /// its action, in every way `[keys]` can be written, and never repeats it.
+    #[test]
+    fn a_binding_that_is_not_a_key_is_placed_by_its_line_and_action() {
+        for (raw, line) in [
+            ("[keys]\nquit = [\"zzTOKEN x\"]\n", 2),
+            (
+                "[keys]\nopen_palette = [\"ctrl-p\"]\nquit = [\"ctrl-q\", \"zzTOKEN x\"]\n",
+                3,
+            ),
+            ("keys = { quit = [\"zzTOKEN x\"] }\n", 1),
+            ("keys.quit = [\"zzTOKEN x\"]\n", 1),
+        ] {
+            let problems = keys_start_problems(raw);
+            assert_eq!(
+                problems,
+                vec![format!(
+                    "[keys] the binding on line {line} for action quit is not a key yaran understands"
+                )],
+                "{raw}"
+            );
+        }
+    }
+
     #[test]
     fn validate_keys_rejects_bad_key() {
         let mut keys = KeysConfig::default();
         keys.bindings
             .insert("quit".to_string(), vec!["badkey!!!".to_string()]);
-        let result = validate_keys(&keys);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("badkey!!!"));
+        let error = validate_keys(&keys).unwrap_err();
+        // Named by its action, never repeated: the value may be a token.
+        assert_eq!(
+            error,
+            "[keys] a binding for action quit is not a key yaran understands"
+        );
     }
 
     #[test]
@@ -3717,7 +4850,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: Some("npm install".to_string()),
-            env: Default::default(),
+            env: BTreeMap::default(),
             workspace_mode: None,
         });
         let rendered = render_config_default(&config);
@@ -3862,7 +4995,7 @@ name = "test"
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: Some("echo ready".to_string()),
-            env: Default::default(),
+            env: BTreeMap::default(),
             workspace_mode: None,
         });
         let bindings = crate::keybindings::RuntimeBindings::from_keys_config(&config.keys);
@@ -3953,7 +5086,7 @@ name = "test"
         }
     }
 
-    /// Strict mode is opt-in and reaches the bridge as YARAN_AMQ_VERIFY at
+    /// Strict mode is opt-in and reaches the bridge as `YARAN_AMQ_VERIFY` at
     /// spawn, so both values must survive a render and parse.
     #[test]
     fn amq_inject_verify_envelope_round_trips() {
@@ -4061,6 +5194,7 @@ name = "test"
         config.server.pty_send_timeout_seconds = 45;
         config.server.reconnect_attempts = 46;
         config.server.reconnect_attempt_timeout_seconds = 47;
+        config.server.changes_request_timeout_seconds = 48;
         let rendered = render_config_default(&config);
         let parsed: Config = toml::from_str(&rendered).expect("config should parse");
         assert_eq!(parsed.server.replay_wait_seconds, 41);
@@ -4070,6 +5204,7 @@ name = "test"
         assert_eq!(parsed.server.pty_send_timeout_seconds, 45);
         assert_eq!(parsed.server.reconnect_attempts, 46);
         assert_eq!(parsed.server.reconnect_attempt_timeout_seconds, 47);
+        assert_eq!(parsed.server.changes_request_timeout_seconds, 48);
     }
 
     #[test]
@@ -4175,13 +5310,13 @@ name = "test"
 
     #[test]
     fn old_config_missing_staged_pane_height_defaults_to_50() {
-        let toml_str = r#"
+        let toml_str = r"
 [ui]
 left_width_pct = 20
 right_width_pct = 23
 terminal_pane_height_pct = 35
 agent_scrollback_lines = 10000
-"#;
+";
         let parsed: Config = toml::from_str(toml_str).expect("should parse");
         assert_eq!(parsed.ui.empty_project_separator_min_projects, 5);
         assert_eq!(parsed.ui.staged_pane_height_pct, 50);
@@ -4236,9 +5371,12 @@ agent_scrollback_lines = 10000
             web_dragdrop_paste: None,
             watch: Vec::new(),
         };
-        assert_eq!(cfg.interactive_args(false), ["--interactive"]);
         assert_eq!(
-            cfg.interactive_args(true),
+            cfg.interactive_args(yaran_core::model::ConversationStart::Fresh),
+            ["--interactive"]
+        );
+        assert_eq!(
+            cfg.interactive_args(yaran_core::model::ConversationStart::Resume),
             ["--interactive", "--resume", "--last"]
         );
 
@@ -4254,7 +5392,10 @@ agent_scrollback_lines = 10000
             web_dragdrop_paste: None,
             watch: Vec::new(),
         };
-        assert_eq!(unsupported.interactive_args(true), ["--interactive"]);
+        assert_eq!(
+            unsupported.interactive_args(yaran_core::model::ConversationStart::Resume),
+            ["--interactive"]
+        );
         assert!(!unsupported.supports_session_resume());
     }
 
@@ -4319,6 +5460,38 @@ agent_scrollback_lines = 10000
     }
 
     #[test]
+    fn ensure_defaults_adds_grok_and_keeps_a_hand_written_grok_block() {
+        let mut without = ProvidersConfig {
+            commands: IndexMap::new(),
+        };
+        without.ensure_defaults();
+        assert_eq!(without.get("grok").expect("grok added").command, "grok");
+
+        let own = ProviderCommandConfig {
+            command: "grok".to_string(),
+            args: vec!["--model".to_string(), "x".to_string()],
+            resume_args: None,
+            resume_wait_timeout_ms: None,
+            install_hint: Some("mine".to_string()),
+            forward_scroll: None,
+            web_dragdrop_paste: None,
+            forward_mouse: None,
+            resume_by_id_args: None,
+            watch: Vec::new(),
+        };
+        let mut with = ProvidersConfig {
+            commands: IndexMap::from([("grok".to_string(), own)]),
+        };
+        with.ensure_defaults();
+        let kept = with.get("grok").unwrap();
+        assert_eq!(kept.args, ["--model", "x"]);
+        assert_eq!(kept.install_hint.as_deref(), Some("mine"));
+        assert_eq!(kept.resume_args, Some(vec!["--continue".to_string()]));
+        assert_eq!(kept.resume_wait_timeout_ms, Some(3_000));
+        assert_eq!(kept.web_dragdrop_paste.as_deref(), Some("bare"));
+    }
+
+    #[test]
     fn built_in_opencode_ships_resume_timeout() {
         let config = Config::default();
         let opencode = config
@@ -4365,7 +5538,10 @@ agent_scrollback_lines = 10000
             .expect("custom provider should exist");
         assert_eq!(provider.resume_args, None);
         assert_eq!(provider.resume_wait_timeout_ms, None);
-        assert_eq!(provider.interactive_args(true), ["chat"]);
+        assert_eq!(
+            provider.interactive_args(yaran_core::model::ConversationStart::Resume),
+            ["chat"]
+        );
     }
 
     #[test]
@@ -4408,9 +5584,10 @@ oneshot_output = "stdout"
         assert_eq!(
             providers.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
             [
-                "claude", "cline", "codex", "opencode", "kilocode", "ntl", "copilot", "jcode"
+                "claude", "cline", "codex", "opencode", "kilocode", "ntl", "copilot", "jcode",
+                "grok"
             ],
-            "eight providers ship as defaults, in picker order"
+            "nine providers ship as defaults, in picker order"
         );
         assert!(
             providers.iter().all(|(name, _)| *name != "gemini"),
@@ -4451,11 +5628,13 @@ oneshot_output = "stdout"
     }
 
     #[test]
-    fn prune_retired_key_actions_drops_the_per_mode_sort_actions() {
+    fn prune_retired_key_actions_drops_the_actions_that_were_replaced() {
         for action in [
             "sort_agents_by_updated",
             "sort_agents_by_created",
             "sort_agents_by_name",
+            "attach_pull_request",
+            "detach_pull_request",
         ] {
             // A binding for the retired action would abort startup at validate_keys...
             let mut keys = KeysConfig::default();
@@ -4690,17 +5869,156 @@ oneshot_output = "stdout"
         let result = validate_keys(&keys);
         assert!(result.is_err(), "duplicate key in same scope should error");
         let msg = result.unwrap_err();
-        assert!(
-            msg.contains("conflicting"),
-            "error should mention conflict: {msg}"
+        // Named by its actions and scope, never by the key, and pointed at
+        // the table that exists.
+        assert_eq!(
+            msg,
+            "[keys] two actions bind the same key: toggle_project and new_agent in the \
+             Projects pane; give one of them a different key in [keys]"
         );
-        assert!(
-            msg.contains("toggle_project"),
-            "error should name first action: {msg}"
+    }
+
+    /// A file written before the tab-number defaults were dropped carries
+    /// them as live rows, beside the global remove-git-pane key that Ctrl-5
+    /// collides with. It must still start, quietly, with those tabs unbound.
+    #[test]
+    fn old_tab_number_default_rows_load_unbound_and_quietly() {
+        let raw = "[keys]\nselect_tab_1 = [\"ctrl-1\"]\nselect_tab_2 = [\"ctrl-2\"]\n\
+                   select_tab_3 = [\"ctrl-3\"]\nselect_tab_5 = [\"ctrl-5\"]\n\
+                   select_tab_6 = [\"ctrl-6\"]\nselect_tab_8 = [\"ctrl-8\"]\n\
+                   select_tab_9 = [\"ctrl-9\"]\nremove_git_pane = [\"ctrl-]\"]\n";
+        assert_eq!(keys_start_problems(raw), Vec::<String>::new());
+        let keys = toml::from_str::<Config>(raw).expect("parses").keys;
+        assert_eq!(
+            key_binding_warnings(&keys, ExtendedKeysMode::Auto),
+            Vec::<String>::new()
         );
+        let bindings = crate::keybindings::RuntimeBindings::from_keys_config(&keys);
+        for action in [
+            keybindings::Action::SelectTab1,
+            keybindings::Action::SelectTab2,
+            keybindings::Action::SelectTab3,
+            keybindings::Action::SelectTab5,
+            keybindings::Action::SelectTab8,
+            keybindings::Action::SelectTab9,
+        ] {
+            assert_eq!(bindings.labels_for(action), "", "{action:?}");
+        }
+        assert_eq!(
+            bindings.labels_for(keybindings::Action::SelectTab6),
+            "Ctrl-6",
+            "a tab whose default still ships keeps its row"
+        );
+    }
+
+    /// A user's own key on one of those tabs is kept.
+    #[test]
+    fn a_user_key_on_a_dropped_tab_number_is_kept() {
+        let mut keys = KeysConfig::default();
+        keys.bindings
+            .insert("select_tab_5".to_string(), vec!["alt-5".to_string()]);
+        let bindings = crate::keybindings::RuntimeBindings::from_keys_config(&keys);
+        assert_eq!(
+            bindings.labels_for(keybindings::Action::SelectTab5),
+            "Alt-5"
+        );
+    }
+
+    /// A key bound in interactive mode that sends no bytes of its own is a
+    /// warning naming the action and never the key; the defaults raise none.
+    #[test]
+    fn an_interactive_chord_with_no_bytes_starts_with_a_warning() {
+        let raw = "[keys]\nscroll_to_bottom = [\"f20\", \"end\"]\n";
+        assert_eq!(keys_start_problems(raw), Vec::<String>::new());
+        let keys = toml::from_str::<Config>(raw).expect("parses").keys;
+        let warnings = key_binding_warnings(&keys, ExtendedKeysMode::Auto);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
-            msg.contains("new_agent"),
-            "error should name second action: {msg}"
+            warnings[0].contains("scroll_to_bottom")
+                && warnings[0].contains("Interactive mode")
+                && !warnings[0].contains("f20"),
+            "{warnings:?}"
+        );
+        // With extended keys possible the chord may yet arrive, so the warning
+        // says where it works; with them off it says why it never will.
+        assert_eq!(
+            warnings[0],
+            "[keys] a key bound to scroll_to_bottom cannot be matched in Interactive mode on a \
+             terminal without extended keys: a classic terminal sends no bytes of its own for \
+             that chord while you type into a pane. It works when your terminal or tmux sends \
+             extended keys ([ui] extended_keys); otherwise give it a different key in [keys]"
+        );
+        assert_eq!(key_binding_warnings(&keys, ExtendedKeysMode::On), warnings);
+        assert_eq!(
+            key_binding_warnings(&keys, ExtendedKeysMode::Off),
+            vec![
+                "[keys] a key bound to scroll_to_bottom cannot be matched in Interactive mode: \
+                 extended keys are off ([ui] extended_keys), and a classic terminal sends no \
+                 bytes of its own for that chord while you type into a pane; give it a \
+                 different key in [keys]"
+                    .to_string()
+            ]
+        );
+        // A Ctrl-digit chord is the same case: no byte is invented for it,
+        // not even Ctrl-2's NUL, which the classic encoder for children knows
+        // but which would fire on Ctrl-Space.
+        for chord in ["ctrl-1", "ctrl-2"] {
+            let keys =
+                toml::from_str::<Config>(&format!("[keys]\nscroll_to_bottom = [\"{chord}\"]\n"))
+                    .expect("parses")
+                    .keys;
+            assert_eq!(
+                keybindings::unmatchable_interactive_bindings(&keys),
+                vec!["scroll_to_bottom"],
+                "{chord}"
+            );
+        }
+        assert_eq!(
+            key_binding_warnings(&KeysConfig::default(), ExtendedKeysMode::Auto),
+            Vec::<String>::new()
+        );
+    }
+
+    /// A pane binding a global action shadows is a warning naming both
+    /// actions, never a reason to refuse the file.
+    #[test]
+    fn a_pane_key_a_global_binding_shadows_starts_with_a_warning() {
+        let raw = "[keys]\nselect_tab_6 = [\"ctrl-]\"]\n";
+        assert_eq!(keys_start_problems(raw), Vec::<String>::new());
+        let keys = toml::from_str::<Config>(raw).expect("parses").keys;
+        let warnings = key_binding_warnings(&keys, ExtendedKeysMode::Auto);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("select_tab_6") && warnings[0].contains("remove_git_pane"),
+            "{warnings:?}"
+        );
+    }
+
+    /// The start check places each action of a conflict by its line, or as
+    /// its default key where the file leaves the action out, and never
+    /// repeats the key.
+    #[test]
+    fn a_conflict_is_named_by_its_actions_and_lines() {
+        let raw = "[keys]\nnew_agent = [\"ctrl-alt-y\"]\ntoggle_project = [\"ctrl-alt-y\"]\n";
+        let problems = keys_start_problems(raw);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("new_agent (line 2)")
+                && problems[0].contains("toggle_project (line 3)")
+                && problems[0].contains("in the Projects pane")
+                && !problems[0].contains("ctrl-alt-y")
+                && !problems[0].contains("keys.bindings"),
+            "{problems:?}"
+        );
+        // `n` is new_agent's default key, which the file leaves out.
+        let raw = "[keys]\ntoggle_project = [\"n\"]\n";
+        let problems = keys_start_problems(raw);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("toggle_project (line 2)")
+                    && p.contains("new_agent (its default key)")),
+            "{problems:?}"
         );
     }
 
@@ -4751,7 +6069,11 @@ oneshot_output = "stdout"
 "Middle" = { text = "m cmd", surface = "both" }
 "#;
         let config: MacrosConfig = toml::from_str(toml_str).unwrap();
-        let names: Vec<&str> = config.entries.keys().map(|s| s.as_str()).collect();
+        let names: Vec<&str> = config
+            .entries
+            .keys()
+            .map(std::string::String::as_str)
+            .collect();
         assert_eq!(names, vec!["Zebra", "Alpha", "Middle"]);
     }
 
@@ -4765,7 +6087,11 @@ oneshot_output = "stdout"
         let config: MacrosConfig = toml::from_str(toml_str).unwrap();
         let serialized = toml::to_string(&config).unwrap();
         let round_tripped: MacrosConfig = toml::from_str(&serialized).unwrap();
-        let names: Vec<&str> = round_tripped.entries.keys().map(|s| s.as_str()).collect();
+        let names: Vec<&str> = round_tripped
+            .entries
+            .keys()
+            .map(std::string::String::as_str)
+            .collect();
         assert_eq!(names, vec!["Zebra", "Alpha", "Middle"]);
     }
 
@@ -4793,7 +6119,11 @@ oneshot_output = "stdout"
                 surface: MacroSurface::Agent,
             },
         );
-        let names: Vec<&str> = config.entries.keys().map(|s| s.as_str()).collect();
+        let names: Vec<&str> = config
+            .entries
+            .keys()
+            .map(std::string::String::as_str)
+            .collect();
         assert_eq!(names, vec!["Zulu", "Alpha", "Mike"]);
     }
 
@@ -4973,7 +6303,8 @@ args = [\"-l\"]
         let paths = yaran_core::config::YaranPaths {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             worktrees_root: root.join("worktrees"),
             root,
         };
@@ -5002,6 +6333,7 @@ args = [\"-l\"]
             sessions_db_path: root.join("sessions.sqlite3"),
             lock_path: root.join("yaran.lock"),
             worktrees_root: root.join("worktrees"),
+            socket_path: root.join("yaran.sock"),
             root,
         };
         fs::write(
@@ -5042,6 +6374,7 @@ args = [\"-l\"]
                 sessions_db_path: root.join("sessions.sqlite3"),
                 lock_path: root.join("yaran.lock"),
                 worktrees_root: root.join("worktrees"),
+                socket_path: root.join("yaran.sock"),
                 root,
             };
             let body = format!("[keys]\nopen_worktree_in_editor = {value}\n");
@@ -5058,7 +6391,10 @@ args = [\"-l\"]
         let persisted: Config =
             toml::from_str(&fs::read_to_string(&paths.config_path).expect("read migrated config"))
                 .expect("parse migrated config");
-        assert!(persisted.keys.bindings["open_worktree_in_editor"].is_empty());
+        assert_eq!(
+            persisted.keys.bindings["open_worktree_in_editor"],
+            Vec::<std::string::String>::new()
+        );
 
         for custom in ["[\"ctrl-o\"]", "[\"o\", \"ctrl-o\"]"] {
             let (_dir, paths) = seed(custom);
@@ -5073,6 +6409,296 @@ args = [\"-l\"]
     /// The terminal UI never goes through `load_config`, so the correction that
     /// keeps the engine tick from re-warning has to happen here too. Without it
     /// the surface with the fastest tick is the one that floods.
+    /// The three ways `[server.auth]` can be unreadable each stop the start,
+    /// name the file and the section, and leave the file exactly as it was
+    /// (no migration rewrites it first).
+    /// The load-time migration rewrites the file under the config write lock,
+    /// re-reading it there: it waits for another writer instead of writing
+    /// over it.
+    #[test]
+    fn the_load_time_migration_waits_for_the_config_write_lock() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = yaran_core::config::YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            worktrees_root: root.join("worktrees"),
+            root,
+        };
+        fs::write(&paths.config_path, "[server]\ntailscale_enabled = true\n").expect("seed");
+        let held = yaran_core::config_write::ConfigFileLock::acquire(&paths.config_path).unwrap();
+        let loader = {
+            let paths = paths.clone();
+            std::thread::spawn(move || ensure_config(&paths).map(|_| ()).map_err(|e| e.to_string()))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Another writer lands while the migration waits.
+        let other = "[server]\ntailscale_enabled = true\n\n[ui]\nleft_width_pct = 33\n";
+        fs::write(&paths.config_path, other).unwrap();
+        assert!(!loader.is_finished(), "the migration waits for the lock");
+        drop(held);
+        loader.join().expect("join").expect("load");
+        let after = fs::read_to_string(&paths.config_path).unwrap();
+        assert!(
+            after.contains("left_width_pct = 33"),
+            "the other write survives:\n{after}"
+        );
+        assert!(!after.contains("tailscale_enabled"), "migrated:\n{after}");
+    }
+
+    /// A config with nothing to migrate never touches the write lock, so a
+    /// lock file this user cannot open (left by a `sudo yaran`) does not stop
+    /// the start.
+    #[test]
+    fn a_config_with_nothing_to_migrate_starts_without_the_write_lock() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = yaran_core::config::YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            worktrees_root: root.join("worktrees"),
+            root,
+        };
+        fs::write(&paths.config_path, "[ui]\nleft_width_pct = 30\n").expect("seed");
+        let lock = yaran_core::config_write::ConfigFileLock::lock_path(&paths.config_path);
+        fs::write(&lock, "").unwrap();
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&lock).is_ok() {
+            // Running as root: every file opens, so there is nothing to show.
+            return;
+        }
+        let config = ensure_config(&paths).expect("starts");
+        assert_eq!(config.ui.left_width_pct, 30);
+        // A migration still needs the lock, and says so.
+        fs::write(&paths.config_path, "[server]\ntailscale_enabled = true\n").expect("seed");
+        let err = ensure_config(&paths).expect_err("the migration needs the lock");
+        assert!(format!("{err:#}").contains("config lock"), "{err:#}");
+    }
+
+    /// A config.toml symlink whose target is missing stops the start, naming
+    /// the link and the target, and nothing is created at either path; a
+    /// symlink whose target is there stays a symlink when the start migrates
+    /// the file.
+    #[test]
+    fn ensure_config_keeps_a_config_symlink_and_refuses_a_dangling_one() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = yaran_core::config::YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            worktrees_root: root.join("worktrees"),
+            root: root.clone(),
+        };
+        let target = root.join("dotfiles.toml");
+        std::os::unix::fs::symlink(&target, &paths.config_path).unwrap();
+        let error = format!("{:#}", ensure_config(&paths).expect_err("refused"));
+        assert!(error.contains(&target.display().to_string()), "{error}");
+        assert!(
+            error.contains(&paths.config_path.display().to_string()),
+            "{error}"
+        );
+        assert!(!target.exists(), "nothing was created at the target");
+        assert!(
+            fs::symlink_metadata(&paths.config_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        fs::write(&target, "[server]\ntailscale_enabled = true\n").unwrap();
+        ensure_config(&paths).expect("starts");
+        assert!(
+            fs::symlink_metadata(&paths.config_path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the migration wrote through the link"
+        );
+        let migrated = fs::read_to_string(&target).unwrap();
+        assert!(!migrated.contains("tailscale_enabled"), "{migrated}");
+    }
+
+    /// A top-level `[auth]` is an orphaned section the documentation restore
+    /// cleans up, but one holding a password hash is a password in the wrong
+    /// place: the restore refuses it, naming it, and drops nothing.
+    #[test]
+    fn restoring_the_docs_never_cleans_up_a_misplaced_password_hash() {
+        let raw = "[auth]\npassword_hash = \"$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g\"\n";
+        let error = format!("{:#}", restore_documentation(raw).expect_err("refused"));
+        assert!(error.contains("auth.password_hash"), "{error}");
+        assert!(error.contains("[server.auth]"), "{error}");
+        assert!(!error.contains("argon2id"), "{error}");
+        let mut rendered: DocumentMut = "".parse().unwrap();
+        let report = yaran_core::config_write::merge_unmanaged_keys(
+            &mut rendered,
+            &raw.parse::<DocumentMut>().unwrap(),
+        );
+        assert!(report.dropped.is_empty(), "{report:?}");
+        assert!(rendered.to_string().contains("password_hash"), "{rendered}");
+        // An old `[auth]` with no password in it is still cleaned up.
+        let mut rendered: DocumentMut = "".parse().unwrap();
+        let report = yaran_core::config_write::merge_unmanaged_keys(
+            &mut rendered,
+            &"[auth]\nenabled = true\n".parse::<DocumentMut>().unwrap(),
+        );
+        assert_eq!(report.dropped, vec!["auth".to_string()]);
+    }
+
+    /// A port of 0 is `yaran server`'s problem alone: the terminal UI starts
+    /// with it whether or not the file has it serve in the background.
+    #[test]
+    fn a_port_of_zero_never_stops_the_terminal_ui() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = yaran_core::config::YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            worktrees_root: root.join("worktrees"),
+            root,
+        };
+        fs::write(&paths.config_path, "[server]\nport = 0\n").unwrap();
+        ensure_config(&paths).expect("starts when it does not serve");
+        fs::write(
+            &paths.config_path,
+            "[server]\nport = 0\nserve_while_tui = true\n",
+        )
+        .unwrap();
+        ensure_config(&paths).expect("starts when it serves in the background too");
+    }
+
+    /// The terminal UI's start (and reload) refuses exactly the files the one
+    /// list of start checks says it refuses, for every kind of problem the
+    /// list knows: a check the start makes that the list lacks, or the other
+    /// way round, fails here.
+    #[test]
+    fn the_terminal_ui_start_refuses_exactly_what_the_start_checks_say() {
+        for fixture in yaran_core::start_check_fixtures::FIXTURES {
+            let dir = tempfile::TempDir::new().expect("tempdir");
+            let root = dir.path().to_path_buf();
+            let paths = yaran_core::config::YaranPaths {
+                config_path: root.join("config.toml"),
+                sessions_db_path: root.join("sessions.sqlite3"),
+                lock_path: root.join("dux.lock"),
+                socket_path: root.join("yaran.sock"),
+                worktrees_root: root.join("worktrees"),
+                root,
+            };
+            fs::write(&paths.config_path, fixture.text).unwrap();
+            let refused = ensure_config(&paths).is_err();
+            install_canonical_renderer();
+            let listed = yaran_core::config::start_problems_of(fixture.text)
+                .iter()
+                .any(|problem| problem.stops(yaran_core::config::Surface::TerminalUi));
+            assert_eq!(
+                refused, fixture.stops_terminal_ui,
+                "{}: start",
+                fixture.name
+            );
+            assert_eq!(
+                listed, fixture.stops_terminal_ui,
+                "{}: the list",
+                fixture.name
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_config_refuses_a_file_it_cannot_start_with_and_writes_nothing() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let paths = yaran_core::config::YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            worktrees_root: root.join("worktrees"),
+            root,
+        };
+        for (body, about) in [
+            ("[server.auth\npassword_hash = \"\"\n", "server.auth"),
+            (
+                "[server.auth]\npassword_hash = \"$argon2id$v=19$broken\"\n",
+                "server.auth",
+            ),
+            (
+                "[server.auth]\nmax_failed_logins = \"five\"\n",
+                "server.auth",
+            ),
+            (
+                "[server]\nbind = \"127.0.0.1:3890\"\n\n[server.auth]\nrequire = \"nowhere\"\n",
+                "server.auth",
+            ),
+            // A log that would be written into a file yaran keeps for itself.
+            ("[logging]\npath = \"sessions.sqlite3\"\n", "[logging] path"),
+            (
+                "[server]\nlog_path = \"config.toml\"\n",
+                "[server] log_path",
+            ),
+        ] {
+            fs::write(&paths.config_path, body).expect("seed config");
+            let err = ensure_config(&paths).expect_err(body);
+            let text = format!("{err:#}");
+            assert!(text.contains(about), "{body:?}: {text}");
+            assert!(
+                text.contains(&paths.config_path.display().to_string()),
+                "{body:?}: {text}"
+            );
+            assert_eq!(
+                fs::read_to_string(&paths.config_path).unwrap(),
+                body,
+                "a refused start writes nothing"
+            );
+        }
+    }
+
+    /// The canonical template documents every `[server.auth]` key, and what it
+    /// renders reads back as the same section.
+    #[test]
+    fn the_template_documents_and_round_trips_server_auth() {
+        let mut config = Config::default();
+        config.server.auth.password_hash = yaran_core::auth::hash_password(
+            &yaran_core::auth::Password::new("correct horse battery staple".to_string()),
+        )
+        .expect("hash");
+        config.server.auth.blocked_addresses = vec!["203.0.113.0/24".to_string()];
+        config.server.auth.require = yaran_core::config::AuthRequire::Tailnet;
+        let rendered = render_config_documented(&config);
+        assert!(rendered.contains("[server.auth]"), "{rendered}");
+        let parsed: Config = toml::from_str(&rendered).expect("valid");
+        assert_eq!(parsed.server.auth, config.server.auth);
+        // The section's own header line: comments elsewhere mention it too.
+        let section = rendered
+            .split("\n[server.auth]\n")
+            .nth(1)
+            .expect("section")
+            .split("\n[")
+            .next()
+            .expect("body");
+        let json = serde_json::to_value(&config.server.auth).expect("json");
+        for key in json.as_object().expect("object").keys() {
+            let line = section
+                .lines()
+                .position(|line| line.starts_with(&format!("{key} = ")))
+                .unwrap_or_else(|| panic!("{key} is rendered"));
+            assert!(
+                section
+                    .lines()
+                    .nth(line.wrapping_sub(1))
+                    .is_some_and(|l| l.starts_with('#')),
+                "{key} has a comment above it"
+            );
+        }
+    }
+
     #[test]
     fn ensure_config_corrects_an_out_of_range_github_probe_interval() {
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -5080,7 +6706,8 @@ args = [\"-l\"]
         let paths = yaran_core::config::YaranPaths {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             worktrees_root: root.join("worktrees"),
             root,
         };
@@ -5111,7 +6738,8 @@ args = [\"-l\"]
         let paths = yaran_core::config::YaranPaths {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             worktrees_root: root.join("worktrees"),
             root,
         };
@@ -5175,7 +6803,8 @@ mod legacy_exit_interactive_tests {
         yaran_core::config::YaranPaths {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             worktrees_root: root.join("worktrees"),
             root,
         }
@@ -5183,10 +6812,14 @@ mod legacy_exit_interactive_tests {
 
     /// A config as an older yaran would have written it: `[keys]` carries an
     /// ACTIVE `exit_interactive` row (yaran stores resolved defaults as real
-    /// values), optionally alongside a `toggle_fullscreen` row.
+    /// values), optionally alongside a `toggle_fullscreen` row, and none of the
+    /// rows for actions that yaran did not have yet.
     fn config_with_legacy_row(legacy_row: &str, toggle_row: Option<&str>) -> String {
         let mut out = String::new();
         for line in render_default_config().lines() {
+            if line.starts_with("cycle_terminal_layout = ") {
+                continue;
+            }
             if line.starts_with("toggle_fullscreen = ") {
                 match toggle_row {
                     Some(row) => {
@@ -5263,6 +6896,33 @@ mod legacy_exit_interactive_tests {
             saved.contains("# A comment the user wrote themselves."),
             "the rewrite must preserve user comments:\n{saved}"
         );
+    }
+
+    /// Each folded row's log line names its own action and what it does.
+    #[test]
+    fn a_renamed_close_terminal_row_logs_its_own_sentence() {
+        let fold = FOLDED_KEY_ACTIONS
+            .iter()
+            .find(|fold| fold.legacy == "delete_terminal")
+            .expect("the close action's old name folds");
+        assert_eq!(
+            fold.rename_sentence(),
+            "[keys] \"delete_terminal\" is now called \"close_terminal\"; renamed your binding \
+             to \"close_terminal\", which closes the selected terminal"
+        );
+    }
+
+    /// A binding written under the close action's old name keeps starting yaran
+    /// and keeps working under the new one.
+    #[test]
+    fn a_delete_terminal_row_becomes_close_terminal() {
+        let (_dir, _paths, config) = seeded_config("[keys]\ndelete_terminal = [\"ctrl-k\"]\n");
+        assert!(validate_keys(&config.keys).is_ok());
+        assert_eq!(
+            config.keys.bindings.get("close_terminal"),
+            Some(&vec!["ctrl-k".to_string()])
+        );
+        assert!(!config.keys.bindings.contains_key("delete_terminal"));
     }
 
     /// A CUSTOM exit key migrates, and gains the enter-fullscreen half: that is
@@ -5344,9 +7004,15 @@ mod legacy_exit_interactive_tests {
         // The legacy row also carries the macro bar's own chord, so the fold
         // hands `toggle_fullscreen` a key that genuinely collides.
         let body = config_with_legacy_row("exit_interactive = [\"ctrl-g\", \"ctrl-\\\\\"]", None);
-        let (_dir, _paths, config) = seeded_config(&body);
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let paths = temp_paths(dir.path().to_path_buf());
+        fs::write(&paths.config_path, &body).expect("seed config");
 
-        let err = validate_keys(&config.keys).expect_err("a real conflict must still be reported");
+        // The start's own check of `[keys]` (one of the start checks) refuses it.
+        let err = format!(
+            "{:#}",
+            ensure_config(&paths).expect_err("a real conflict must still be reported")
+        );
         assert!(
             err.contains("open_macro_bar") && err.contains("toggle_fullscreen"),
             "expected the macro-bar conflict, got:\n{err}"
@@ -5495,7 +7161,10 @@ mod web_dragdrop_paste_render_tests {
         );
         // The rendered default still parses with zero rules.
         let parsed: Config = toml::from_str(&rendered).expect("default parses");
-        assert!(parsed.providers.commands["claude"].watch.is_empty());
+        assert_eq!(
+            parsed.providers.commands["claude"].watch,
+            Vec::<yaran_core::watch::WatchRule>::new()
+        );
     }
 
     /// The commented examples must be valid rules once uncommented: a user
@@ -5552,7 +7221,10 @@ mod web_dragdrop_paste_render_tests {
     /// never touches the watch array. The test drives the deprecated sync save
     /// path directly, as the fork's test did.
     #[test]
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "a sync-direct save, like the other save_config tests"
+    )]
     fn save_config_preserves_user_authored_watch_rules() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let config_path = dir.path().join("config.toml");
@@ -5650,6 +7322,7 @@ mod workspace_mode_tests {
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
+            socket_path: root.join("yaran.sock"),
         }
     }
 
@@ -5662,7 +7335,7 @@ mod workspace_mode_tests {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             workspace_mode: mode,
         }
     }
@@ -5811,7 +7484,10 @@ mod workspace_mode_tests {
     /// `[workspace]` (which would flip it to shared), and a project's override
     /// survives a save.
     #[test]
-    #[allow(deprecated)] // sync-direct save, like the other save_config tests
+    #[expect(
+        deprecated,
+        reason = "a sync-direct save, like the other save_config tests"
+    )]
     fn save_config_preserves_legacy_workspace_absence_and_project_override() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");
@@ -5863,3 +7539,126 @@ mod workspace_mode_tests {
         assert!(!rendered.contains("default_mode = \"shared\""));
     }
 }
+
+#[cfg(test)]
+mod port_zero_and_deprecated_key_start_tests {
+    use super::*;
+
+    #[test]
+    fn the_terminal_ui_still_starts_with_a_background_server_on_port_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let paths = yaran_core::config::YaranPaths {
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+            worktrees_root: root.join("worktrees"),
+            root,
+        };
+        std::fs::write(
+            &paths.config_path,
+            "[server]\nport = 0\nserve_while_tui = true\n",
+        )
+        .unwrap();
+        // Before the branch the terminal UI started, and only its background
+        // server reported that it could not bind.
+        let result = ensure_config(&paths)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"));
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn the_one_list_agrees_with_the_terminal_ui_start_on_a_deprecated_key_of_the_wrong_type() {
+        install_canonical_renderer();
+        for raw in [
+            "[defaults]\nprompt_for_name = \"yes\"\n",
+            "[server]\nbind = 5\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let paths = yaran_core::config::YaranPaths {
+                config_path: root.join("config.toml"),
+                sessions_db_path: root.join("sessions.sqlite3"),
+                lock_path: root.join("dux.lock"),
+                socket_path: root.join("yaran.sock"),
+                worktrees_root: root.join("worktrees"),
+                root,
+            };
+            std::fs::write(&paths.config_path, raw).unwrap();
+            let started = ensure_config(&paths)
+                .map(|_| ())
+                .map_err(|e| format!("{e:#}"));
+            let listed =
+                yaran_core::config::start_refusal(raw, yaran_core::config::Surface::TerminalUi);
+            assert_eq!(
+                started.is_ok(),
+                listed.is_none(),
+                "for {raw:?}: the start said {started:?}, the one list said {listed:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod entries_named_password_hash_start_tests {
+    use super::*;
+
+    /// An environment variable or a provider that happens to be named
+    /// `password_hash` is not a password hash; the terminal UI started with
+    /// such a file before the branch.
+    #[test]
+    fn the_terminal_ui_starts_with_an_env_variable_or_provider_named_password_hash() {
+        for body in [
+            "[env]\npassword_hash = \"x\"\n",
+            "[providers.password_hash]\ncommand = \"mytool\"\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let paths = YaranPaths {
+                config_path: root.join("config.toml"),
+                sessions_db_path: root.join("sessions.sqlite3"),
+                lock_path: root.join("dux.lock"),
+                socket_path: root.join("yaran.sock"),
+                worktrees_root: root.join("worktrees"),
+                root,
+            };
+            std::fs::write(&paths.config_path, body).unwrap();
+            let result = ensure_config(&paths)
+                .map(|_| ())
+                .map_err(|e| format!("{e:#}"));
+            assert!(result.is_ok(), "{body:?}: {result:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod keys_names_tests {
+    use super::*;
+
+    /// A token pasted as a `[keys]` name with a binding as its value is
+    /// placed by its line, never quoted, by the terminal UI's own check.
+    #[test]
+    fn an_unknown_action_name_that_breaks_the_rule_is_placed_by_its_line() {
+        install_canonical_renderer();
+        let raw = "[keys]\n\"sk-proj-AbCdEf0123456789\" = [\"x\"]\n";
+        let problems = yaran_core::config::start_problems_of(raw);
+        assert_ne!(problems, Vec::<StartProblem>::new());
+        for problem in &problems {
+            assert!(!problem.message.contains("sk-proj"), "{problem:?}");
+        }
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.message.contains("the entry on line 2 of [keys]")),
+            "{problems:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod start_corpus_tests;
+
+#[cfg(test)]
+mod inline_section_start_tests;

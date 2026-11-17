@@ -57,6 +57,10 @@ vi.mock("@/components/LazyTerminalPane", () => ({
   LazyTerminalPane: ({ overlay }: { overlay?: React.ReactNode }) => (
     <div data-testid="pane-stub">{overlay}</div>
   ),
+  // An agent's screen is its stack, the same stand-in with the same overlay.
+  LazyTerminalStack: ({ overlay }: { overlay?: React.ReactNode }) => (
+    <div data-testid="pane-stub">{overlay}</div>
+  ),
 }))
 installBootStubs()
 const { MobileShell } = await import("./MobileShell")
@@ -115,8 +119,14 @@ function makeState(theater: boolean): YaranState {
     terminalEpoch: 0,
     startedDormantTabs: [],
     pendingSlotTab: {},
+    endedInViewTab: null,
+    stackLayouts: {},
+    stackTerminals: {},
+    stackTabs: {},
+    pendingTerminalOrder: null,
     routeNotFound: null,
     createTabInFlight: [],
+    pendingTabOrder: {},
     mobileScreen: "terminal",
     changes: { sessionId: "s1", phase: "loaded", staged: [], unstaged: [] },
   } as unknown as YaranState
@@ -130,7 +140,14 @@ function shot() {
   const f = flap()
   const p = pill()
   return {
-    flap: f === null ? "gone" : f.className.includes("invisible") ? "hidden" : "shown",
+    // Hidden on its own box: an inherited `visibility` is eased by the
+    // cluster's `transition-all` buttons, which keeps them painted.
+    flap:
+      f === null
+        ? "gone"
+        : f.style.opacity === "0" && f.hasAttribute("inert")
+          ? "hidden"
+          : "shown",
     pill:
       p === null
         ? "gone"
@@ -318,6 +335,99 @@ describe("a mode flipped back mid-gesture", () => {
   })
 })
 
+describe("theater re-entered while the return is still in the air", () => {
+  // THE CLUSTER IS ONE OBJECT, so a gesture the other way picks it up wherever
+  // it is. Re-entering while the capsule is flying home, or squaring up against
+  // the band, must not put the flap back on the band for a chrome stage and
+  // then fly it out again: the pill would vanish mid-air and reappear as the
+  // docked flap, which is the teleport the whole choreography exists to avoid.
+  function leaveAfterSettling() {
+    mockState = makeState(false)
+    const view = render(<MobileShell />)
+    mockState = makeState(true)
+    act(() => view.rerender(<MobileShell />))
+    tick(CHROME_HOLD_MS)
+    tick(FLIGHT_TRAVEL_HOLD_MS)
+    mockState = makeState(false)
+    act(() => view.rerender(<MobileShell />))
+    tick(CHROME_HOLD_MS)
+    return view
+  }
+
+  for (const [when, into] of [
+    ["early in the travel home", 40],
+    ["halfway home", FLIGHT_TRAVEL_HOLD_MS / 2],
+    ["during the arrival snap", FLIGHT_TRAVEL_HOLD_MS + FLIGHT_ATTACH_HOLD_MS / 2],
+  ] as const) {
+    it(`keeps the pill on screen and the flap off the band, ${when}`, () => {
+      const view = leaveAfterSettling()
+      tick(into)
+      expect(pill()).not.toBeNull()
+
+      mockState = makeState(true)
+      act(() => view.rerender(<MobileShell />))
+      // It heads straight back out, with no chrome stage in between.
+      expect(shot()).toEqual({ flap: "hidden", pill: "leaving" })
+      // Every moment the cluster is not the pill in the air, by time since the
+      // re-entry.
+      const jumps: string[] = []
+      for (let t = 0; t <= CHROME_HOLD_MS + FLIGHT_TRAVEL_HOLD_MS; t += 20) {
+        const s = shot()
+        if (s.pill === "gone" || s.flap === "shown") {
+          jumps.push(`${t}ms: flap ${s.flap}, pill ${s.pill}`)
+        }
+        tick(20)
+      }
+      expect(jumps).toEqual([])
+      expect(shot()).toEqual({ flap: "gone", pill: "floating" })
+    })
+  }
+})
+
+describe("theater left while the departure is still in the air", () => {
+  // The same rule the other way: leaving while the capsule is still flying out
+  // turns it around at once, toward the dock, rather than letting it finish a
+  // departure the user has just taken back. It ends exactly as any return does:
+  // travel, then the snap, then the real flap in the pill's place.
+  for (const [when, into] of [
+    ["early in the departure", 40],
+    ["halfway out", FLIGHT_TRAVEL_HOLD_MS / 2],
+    ["just before it settles", FLIGHT_TRAVEL_HOLD_MS - 40],
+  ] as const) {
+    it(`turns straight back to the dock, ${when}`, () => {
+      mockState = makeState(false)
+      const view = render(<MobileShell />)
+      mockState = makeState(true)
+      act(() => view.rerender(<MobileShell />))
+      tick(CHROME_HOLD_MS)
+      tick(into)
+      expect(shot()).toEqual({ flap: "hidden", pill: "leaving" })
+
+      mockState = makeState(false)
+      act(() => view.rerender(<MobileShell />))
+      expect(shot()).toEqual({ flap: "hidden", pill: "returning" })
+
+      // Until the pill goes, the flap is not painted; the tick the pill goes,
+      // the flap is there.
+      const wrong: string[] = []
+      let t = 0
+      for (; t <= FLIGHT_TRAVEL_HOLD_MS + FLIGHT_ATTACH_HOLD_MS + 40; t += 20) {
+        const s = shot()
+        const docked = s.pill === "gone" && s.flap === "shown"
+        if (docked) break
+        if (s.pill === "gone" || s.flap === "shown") {
+          wrong.push(`${t}ms: flap ${s.flap}, pill ${s.pill}`)
+        }
+        tick(20)
+      }
+      expect(wrong).toEqual([])
+      expect(shot()).toEqual({ flap: "shown", pill: "gone" })
+      // A travel and a snap, never a chrome stage on top of them.
+      expect(t).toBeLessThanOrEqual(FLIGHT_TRAVEL_HOLD_MS + FLIGHT_ATTACH_HOLD_MS + 20)
+    })
+  }
+})
+
 describe("the cluster the pill carries on a phone", () => {
   it("is the flap's four controls, in the flap's order", () => {
     mockState = makeState(true)
@@ -333,6 +443,99 @@ describe("the cluster the pill carries on a phone", () => {
     // as one object, so its menu cannot become a different menu on arrival.
     expect(box.contains(screen.getByLabelText("Session actions"))).toBe(true)
     expect(toggle.getAttribute("aria-pressed")).toBe("true")
+  })
+
+  // The flight is a pure translation only while both ends are the same object,
+  // so the keys button has to be in the same slot on the pill as on the flap.
+  it("carries the keys toggle in the same slot on the pill as on the flap", async () => {
+    const { registerPaneInputGroup, resetPaneInputGroups } = await import(
+      "@/lib/paneInputGroup"
+    )
+    resetPaneInputGroups()
+    registerPaneInputGroup("s1", {
+      surfaceSwitch: false,
+      composeSurface: false,
+      keysToggle: true,
+    })
+    const wide = window.innerWidth
+    Object.defineProperty(window, "innerWidth", {
+      value: 500,
+      configurable: true,
+    })
+    // The controls of a cluster in order, the theater button named alike in
+    // both modes and the pill's grip (which the flap has no slot for) left out.
+    const cluster = (el: HTMLElement) =>
+      Array.from(el.querySelectorAll("button"))
+        .filter((b) => b.dataset.testid !== "theater-pill-grip")
+        .map((b) => b.getAttribute("aria-label") ?? "")
+        .map((l) => (/theater mode/i.test(l) ? "theater" : l.replace(/^\d+ changed files?$/, "changes")))
+    try {
+      mockState = makeState(false)
+      const flap = render(<MobileShell />)
+      const docked = cluster(screen.getByTestId("mobile-action-flap"))
+      flap.unmount()
+      mockState = makeState(true)
+      render(<MobileShell />)
+      const floating = cluster(screen.getByTestId("theater-pill"))
+      expect(floating).toEqual(docked)
+      expect(floating.slice(-3)).toEqual([
+        "changes",
+        "Hide terminal keys",
+        "Session actions",
+      ])
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        value: wide,
+        configurable: true,
+      })
+      resetPaneInputGroups()
+    }
+  })
+
+  // The agent/terminals switch rides the same flight, so it too has to be in
+  // the same slot at both ends: after the keys, before the menu.
+  it("carries the agent/terminals switch in the same slot on the pill as on the flap", async () => {
+    const { registerPaneInputGroup, resetPaneInputGroups } = await import(
+      "@/lib/paneInputGroup"
+    )
+    resetPaneInputGroups()
+    registerPaneInputGroup("s1", {
+      surfaceSwitch: false,
+      composeSurface: false,
+      keysToggle: true,
+    })
+    const wide = window.innerWidth
+    Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
+    const withTerminal = (theater: boolean) => {
+      const state = makeState(theater)
+      ;(state.spine as unknown as { terminals: unknown[] }).terminals = [
+        { id: "t1", owner: { kind: "session", session_id: "s1" }, label: "t1", working: false, typing: false, sort_order: 0 },
+      ]
+      return state
+    }
+    const cluster = (el: HTMLElement) =>
+      Array.from(el.querySelectorAll("button"))
+        .filter((b) => b.dataset.testid !== "theater-pill-grip")
+        .map((b) => b.getAttribute("aria-label") ?? "")
+        .map((l) => (/theater mode/i.test(l) ? "theater" : l.replace(/^\d+ changed files?$/, "changes")))
+    try {
+      mockState = withTerminal(false)
+      const docked = render(<MobileShell />)
+      const flapCluster = cluster(screen.getByTestId("mobile-action-flap"))
+      docked.unmount()
+      mockState = withTerminal(true)
+      render(<MobileShell />)
+      const floating = cluster(screen.getByTestId("theater-pill"))
+      expect(floating).toEqual(flapCluster)
+      expect(floating.slice(-3)).toEqual([
+        "Hide terminal keys",
+        "Show terminals (1)",
+        "Session actions",
+      ])
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: wide, configurable: true })
+      resetPaneInputGroups()
+    }
   })
 
   it("keeps the grip, at the width the flight grows it from nothing", () => {

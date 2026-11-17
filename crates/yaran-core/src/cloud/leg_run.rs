@@ -10,6 +10,7 @@
 //! - The token file is written before each spawn and removed when the leg ends.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_run.rs
 //! ├── cloud::cloudflared::acquire
@@ -30,6 +31,7 @@
 //! cloud/leg_run.rs
 //! ├── cloud
 //! └── cloud::leg
+//! ```
 //! <module-headers:end>
 
 use std::path::PathBuf;
@@ -82,13 +84,13 @@ struct Run<'a> {
 }
 
 /// Run until the leg ends; answers why it ended.
-pub fn run(
+pub(super) fn run(
     params: &LegParams,
     identity: &dyn CloudIdentity,
     prepared: Prepared,
     stop: &AtomicBool,
     sink: &LegSink,
-) -> Result<LegStop, LegStop> {
+) -> LegStop {
     let mut run = Run {
         params,
         identity,
@@ -103,7 +105,7 @@ pub fn run(
     };
     let end = run.supervise();
     command::remove_token_file(&run.token_file);
-    Ok(end)
+    end
 }
 
 impl Run<'_> {
@@ -207,7 +209,7 @@ impl Run<'_> {
             metrics_addr: format!("127.0.0.1:{port}"),
             state: state.to_string(),
             since: chrono::Utc::now().to_rfc3339(),
-            child_start_time: process_identity(pid).map(|(_, t)| t).unwrap_or(0),
+            child_start_time: process_identity(pid).map_or(0, |(_, t)| t),
         };
         if let Err(err) = self.identity.write_leg_state(&record) {
             tracing::warn!(target: "yaran::cloud", %err, "could not write leg-state.json");
@@ -341,7 +343,7 @@ impl Run<'_> {
 }
 
 /// "this machine's clock is off by N s; fix the system clock" (02 §7 `signature_expired`).
-pub fn clock_warning(server_time: Option<&str>) -> String {
+pub(super) fn clock_warning(server_time: Option<&str>) -> String {
     let offset = server_time
         .ok_or(())
         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).map_err(|_| ()))
@@ -352,7 +354,7 @@ pub fn clock_warning(server_time: Option<&str>) -> String {
              fix the system clock. cloudflared keeps running.",
             seconds.abs()
         ),
-        Err(_) => "Yaran Cloud refused this machine's signed request because its clock is off; \
+        Err(()) => "Yaran Cloud refused this machine's signed request because its clock is off; \
                    fix the system clock. cloudflared keeps running."
             .to_string(),
     }

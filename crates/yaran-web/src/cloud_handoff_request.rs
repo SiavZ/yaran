@@ -6,6 +6,7 @@
 //!   `state` pass, the only possible answer is a 400; nothing is redirected to.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_handoff_request.rs
 //! ├── handoff_consent_page
@@ -20,6 +21,7 @@
 //! cloud_handoff_request.rs
 //! ├── cloud_handoff
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashMap;
@@ -138,13 +140,13 @@ pub(crate) fn common(p: &Params, t: &Target) -> Result<(), Failure> {
         ];
         return Err((ErrorCode::ProtocolUnsupported, range));
     }
-    let device = p.get("device").map(String::as_str).unwrap_or("");
+    let device = p.get("device").map_or("", String::as_str);
     let device_ok = rules::chars_between(device, 1, 64)
         && !device.chars().any(|c| c.is_control() || is_bidi(c));
     if !t.mode_ok || !device_ok {
         return Err(invalid());
     }
-    parse_recipient_point(p.get("pk").map(String::as_str).unwrap_or("")).map_err(|_| invalid())?;
+    parse_recipient_point(p.get("pk").map_or("", String::as_str)).map_err(|_| invalid())?;
     Ok(())
 }
 

@@ -6,10 +6,16 @@
 //! - Test-only (`#[cfg(test)]`); never touches the network beyond loopback.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_test_support.rs
+//! ├── auth
+//! ├── auth::provenance
 //! ├── cloud_ingress
 //! ├── cloud_jwks_cache
+//! ├── engine_actor
+//! ├── exposure
+//! ├── host_guard
 //! ├── server
 //! ├── test_support
 //! ├── yaran-core::cloud::access_jwks
@@ -17,16 +23,18 @@
 //! ├── yaran-core::cloud::protocol::handoff_consent
 //! ├── yaran-core::cloud::protocol::rules
 //! └── yaran-core::test_scratch
-//! External: axum, ring, serde_json, std, tower, tracing, tracing_subscriber
+//! External: axum, futures_util, ring, serde_json, std, tokio, tokio_tungstenite, tower, tracing, tracing_subscriber
 //!
 //! Used by:
 //! cloud_test_support.rs
+//! ├── cloud_auth_bridge_tests
 //! ├── cloud_consent_tests
 //! ├── cloud_handoff_tests
 //! ├── cloud_ingress_tests
 //! ├── cloud_loop::live_cloud_mode_tests
 //! ├── cloud_mode
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -90,6 +98,8 @@ impl ConsentKeySource for FakeConsent {
 pub(crate) struct Harness {
     _tmp: ScratchDir,
     pub app: Router,
+    /// The engine behind `app`, for a test that changes its live `[server.auth]`.
+    pub engine: crate::engine_actor::EngineHandle,
     pub ingress: CloudIngress,
     pub clock: Arc<AtomicI64>,
     pub consent: Arc<FakeConsent>,
@@ -113,8 +123,10 @@ pub(crate) fn harness_with(host: Option<&str>, jwks: Result<Jwks, String>) -> Ha
     let c = Arc::clone(&clock);
     let ingress = CloudIngress::with_parts(
         FakeSource::new(vec![jwks.map(|j| (j, None))]),
-        consent.clone(),
-        Arc::new(move || UNIX_EPOCH + Duration::from_secs(c.load(Ordering::SeqCst) as u64)),
+        Arc::<FakeConsent>::clone(&consent),
+        Arc::new(move || {
+            UNIX_EPOCH + Duration::from_secs(u64::try_from(c.load(Ordering::SeqCst)).unwrap())
+        }),
     );
     ingress.update_settings(IngressSettings {
         app_callback_urls: vec![CALLBACK.to_string()],
@@ -124,16 +136,27 @@ pub(crate) fn harness_with(host: Option<&str>, jwks: Result<Jwks, String>) -> Ha
         ingress.bind(binding_input(host), Box::new(|_| {})).unwrap();
     }
     let probe = Router::new().route("/probe", axum::routing::post(|| async { "ok" }));
+    let engine = crate::test_support::test_engine_handle(tmp.path());
     let app = build_app(
-        crate::test_support::test_engine_handle(tmp.path()),
+        engine.clone(),
         probe,
         RouterParams::plain_http()
-            .with_host_allowlist(vec!["127.0.0.1".parse().unwrap()], vec![], false)
+            .with_host_allowlist(
+                vec!["127.0.0.1".parse().unwrap()],
+                vec![],
+                crate::host_guard::TailscaleLiteralRule::Refuse,
+            )
+            // A look at Tailscale that found nothing reaching yaran, so a plain
+            // loopback request reads as this machine, as on a real serve.
+            .with_live_exposure(crate::exposure::ExposureCell::new(
+                crate::exposure::FunnelState::Open,
+            ))
             .with_cloud_ingress(ingress.clone()),
     );
     Harness {
         _tmp: tmp,
         app,
+        engine,
         ingress,
         clock,
         consent,
@@ -172,6 +195,85 @@ pub(crate) fn request(
         Some(jwt) => b.header("Cf-Access-Jwt-Assertion", jwt),
         None => b,
     }
+}
+
+/// Serves `app` on loopback the way every serve leg does (both ends of each
+/// connection recorded) and opens a WebSocket to `path` as `host`.
+pub(crate) async fn ws(
+    app: &Router,
+    path: &str,
+    host: &str,
+    jwt: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+    ws_with(app, path, host, jwt, &[]).await
+}
+
+/// [`ws`] with `extra` headers on the upgrade request.
+pub(crate) async fn ws_with(
+    app: &Router,
+    path: &str,
+    host: &str,
+    jwt: &str,
+    extra: &[(&str, &str)],
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = app.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            crate::auth::provenance::Recorded(listener),
+            app.into_make_service_with_connect_info::<crate::auth::Arrival>(),
+        )
+        .await;
+    });
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let request = Request::builder()
+        .uri(format!("ws://{host}{path}"))
+        .header("Host", host)
+        .header("Cf-Access-Jwt-Assertion", jwt)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        );
+    let request = extra
+        .iter()
+        .fold(request, |request, (name, value)| {
+            request.header(*name, *value)
+        })
+        .body(())
+        .unwrap();
+    tokio_tungstenite::client_async(request, stream)
+        .await
+        .unwrap()
+        .0
+}
+
+/// The close code the socket ends with within `wait`, or `None` if it stays open.
+pub(crate) async fn close_code(
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    wait: Duration,
+) -> Option<u16> {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let read = async {
+        while let Some(Ok(message)) = socket.next().await {
+            if let Message::Close(frame) = message {
+                return frame.map(|f| u16::from(f.code));
+            }
+        }
+        None
+    };
+    tokio::time::timeout(wait, read).await.ok().flatten()
+}
+
+/// Puts the clock `seconds` before the valid token's `exp + skew`.
+pub(crate) fn before_expiry(h: &Harness, seconds: i64) {
+    let skew = i64::try_from(IngressSettings::default().clock_skew.as_secs()).unwrap();
+    h.clock
+        .store(fixture_now() + 3600 + skew - seconds, Ordering::SeqCst);
 }
 
 pub(crate) async fn text(response: Response<Body>) -> String {
@@ -231,7 +333,7 @@ pub(crate) fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
+                char::from(b).to_string()
             }
             b => format!("%{b:02X}"),
         })
@@ -321,8 +423,7 @@ impl Ask {
         self.params
             .iter()
             .find(|(k, _)| *k == name)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default()
+            .map_or_default(|(_, v)| v.clone())
     }
 }
 
@@ -393,8 +494,7 @@ pub(crate) async fn consent(
 pub(crate) fn location(r: &Response<Body>) -> String {
     r.headers()
         .get("location")
-        .map(|v| v.to_str().unwrap().to_string())
-        .unwrap_or_default()
+        .map_or_default(|v| v.to_str().unwrap().to_string())
 }
 
 pub(crate) fn param(location: &str, name: &str) -> Option<String> {
@@ -447,7 +547,7 @@ pub(crate) fn fixture_consent_key() -> ConsentKey {
         .collect();
     ConsentKey {
         key: key.try_into().unwrap(),
-        version: f["kv"].as_u64().unwrap() as u32,
+        version: u32::try_from(f["kv"].as_u64().unwrap()).unwrap(),
     }
 }
 

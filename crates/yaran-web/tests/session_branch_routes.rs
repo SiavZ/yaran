@@ -1,11 +1,16 @@
-//! End-to-end tests for the delete dialog's two session routes against a real
-//! router, a real git repository and real worktrees in a temp dir:
+//! End-to-end tests for the session routes that touch an agent's branch, against
+//! a real router, a real git repository and real worktrees in a temp dir:
 //!
 //! - `GET    /api/v1/sessions/:id/branch-unpushed`: the branches a delete would
-//!   remove and how much of their work exists only here.
-//! - `DELETE /api/v1/sessions/:id?delete_branch=`:  where an ABSENT answer and
-//!   an explicit `false` part company, which is the compatibility claim the
-//!   parameter rests on and the one a client actually enters through.
+//!   offer, each pinned, and how much of their work exists only here.
+//! - `GET    /api/v1/sessions/:id/uncommitted-files`: the worktree's
+//!   uncommitted file count alone, reading no branch.
+//! - `DELETE /api/v1/sessions/:id`: an absent answer, the older
+//!   `?delete_branch=`, and the body carrying both boxes' pinned answers.
+//! - `GET    /api/v1/sessions/:id/branch-pushed`: whether a branch rename would
+//!   leave a pushed copy behind on the old name.
+//! - `PATCH  /api/v1/sessions/:id` with `rename_branch`: the rename dialog's
+//!   branch box, running `git branch -m` and its refusals.
 //!
 //! The route is where these matter: an HTTP caller reaches them without passing
 //! through either dialog, so neither the naming nor the default may live in a
@@ -28,7 +33,7 @@ fn git(dir: &Path, args: &[&str]) {
         .args(args)
         .current_dir(dir)
         .output()
-        .unwrap();
+        .expect("run git");
     assert!(
         out.status.success(),
         "git {args:?} failed: {}",
@@ -101,7 +106,51 @@ fn standalone_session(id: &str, folder: &str) -> yaran_core::model::AgentSession
 struct Fixture {
     addr: SocketAddr,
     repo: std::path::PathBuf,
+    /// The drifted agent's worktree.
+    drifted_wt: std::path::PathBuf,
     _tmp: yaran_core::test_scratch::ScratchDir,
+}
+
+/// Save the project and the three agents `boot` serves.
+fn seed_store(paths: &YaranPaths, repo: &Path, drifted_wt: &Path, yarans_wt: &Path, folder: &Path) {
+    let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
+    store
+        .upsert_project(&ProjectConfig {
+            id: "p1".to_string(),
+            path: repo.to_string_lossy().into_owned(),
+            name: Some("repo".to_string()),
+            default_provider: None,
+            leading_branch: None,
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: std::collections::BTreeMap::new(),
+            workspace_mode: None,
+        })
+        .expect("save the test project");
+    store
+        .create_session(&managed_session(
+            "drifted",
+            drifted_wt.to_string_lossy().as_ref(),
+            "develop-next",
+            "develop",
+            yaran_core::model::BranchProvenance::AttachedExisting,
+        ))
+        .expect("save the test agent");
+    store
+        .create_session(&managed_session(
+            "yarans",
+            yarans_wt.to_string_lossy().as_ref(),
+            "yaran/made-this",
+            "yaran/made-this",
+            yaran_core::model::BranchProvenance::CreatedByYaran,
+        ))
+        .expect("save the test agent");
+    store
+        .create_session(&standalone_session(
+            "folder",
+            folder.to_string_lossy().as_ref(),
+        ))
+        .expect("save the test agent");
 }
 
 /// Boot a server over a real repo with three agents:
@@ -114,14 +163,14 @@ async fn boot() -> Fixture {
     let root = tmp.path().to_path_buf();
 
     let repo = root.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&repo).expect("create the test directory");
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["config", "user.email", "t@example.com"]);
     git(&repo, &["config", "user.name", "Test"]);
     git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
 
     let managed_root = root.join("worktrees").join("repo");
-    std::fs::create_dir_all(&managed_root).unwrap();
+    std::fs::create_dir_all(&managed_root).expect("create the test directory");
 
     // The drifted agent: born on `develop`, its worktree now on `develop-next`,
     // which carries one commit `develop` does not.
@@ -158,56 +207,18 @@ async fn boot() -> Fixture {
     );
 
     let folder = root.join("someones-folder");
-    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::create_dir_all(&folder).expect("create the test directory");
 
     let paths = YaranPaths {
         root: root.clone(),
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
-        store
-            .upsert_project(&ProjectConfig {
-                id: "p1".to_string(),
-                path: repo.to_string_lossy().into_owned(),
-                name: Some("repo".to_string()),
-                default_provider: None,
-                leading_branch: None,
-                auto_reopen_agents: None,
-                startup_command: None,
-                env: Default::default(),
-                workspace_mode: None,
-            })
-            .unwrap();
-        store
-            .create_session(&managed_session(
-                "drifted",
-                drifted_wt.to_string_lossy().as_ref(),
-                "develop-next",
-                "develop",
-                yaran_core::model::BranchProvenance::AttachedExisting,
-            ))
-            .unwrap();
-        store
-            .create_session(&managed_session(
-                "yarans",
-                yarans_wt.to_string_lossy().as_ref(),
-                "yaran/made-this",
-                "yaran/made-this",
-                yaran_core::model::BranchProvenance::CreatedByYaran,
-            ))
-            .unwrap();
-        store
-            .create_session(&standalone_session(
-                "folder",
-                folder.to_string_lossy().as_ref(),
-            ))
-            .unwrap();
-    }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    seed_store(&paths, &repo, &drifted_wt, &yarans_wt, &folder);
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     yaran_core::test_provider::defuse_config(&mut engine.config);
     let (handle, _join) = spawn_engine_thread(engine);
     let app = build_app(
@@ -215,20 +226,23 @@ async fn boot() -> Fixture {
         Router::<AppState>::new(),
         RouterParams::plain_http(),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
 
     Fixture {
         addr,
         repo,
+        drifted_wt,
         _tmp: tmp,
     }
 }
@@ -238,7 +252,7 @@ async fn branch_unpushed(addr: SocketAddr, id: &str) -> (u16, serde_json::Value)
         "http://{addr}/api/v1/sessions/{id}/branch-unpushed"
     ))
     .await
-    .unwrap();
+    .expect("send the request");
     let status = resp.status().as_u16();
     let body = resp.json().await.unwrap_or(serde_json::Value::Null);
     (status, body)
@@ -252,7 +266,7 @@ async fn delete(addr: SocketAddr, id: &str, query: &str, connection: &str) -> u1
         .header("x-connection-id", connection)
         .send()
         .await
-        .unwrap()
+        .expect("send the request")
         .status()
         .as_u16()
 }
@@ -267,7 +281,7 @@ async fn events_socket(
 ) {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
         .await
-        .unwrap();
+        .expect("open the websocket");
     let frame = next_frame(&mut ws, |v| v["event"] == "connected")
         .await
         .expect("a /ws/events connection must send a `connected` first frame");
@@ -343,7 +357,10 @@ where
     })
     .await
     .unwrap_or_else(|| panic!("the delete of {name} must report its outcome on the events socket"));
-    frame["message"].as_str().unwrap().to_string()
+    frame["message"]
+        .as_str()
+        .expect("the status frame carries a message")
+        .to_string()
 }
 
 fn branches(repo: &Path) -> Vec<String> {
@@ -351,10 +368,10 @@ fn branches(repo: &Path) -> Vec<String> {
         .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
         .current_dir(repo)
         .output()
-        .unwrap();
+        .expect("run git");
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .map(|line| line.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
@@ -364,7 +381,7 @@ fn branches(repo: &Path) -> Vec<String> {
 async fn assert_session_gone(addr: SocketAddr, id: &str) {
     let status = reqwest::get(format!("http://{addr}/api/v1/sessions/{id}"))
         .await
-        .unwrap()
+        .expect("send the request")
         .status()
         .as_u16();
     assert_eq!(
@@ -373,23 +390,71 @@ async fn assert_session_gone(addr: SocketAddr, id: &str) {
     );
 }
 
-/// The route names every branch the delete would remove, and counts them as one
-/// set: a drifted agent gives up both, so an answer about one of them would
-/// understate what the tick costs.
+/// The route offers the branch the worktree is on and every other branch it
+/// has been on, each pinned to the commit a tick would delete and with who
+/// made it, and counts each box's work on its own.
 #[tokio::test]
-async fn branch_unpushed_names_both_branches_of_a_drifted_agent() {
+async fn branch_unpushed_offers_both_boxes_pinned() {
     let f = boot().await;
     let (status, body) = branch_unpushed(f.addr, "drifted").await;
     assert_eq!(status, 200, "{body}");
+    assert_eq!(body["current"]["name"], "develop-next", "{body}");
     assert_eq!(
-        body["branches"],
-        serde_json::json!(["develop-next", "develop"]),
+        body["current"]["oid"].as_str().unwrap(),
+        rev(&f.repo, "develop-next"),
         "{body}"
     );
-    // No remote-tracking refs at all here, so the count is the whole history:
-    // the initial commit plus the one made on `develop-next`.
-    assert_eq!(body["unpushed"]["count"], 2, "{body}");
-    assert_eq!(body["unpushed"]["has_remote_refs"], false, "{body}");
+    // Made just before the agent's record was: before it, or in the same
+    // second, which proves nothing either way. Never yaran's.
+    assert!(
+        matches!(
+            body["current"]["origin"].as_str(),
+            Some("before" | "unknown")
+        ),
+        "{body}"
+    );
+    assert_eq!(body["others"][0]["name"], "develop", "{body}");
+    assert_eq!(body["others"][0]["origin"], "attached", "{body}");
+    assert_eq!(body["others"].as_array().unwrap().len(), 1, "{body}");
+    // Each count is what that box's deletion loses: the commit made on
+    // `develop-next` is on no other branch, while the initial commit `develop`
+    // holds is on `main` too, so deleting `develop` loses nothing.
+    assert_eq!(body["current_unpushed"]["count"], 1, "{body}");
+    assert_eq!(body["others_unpushed"]["count"], 0, "{body}");
+    // Both ticked loses what neither box leaves behind.
+    assert_eq!(body["both_unpushed"]["count"], 1, "{body}");
+    assert_eq!(body["current_name"], "develop-next", "{body}");
+    assert_eq!(body["protected"], serde_json::json!([]), "{body}");
+    assert_eq!(body["others_unpushed"]["has_remote_refs"], false, "{body}");
+}
+
+/// The offer also says how many files in the worktree are not committed, which
+/// a worktree removal deletes along with the folder.
+#[tokio::test]
+async fn branch_unpushed_counts_the_worktrees_uncommitted_files() {
+    let f = boot().await;
+    let (_, clean) = branch_unpushed(f.addr, "drifted").await;
+    assert_eq!(clean["uncommitted_files"], 0, "{clean}");
+    std::fs::write(f.drifted_wt.join("RELEASE_NOTES.md"), "draft").expect("write a file");
+    let (status, body) = branch_unpushed(f.addr, "drifted").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["uncommitted_files"], 1, "{body}");
+    assert_eq!(
+        body["uncommitted_files_error"],
+        serde_json::Value::Null,
+        "{body}"
+    );
+}
+
+/// A branch the worktree was on but that no longer exists is not offered: there
+/// is nothing left to orphan, or to count.
+#[tokio::test]
+async fn branch_unpushed_does_not_offer_a_branch_that_is_gone() {
+    let f = boot().await;
+    git(&f.repo, &["branch", "-D", "develop"]);
+    let (status, body) = branch_unpushed(f.addr, "drifted").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["others"], serde_json::json!([]), "{body}");
 }
 
 /// A standalone agent has no branch, so there is no question to answer. It is
@@ -409,12 +474,89 @@ async fn branch_unpushed_refuses_a_session_that_does_not_exist() {
     assert_eq!(status, 404);
 }
 
-/// THE COMPATIBILITY CLAIM, at the layer a client actually enters through: an
-/// ABSENT `delete_branch` keeps the provenance default, so a caller written
-/// before the parameter existed behaves exactly as it did. `develop` predates
-/// the agent, so it survives, and so does the branch the worktree drifted onto.
+async fn uncommitted_files(addr: SocketAddr, id: &str) -> (u16, serde_json::Value) {
+    let resp = reqwest::get(format!(
+        "http://{addr}/api/v1/sessions/{id}/uncommitted-files"
+    ))
+    .await
+    .expect("send the request");
+    let status = resp.status().as_u16();
+    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+/// The file count on its own reads no branch and records none: a branch the
+/// agent visited since its last branch check stays unknown to the delete that
+/// follows, which says exactly what it would have said with no read at all.
 #[tokio::test]
-async fn an_absent_branch_answer_keeps_the_provenance_default() {
+async fn uncommitted_files_counts_without_recording_any_branch() {
+    let f = boot().await;
+    git(&f.drifted_wt, &["switch", "-q", "-c", "spike"]);
+    git(&f.drifted_wt, &["switch", "-q", "develop-next"]);
+    std::fs::write(f.drifted_wt.join("RELEASE_NOTES.md"), "draft").expect("write a file");
+    let (status, body) = uncommitted_files(f.addr, "drifted").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["uncommitted_files"], 1, "{body}");
+    assert_eq!(
+        body["uncommitted_files_error"],
+        serde_json::Value::Null,
+        "{body}"
+    );
+
+    let (mut ws, connection) = events_socket(f.addr).await;
+    assert_eq!(
+        delete(f.addr, "drifted", "delete_worktree=true", &connection).await,
+        204
+    );
+    let outcome = wait_for_delete_status(&mut ws, "drifted").await;
+    assert!(
+        !outcome.contains("spike"),
+        "reading the count must not record the branches the agent was on: {outcome}"
+    );
+}
+
+/// A standalone agent has no worktree yaran would remove, so there is nothing
+/// to count.
+#[tokio::test]
+async fn uncommitted_files_refuses_a_standalone_agent() {
+    let f = boot().await;
+    let (status, _) = uncommitted_files(f.addr, "folder").await;
+    assert_eq!(status, 404);
+}
+
+fn rev(repo: &Path, branch: &str) -> String {
+    let out = yaran_core::test_git::fixture_git()
+        .args(["rev-parse", &format!("refs/heads/{branch}")])
+        .current_dir(repo)
+        .output()
+        .expect("run git");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The delete with both boxes' answers in its body.
+async fn delete_with_body(
+    addr: SocketAddr,
+    id: &str,
+    body: &serde_json::Value,
+    connection: &str,
+) -> u16 {
+    reqwest::Client::new()
+        .delete(format!(
+            "http://{addr}/api/v1/sessions/{id}?delete_worktree=true"
+        ))
+        .header("x-connection-id", connection)
+        .json(body)
+        .send()
+        .await
+        .expect("send the request")
+        .status()
+        .as_u16()
+}
+
+/// Nobody was asked: neither the branch the worktree moved onto nor the one it
+/// was attached to is yaran's, so both survive, each named with its reason.
+#[tokio::test]
+async fn an_absent_branch_answer_keeps_every_branch_yaran_did_not_make() {
     let f = boot().await;
     let (mut ws, connection) = events_socket(f.addr).await;
     assert_eq!(
@@ -423,25 +565,20 @@ async fn an_absent_branch_answer_keeps_the_provenance_default() {
     );
     let status = wait_for_delete_status(&mut ws, "drifted").await;
     assert!(
-        status.contains("\"develop-next\" was created inside this agent's worktree and was kept")
+        status.contains("Its branch \"develop-next\" was kept: this agent was on it, but nobody")
             && status.contains("\"develop\" existed before this agent and was kept"),
         "the outcome must name both kept branches with their reasons: {status}"
     );
     assert_session_gone(f.addr, "drifted").await;
     let listed = branches(&f.repo);
     assert!(
-        listed.contains(&"develop".to_string()),
-        "a branch that predates the agent is not yaran's to delete: {listed:?} ({status})"
-    );
-    assert!(
-        listed.contains(&"develop-next".to_string()),
-        "and neither is the one the worktree drifted onto: {listed:?} ({status})"
+        listed.contains(&"develop".to_string()) && listed.contains(&"develop-next".to_string()),
+        "{listed:?} ({status})"
     );
 }
 
-/// The same request with an explicit `false` is a different thing from an
-/// absent one only when the default would have deleted: yaran made this branch,
-/// so unasked it would go, and the answer is what spares it.
+/// The older single answer still works: an explicit `false` spares a branch
+/// yaran created, which unasked it would delete.
 #[tokio::test]
 async fn an_explicit_false_spares_a_branch_yaran_created() {
     let f = boot().await;
@@ -458,64 +595,229 @@ async fn an_explicit_false_spares_a_branch_yaran_created() {
     );
     let status = wait_for_delete_status(&mut ws, "yarans").await;
     assert!(
-        status.contains("\"yaran/made-this\" was kept because you left the branch box unticked"),
+        status.contains("\"yaran/made-this\" was kept because you chose to keep it"),
         "the outcome must say the answer is what spared the branch: {status}"
     );
     assert_session_gone(f.addr, "yarans").await;
     assert!(
         branches(&f.repo).contains(&"yaran/made-this".to_string()),
-        "the answer must override the provenance default: {:?} ({status})",
+        "the answer must override the default: {:?} ({status})",
         branches(&f.repo)
     );
 }
 
-/// And in the other direction: a branch yaran would have kept goes when the user
-/// asks, which is the only way to remove it once the worktree is gone. Both of
-/// the drifted agent's branches go, because both were named.
+/// Both boxes ticked over what the route offered delete exactly those branches,
+/// each only at the commit it was offered at: one that moved since is kept.
 #[tokio::test]
-async fn an_explicit_true_removes_every_branch_the_route_named() {
+async fn ticked_boxes_delete_exactly_the_pinned_branches_still_where_they_were() {
     let f = boot().await;
-    let (_, body) = branch_unpushed(f.addr, "drifted").await;
-    let named: Vec<String> = body["branches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|b| b.as_str().unwrap().to_string())
-        .collect();
-    let before = branches(&f.repo);
+    let (_, offer) = branch_unpushed(f.addr, "drifted").await;
+    let body = serde_json::json!({ "branches": {
+        "current": { "delete": true, "branches": [ {
+            "name": offer["current"]["name"], "oid": offer["current"]["oid"] } ] },
+        "others": { "delete": true, "branches": offer["others"].as_array().unwrap().iter()
+            .map(|o| serde_json::json!({ "name": o["name"], "oid": o["oid"] }))
+            .collect::<Vec<_>>() },
+    } });
+    // `develop` moves after the dialog read it.
+    git(
+        &f.repo,
+        &[
+            "update-ref",
+            "refs/heads/develop",
+            "refs/heads/develop-next",
+        ],
+    );
 
     let (mut ws, connection) = events_socket(f.addr).await;
     assert_eq!(
-        delete(
-            f.addr,
-            "drifted",
-            "delete_worktree=true&delete_branch=true",
-            &connection
-        )
-        .await,
+        delete_with_body(f.addr, "drifted", &body, &connection).await,
         204
     );
-    // The outcome message first: it settles the branches AND says in git's own
-    // words when git refused one, which the list below cannot.
     let status = wait_for_delete_status(&mut ws, "drifted").await;
     assert!(
         status.contains("deleted its branch \"develop-next\"")
-            && status.contains("Its original branch \"develop\" was deleted too"),
-        "the outcome must report both branches deleted: {status}"
+            && status.contains("\"develop\" was kept because it moved after you were shown it"),
+        "{status}"
     );
-    assert_session_gone(f.addr, "drifted").await;
+    let listed = branches(&f.repo);
+    assert!(!listed.contains(&"develop-next".to_string()), "{listed:?}");
+    assert!(listed.contains(&"develop".to_string()), "{listed:?}");
+}
 
-    let after = branches(&f.repo);
-    let mut gone: Vec<String> = before
-        .iter()
-        .filter(|b| !after.contains(b))
-        .cloned()
-        .collect();
-    gone.sort();
-    let mut named = named;
-    named.sort();
-    assert_eq!(
-        gone, named,
-        "the route must remove exactly the branches it named ({status})"
+/// A ticked box that pins nothing, or pins a short commit, is refused whole:
+/// a malformed answer is never read as a delete without a pin.
+#[tokio::test]
+async fn a_malformed_branch_answer_is_refused_and_deletes_nothing() {
+    let f = boot().await;
+    let (_, connection) = events_socket(f.addr).await;
+    for body in [
+        serde_json::json!({ "branches": { "current": { "delete": true, "branches": [] } } }),
+        serde_json::json!({ "branches": { "current": { "delete": true,
+            "branches": [ { "name": "develop-next", "oid": "abc123" } ] } } }),
+    ] {
+        assert_eq!(
+            delete_with_body(f.addr, "drifted", &body, &connection).await,
+            400,
+            "{body}"
+        );
+    }
+    let (status, _) = branch_unpushed(f.addr, "drifted").await;
+    assert_eq!(status, 200, "the agent is still there");
+}
+
+async fn branch_pushed(addr: SocketAddr, id: &str) -> (u16, serde_json::Value) {
+    let resp = reqwest::get(format!("http://{addr}/api/v1/sessions/{id}/branch-pushed"))
+        .await
+        .expect("send the request");
+    let status = resp.status().as_u16();
+    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+/// A rename, scoped to an events connection so its statuses come back on it.
+async fn rename(
+    addr: SocketAddr,
+    id: &str,
+    body: serde_json::Value,
+    connection: &str,
+) -> (u16, String) {
+    let resp = reqwest::Client::new()
+        .patch(format!("http://{addr}/api/v1/sessions/{id}"))
+        .header("x-connection-id", connection)
+        .json(&body)
+        .send()
+        .await
+        .expect("send the request");
+    let status = resp.status().as_u16();
+    (status, resp.text().await.unwrap_or_default())
+}
+
+async fn session_title(addr: SocketAddr, id: &str) -> serde_json::Value {
+    let body: serde_json::Value = reqwest::get(format!("http://{addr}/api/v1/sessions/{id}"))
+        .await
+        .expect("send the request")
+        .json()
+        .await
+        .expect("the response body is JSON");
+    body["title"].clone()
+}
+
+/// The rename dialog's warning reads whether the branch has a pushed copy, from
+/// this clone's refs; a standalone agent has no branch and is not answered.
+#[tokio::test]
+async fn branch_pushed_reads_the_clones_remote_tracking_refs() {
+    let f = boot().await;
+    let (status, body) = branch_pushed(f.addr, "yarans").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["pushed"], false, "{body}");
+
+    git(&f.repo, &["remote", "add", "origin", "/nowhere"]);
+    git(
+        &f.repo,
+        &["update-ref", "refs/remotes/origin/yaran/made-this", "HEAD"],
     );
+    let (_, body) = branch_pushed(f.addr, "yarans").await;
+    assert_eq!(body["pushed"], true, "{body}");
+
+    assert_eq!(branch_pushed(f.addr, "folder").await.0, 404);
+    assert_eq!(branch_pushed(f.addr, "nobody").await.0, 404);
+}
+
+/// With the box ticked the web rename runs `git branch -m` through the same
+/// engine path the terminal UI uses: the branch moves, the final says both
+/// names, and no custom title is left behind, so the label follows the branch.
+#[tokio::test]
+async fn a_rename_with_the_branch_box_renames_the_git_branch() {
+    let f = boot().await;
+    let (mut ws, connection) = events_socket(f.addr).await;
+    let (status, body) = rename(
+        f.addr,
+        "yarans",
+        serde_json::json!({ "title": "yaran/renamed", "rename_branch": true }),
+        &connection,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let frame = next_frame(&mut ws, |v| {
+        v["event"] == "status"
+            && v["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("Renamed agent and its git branch"))
+    })
+    .await
+    .expect("the branch rename reports its outcome on the events socket");
+    assert_eq!(
+        frame["message"],
+        "Renamed agent and its git branch to \"yaran/renamed\". The branch was called \"yaran/made-this\"."
+    );
+    let listed = branches(&f.repo);
+    assert!(listed.contains(&"yaran/renamed".to_string()), "{listed:?}");
+    assert!(
+        !listed.contains(&"yaran/made-this".to_string()),
+        "{listed:?}"
+    );
+    assert_eq!(
+        session_title(f.addr, "yarans").await,
+        serde_json::Value::Null
+    );
+}
+
+/// An empty name cannot be a branch: the route refuses with the terminal UI's
+/// sentence and renames nothing.
+#[tokio::test]
+async fn a_branch_rename_to_an_empty_name_is_refused() {
+    let f = boot().await;
+    let (_ws, connection) = events_socket(f.addr).await;
+    let (status, body) = rename(
+        f.addr,
+        "yarans",
+        serde_json::json!({ "title": "  ", "rename_branch": true }),
+        &connection,
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        body.contains("untick \"Also rename the git branch\""),
+        "{body}"
+    );
+    assert!(branches(&f.repo).contains(&"yaran/made-this".to_string()));
+    assert_eq!(session_title(f.addr, "yarans").await, "yarans");
+}
+
+/// Without the box the branch is left alone, and a standalone agent's name is
+/// held to the agent-name rules, whatever the box says.
+#[tokio::test]
+async fn a_rename_without_the_box_leaves_the_branch_alone() {
+    let f = boot().await;
+    let (_ws, connection) = events_socket(f.addr).await;
+    let (status, body) = rename(
+        f.addr,
+        "yarans",
+        serde_json::json!({ "title": "shiny" }),
+        &connection,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(session_title(f.addr, "yarans").await, "shiny");
+    assert!(branches(&f.repo).contains(&"yaran/made-this".to_string()));
+
+    let (status, body) = rename(
+        f.addr,
+        "folder",
+        serde_json::json!({ "title": "My Notes (2026)", "rename_branch": true }),
+        &connection,
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+
+    let (status, body) = rename(
+        f.addr,
+        "folder",
+        serde_json::json!({ "title": "My-Notes-2026", "rename_branch": true }),
+        &connection,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(session_title(f.addr, "folder").await, "My-Notes-2026");
 }

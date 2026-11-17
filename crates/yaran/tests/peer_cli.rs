@@ -1,5 +1,16 @@
-//! End-to-end checks of `yaran peer` through the real binary, with YARAN_HOME and
+//! End-to-end checks of `yaran peer` through the real binary, with `YARAN_HOME` and
 //! the AMQ root pointed at a temp dir so the host's real state is untouched.
+//!
+//! `yaran peer` is a client: its agents and its AMQ registry pass come from the
+//! yaran running on its config folder, so this journey serves one in this
+//! process (and is a test binary of its own, since that yaran runs until the
+//! process ends).
+
+#[expect(
+    dead_code,
+    reason = "this journey uses only the serving half of the shared helpers"
+)]
+mod support;
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -38,8 +49,10 @@ fn session(id: &str, provider: &str, folder: &Path, status: SessionStatus) -> Ag
         }),
         title: None,
         started_providers: Vec::new(),
-        desired_running: true,
-        auto_reopen_enabled: true,
+        // Served below: a session yaran would relaunch at start would launch a
+        // real agent CLI, which the test guard refuses.
+        desired_running: false,
+        auto_reopen_enabled: false,
         status,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -48,26 +61,57 @@ fn session(id: &str, provider: &str, folder: &Path, status: SessionStatus) -> Ag
 }
 
 #[test]
-fn peer_help_list_and_sync_run_through_the_binary() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey through every peer command against one running yaran"
+)]
+fn peer_commands_ask_the_running_yaran() {
     let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
+    let home = support::home("peer", "journey");
     let amq = tmp.path().join("amq");
-    std::fs::create_dir_all(&home).unwrap();
     let live = tmp.path().join("Live Agent");
     let gone = tmp.path().join("gone-agent");
-    let exited = tmp.path().join("exited-agent");
-    std::fs::create_dir_all(&live).unwrap();
-    std::fs::create_dir_all(&exited).unwrap();
-    let store = SessionStore::open(&home.join("sessions.sqlite3")).unwrap();
-    store
-        .upsert_session(&session("s1", "claude", &live, SessionStatus::Active))
-        .unwrap();
-    store
-        .upsert_session(&session("s2", "codex", &gone, SessionStatus::Active))
-        .unwrap();
-    store
-        .upsert_session(&session("s3", "codex", &exited, SessionStatus::Exited))
-        .unwrap();
+    let worker = tmp.path().join("worker");
+    for dir in [&live, &worker] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    {
+        let store = SessionStore::open(&home.join("sessions.sqlite3")).unwrap();
+        for (id, provider, dir, status) in [
+            ("s1", "claude", &live, SessionStatus::Active),
+            ("s2", "codex", &gone, SessionStatus::Active),
+            ("s4", "claude", &worker, SessionStatus::Active),
+        ] {
+            store
+                .upsert_session(&session(id, provider, dir, status))
+                .unwrap();
+        }
+    }
+
+    // With no yaran on the folder the command says so and reads nothing.
+    let alone = yaran(&home, &amq, &["peer", "list"]);
+    assert!(!alone.status.success());
+    assert!(
+        String::from_utf8_lossy(&alone.stderr).contains("yaran isn't running"),
+        "{alone:?}"
+    );
+
+    // The yaran serving this folder reconciles the registry it is pointed at.
+    for (name, value) in [
+        ("AMQ_GLOBAL_ROOT", Some(amq.as_os_str())),
+        ("AM_ROOT", None),
+        // A terminal runs the developer's login shell otherwise.
+        ("SHELL", Some("/bin/sh".as_ref())),
+    ] {
+        match value {
+            // SAFETY: this binary runs this one test, and the serve that reads
+            // the environment starts after this.
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            // SAFETY: as above.
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
+    support::serve(&home);
 
     let help = yaran(&home, &amq, &["peer", "--help"]);
     assert!(help.status.success());
@@ -77,36 +121,28 @@ fn peer_help_list_and_sync_run_through_the_binary() {
     let sync = yaran(&home, &amq, &["peer", "sync-amq"]);
     assert!(sync.status.success(), "{sync:?}");
     let sync = String::from_utf8_lossy(&sync.stdout);
-    assert!(sync.contains("configured agents added: 3"), "{sync}");
+    assert!(
+        sync.contains(&format!("AMQ sync: {}", amq.display())),
+        "{sync}"
+    );
+    assert!(sync.contains("configured agents added:"), "{sync}");
     assert!(amq.join("agents/live-agent/.dux-amq-source").is_file());
 
     let list = yaran(&home, &amq, &["peer", "list"]);
     assert!(list.status.success(), "{list:?}");
     let list = String::from_utf8_lossy(&list.stdout);
     assert!(list.contains("live-agent"), "{list}");
-    // Unroutable sessions are hidden: a missing directory, an exited agent.
+    // An unroutable session is hidden: its directory is gone. (An exited one
+    // is too, but the yaran serving this folder settles every stored status
+    // when it starts, so the router's own tests hold that case.)
     assert!(!list.contains("gone-agent"), "{list}");
-    assert!(!list.contains("exited-agent"), "{list}");
     assert!(list.contains("Claude Peers broker: unavailable"), "{list}");
-}
-
-#[test]
-fn peer_send_refuses_unknown_targets_and_falls_back_to_amq_without_the_broker() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let amq = tmp.path().join("amq");
-    std::fs::create_dir_all(&home).unwrap();
-    let live = tmp.path().join("worker");
-    std::fs::create_dir_all(&live).unwrap();
-    SessionStore::open(&home.join("sessions.sqlite3"))
-        .unwrap()
-        .upsert_session(&session("s1", "claude", &live, SessionStatus::Active))
-        .unwrap();
 
     let unknown = yaran(&home, &amq, &["peer", "send", "nobody", "hi"]);
     assert!(!unknown.status.success());
     assert!(
-        String::from_utf8_lossy(&unknown.stderr).contains("does not exist or is not reachable")
+        String::from_utf8_lossy(&unknown.stderr).contains("does not exist or is not reachable"),
+        "{unknown:?}"
     );
 
     // A stand-in `amq` records the hand-off, so the test needs no AMQ install.
@@ -128,7 +164,7 @@ fn peer_send_refuses_unknown_targets_and_falls_back_to_amq_without_the_broker() 
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let send = |args: &[&str]| {
+    let peer_send = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_yaran"))
             .args(args)
             .env("YARAN_HOME", &home)
@@ -145,7 +181,7 @@ fn peer_send_refuses_unknown_targets_and_falls_back_to_amq_without_the_broker() 
 
     // With the broker down a Claude target still gets the message, over AMQ,
     // and the output says why.
-    let claude = send(&["peer", "send", "worker", "--status", "please"]);
+    let claude = peer_send(&["peer", "send", "worker", "--status", "please"]);
     let out = String::from_utf8_lossy(&claude.stdout);
     assert!(
         claude.status.success(),
@@ -158,7 +194,7 @@ fn peer_send_refuses_unknown_targets_and_falls_back_to_amq_without_the_broker() 
     assert!(handed.contains("--status please"), "{handed}");
 
     // Asking for Claude Peers explicitly refuses rather than falling back.
-    let explicit = send(&[
+    let explicit = peer_send(&[
         "peer",
         "send",
         "--transport",

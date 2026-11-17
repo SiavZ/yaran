@@ -6,6 +6,7 @@
 //! - `ensure_dir` creates `cloud/` owner-only (`0700`) through `file_modes`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/paths.rs
 //! ├── config
@@ -30,6 +31,7 @@
 //! ├── yaran-core[test cloud_machine_api]
 //! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app::cloud_commands
+//! ├── yaran-web
 //! ├── yaran-web::cloud_ingress
 //! ├── yaran-web::cloud_ingress_tests
 //! ├── yaran-web::cloud_loop
@@ -37,6 +39,7 @@
 //! ├── yaran-web::cloud_routes
 //! ├── yaran-web::cloud_routes::actions_routes
 //! └── yaran-web::cloud_routes::tests
+//! ```
 //! <module-headers:end>
 
 use std::io;
@@ -60,10 +63,12 @@ pub struct CloudPaths {
 }
 
 impl CloudPaths {
+    /// The layout under a yaran home.
     pub fn new(paths: &YaranPaths) -> Self {
         Self::from_root(&paths.root)
     }
 
+    /// The layout under the yaran home at `root`.
     pub fn from_root(root: &Path) -> Self {
         Self::from_dir(&root.join("cloud"))
     }
@@ -81,6 +86,10 @@ impl CloudPaths {
     }
 
     /// Create `cloud/` (and the root if missing) and make it owner-only.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the directory cannot be created or made owner-only.
     pub fn ensure_dir(&self) -> io::Result<()> {
         crate::file_modes::create_private_dir_all(&self.dir)
     }

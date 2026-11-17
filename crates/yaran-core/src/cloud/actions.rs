@@ -8,6 +8,7 @@
 //!   worker or CLI threads only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/actions.rs
 //! ├── cloud::credentials
@@ -24,6 +25,7 @@
 //! ├── cloud::cli::manage
 //! ├── yaran-tui::app::cloud_commands
 //! └── yaran-web::cloud_routes::actions_routes
+//! ```
 //! <module-headers:end>
 
 use crate::cloud::credentials::{self, CredentialsError};
@@ -32,7 +34,16 @@ use crate::cloud::outcome::CloudActionOutcome;
 use crate::cloud::paths::CloudPaths;
 use crate::cloud::protocol::machine::RotateReason;
 
-fn unreadable(e: CredentialsError) -> CloudActionOutcome {
+/// Whether a logout tells the control plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogoutScope {
+    /// Unpair with the control plane, then forget the credentials.
+    ControlPlane,
+    /// Forget the credentials here without telling anyone.
+    LocalOnly,
+}
+
+fn unreadable(e: &CredentialsError) -> CloudActionOutcome {
     CloudActionOutcome::CredentialsUnreadable {
         reason: e.to_string(),
     }
@@ -40,14 +51,15 @@ fn unreadable(e: CredentialsError) -> CloudActionOutcome {
 
 /// Unpair (W8) and delete the credentials on 202 or 410, unless a login replaced them
 /// meanwhile (`PairingChanged`). A failed request keeps the credentials and returns its
-/// outcome. `local_only` never contacts the control plane
+/// outcome. [`LogoutScope::LocalOnly`] never contacts the control plane
 /// and also forgets an unreadable file.
-pub fn logout(paths: &CloudPaths, api: &ApiFactory, local_only: bool) -> CloudActionOutcome {
+pub fn logout(paths: &CloudPaths, api: &ApiFactory, scope: LogoutScope) -> CloudActionOutcome {
+    let local_only = scope == LogoutScope::LocalOnly;
     let creds = match credentials::read(paths) {
         Ok(Some(c)) => Some(c),
         Ok(None) => return CloudActionOutcome::NotPaired,
         Err(_) if local_only => None,
-        Err(e) => return unreadable(e),
+        Err(e) => return unreadable(&e),
     };
     let hostname = creds
         .as_ref()
@@ -70,7 +82,7 @@ pub fn logout(paths: &CloudPaths, api: &ApiFactory, local_only: bool) -> CloudAc
     match forgotten {
         Ok(true) => {}
         Ok(false) => return CloudActionOutcome::PairingChanged,
-        Err(e) => return unreadable(e),
+        Err(e) => return unreadable(&e),
     }
     if local_only {
         CloudActionOutcome::UnpairedLocallyOnly { hostname }
@@ -84,7 +96,7 @@ pub fn rotate_token(paths: &CloudPaths, api: &ApiFactory) -> CloudActionOutcome 
     let creds = match credentials::read(paths) {
         Ok(Some(c)) => c,
         Ok(None) => return CloudActionOutcome::NotPaired,
-        Err(e) => return unreadable(e),
+        Err(e) => return unreadable(&e),
     };
     match api(&creds.org_url, paths).and_then(|api| api.rotate(RotateReason::User)) {
         Ok(_) => CloudActionOutcome::Rotated {
@@ -101,7 +113,7 @@ pub fn rotate_consent_key(paths: &CloudPaths) -> CloudActionOutcome {
             hostname: c.hostname,
         },
         Ok(None) => CloudActionOutcome::NotPaired,
-        Err(e) => unreadable(e),
+        Err(e) => unreadable(&e),
     }
 }
 
@@ -125,9 +137,13 @@ mod tests {
             credentials::update(&repair_paths, |_| Ok(Some(repaired.clone()))).unwrap();
             let body =
                 serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"});
-            MockResponse::json(202, body)
+            MockResponse::json(202, &body)
         });
-        let out = logout(&paths, &test_api_factory(worker.base_url()), false);
+        let out = logout(
+            &paths,
+            &test_api_factory(worker.base_url()),
+            LogoutScope::ControlPlane,
+        );
         assert_eq!(out, CloudActionOutcome::PairingChanged);
         assert_eq!(credentials::read(&paths).unwrap(), Some(fresh));
     }

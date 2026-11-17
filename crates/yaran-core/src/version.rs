@@ -33,7 +33,7 @@ mod tests {
         assert!(v.starts_with(crate::display_version()));
         assert!(v.ends_with(GIT_COMMIT));
         let stamp = v.split('+').nth(1).unwrap_or("");
-        assert!(!stamp.is_empty());
+        assert_ne!(stamp, "");
     }
 
     #[test]

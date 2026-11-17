@@ -8,11 +8,23 @@
 //!   anything an agent is attached to (409). Answers 200 with a body reporting what
 //!   happened to the branch, because `git branch -D` can refuse one checked out in
 //!   another worktree and the client must not report its checkbox as the outcome.
+//! - `POST /api/v1/projects/:id/leftover-folders/delete` with
+//!   `{ path, delete_branches }`: delete ONE left-over folder (a worktree folder
+//!   a delete could not finish) and the kept branches named. Every decided
+//!   outcome, a refusal included, is a 200 `{ removed, warning, message,
+//!   segments }`: the sentence is yaran-core's, the same one the terminal UI
+//!   prints, with its name parts. 404 for an unknown project, 400 for a bad
+//!   path.
 //! - `GET /api/v1/projects/worktree-counts`: how many managed worktrees each project
 //!   has, so the picker can label its rows before the user drills into an empty one.
 //! - `GET /api/v1/projects/inspect?path=`: branch pre-flight for the add-project
 //!   flow. 400 for an empty or relative path: the path must be absolute, because it
 //!   is not a registered project yet and is inspected straight off the filesystem.
+//! - `GET /api/v1/projects/:id/branches`: the branches "Change base branch" can
+//!   move the project to, after one bounded fetch of origin:
+//!   `{ branches: [{ name, location: "local" | "remote", held_by }], fetched,
+//!   fetch_error? }`. The change itself is `POST .../base-branch` in
+//!   [`crate::project_actions`].
 //!
 //! These shell to git, so the classification and inspection run off the async
 //! reactor. The static `inspect` and `worktree-counts` segments coexist with the
@@ -50,6 +62,120 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/projects/{id}/worktrees",
             get(list_worktrees).delete(delete_worktree),
         )
+        .route(
+            "/api/v1/projects/{id}/leftover-folders/delete",
+            axum::routing::post(delete_leftover_folder),
+        )
+        .route("/api/v1/projects/{id}/branches", get(list_branches))
+}
+
+// ── Branches ───────────────────────────────────────────────────────────────────
+
+/// One branch the project's base could move to (a
+/// [`yaran_core::git::BranchChoice`] on the wire).
+#[derive(Serialize)]
+struct BranchChoiceView {
+    name: String,
+    /// `"local"`, or `"remote"` for a branch only origin has; choosing one of
+    /// those creates the local branch, tracking it, before the switch.
+    location: &'static str,
+    /// The folder of ANOTHER worktree that has the branch checked out (an
+    /// agent's, typically), which git refuses to check out a second time, so
+    /// the branch cannot be chosen. `null` for a free branch and for the one
+    /// the project folder is on.
+    held_by: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BranchesReply {
+    branches: Vec<BranchChoiceView>,
+    /// Whether origin was fetched just now. `false` means the origin-only
+    /// branches are as last fetched, and `fetch_error` says why.
+    fetched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fetch_error: Option<String>,
+}
+
+/// `GET /api/v1/projects/{id}/branches`: every branch the project folder could
+/// be switched to for "Change base branch", after one bounded fetch of origin.
+///
+/// Local branches first, then the branches only origin has, each once. `200`
+/// even when the fetch failed or timed out (`fetched: false` plus the reason),
+/// `404` for an unknown project, `409` with the engine's missing-folder
+/// sentence when the folder is gone, and `500` when git could not list the
+/// branches at all. The fetch and the listing shell to git, so both run in
+/// `spawn_blocking`.
+async fn list_branches(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
+    if !id_within_bound(&id) {
+        return (StatusCode::NOT_FOUND, "unknown project").into_response();
+    }
+    let Some(spine) = state.engine.spine().await else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "engine unavailable").into_response();
+    };
+    let Some(project) = spine.projects.into_iter().find(|p| p.id == id) else {
+        return (StatusCode::NOT_FOUND, "unknown project").into_response();
+    };
+    let missing = || {
+        (
+            StatusCode::CONFLICT,
+            yaran_core::engine::change_base_branch_path_missing_message(&project.name)
+                .message()
+                .to_string(),
+        )
+            .into_response()
+    };
+    if project.path_missing {
+        return missing();
+    }
+    let path = PathBuf::from(&project.path);
+    let listing = tokio::task::spawn_blocking(move || {
+        // The engine notices a vanished folder on its own schedule; the answer
+        // here must not wait for it, or git would report a folder that is not
+        // there as a failure to list.
+        if !path.is_dir() {
+            return None;
+        }
+        Some(yaran_core::base_branch::load_branch_listing(
+            &path,
+            yaran_core::base_branch::BASE_BRANCH_FETCH_TIMEOUT,
+        ))
+    })
+    .await;
+    match listing {
+        Ok(None) => missing(),
+        Ok(Some(Ok(listing))) => Json(BranchesReply {
+            fetched: listing.fetched(),
+            fetch_error: listing.fetch_error(),
+            branches: listing
+                .branches
+                .into_iter()
+                .map(|choice| BranchChoiceView {
+                    name: choice.name,
+                    location: match choice.location {
+                        yaran_core::git::BranchLocation::Local => "local",
+                        yaran_core::git::BranchLocation::Remote => "remote",
+                    },
+                    held_by: choice
+                        .held_by
+                        .map(|holder| holder.to_string_lossy().into_owned()),
+                })
+                .collect(),
+        })
+        .into_response(),
+        Ok(Some(Err(error))) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "Couldn't list the branches of project \"{}\": {error}",
+                project.name
+            ),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("branch listing failed: {error}"),
+        )
+            .into_response(),
+    }
 }
 
 // ── Worktrees ──────────────────────────────────────────────────────────────────
@@ -76,11 +202,62 @@ struct ProjectWorktreeEntryView {
     /// the naming vocabulary stays in one place, and points the user at that
     /// agent instead of offering a second route to deleting the worktree.
     agent_id: Option<String>,
+    /// A removal of this worktree has already begun: the agent that owned it
+    /// was just deleted and its processes are still exiting, or git is removing
+    /// it now. Not adoptable, not removable a second time; the client labels it
+    /// "being removed".
+    being_removed: bool,
+    /// What, other than the agent holding it, is using the worktree, as a
+    /// sentence ("In use: a terminal open in it."), or `null`. Carried on its
+    /// own so a row its agent holds can say both: it stays under its agent,
+    /// with this beside it.
+    in_use: Option<String>,
+}
+
+/// A left-over folder row of the Worktrees manager: a worktree folder a
+/// delete could not finish, which git no longer lists.
+#[derive(Serialize)]
+struct LeftoverFolderView {
+    path: String,
+    /// Whether the folder is still there. `false` when it was deleted by hand
+    /// or replaced while a branch it kept is still there: the row is then
+    /// about that branch, and nothing at the path is deleted.
+    folder_present: bool,
+    /// The kept branches a delete can remove, by name.
+    branches: Vec<String>,
+    /// The kept branches a delete would keep, each with why.
+    undeletable: Vec<UndeletableBranchView>,
+    /// The provenance the dialog warns by and defaults its box from
+    /// (`created`, `attached`, `adopted`, `unknown`), or `null` when the
+    /// manager's own removal kept the branches.
+    branch_provenance: Option<&'static str>,
+    /// What left the folder behind: `agent` or `manager`.
+    left_by: &'static str,
+    /// Whether the row offers a delete: a folder to delete, or a kept branch
+    /// a delete can remove.
+    offers_delete: bool,
+    /// What is using the folder now, as yaran-core's sentence for both
+    /// surfaces, or `null`. A row with it offers no delete.
+    in_use: Option<String>,
+}
+
+/// A kept branch yaran will not delete, and why: `no_commit`, `checked_out`
+/// (with the worktree's `path`), `moved` or `unchecked` (with git's
+/// `reason`). The browser words it with the same sentence yaran-core builds.
+#[derive(Serialize)]
+struct UndeletableBranchView {
+    name: String,
+    why: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 #[derive(Serialize)]
 struct WorktreesReply {
     entries: Vec<ProjectWorktreeEntryView>,
+    leftovers: Vec<LeftoverFolderView>,
 }
 
 #[derive(Serialize)]
@@ -98,13 +275,17 @@ async fn list_worktrees(State(state): State<AppState>, AxumPath(id): AxumPath<St
     // not run on the engine loop or the async reactor (the browse precedent).
     match state.engine.project_worktree_inputs(id).await {
         None => (StatusCode::NOT_FOUND, "unknown project").into_response(),
-        Some((project, paths, sessions)) => {
+        Some(inputs) => {
+            let ops = state.engine.worktree_ops().clone();
             match tokio::task::spawn_blocking(move || {
-                classify_managed_worktrees(&project, &paths, &sessions)
+                classify_managed_worktrees(&inputs, &ops)
+                    .map(|entries| (entries, leftover_folder_views(&inputs, &ops)))
             })
             .await
             {
-                Ok(Ok(entries)) => Json(WorktreesReply { entries }).into_response(),
+                Ok(Ok((entries, leftovers))) => {
+                    Json(WorktreesReply { entries, leftovers }).into_response()
+                }
                 Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -124,28 +305,89 @@ async fn list_worktrees(State(state): State<AppState>, AxumPath(id): AxumPath<St
 /// the reason string are decided here. Runs in `spawn_blocking`, since the listing
 /// shells to git, and returns a user-facing error string when that fails.
 fn classify_managed_worktrees(
-    project: &yaran_core::model::Project,
-    paths: &yaran_core::config::YaranPaths,
-    sessions: &[yaran_core::model::AgentSession],
+    inputs: &crate::engine_actor::ProjectWorktreeInputs,
+    ops: &yaran_core::worktree_ops::WorktreeOps,
 ) -> Result<Vec<ProjectWorktreeEntryView>, String> {
-    let entries =
-        yaran_core::worktree_manager::list_manageable_worktrees(project, paths, sessions)?
-            .into_iter()
-            .map(|entry| ProjectWorktreeEntryView {
-                adoptable: entry.is_removable(),
-                reason: if entry.is_removable() {
-                    None
-                } else {
-                    Some("Already has an agent.".to_string())
-                },
-                worktree_path: entry.path.to_string_lossy().to_string(),
-                branch_name: entry.label,
-                branch: entry.branch,
-                dirty: entry.dirty,
-                agent_id: entry.attached_session_id,
-            })
-            .collect();
+    let entries = yaran_core::worktree_manager::list_manageable_worktrees_with_busy(
+        &inputs.project,
+        &inputs.paths,
+        &inputs.sessions,
+        ops,
+        &inputs.busy,
+    )?
+    .into_iter()
+    .map(|entry| ProjectWorktreeEntryView {
+        adoptable: entry.is_removable(),
+        in_use: entry.busy.as_ref().map(|busy| format!("In use: {busy}.")),
+        reason: if entry.being_removed {
+            Some("Being removed: its agent was just deleted.".to_string())
+        } else {
+            match (&entry.attached_session_id, &entry.busy) {
+                (Some(_), Some(busy)) => Some(format!("Already has an agent. In use: {busy}.")),
+                (Some(_), None) => Some("Already has an agent.".to_string()),
+                (None, Some(busy)) => Some(format!("In use: {busy}.")),
+                (None, None) => None,
+            }
+        },
+        being_removed: entry.being_removed,
+        worktree_path: entry.path.to_string_lossy().to_string(),
+        branch_name: entry.label,
+        branch: entry.branch,
+        dirty: entry.dirty,
+        agent_id: entry.attached_session_id,
+    })
+    .collect();
     Ok(entries)
+}
+
+/// The project's left-over folders, from the same core listing the terminal
+/// UI's manager reads. Runs in `spawn_blocking` (it reads the database and
+/// shells to git).
+fn leftover_folder_views(
+    inputs: &crate::engine_actor::ProjectWorktreeInputs,
+    ops: &yaran_core::worktree_ops::WorktreeOps,
+) -> Vec<LeftoverFolderView> {
+    yaran_core::leftover_folders::list_leftover_folders(
+        &inputs.project,
+        &inputs.paths,
+        ops,
+        &inputs.busy,
+    )
+    .into_iter()
+    .map(|folder| LeftoverFolderView {
+        offers_delete: folder.offers_delete(),
+        path: folder.path.to_string_lossy().into_owned(),
+        folder_present: folder.folder_present,
+        branches: folder.branches,
+        undeletable: folder
+            .undeletable
+            .into_iter()
+            .map(|branch| {
+                use yaran_core::leftover_folders::BranchBlock;
+                let (why, path, reason) = match branch.why {
+                    BranchBlock::NoCommit => ("no_commit", None, None),
+                    BranchBlock::CheckedOut { path } => ("checked_out", Some(path), None),
+                    BranchBlock::Moved => ("moved", None, None),
+                    BranchBlock::Unchecked { reason } => ("unchecked", None, Some(reason)),
+                };
+                UndeletableBranchView {
+                    name: branch.name,
+                    why,
+                    path,
+                    reason,
+                }
+            })
+            .collect(),
+        branch_provenance: folder.provenance.map(|p| p.as_str()),
+        left_by: match folder.left_by {
+            yaran_core::leftover_folders::LeftBy::Agent => "agent",
+            yaran_core::leftover_folders::LeftBy::Manager => "manager",
+        },
+        in_use: folder
+            .busy
+            .map(|busy| yaran_core::leftover_folders::in_use_sentence(&busy)),
+    })
+    .collect()
 }
 
 // ── Worktree counts ────────────────────────────────────────────────────────────
@@ -160,20 +402,19 @@ async fn list_worktree_counts(State(state): State<AppState>) -> Response {
     };
     let mut inputs = Vec::new();
     for project in spine.projects {
-        if let Some(triple) = state
+        if let Some(found) = state
             .engine
             .project_worktree_inputs(project.id.clone())
             .await
         {
-            inputs.push((project.id, triple));
+            inputs.push((project.id, found));
         }
     }
+    let ops = state.engine.worktree_ops().clone();
     match tokio::task::spawn_blocking(move || {
         let mut counts = BTreeMap::new();
-        for (id, (project, paths, sessions)) in inputs {
-            let n = classify_managed_worktrees(&project, &paths, &sessions)
-                .map(|entries| entries.len())
-                .unwrap_or(0);
+        for (id, found) in inputs {
+            let n = classify_managed_worktrees(&found, &ops).map_or(0, |entries| entries.len());
             counts.insert(id, n);
         }
         counts
@@ -263,34 +504,30 @@ async fn delete_worktree(
     if query.path.chars().count() > MAX_PATH_LEN {
         return (StatusCode::BAD_REQUEST, "path is too long").into_response();
     }
-    let Some((project, paths, sessions)) = state.engine.project_worktree_inputs(id).await else {
-        return (StatusCode::NOT_FOUND, "unknown project").into_response();
-    };
-    // Every registered checkout is protected from the removal; an unreadable
-    // inventory refuses it outright rather than removing half-guarded.
-    let protected = match state.engine.registered_project_paths().await {
-        Ok(protected) => protected,
-        Err(error) => return (StatusCode::CONFLICT, error).into_response(),
-    };
-
     let requested = PathBuf::from(&query.path);
-    let delete_branch = query.delete_branch;
-    // Classify and remove in ONE off-thread hop, both because the classification
-    // shells to git and because the removal must be decided against a fresh
-    // listing rather than against whatever the client last saw. Both halves are
-    // core's, shared with the TUI's worktree manager; the route only maps the
-    // three answers onto statuses.
-    let result = tokio::task::spawn_blocking(move || {
-        yaran_core::worktree_manager::remove_managed_worktree(
-            &project,
-            &paths,
-            &sessions,
-            &requested,
-            delete_branch,
-            &protected,
-        )
-    })
-    .await;
+    let branch = if query.delete_branch {
+        yaran_core::worktree_manager::BranchRemoval::Delete
+    } else {
+        yaran_core::worktree_manager::BranchRemoval::Keep
+    };
+    // Admitted by the engine against its LIVE state at this moment (the agents
+    // now, an agent being created on the folder now, a removal of it already
+    // under way), never against the listing the client last saw, and announced
+    // before the answer comes back so nothing new starts in the folder. The wait
+    // for operations still running in it and the git work run off-thread.
+    // Both halves are core's, shared with the TUI's worktree manager; the route
+    // only maps the answers onto statuses.
+    let result = match state
+        .engine
+        .admit_manager_removal(id, requested, branch)
+        .await
+    {
+        None => return (StatusCode::NOT_FOUND, "unknown project").into_response(),
+        Some(yaran_core::worktree_manager::RemovalAdmission::Refused(outcome)) => Ok(Ok(outcome)),
+        Some(yaran_core::worktree_manager::RemovalAdmission::Admitted(ticket)) => {
+            tokio::task::spawn_blocking(move || ticket.run()).await
+        }
+    };
 
     match result {
         // 404: yaran will not remove a directory it was not asked about, and an
@@ -306,8 +543,27 @@ async fn delete_worktree(
         // session, and deleting the agent is the supported route.
         Ok(Ok(yaran_core::worktree_manager::RemovalOutcome::Attached)) => (
             StatusCode::CONFLICT,
-            "an agent is working in that directory; delete that agent first (deleting a \
-             standalone agent leaves its directory in place)",
+            "an agent is working in that directory, or one is being created on it; delete \
+             that agent first (deleting a standalone agent leaves its directory in place)",
+        )
+            .into_response(),
+        // 409: the agent that owned it was just deleted and its removal is
+        // already under way; a second one would run git twice.
+        // 409: something yaran started still runs in the folder (a deleted
+        // agent's CLI still stopping, a terminal); removing it would pull the
+        // folder out from under that process.
+        Ok(Ok(yaran_core::worktree_manager::RemovalOutcome::Busy { reason })) => (
+            StatusCode::CONFLICT,
+            format!(
+                "nothing was removed: {reason}. Try again once it has stopped (closing that \
+                 terminal, or waiting for the deleted agent to finish stopping)"
+            ),
+        )
+            .into_response(),
+        Ok(Ok(yaran_core::worktree_manager::RemovalOutcome::BeingRemoved)) => (
+            StatusCode::CONFLICT,
+            "that worktree is already being removed, because the agent that owned it was \
+             just deleted; it leaves the list once that removal finishes",
         )
             .into_response(),
         // 200 with a body rather than a bare 204: the client has to be
@@ -794,5 +1050,81 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+// ── Delete one left-over folder ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DeleteLeftoverFolderBody {
+    #[serde(default)]
+    path: String,
+    /// The kept branches to delete with the folder, by name. Empty (the
+    /// default) deletes none; a name the folder did not keep is ignored.
+    #[serde(default)]
+    delete_branches: Vec<String>,
+}
+
+/// What a Delete folder request came to: whether the folder went, whether the
+/// sentence is a warning, and the sentence with its name parts.
+#[derive(Serialize)]
+struct DeleteLeftoverFolderReply {
+    removed: bool,
+    warning: bool,
+    message: String,
+    segments: Option<Vec<yaran_core::prose::ProseSegment>>,
+}
+
+async fn delete_leftover_folder(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<DeleteLeftoverFolderBody>,
+) -> Response {
+    if !id_within_bound(&id) {
+        return (StatusCode::NOT_FOUND, "unknown project").into_response();
+    }
+    if body.path.is_empty() {
+        return (StatusCode::BAD_REQUEST, "path is required").into_response();
+    }
+    if body.path.chars().count() > MAX_PATH_LEN {
+        return (StatusCode::BAD_REQUEST, "path is too long").into_response();
+    }
+    let requested = PathBuf::from(&body.path);
+    // Admitted against the engine's live state, then checked against the
+    // record, the disk and git and deleted off-thread; both halves are core's,
+    // shared with the terminal UI's worktree manager.
+    let result = match state
+        .engine
+        .admit_leftover_removal(id, requested, body.delete_branches)
+        .await
+    {
+        None => return (StatusCode::NOT_FOUND, "unknown project").into_response(),
+        Some(yaran_core::leftover_folders::LeftoverAdmission::Refused(outcome)) => Ok(Ok(outcome)),
+        Some(yaran_core::leftover_folders::LeftoverAdmission::Admitted(ticket)) => {
+            tokio::task::spawn_blocking(move || ticket.run()).await
+        }
+    };
+    match result {
+        Ok(Ok(outcome)) => {
+            let report =
+                yaran_core::leftover_folders::leftover_removal_report(&body.path, &outcome);
+            let (message, segments) = report.message.into_parts();
+            Json(DeleteLeftoverFolderReply {
+                removed: matches!(
+                    outcome,
+                    yaran_core::leftover_folders::LeftoverRemovalOutcome::Removed { .. }
+                ),
+                warning: report.warning,
+                message,
+                segments,
+            })
+            .into_response()
+        }
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("left-over folder delete failed: {e}"),
+        )
+            .into_response(),
     }
 }

@@ -1210,6 +1210,15 @@ and `yaran-web`'s `cloud_jwks_cache` refreshes them every
 whose Host is the bound tunnel hostname; when the keys cannot be fetched it
 fails closed with a 503 `Yaran-Refusal: access-keys-unavailable`. Loopback,
 LAN and Tailscale Hosts never reach the check. The token is never logged.
+The check runs outside the optional web password (`[server.auth]`): a
+verified owner whose request arrived loopback-to-loopback (cloudflared on
+the loopback primary) with no Funnel marker counts as signed in for that
+request only, through `RequestFacts::access_owner`, set by the auth layer
+from the extension `cloud_access_middleware` attached and never from a
+header. No yaran session or cookie is issued for it. Such a request is
+always classified as the network, so it never sets the first password and
+never reads the broken-config detail, and `blocked_addresses` still applies
+to it (`crates/yaran-web/src/auth/`, tests in `cloud_auth_bridge_tests.rs`).
 
 **Residual risk.** A valid JWT stolen from the owner's browser or phone is
 accepted until it expires (T37, T45). The skew window extends every token's
@@ -1785,7 +1794,12 @@ callers by design, remote access through the tunnel is owner access
 verified per request (T26), so no route is restricted by origin. yaran's
 own secrets never enter config (D5). The exposure is bounded by T26 and T37
 and by the Access session duration, and the docs tell people to keep real
-secrets out of `[env]`.
+secrets out of `[env]`. A web password set with `[server.auth]` does not
+apply on the cloud hostname: a verified owner arriving through the tunnel
+is authenticated by Access for that request (T26), and the password stays
+the gate for every other way in. The owner on the tunnel cannot set the
+first password, is never shown the broken-config detail, and remains
+subject to `blocked_addresses`.
 
 **Residual risk.** Secrets in `[env]` are as exposed as the owner's
 session.
@@ -1815,7 +1829,12 @@ every reconnect, and with `close_sockets_at_access_expiry` (default on)
 closes an open socket with code 4401 at the token's `exp` plus
 `access_clock_skew_seconds` (`crates/yaran-web/src/cloud_ingress.rs`).
 `src/sessions/revoke-sessions.ts` revokes every Access session of a user
-for sign-out-everywhere and when an admin disables someone.
+for sign-out-everywhere and when an admin disables someone. Because the
+owner on the tunnel is credited per request and yaran issues no session or
+cookie for it (T26), revocation is bounded by Access alone: no yaran
+session outlives an Access sign-out, and a change to `[server.auth]` (a new
+password, a ban of someone else, a sign-out of another browser) never
+closes the owner's sockets with a password-style 4401.
 
 **Residual risk.** Access has no per-device revocation, so a removed or
 stolen phone keeps its Access sign-ins for up to the session duration
@@ -2347,6 +2366,67 @@ accepted risk in `SECURITY.md`.
 consent was remembered or explicit; yaran logs the same verdict as the
 `consent` field of `handoff issued` under the `yaran::cloud::handoff`
 target.
+
+---
+
+## T65 — Access JWT replayed to a non-loopback listener
+
+**Attack scenario.** The tunnel hostname is admitted by the Host guard on
+every listener while the cloud leg is bound, not only on loopback. Someone
+on the LAN or the tailnet who holds a stolen, unexpired owner Access JWT
+sends it with `Host: <machine-hostname>` to a LAN or Tailscale listener,
+or through a Tailscale Funnel, hoping the Access credit lets them skip the
+web password.
+
+**Mitigation in code.** Implemented with the merge of the web password
+(`[server.auth]`); not yet verified against live Cloudflare. The assertion
+still verifies at `cloud_access_middleware` (T26), but the auth layer
+credits a verified owner only when the connection's two ends are both
+loopback (cloudflared dials the loopback primary) and the request carries
+no Tailscale Funnel marker (`RequestFacts::credit_access_owner` in
+`crates/yaran-web/src/auth/provenance.rs`). A replay to a LAN or tailnet
+listener, or through a Funnel, is assessed like any other request from
+there, so a set password still applies to it. Every serve leg records both
+ends of each connection, so no leg reads as loopback by default. Tests:
+`a_replayed_assertion_off_loopback_or_through_a_funnel_still_needs_the_password`
+and `a_spoofed_assertion_on_another_host_credits_nothing` in
+`crates/yaran-web/src/cloud_auth_bridge_tests.rs`.
+
+**Residual risk.** With no password set, a replayed owner JWT on a
+non-loopback listener reaches what that listener already serves without
+one, exactly as before the merge. A local process that can connect to the
+loopback primary with a stolen owner JWT and the tunnel Host is credited,
+but it could already reach yaran over loopback.
+
+**Detection.** The request is refused with `auth_required` (or counted as a
+failed login if it tries the password) and, with `[server] access_log` on,
+access-logged like any other refusal.
+
+---
+
+## T66 — Repository control bytes typed through diff comments
+
+**Attack scenario.** A repository line or filename contains an escape sequence
+that means Enter, Ctrl-C or Ctrl-Z to an agent. Including it in a diff comment's
+prompt could submit unfinished feedback, interrupt the agent or suspend it.
+Comment text and the configured prompt template can carry the same bytes.
+
+**Mitigation in code.** The sender escapes the complete rendered prompt with
+`sanitize::for_terminal` before `macro_payload_bytes` encodes newlines as
+Alt-Enter. Untrusted controls become visible text; the encoder alone introduces
+the escape bytes used for line breaks. The send uses the existing tab ownership
+gate and never presses Enter. A refused input-queue enqueue keeps the comments
+in memory and SQLite and reports the failure. Regression tests cover control
+bytes in the filename, line and comment, and a saturated queue with and without
+a serving ownership seat. Implemented.
+
+**Residual risk.** Printable repository text is still untrusted prompt content;
+the person reviews the typed feedback before submitting it. Queue acceptance
+does not acknowledge delivery by the asynchronous writer or reading by the
+agent, so a later writer failure can still lose input.
+
+**Detection.** Escaped controls remain visible in the prompt. Immediate enqueue
+failure leaves the comments queued and shows a warning instead of success.
 
 ---
 

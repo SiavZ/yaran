@@ -13,6 +13,7 @@
 //!   stops without withdrawing anything already delivered.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_emitter.rs
 //! ├── cloud::protocol::machine
@@ -32,6 +33,7 @@
 //! ├── engine::push_hook
 //! ├── engine::push_hook::tests
 //! └── yaran-core[test cloud_push_emitter]
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;
@@ -51,10 +53,11 @@ use crate::worker::WorkerEvent;
 /// Engine-to-thread slots; `offer` drops (and counts) rather than wait.
 pub const CHANNEL_CAPACITY: usize = 512;
 /// How often a paused emitter asks whether the org turned push back on.
-pub const CONFIG_RECHECK: Duration = Duration::from_secs(15 * 60);
+pub const CONFIG_RECHECK: Duration = Duration::from_mins(15);
 /// The bound on `Drop`'s join, mirroring `ConfigWriteQueue`.
 pub const SHUTDOWN_JOIN: Duration = Duration::from_secs(2);
 
+/// Builds the link the emitter sends through, once per start.
 pub type LinkFactory = Arc<dyn Fn() -> Box<dyn MachineLink> + Send + Sync>;
 
 #[derive(Debug)]
@@ -73,6 +76,15 @@ pub struct PushEmitter {
     dropped: u64,
 }
 
+impl std::fmt::Debug for PushEmitter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushEmitter")
+            .field("on", &self.is_on())
+            .field("dropped", &self.dropped)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PushEmitter {
     /// An emitter with no identity behind it (test engines): every retune leaves it off.
     pub fn off() -> Self {
@@ -85,6 +97,8 @@ impl PushEmitter {
         }
     }
 
+    /// An emitter that sends through links `factory` builds, started or not
+    /// as `settings` say.
     pub fn with_link(
         settings: PushSettings,
         status_lane: Option<Sender<WorkerEvent>>,
@@ -110,6 +124,7 @@ impl PushEmitter {
         (emitter, rx)
     }
 
+    /// Whether the emitter is running.
     pub fn is_on(&self) -> bool {
         self.tx.is_some()
     }
@@ -161,7 +176,7 @@ impl PushEmitter {
             factory(),
             settings,
             self.status_lane.clone(),
-            flush.clone(),
+            std::sync::Arc::clone(&flush),
         );
         match thread::Builder::new()
             .name("cloud-push".into())
@@ -172,7 +187,7 @@ impl PushEmitter {
                 self.worker = Some((handle, flush));
             }
             Err(err) => {
-                tracing::warn!(target: "yaran::cloud::push", %err, "could not start the phone-notification thread; phone notifications stay off")
+                tracing::warn!(target: "yaran::cloud::push", %err, "could not start the phone-notification thread; phone notifications stay off");
             }
         }
     }

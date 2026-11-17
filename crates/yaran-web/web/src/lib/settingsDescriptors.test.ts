@@ -50,6 +50,8 @@ const sampleBootstrap: Bootstrap = {
   agent_tabs_max: 20,
   always_show_tab_strip: true,
   tab_reaches_agent: true,
+  nerd_font_icons: true,
+  extended_keys: "off",
   attention_indicator: false,
   attention_on_bell: false,
   global_default_provider: "codex",
@@ -58,8 +60,17 @@ const sampleBootstrap: Bootstrap = {
 }
 
 describe("settingsDescriptors", () => {
-  it("groups are ordered web, both, tui", () => {
-    expect(SETTING_GROUPS.map((g) => g.surface)).toEqual(["web", "both", "tui"])
+  it("groups are ordered sign-in, web, both, tui", () => {
+    expect(SETTING_GROUPS.map((g) => g.surface)).toEqual(["signin", "web", "both", "tui"])
+  })
+
+  it("routes the password to its own write target and never through the settings PATCH", () => {
+    const d = allSettingDescriptors().find((x) => x.key === "server.auth.password")
+    expect(d?.writeTarget).toBe("password")
+    expect(d?.control.kind).toBe("password")
+    // Its group holds nothing else, so the group offers no reset to defaults.
+    const group = SETTING_GROUPS.find((g) => g.surface === "signin")
+    expect(group?.settings.map((x) => x.key)).toEqual(["server.auth.password"])
   })
 
   // NOTE: this only catches an accidental key change WITHIN this file (a typo
@@ -75,6 +86,7 @@ describe("settingsDescriptors", () => {
     const keys = allSettingDescriptors().map((d) => d.key)
     expect(new Set(keys)).toEqual(
       new Set([
+        "server.auth.password",
         "server.title",
         "server.favicon",
         "ui.show_changes_pane",
@@ -93,6 +105,8 @@ describe("settingsDescriptors", () => {
         "ui.attention_on_bell",
         "ui.always_show_tab_strip",
         "ui.tab_reaches_agent",
+        "ui.nerd_font_icons",
+        "ui.extended_keys",
         "ui.pr_banner_position",
         "capabilities.hyperlinks",
         "ui.github_integration",
@@ -158,6 +172,8 @@ describe("settingsDescriptors", () => {
     expect(byKey["ui.attention_on_bell"]).toBe(false)
     expect(byKey["ui.always_show_tab_strip"]).toBe(true)
     expect(byKey["ui.tab_reaches_agent"]).toBe(true)
+    expect(byKey["ui.nerd_font_icons"]).toBe(true)
+    expect(byKey["ui.extended_keys"]).toBe("off")
     expect(byKey["ui.pr_banner_position"]).toBe("top")
     expect(byKey["capabilities.hyperlinks"]).toBe(false)
     expect(byKey["ui.github_integration"]).toBe(false)
@@ -293,7 +309,9 @@ describe("settingsDescriptors", () => {
       "ui.copy_on_select",
       "ui.disable_automated_welcome_screen",
       "ui.disable_release_notes",
+      "ui.extended_keys",
       "ui.mobile_accessory_bar",
+      "ui.nerd_font_icons",
       "ui.pr_banner_position",
       "ui.status_clear_seconds",
       "ui.tab_reaches_agent",
@@ -341,8 +359,8 @@ describe("settingsDescriptors", () => {
   })
 
   // `--no-tailscale` outranks the config for as long as the run lasts, so the
-  // row would save a value the listener refuses. It locks instead and says why.
-  it("locks the Tailscale row on a run started with --no-tailscale", () => {
+  // row would save a value the listener refuses. It stays editable and says why a change waits.
+  it("flags the Tailscale row on a run started with --no-tailscale", () => {
     const d = allSettingDescriptors().find((x) => x.key === "server.tailscale")!
     expect(d.lockedBy).toBeTypeOf("function")
     expect(d.lockedBy!({ ...sampleBootstrap, tailscale_forced_no: false })).toBeNull()
@@ -406,8 +424,8 @@ describe("settingsDescriptors", () => {
   })
 
   // Escape-hatch truth: the terminal-keys description must name EVERY restore
-  // route (the input ⋯ inside the typing bar, the pane's own ⋯ for the state
-  // with no typing bar at all, and this Preferences dialog) rather than leaving
+  // route (the phone's action-cluster button, the Input group of the pane's ⋯
+  // on a computer, and this Preferences dialog) rather than leaving
   // the user to rediscover them. Deliberately NOT "the compose bar's button":
   // that wording was false with the compose bar disabled.
   it("the terminal-keys description names the restore routes", () => {
@@ -415,8 +433,8 @@ describe("settingsDescriptors", () => {
     const d = allSettingDescriptors().find((x) => x.key === key)
     expect(d?.writeTarget, key).toBe("settings")
     expect(d?.default, key).toBe(true)
-    expect(d?.description, key).toContain("⋯ menu")
-    expect(d?.description, key).toContain("terminal's own")
+    expect(d?.description, key).toContain("action cluster")
+    expect(d?.description, key).toContain("Input group")
     expect(d?.description, key).toContain("Preferences")
   })
 

@@ -28,7 +28,7 @@ use rust_embed::RustEmbed;
 /// of only through the router: every other gate here fetches a page and happens to
 /// fail when the embed is empty, where a direct assertion holds wherever `folder`
 /// points and reports the cause instead of a 404.
-#[derive(RustEmbed)]
+#[derive(Debug, RustEmbed)]
 #[folder = "$OUT_DIR/ui"]
 pub struct WebAssets;
 
@@ -81,6 +81,7 @@ pub fn ui_build_state() -> UiBuildState {
 /// startup banner row and logged to `yaran.log`, because the person who can fix
 /// this is the one who launched the server, and they may never open a browser.
 /// The served page carries the same message for whoever does open one.
+// backtick-ok: the startup banner, the log and the notice page, never a status.
 pub const UI_NOT_BUILT_WARNING: &str = "This binary was built with YARAN_DISABLE_UI_BUILD set, so it contains NO web UI. \
      Every page serves a notice explaining that. Rebuild without YARAN_DISABLE_UI_BUILD \
      (run `npm ci` in crates/yaran-web/web first) to serve the real web UI.";
@@ -106,6 +107,7 @@ pub const fn ui_build_warning(state: UiBuildState) -> Option<&'static str> {
 /// Warning for a build stamped as complete whose embedded asset set is empty or
 /// nearly empty. It gives source builders repair steps and tells binary-package
 /// users to report a packaging error.
+// backtick-ok: the startup banner, the log and the notice page, never a status.
 pub const UI_EMPTY_EMBED_WARNING: &str = "This binary reports a real frontend build, but almost no web assets are embedded \
      in it, so server mode will answer 404 for the web UI. The build script and \
      rust-embed disagreed about what to bake in. Building from source? Run `touch \
@@ -160,7 +162,7 @@ fn cache_policy(path: &str) -> &'static str {
     }
 }
 
-/// Weak ETag derived from rust-embed's build-time sha256 of the file. Weak
+/// Weak `ETag` derived from rust-embed's build-time sha256 of the file. Weak
 /// (`W/`) on purpose: the same URL serves Brotli or decompressed bytes depending
 /// on `Accept-Encoding`, and a weak validator asserts semantic equivalence
 /// across those representations.
@@ -186,13 +188,17 @@ fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
 /// paths so client-side routing works. `/ws` and `/healthz` are matched before this
 /// fallback and never reach here, and `offline.html` is a real embedded asset served
 /// directly rather than shadowed by that fallback.
-pub async fn static_handler(uri: Uri, headers: HeaderMap) -> Response {
-    let accepts_br = accepts_br(&headers);
+pub fn static_handler(uri: &Uri, headers: &HeaderMap) -> Response {
+    let accepts_br = if accepts_br(headers) {
+        ClientBrotli::Accepted
+    } else {
+        ClientBrotli::Refused
+    };
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     if let Some(content) = WebAssets::get(path) {
         let mime = content.metadata.mimetype().to_string();
-        return serve_embedded(&mime, path, content, accepts_br, &headers);
+        return serve_embedded(&mime, path, content, accepts_br, headers);
     }
     // A miss under `assets/` means a chunk URL from a stale `index.html`. Falling
     // back to the SPA `index.html` would hand HTML to a `*.js` import(), which the
@@ -202,19 +208,19 @@ pub async fn static_handler(uri: Uri, headers: HeaderMap) -> Response {
         return (StatusCode::NOT_FOUND, "asset not found").into_response();
     }
     match WebAssets::get("index.html") {
-        Some(content) => serve_embedded("text/html", "index.html", content, accepts_br, &headers),
+        Some(content) => serve_embedded("text/html", "index.html", content, accepts_br, headers),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
 /// Answer a request for an embedded file: `304 Not Modified` when the client
 /// already holds the current bytes (matching `If-None-Match`), the full body
-/// otherwise. Both carry the ETag and the path's cache policy.
+/// otherwise. Both carry the `ETag` and the path's cache policy.
 fn serve_embedded(
     content_type: &str,
     path: &str,
     content: rust_embed::EmbeddedFile,
-    accepts_br: bool,
+    accepts_br: ClientBrotli,
     request_headers: &HeaderMap,
 ) -> Response {
     let etag = etag_for(&content);
@@ -233,7 +239,11 @@ fn serve_embedded(
     serve_asset(
         content_type,
         content.data.into_owned(),
-        crate::compressible_exts::compressible_path(path),
+        if crate::compressible_exts::compressible_path(path) {
+            Stored::Brotli
+        } else {
+            Stored::AsIs
+        },
         accepts_br,
         Some(cache_control),
         Some(&etag),
@@ -248,7 +258,7 @@ fn accepts_br(headers: &HeaderMap) -> bool {
     headers
         .get(header::ACCEPT_ENCODING)
         .and_then(|v| v.to_str().ok())
-        .map(|v| {
+        .is_some_and(|v| {
             v.split(',').any(|token| {
                 token
                     .trim()
@@ -257,18 +267,35 @@ fn accepts_br(headers: &HeaderMap) -> bool {
                     .is_some_and(|t| t.trim() == "br")
             })
         })
-        .unwrap_or(false)
+}
+
+/// How an embedded file's bytes are stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stored {
+    /// Brotli-compressed at build time.
+    Brotli,
+    /// As the file is.
+    AsIs,
+}
+
+/// Whether the client accepts a Brotli body ([`accepts_br`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClientBrotli {
+    /// It does.
+    Accepted,
+    /// It does not, so a Brotli file is decompressed for it.
+    Refused,
 }
 
 /// Build a response for an embedded asset, transparently handling the
-/// Brotli-at-build-time scheme. `compressed` says whether `bytes` are Brotli:
+/// Brotli-at-build-time scheme. `stored` says whether `bytes` are Brotli:
 /// the CALLER decides, from the shared extension list, because Brotli has no
 /// magic bytes to sniff (unlike the gzip scheme this replaced).
 fn serve_asset(
     content_type: &str,
     bytes: Vec<u8>,
-    compressed: bool,
-    accepts_br: bool,
+    stored: Stored,
+    accepts_br: ClientBrotli,
     cache_control: Option<&'static str>,
     etag: Option<&str>,
 ) -> Response {
@@ -285,11 +312,11 @@ fn serve_asset(
         headers.insert(header::ETAG, value);
     }
 
-    if compressed {
+    if stored == Stored::Brotli {
         // Caches must key on Accept-Encoding since the same URL can serve Brotli
         // or decompressed bytes depending on the client.
         headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
-        if accepts_br {
+        if accepts_br == ClientBrotli::Accepted {
             headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
             return (headers, bytes).into_response();
         }
@@ -448,8 +475,8 @@ mod tests {
         let resp = serve_asset(
             "text/javascript",
             br(b"console.log('hi')\n"),
-            true,
-            true,
+            Stored::Brotli,
+            ClientBrotli::Accepted,
             None,
             None,
         );
@@ -462,8 +489,8 @@ mod tests {
         let resp = serve_asset(
             "text/javascript",
             br(b"console.log('hi')\n"),
-            true,
-            false,
+            Stored::Brotli,
+            ClientBrotli::Refused,
             None,
             None,
         );
@@ -477,8 +504,8 @@ mod tests {
         let resp = serve_asset(
             "text/javascript",
             br(b"console.log('hi')\n"),
-            true,
-            false,
+            Stored::Brotli,
+            ClientBrotli::Refused,
             None,
             None,
         );
@@ -493,7 +520,14 @@ mod tests {
         // A PNG (not a compressible extension, so the caller passes
         // compressed: false) must pass through with no Content-Encoding.
         let png = vec![0x89u8, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-        let resp = serve_asset("image/png", png, false, true, None, None);
+        let resp = serve_asset(
+            "image/png",
+            png,
+            Stored::AsIs,
+            ClientBrotli::Accepted,
+            None,
+            None,
+        );
         assert!(resp.headers().get(header::CONTENT_ENCODING).is_none());
         assert!(resp.headers().get(header::VARY).is_none());
     }
@@ -534,8 +568,8 @@ mod tests {
         let resp = serve_asset(
             "text/html",
             b"<html></html>".to_vec(),
-            false,
-            true,
+            Stored::AsIs,
+            ClientBrotli::Accepted,
             Some("no-cache"),
             Some("W/\"abc123\""),
         );
@@ -567,7 +601,7 @@ mod tests {
     async fn index_html_revalidates_to_304_with_matching_etag() {
         // First request: full body plus the validator headers.
         let uri: Uri = "/".parse().unwrap();
-        let first = static_handler(uri.clone(), HeaderMap::new()).await;
+        let first = static_handler(&uri, &HeaderMap::new());
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(
             first.headers().get(header::CACHE_CONTROL).unwrap(),
@@ -578,7 +612,7 @@ mod tests {
         // Second request presenting the ETag: 304, no re-download.
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, etag.clone());
-        let second = static_handler(uri, headers).await;
+        let second = static_handler(&uri, &headers);
         assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(second.headers().get(header::ETAG).unwrap(), &etag);
     }

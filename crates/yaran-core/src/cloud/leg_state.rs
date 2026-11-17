@@ -8,6 +8,7 @@
 //! - Holds no secret.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_state.rs
 //! ├── cloud::paths
@@ -21,6 +22,7 @@
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_run
 //! └── cloud::status
+//! ```
 //! <module-headers:end>
 
 use std::fs;
@@ -30,14 +32,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::cloud::paths::CloudPaths;
 
+/// The record's schema version, written into every record.
 pub const LEG_STATE_SCHEMA: u32 = 1;
 
 /// One running leg as Phase 10 records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegState {
+    /// The schema version the record was written with.
     pub schema: u32,
     /// The cloudflared child's pid and process group.
     pub pid: u32,
+    /// The process group the child leads.
     pub pgid: u32,
     /// The binary actually spawned.
     pub binary: String,
@@ -61,10 +66,12 @@ pub const READY: &str = "ready";
 pub enum LegStatus {
     /// No file, an unreadable one, or a dead pid.
     NotRunning,
+    /// A live child, with its record.
     Running(LegState),
 }
 
 impl LegStatus {
+    /// Whether a live child has reported ready.
     pub fn is_ready(&self) -> bool {
         match self {
             Self::Running(s) => s.state == READY,
@@ -74,6 +81,11 @@ impl LegStatus {
 }
 
 /// Write the record (Phase 10).
+///
+/// # Errors
+///
+/// Fails when the cloud directory cannot be created or the record cannot be
+/// written.
 pub fn write(paths: &CloudPaths, state: &LegState) -> anyhow::Result<()> {
     paths.ensure_dir()?;
     let mut body = serde_json::to_vec_pretty(state)?;
@@ -82,6 +94,10 @@ pub fn write(paths: &CloudPaths, state: &LegState) -> anyhow::Result<()> {
 }
 
 /// Remove the record when the leg stops (Phase 10). Missing is fine.
+///
+/// # Errors
+///
+/// Fails when the record exists and cannot be removed.
 pub fn remove(paths: &CloudPaths) -> io::Result<()> {
     match fs::remove_file(&paths.leg_state) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),

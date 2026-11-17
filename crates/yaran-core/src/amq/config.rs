@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AmqConfig {
+    /// `[amq.inject]`: how messages reach an agent's PTY.
     pub inject: AmqInjectConfig,
+    /// `[amq.orchestrator]`: the orchestrator's checkpoint prompts.
     pub orchestrator: AmqOrchestratorConfig,
 }
 
@@ -139,7 +141,7 @@ mod tests {
     fn amq_inject_defaults_match_constants() {
         let c = AmqConfig::default();
         assert!(c.inject.enabled);
-        assert!(c.inject.queue_dir.is_empty());
+        assert_eq!(c.inject.queue_dir, "");
         assert!(
             c.inject
                 .busy_markers
@@ -164,7 +166,7 @@ mod tests {
         );
         assert!(c.orchestrator.enabled);
         assert_eq!(c.orchestrator.poll_interval_secs, 900);
-        assert!(c.orchestrator.checkpoint_prompt.is_empty());
+        assert_eq!(c.orchestrator.checkpoint_prompt, "");
     }
 
     #[test]

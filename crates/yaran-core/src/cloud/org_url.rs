@@ -7,6 +7,7 @@
 //! - Pure; the error is a sentence a surface can show as is.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/org_url.rs
 //! ├── cloud::protocol::rules
@@ -19,11 +20,16 @@
 //! ├── cloud::cli::pair_phone
 //! ├── cloud::login
 //! └── yaran-tui::app::cloud_commands
+//! ```
 //! <module-headers:end>
 
 use crate::cloud::protocol::rules::is_org_url;
 
 /// The normalized `OrgUrl`, or a sentence saying what is wrong with `input`.
+///
+/// # Errors
+///
+/// Fails, with that sentence, when `input` is not an organization address.
 pub fn normalize_org_url(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {

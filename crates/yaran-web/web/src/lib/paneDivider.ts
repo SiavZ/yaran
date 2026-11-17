@@ -8,6 +8,8 @@
 
 // The smallest a divider's grab band may be, per pointer kind: the library's own
 // `resizeTargetMinimumSize` defaults, passed straight back by `ResizablePanelGroup`.
+import { isInGateLayer } from "./gateLayer"
+
 export const DIVIDER_TARGET_MIN = { coarse: 20, fine: 10 } as const
 
 // The transparent grab band, painted as a centred ::after so the visible line
@@ -55,22 +57,26 @@ export const DIVIDER_ACTIVE_PAINT = "data-[yaran-held=true]:bg-ring"
 // whose `touch-action` is `auto`, and the browser claims the gesture as a scroll.
 export const DIVIDER_STACKING = "z-30"
 
-// Everything a divider element wears whatever side it is on. Positioning is
+// How a divider grabs, as opposed to how it paints: stacking, cursor, touch
+// handling, focus ring and the grab band. Every divider wears it. Positioning is
 // deliberately not here: each site declares its own, since the Changes divider is
 // a flex item and the sidebar's is pinned to the sidebar's edge.
 //
 // `touch-none` is load-bearing: without it the browser claims a finger's drag as a
 // page pan and answers with `pointercancel`, which drag handlers read as drag-end.
-export const DIVIDER_CHROME =
-  "w-px bg-border hover:bg-ring " +
-  DIVIDER_ACTIVE_PAINT +
-  " " +
+export const DIVIDER_GRAB =
   DIVIDER_STACKING +
   // The focus ring is `focus-visible:` and nothing else: a press moves focus to the
   // divider so a drag can continue from the keyboard, and a ring painted for that
   // press would stand under a finger that has already lifted.
   " cursor-col-resize touch-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-hidden " +
   DIVIDER_HIT_SLOP
+
+// Everything a hairline divider wears: a 1px element that is itself the line,
+// lit on hover and while held. The terminal dock's divider is taller than its
+// line, so it takes DIVIDER_GRAB alone and paints a line and a grip inside it.
+export const DIVIDER_CHROME =
+  "w-px bg-border hover:bg-ring " + DIVIDER_ACTIVE_PAINT + " " + DIVIDER_GRAB
 
 // Where a press counts as a press on the divider, decided from the element's rect
 // rather than a DOM hit test: the band can be wider than the element, and a press
@@ -115,6 +121,9 @@ export function dividerPressHits(
 ): boolean {
   if (el === null) return false
   const target = event.target
+  // The sign-in gate's page sits over the hidden app; nothing pressed on it is
+  // a press on a divider underneath, whatever the rectangle says.
+  if (isInGateLayer(target)) return false
   if (target === el || (target instanceof Node && el.contains(target))) {
     return true
   }
@@ -166,6 +175,8 @@ export const DIVIDER_DRAG_THRESHOLD_PX = 3
 export const DIVIDER_STORAGE_KEYS = {
   sidebarWidth: "yaran:sidebar-width",
   changesPanePercent: "yaran:changes-pane-percent",
+  // The agent part's share of an agent's stack, one value for every agent.
+  stackAgentPercent: "yaran:stack-agent-percent",
 } as const
 
 // Every localStorage touch here is guarded: private mode, blocked site data or a

@@ -8,6 +8,7 @@
 //! - Pure apart from [`log`], which writes under the `yaran::cloudflare` target.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/log_lines.rs
 //! └── sanitize
@@ -18,6 +19,7 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::supervisor
 //! └── cloud::leg_run
+//! ```
 //! <module-headers:end>
 
 /// Longest stderr line kept; the rest is dropped.
@@ -30,23 +32,33 @@ pub enum LogSignal {
     Registered,
     /// The edge refused the token. cloudflared retries this forever rather than exiting.
     Unauthorized,
+    /// Anything else.
     Other,
 }
 
 /// cloudflared's level, mapped one to one onto `tracing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineLevel {
+    /// `DBG`.
     Debug,
+    /// `INF`.
     Info,
+    /// `WRN`.
     Warn,
+    /// `ERR`.
     Error,
 }
 
+/// One cloudflared log line, read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedLine {
+    /// Its level.
     pub level: LineLevel,
+    /// Its message, with the tunnel token redacted.
     pub message: String,
+    /// Its `error=` field, redacted, when it has one.
     pub error: Option<String>,
+    /// What it tells the supervisor, if anything.
     pub signal: LogSignal,
 }
 

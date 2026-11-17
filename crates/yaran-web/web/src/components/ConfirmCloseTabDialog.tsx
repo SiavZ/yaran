@@ -1,3 +1,8 @@
+import {
+  AttachedSection,
+  GuardedConfirmButton,
+} from "@/components/AttachedSection"
+import { useAttachedOverride } from "@/hooks/use-attached-override"
 import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
@@ -9,14 +14,14 @@ import {
 } from "@yaran/ui-kit/dialog"
 import { InlineCode } from "@yaran/ui-kit/inline-code"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
-import { closeTabConsequences } from "@/lib/agentTabs"
+import { closeTabConsequences, sessionAsShown } from "@/lib/agentTabs"
 import { DOCS_AGENT_TABS_CLOSING } from "@/lib/docs"
 import { renderProse } from "@/lib/prose"
 import { closeCloseTab, closeTab, useYaran } from "@/lib/store"
 
 // Confirmation before closing a tab. The agent's first tab reaches this dialog
 // like any other: the session slot is a pointer, so closing the tab holding it
-// hands the slot to the next tab in strip order rather than being refused.
+// hands the slot to the leftmost other tab rather than being refused.
 //
 // Two gestures deliberately do not come here. An agent's only tab has no
 // successor, so the strip's menu item is disabled with the reason rather than
@@ -27,11 +32,21 @@ import { closeCloseTab, closeTab, useYaran } from "@/lib/store"
 // The copy states only the consequences that apply (`closeTabConsequences`),
 // and Cancel is the default focus.
 export function ConfirmCloseTabDialog() {
-  const { closeTabTarget, spine } = useYaran()
+  const { closeTabTarget, spine, pendingTabOrder, pendingSlotTab } = useYaran()
 
-  const session = closeTabTarget
+  // The strip as the screen shows it, so the tab named as taking the slot is the
+  // leftmost one the user sees, not the one the server's older order has first.
+  const listed = closeTabTarget
     ? spine?.sessions.find((s) => s.id === closeTabTarget.sessionId)
     : undefined
+  const session =
+    listed && closeTabTarget
+      ? sessionAsShown(
+          listed,
+          pendingTabOrder[closeTabTarget.sessionId],
+          pendingSlotTab[closeTabTarget.sessionId],
+        )
+      : undefined
   const tab = closeTabTarget
     ? session?.tabs.find((t) => t.id === closeTabTarget.tabId)
     : undefined
@@ -51,11 +66,18 @@ export function ConfirmCloseTabDialog() {
     tab !== undefined,
     closeCloseTab,
   )
+  const { blockers, pending, cancelRef, confirm } = useAttachedOverride(
+    isOpen,
+    closeTabTarget && `${closeTabTarget.sessionId}/${closeTabTarget.tabId}`,
+  )
 
-  function handleConfirm() {
+  async function handleConfirm() {
     if (!closeTabTarget) return
-    closeTab(closeTabTarget.sessionId, closeTabTarget.tabId)
-    closeCloseTab()
+    const { sessionId, tabId } = closeTabTarget
+    const done = await confirm((accepted) =>
+      closeTab(sessionId, tabId, accepted),
+    )
+    if (done) closeCloseTab()
   }
 
   function handleOpenChange(open: boolean) {
@@ -78,8 +100,8 @@ export function ConfirmCloseTabDialog() {
             {successorLabel ? (
               <>
                 {" "}
-                The next tab, <InlineCode>{successorLabel}</InlineCode>, takes its
-                place as the agent&rsquo;s first tab.
+                <InlineCode>{successorLabel}</InlineCode> takes its place as the
+                agent&rsquo;s first tab.
               </>
             ) : null}{" "}
             <a
@@ -92,17 +114,26 @@ export function ConfirmCloseTabDialog() {
             </a>
           </DialogDescription>
         </DialogHeader>
+        <AttachedSection blockers={blockers} />
         {/* Misclick-safe spacing between the body and the buttons. */}
         <div className="h-2" />
         <DialogFooter>
           {/* Cancel is the default focus, matching the TUI. shadcn/radix buttons
               activate on Space/Enter natively. */}
-          <Button variant="outline" autoFocus onClick={closeCloseTab}>
+          <Button
+            ref={cancelRef}
+            variant="outline"
+            autoFocus
+            onClick={closeCloseTab}
+          >
             Cancel
           </Button>
-          <Button variant="destructive" onClick={handleConfirm}>
-            Close tab
-          </Button>
+          <GuardedConfirmButton
+            verb="Close tab"
+            blockers={blockers}
+            pending={pending}
+            onConfirm={() => void handleConfirm()}
+          />
         </DialogFooter>
       </DialogContent>
     </Dialog>

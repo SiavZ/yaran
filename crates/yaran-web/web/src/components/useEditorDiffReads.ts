@@ -7,6 +7,9 @@ import { emptyBuffer, isBufferStale, pruneByIds } from "@/lib/editorBuffers"
 import type { TabBuffer } from "@/lib/editorBuffers"
 import type { EditorRoot } from "@/lib/editorRoot"
 import type { EditorTab } from "@/lib/editorTabs"
+import { encodingLabel } from "@/lib/editorEncoding"
+import { notifyError, notifySuccess } from "@/lib/notify"
+import { chip, prose } from "@/lib/prose"
 
 interface UseEditorDiffReadsOptions {
   root: EditorRoot
@@ -14,6 +17,10 @@ interface UseEditorDiffReadsOptions {
   activeTab: EditorTab | null
   activeBuffer: TabBuffer | undefined
   tabsRef: RefObject<readonly EditorTab[]>
+  buffersRef: RefObject<Map<string, TabBuffer>>
+  // The encoding chosen for each open path when no buffer carries it yet (an
+  // address that names one, or a rename), the same map the file reads use.
+  encodingChoicesRef: RefObject<Map<string, string>>
   loadedSignalRef: RefObject<string>
   setBuffers: Dispatch<SetStateAction<Map<string, TabBuffer>>>
 }
@@ -81,6 +88,8 @@ export function useEditorDiffReads({
   activeTab,
   activeBuffer,
   tabsRef,
+  buffersRef,
+  encodingChoicesRef,
   loadedSignalRef,
   setBuffers,
 }: UseEditorDiffReadsOptions) {
@@ -98,8 +107,17 @@ export function useEditorDiffReads({
 
   function loadDiffBuffer(tabId: string, path: string): void {
     const request = nextRequest(tabId, path)
+    // The encoding the person reopened this file in, so the diff shows the
+    // same characters the editor tab does.
+    const buffer = buffersRef.current.get(tabId)
+    const encoding =
+      (buffer !== undefined && !isBufferStale(buffer, path)
+        ? buffer.encodingRequested
+        : null) ??
+      encodingChoicesRef.current.get(path) ??
+      null
     fileApi
-      .diff(root, path)
+      .diff(root, path, encoding)
       .then((diff) => {
         if (!isCurrentRequest(request)) return
         setBuffers((previous) =>
@@ -157,5 +175,41 @@ export function useEditorDiffReads({
     })
   }
 
-  return { loadDiffBuffer, refreshDiff }
+  // Read the diff again in exactly `encoding`, the large-file view's way to
+  // correct how the patch's lines were decoded. On success the buffer asks for
+  // it from then on; a refusal (bytes not valid in it) leaves the diff on
+  // screen as it was and says why, the way a refused reopen of a file does.
+  function reloadDiffAs(tabId: string, path: string, encoding: string): void {
+    const request = nextRequest(tabId, path)
+    fileApi
+      .diff(root, path, encoding)
+      .then((diff) => {
+        if (!isCurrentRequest(request)) return
+        setBuffers((previous) => {
+          const next = withDiffResult(
+            previous,
+            tabsRef.current,
+            request,
+            diff,
+            loadedSignalRef.current,
+          )
+          const buffer = next.get(tabId)
+          if (next === previous || buffer === undefined) return next
+          next.set(tabId, { ...buffer, encodingRequested: encoding })
+          return next
+        })
+        notifySuccess(
+          prose`Reread the diff of ${chip(path)} as ${encodingLabel(encoding, false)}.`,
+        )
+      })
+      .catch((error) => {
+        if (!isCurrentRequest(request)) return
+        const reason = error instanceof Error ? error.message : "the read failed"
+        notifyError(
+          prose`Couldn't read the diff of ${chip(path)} as ${encodingLabel(encoding, false)}: ${reason}. It is still shown as it was.`,
+        )
+      })
+  }
+
+  return { loadDiffBuffer, refreshDiff, reloadDiffAs }
 }

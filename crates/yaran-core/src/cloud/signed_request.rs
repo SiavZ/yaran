@@ -8,6 +8,7 @@
 //! - Pure apart from the clock and CSPRNG nonce in `prepare`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/signed_request.rs
 //! ├── cloud::protocol::machine
@@ -20,6 +21,7 @@
 //! cloud/signed_request.rs
 //! ├── cloud
 //! └── cloud::machine_api
+//! ```
 //! <module-headers:end>
 
 use ring::signature::Ed25519KeyPair;
@@ -30,18 +32,26 @@ use crate::cloud::protocol::signing::{self, RequestParts, SignedHeaders, Signing
 /// The exact bytes to send and the SIG headers that cover them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedRequest {
+    /// The body exactly as signed.
     pub body: Vec<u8>,
+    /// The signature headers over the body.
     pub headers: SignedHeaders,
 }
 
 /// The body bytes for `value` (`None`: an empty body).
+///
+/// # Panics
+///
+/// Never in practice: every wire type serializes.
 pub fn body_bytes<T: Serialize>(value: Option<&T>) -> Vec<u8> {
-    value
-        .map(|v| serde_json::to_vec(v).expect("wire types always serialize"))
-        .unwrap_or_default()
+    value.map_or_default(|v| serde_json::to_vec(v).expect("wire types always serialize"))
 }
 
 /// Sign `body` now, with a fresh nonce.
+///
+/// # Errors
+///
+/// Fails when the request cannot be signed.
 pub fn prepare(
     key: &Ed25519KeyPair,
     parts: &RequestParts<'_>,
@@ -52,6 +62,10 @@ pub fn prepare(
 }
 
 /// Sign `body` with a fixed timestamp and nonce (tests and vectors).
+///
+/// # Errors
+///
+/// Fails when the request cannot be signed.
 pub fn prepare_at(
     key: &Ed25519KeyPair,
     parts: &RequestParts<'_>,
@@ -129,6 +143,6 @@ mod tests {
         assert!(recorded.signature_verifies(&public));
         recorded.body = serde_json::to_vec_pretty(&req).unwrap();
         assert!(!recorded.signature_verifies(&public));
-        assert!(body_bytes::<RotateRequest>(None).is_empty());
+        assert_eq!(body_bytes::<RotateRequest>(None), Vec::<u8>::new());
     }
 }

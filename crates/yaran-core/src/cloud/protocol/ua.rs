@@ -1,5 +1,5 @@
 //! The phone app's User-Agent token (Design §11): `YaranApp/<version> (<os>; <form>)`,
-//! appended to the WebView UA in machine-view and sent alone on native HTTP calls.
+//! appended to the `WebView` UA in machine-view and sent alone on native HTTP calls.
 //!
 //! yaran parses it to label a connected device (Phase 13 owns the visible wording, which
 //! must fit `device_label::SHORT_LABEL_MAX_CHARS`). Pinned by `fixtures/ua/ua.json`.
@@ -7,6 +7,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/ua.rs
 //! └── cloud::protocol::test_fixtures
@@ -17,6 +18,7 @@
 //! ├── cloud::protocol
 //! ├── device_label
 //! └── yaran-web::handoff_consent_page
+//! ```
 //! <module-headers:end>
 
 use std::sync::LazyLock;
@@ -30,22 +32,32 @@ static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
     .expect("UA token pattern compiles")
 });
 
+/// The phone app's operating system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppOs {
+    /// Android.
     Android,
+    /// iOS.
     Ios,
 }
 
+/// The device the phone app runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppForm {
+    /// A phone.
     Phone,
+    /// A tablet.
     Tablet,
 }
 
+/// The `YaranApp/<version> (<os>; <form>)` token from a User-Agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YaranAppUa {
+    /// The app's version.
     pub version: String,
+    /// Its operating system.
     pub os: AppOs,
+    /// Its device form.
     pub form: AppForm,
 }
 

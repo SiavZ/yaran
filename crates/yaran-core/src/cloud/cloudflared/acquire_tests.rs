@@ -3,6 +3,7 @@
 //! - Test-only; downloads only from 127.0.0.1.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/acquire_tests.rs
 //! ├── cloud::cloudflared::acquire
@@ -14,6 +15,7 @@
 //! Used by:
 //! cloud/cloudflared/acquire_tests.rs
 //! └── cloud::cloudflared::acquire
+//! ```
 //! <module-headers:end>
 
 use super::*;
@@ -47,13 +49,11 @@ fn source(base: &str) -> ManagedSource {
 }
 
 fn bin_files(dir: &Path) -> Vec<String> {
-    let mut names: Vec<_> = fs::read_dir(dir.join("bin"))
-        .map(|it| {
-            it.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<_> = fs::read_dir(dir.join("bin")).map_or_default(|it| {
+        it.flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    });
     names.sort();
     names
 }
@@ -109,7 +109,7 @@ fn every_bad_download_fails_closed_and_leaves_no_file() {
         Reply {
             status: 200,
             body: Vec::new(),
-            claimed_len: Some(MAX_ASSET_BYTES as usize + 1),
+            claimed_len: Some(usize::try_from(MAX_ASSET_BYTES).unwrap() + 1),
         },
         Reply {
             status: 404,
@@ -175,7 +175,7 @@ fn a_cancelled_download_leaves_nothing() {
         false
     });
     assert_eq!(result, Err(BinaryUnavailable::Cancelled));
-    assert!(bin_files(dir.path()).is_empty());
+    assert_eq!(bin_files(dir.path()), Vec::<std::string::String>::new());
 }
 
 #[test]

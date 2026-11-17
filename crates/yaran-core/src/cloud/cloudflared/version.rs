@@ -10,6 +10,7 @@
 //! - An unparseable answer fails closed, the same as a too-old one.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/version.rs
 //! ├── bounded_command
@@ -23,6 +24,7 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::acquire
 //! └── cloud::leg_start
+//! ```
 //! <module-headers:end>
 
 use std::path::Path;
@@ -45,11 +47,14 @@ pub const PIN_WARN_DAYS: i64 = 330;
 
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A cloudflared CalVer release, `YYYY.M.N`.
+/// A cloudflared `CalVer` release, `YYYY.M.N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CfVersion {
+    /// The release year.
     pub year: u16,
+    /// The release month.
     pub month: u8,
+    /// The release's number within the month.
     pub patch: u16,
 }
 
@@ -88,25 +93,44 @@ impl std::fmt::Display for CfVersion {
 /// Why a user-supplied binary will not be run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionRefusal {
-    TooOld { found: CfVersion },
-    Unparseable { output: String },
-    ProbeFailed { detail: String },
+    /// It is below the minimum version.
+    TooOld {
+        /// The version it reported.
+        found: CfVersion,
+    },
+    /// It reported no version yaran understands.
+    Unparseable {
+        /// What it printed.
+        output: String,
+    },
+    /// It could not be asked for its version.
+    ProbeFailed {
+        /// Why.
+        detail: String,
+    },
 }
 
 /// What the probe of a user binary found: its version and whether it is outside
 /// Cloudflare's support window (a warning, not a refusal).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbedVersion {
+    /// The version it reported.
     pub version: CfVersion,
+    /// Whether that is more than a year older than yaran's pinned release.
     pub outside_support_window: bool,
 }
 
 /// Run `<bin> --version` and judge the answer.
+///
+/// # Errors
+///
+/// Fails with the [`VersionRefusal`] that keeps the binary from running.
 pub fn probe_user_binary(binary: &Path) -> Result<ProbedVersion, VersionRefusal> {
     let mut cmd = std::process::Command::new(binary);
     cmd.arg("--version").env_clear();
     match run_command_with_timeout(
         cmd,
+        crate::bounded_command::ChildGroup::New,
         VERSION_PROBE_TIMEOUT,
         DEFAULT_READER_DRAIN,
         "cloudflared",
@@ -118,17 +142,23 @@ pub fn probe_user_binary(binary: &Path) -> Result<ProbedVersion, VersionRefusal>
         }
         CommandOutcome::TimedOut => Err(VersionRefusal::ProbeFailed {
             detail: format!(
-                "`--version` did not answer within {}s",
+                "\"--version\" did not answer within {}s",
                 VERSION_PROBE_TIMEOUT.as_secs()
             ),
         }),
-        CommandOutcome::Failed(detail) => Err(VersionRefusal::ProbeFailed {
-            detail: crate::sanitize::for_terminal(&detail),
-        }),
+        CommandOutcome::Failed(detail) | CommandOutcome::NotFound(detail) => {
+            Err(VersionRefusal::ProbeFailed {
+                detail: crate::sanitize::for_terminal(&detail),
+            })
+        }
     }
 }
 
 /// The pure half of the probe.
+///
+/// # Errors
+///
+/// Fails when `output` names no version, or one below the minimum.
 pub fn judge(output: &str) -> Result<ProbedVersion, VersionRefusal> {
     let Some(version) = CfVersion::from_version_output(output) else {
         let shown: String = crate::sanitize::for_terminal(output.trim())
@@ -161,6 +191,10 @@ pub fn pin_nearing_end_of_support(today: chrono::NaiveDate) -> bool {
 }
 
 /// The pinned version, parsed.
+///
+/// # Panics
+///
+/// Never in practice: the pinned version is a constant a test parses.
 pub fn pinned() -> CfVersion {
     CfVersion::parse(PINNED_VERSION).expect("PINNED_VERSION is a CalVer release")
 }

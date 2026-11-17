@@ -20,7 +20,12 @@ services:
       args:
         BASE_IMAGE: ${BASE_IMAGE:-archlinux:latest}
     image: yaran-preview
-    container_name: yaran-preview
+    # A container name is global to the Docker daemon, unlike the network and
+    # the volumes, which compose already scopes to the project. So a second
+    # stack (its own COMPOSE_PROJECT_NAME) needs a name of its own too; up.sh
+    # derives one from the project when this is unset. The image name stays
+    # shared on purpose: every stack runs the same image.
+    container_name: ${YARAN_PREVIEW_CONTAINER:-yaran-preview}
     ports:
       - "127.0.0.1:${YARAN_PORT:-8790}:8790"
       # The concurrent-TUI journey's port. That journey runs the TUI in this
@@ -77,8 +82,17 @@ services:
       - ${YARAN_BIN:-../../target/release/yaran}:/usr/local/bin/yaran:ro
       - ${YARAN_TUI_OUTPUT_DIR:-./shots}:/output
       - ${YARAN_TUI_JOURNEY:-./tui-journey.example.js}:/journey.js:ro
+      # The stand-in gh, put on yaran's PATH only for a journey that asks for
+      # GitHub (journey.github in tui-driver.js).
+      - ./screens/fixtures:/fixtures:ro
     tmpfs:
       - /capture
+    # Lets a journey's stand-in Tailscale address be added to this container's
+    # own loopback interface, so yaran's Tailscale listener really binds (see
+    # standInTailscale in tui-driver.js). The capture container is disposable
+    # and has a network namespace of its own, so nothing outside it is touched.
+    cap_add:
+      - NET_ADMIN
 
 volumes:
   yaran-data:

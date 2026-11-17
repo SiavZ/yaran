@@ -10,12 +10,12 @@
 //!
 //! <module-headers:begin>
 //! Uses:
-//! engine/cloud_mode.rs
-//! └── cloud::leg_identity
+//! `engine/cloud_mode.rs`
+//! └── `cloud::leg_identity`
 //! External: anyhow
 //!
 //! Used by:
-//! engine/cloud_mode.rs
+//! `engine/cloud_mode.rs`
 //! └── engine
 //! <module-headers:end>
 
@@ -24,6 +24,11 @@ use crate::cloud::leg_identity::{self, CloudMode};
 
 impl Engine {
     /// Save `[cloud] mode`, refusing anything outside the tri-state.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a value outside the tri-state or when the config cannot be
+    /// written.
     pub fn set_cloud_mode(&mut self, mode: &str) -> anyhow::Result<CloudMode> {
         let parsed = parse_mode(mode)?;
         if leg_identity::settings_from_config(&self.config).mode != parsed {

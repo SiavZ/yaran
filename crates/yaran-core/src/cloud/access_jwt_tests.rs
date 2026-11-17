@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::access_jwt`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/access_jwt_tests.rs
 //! ├── cloud::access_jwks
@@ -14,6 +15,7 @@
 //! Used by:
 //! cloud/access_jwt_tests.rs
 //! └── cloud::access_jwt
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;
@@ -42,7 +44,7 @@ fn expectations(t: &Value) -> Expectations {
 }
 
 fn at(secs: i64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(secs as u64)
+    UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap())
 }
 
 fn token(t: &Value, name: &str) -> String {
@@ -74,7 +76,11 @@ fn every_fixture_case_gets_its_expected_outcome() {
                 assert!(v.email.eq_ignore_ascii_case("owner@example.com"), "{name}");
                 assert!(!v.sub.is_empty(), "{name}");
             }
-            code => assert_eq!(got.map(|_| ()).map_err(|e| e.code()), Err(code), "{name}"),
+            code => assert_eq!(
+                got.map(|_| ()).map_err(super::AccessRejection::code),
+                Err(code),
+                "{name}"
+            ),
         }
     }
 }

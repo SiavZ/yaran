@@ -7,6 +7,7 @@
 //!   whatever happens to the tunnel, then the lane, then one sentence with its chips.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_mode_routes.rs
 //! ├── cloud_mode
@@ -25,6 +26,7 @@
 //! cloud_mode_routes.rs
 //! ├── crate
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;
@@ -44,6 +46,7 @@ use crate::event_bus::{Event, EventBus};
 use crate::rest_common::scope_from_headers;
 use crate::server::AppState;
 
+/// The live `[cloud] mode` routes, merged into the main router.
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/server/cloud-mode", post(set_cloud_mode))

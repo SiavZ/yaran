@@ -3,6 +3,7 @@
 //! - Test-only; spawns real processes and kills their groups.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/supervisor_tests.rs
 //! ├── cloud::cloudflared::command
@@ -13,6 +14,7 @@
 //! Used by:
 //! cloud/cloudflared/supervisor_tests.rs
 //! └── cloud::cloudflared::supervisor
+//! ```
 //! <module-headers:end>
 
 use super::*;
@@ -42,7 +44,10 @@ fn wait_exit(child: &mut RunningChild) -> ChildExit {
 }
 
 fn alive(pid: u32) -> bool {
-    rustix::process::test_kill_process(rustix::process::Pid::from_raw(pid as i32).unwrap()).is_ok()
+    rustix::process::test_kill_process(
+        rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap(),
+    )
+    .is_ok()
 }
 
 #[test]
@@ -52,7 +57,7 @@ fn exit_codes_are_reported() {
         let bin = script(dir.path(), &format!("exit{code}"), &format!("exit {code}"));
         let mut child = spawn(&spec(bin, dir.path()), "").unwrap();
         assert_eq!(wait_exit(&mut child), ChildExit::Code(code));
-        assert!(!child_registry::live().contains(&(child.pid() as i32)));
+        assert!(!child_registry::live().contains(&i32::try_from(child.pid()).unwrap()));
     }
 }
 
@@ -104,7 +109,7 @@ fn a_child_ignoring_sigterm_is_killed_after_the_grace() {
         started.elapsed()
     );
     assert!(!alive(pid));
-    assert!(!child_registry::live().contains(&(pid as i32)));
+    assert!(!child_registry::live().contains(&i32::try_from(pid).unwrap()));
 }
 
 #[test]
@@ -143,8 +148,7 @@ fn a_group_kill_reaches_a_grandchild() {
 #[test]
 fn a_missing_binary_is_a_spawn_error() {
     let dir = tempfile::tempdir().unwrap();
-    let err = spawn(&spec(dir.path().join("nope"), dir.path()), "")
-        .err()
-        .expect("no binary, no child");
+    let err =
+        spawn(&spec(dir.path().join("nope"), dir.path()), "").expect_err("no binary, no child");
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 }

@@ -49,12 +49,19 @@ export type TerminalLiveSettings = {
   /// The owning session's tabs, for the tab-gone check. A dependency of the
   /// lifecycle effect would rebuild the socket on every spine refresh.
   sessionTabs: AgentTabView[] | undefined
+  /// Whether the spine lists this pane's terminal now, and whether it ever has
+  /// on this mount, for the terminal-gone check. Both false for an agent pane.
+  terminalListed: { now: boolean; ever: boolean }
   /// Whether the faithful watcher is OVERFLOWING on purpose: the floor font could
   /// not fit the adopted grid, so the host scrolls. Always false for an owner.
   viewerOverflow: boolean
   /// Whether the compose bar is the typing surface. A mirror that lags the render
   /// by one commit; both mismatch directions degrade to a harmless focus call.
   composeActive: boolean
+  /// Whether the pane is on screen. A part of a stack kept mounted off screen
+  /// is not looking at its tab and never makes the first claim of a row.
+  /// Absent means on screen.
+  onScreen?: boolean
 }
 
 /// The read side of the container: a ref, so a call site reads one field without

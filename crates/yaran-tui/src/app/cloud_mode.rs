@@ -10,9 +10,12 @@
 //!   picker say the same words.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_mode.rs
 //! ├── app
+//! ├── app::components
+//! ├── app::components::hint_bar
 //! ├── app::render
 //! ├── app::test_support
 //! ├── yaran-core::cloud::config
@@ -20,15 +23,24 @@
 //! ├── yaran-core::cloud::leg_outcome
 //! ├── yaran-core::engine
 //! └── yaran-core::engine::status_op
-//! External: none
+//! External: ratatui
 //!
 //! Used by:
 //! app/cloud_mode.rs
-//! └── app
+//! ├── app
+//! └── app::picker_lists
+//! ```
 //! <module-headers:end>
 
-use super::*;
-use crate::app::render::{active_provider_marker_span, centered_rect};
+use super::{
+    Action, App, BindingScope, ClickCount, FullscreenOverlay, InputTarget, KeyEvent, Line,
+    Modifier, OverlayMouseLayout, PromptState, Span, Style,
+};
+use crate::app::components::PickerList;
+use crate::app::components::hint_bar::{Hint, modal_hint_line};
+use crate::app::render::{CurrentMark, active_provider_marker_span, centered_rect};
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 use yaran_core::cloud::config::CloudConfig;
 use yaran_core::cloud::leg_identity::CloudMode;
 use yaran_core::cloud::leg_outcome::CloudModeOutcome;
@@ -152,9 +164,9 @@ impl App {
 
     /// Resolve the pending op with what the serve did, or say it on the shared lane when
     /// nothing on this surface is waiting.
-    pub(crate) fn apply_cloud_mode_outcome(&mut self, mode: CloudMode, outcome: CloudModeOutcome) {
+    pub(crate) fn apply_cloud_mode_outcome(&mut self, mode: CloudMode, outcome: &CloudModeOutcome) {
         match self.pending_cloud_mode_op.take() {
-            Some(op) => self.apply_reaction(op.resolve(&outcome).into_reaction()),
+            Some(op) => self.apply_reaction(op.resolve(outcome).into_reaction()),
             None => self.engine.post_status(outcome.status(mode)),
         }
     }
@@ -162,16 +174,9 @@ impl App {
     /// The background-mode reload owner: a changed mode goes through the companion (only
     /// when a serve ran both before and after the reload, so it is never applied twice),
     /// every other changed key goes to the serve, which applies the ingress keys live and
-    /// restarts the running child on a changed restart key.
-    pub(crate) fn apply_cloud_reload(
-        &mut self,
-        serving_before: bool,
-        previous: &CloudConfig,
-        next: &CloudConfig,
-    ) {
-        if !(serving_before && self.background_server_is_serving()) {
-            return;
-        }
+    /// restarts the running child on a changed restart key. Called only when a serve
+    /// ran both before and after the reload.
+    pub(crate) fn apply_cloud_reload(&mut self, previous: &CloudConfig, next: &CloudConfig) {
         if previous != next
             && let Some(companion) = self.companion.as_mut()
         {
@@ -206,58 +211,40 @@ impl App {
         Some(false)
     }
 
-    pub(crate) fn click_cloud_mode_item(&mut self, index: usize, double_click: bool) {
+    pub(crate) fn click_cloud_mode_item(&mut self, index: usize, clicks: ClickCount) {
         if let PromptState::SetCloudMode(prompt) = &mut self.prompt
             && index < prompt.options.len()
         {
             prompt.selected = index;
         }
-        if double_click {
+        if clicks == ClickCount::Double {
             self.apply_set_cloud_mode();
         }
     }
 
-    pub(crate) fn render_set_cloud_mode_prompt(&mut self, frame: &mut Frame) {
+    pub(crate) fn render_set_cloud_mode_prompt(&mut self, frame: &mut Frame<'_>) {
         let PromptState::SetCloudMode(prompt) = &self.prompt else {
             return;
         };
         self.render_dim_overlay(frame);
         let area = centered_rect(66, 55, frame.area());
         self.clear_overlay_area(frame, area);
-        let hint = |text: String, key: bool| {
-            let fg = if key {
-                self.theme.hint_key_fg
-            } else {
-                self.theme.hint_desc_fg
-            };
-            Span::styled(text, Style::default().fg(fg))
-        };
         let picks = if prompt.serving {
             "apply now"
         } else {
             "save for next time"
         };
-        let bottom_spans = vec![
-            hint(
-                format!(
-                    " {}/{} ",
-                    self.bindings.label_for(Action::MoveUp),
-                    self.bindings.label_for(Action::MoveDown)
-                ),
-                true,
-            ),
-            hint("move  ".into(), false),
-            hint(
-                format!("{} ", self.bindings.label_for(Action::Confirm)),
-                true,
-            ),
-            hint(picks.into(), false),
-            hint(
-                format!("  {} ", self.bindings.label_for(Action::CloseOverlay)),
-                true,
-            ),
-            hint("cancel ".into(), false),
-        ];
+        let bottom_spans = modal_hint_line(
+            &self.theme,
+            &[
+                Hint::key(self.bindings.label_for(Action::MoveDown), "down"),
+                Hint::key(self.bindings.label_for(Action::MoveUp), "up"),
+                Hint::key(self.bindings.label_for(Action::Confirm), picks),
+                Hint::key(self.bindings.label_for(Action::CloseOverlay), "cancel").pinned(),
+            ],
+            area.width.saturating_sub(2),
+        );
+        let hint = |text: String| Span::styled(text, Style::default().fg(self.theme.hint_desc_fg));
         let [details_area, list_area] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(4), Constraint::Min(5)])
@@ -269,7 +256,7 @@ impl App {
         };
         let details = Paragraph::new(vec![
             Line::from(vec![
-                hint(" Saved mode: ".into(), false),
+                hint(" Saved mode: ".into()),
                 Span::styled(
                     prompt.current.as_str().to_string(),
                     Style::default()
@@ -277,7 +264,7 @@ impl App {
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
-            Line::from(vec![hint(format!(" {where_at}"), false)]),
+            Line::from(vec![hint(format!(" {where_at}"))]),
         ])
         .block(
             Block::default()
@@ -297,39 +284,37 @@ impl App {
             .iter()
             .map(|option| {
                 ListItem::new(Line::from(vec![
-                    active_provider_marker_span(option.is_current, &self.theme),
+                    active_provider_marker_span(
+                        if option.is_current {
+                            CurrentMark::Current
+                        } else {
+                            CurrentMark::Other
+                        },
+                        &self.theme,
+                        self.glyphs(),
+                    ),
                     Span::styled(
                         format!("{:<6}", option.mode.as_str()),
                         Style::default()
                             .fg(self.theme.help_section_header_fg)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    hint(format!("  {}", meaning(option.mode)), false),
+                    hint(format!("  {}", meaning(option.mode))),
                 ]))
             })
             .collect();
-        let mut state = ListState::default().with_selected(Some(
-            prompt.selected.min(prompt.options.len().saturating_sub(1)),
-        ));
         let list_block = Block::default()
             .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
             .border_style(Style::default().fg(self.theme.overlay_border))
             .style(Style::default().bg(self.theme.overlay_bg))
-            .title_bottom(Line::from(bottom_spans));
-        let list_inner = list_block.inner(list_area);
-        let items_len = prompt.options.len();
-        StatefulWidget::render(
-            List::new(items)
-                .block(list_block)
-                .highlight_style(self.theme.selection_style()),
-            list_area,
-            frame.buffer_mut(),
-            &mut state,
-        );
+            .title_bottom(bottom_spans);
+        let list = PickerList::new(items, Some(prompt.selected), "No modes to choose from.")
+            .block(list_block)
+            .render(frame, list_area, &self.theme);
         self.overlay_layout.active = OverlayMouseLayout::SetCloudMode {
-            list: list_inner,
-            items: items_len,
-            offset: state.offset(),
+            list: list.list,
+            items: list.items,
+            offset: list.offset,
         };
     }
 }
@@ -369,11 +354,11 @@ mod tests {
     fn an_outcome_with_no_pending_op_is_posted_and_one_with_an_op_resolves_it() {
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
-        app.apply_cloud_mode_outcome(CloudMode::Auto, CloudModeOutcome::NotPaired);
+        app.apply_cloud_mode_outcome(CloudMode::Auto, &CloudModeOutcome::NotPaired);
         assert!(app.pending_cloud_mode_op.is_none());
         app.ask_companion_for_cloud_mode(CloudMode::No);
         assert!(app.pending_cloud_mode_op.is_some());
-        app.apply_cloud_mode_outcome(CloudMode::No, CloudModeOutcome::Stopped);
+        app.apply_cloud_mode_outcome(CloudMode::No, &CloudModeOutcome::Stopped);
         assert!(app.pending_cloud_mode_op.is_none());
     }
 }

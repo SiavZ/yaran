@@ -17,8 +17,11 @@
 //! runs `cargo tree -p yaran-web` and fails if any TUI-only crate appears.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! lib.rs
+//! ├── auth
+//! ├── auth::provenance
 //! ├── background
 //! ├── bootstrap
 //! ├── bootstrap_routes
@@ -26,6 +29,7 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
+//! ├── cloud_auth_bridge_tests
 //! ├── cloud_consent_tests
 //! ├── cloud_handoff
 //! ├── cloud_handoff_request
@@ -42,9 +46,11 @@
 //! ├── compressible_exts
 //! ├── config_routes
 //! ├── console
+//! ├── control_socket
 //! ├── engine_actor
 //! ├── event_bus
 //! ├── events_beat
+//! ├── exposure
 //! ├── file_drop_routes
 //! ├── file_routes
 //! ├── first_load_routes
@@ -52,17 +58,21 @@
 //! ├── handoff_consent_page
 //! ├── handoff_csrf
 //! ├── host_guard
+//! ├── operation_routes
 //! ├── origin_match
 //! ├── ownership_publish
+//! ├── peer_routes
 //! ├── project_actions
 //! ├── project_reads
 //! ├── pty_log
 //! ├── pty_sizes
 //! ├── rate_window
+//! ├── reload_signal
 //! ├── resource_routes
 //! ├── rest_common
 //! ├── serve_legs
 //! ├── server
+//! ├── server_inspect_routes
 //! ├── session_actions
 //! ├── startup_logs
 //! ├── tab_actions
@@ -70,17 +80,30 @@
 //! ├── test_support
 //! ├── web_assets
 //! ├── workspace_routes
+//! ├── yaran-core
 //! ├── yaran-core::activity
+//! ├── yaran-core::auth
+//! ├── yaran-core::background_serve
 //! ├── yaran-core::cloud::cloudflared::child_registry
+//! ├── yaran-core::cloud::paths
 //! ├── yaran-core::config
+//! ├── yaran-core::config_effective
 //! ├── yaran-core::config_write
+//! ├── yaran-core::container
+//! ├── yaran-core::control_socket
 //! ├── yaran-core::engine
 //! ├── yaran-core::logger
 //! ├── yaran-core::peer
+//! ├── yaran-core::prose
 //! ├── yaran-core::pty_owners
+//! ├── yaran-core::serve_log
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
 //! ├── yaran-core::tailscale
+//! ├── yaran-core::test_scratch
+//! ├── yaran-core::wire
 //! └── yaran-core::worker
-//! External: anyhow, axum, std, tempfile, tokio
+//! External: anyhow, axum, chrono, std, tempfile, tokio, tower
 //!
 //! Used by:
 //! lib.rs
@@ -88,9 +111,13 @@
 //! ├── engine_actor
 //! ├── server
 //! ├── yaran-web[test serve_with_engine]
-//! └── yaran[bin yaran]
+//! ├── yaran-web[test yaran_server_control_socket]
+//! ├── yaran[bin yaran]
+//! └── yaran[test config_resources]::support
+//! ```
 //! <module-headers:end>
 
+pub mod auth;
 pub mod background;
 pub mod bootstrap;
 pub mod bootstrap_routes;
@@ -98,6 +125,8 @@ pub mod browse_routes;
 pub mod build_routes;
 pub mod changes;
 pub mod changes_routes;
+#[cfg(test)]
+mod cloud_auth_bridge_tests;
 #[cfg(test)]
 mod cloud_consent_tests;
 pub(crate) mod cloud_handoff;
@@ -115,12 +144,15 @@ pub mod cloud_phone_routes;
 pub mod cloud_routes;
 #[cfg(test)]
 mod cloud_test_support;
+/// The asset extensions the embedded web UI carries Brotli-compressed.
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;
+pub mod control_socket;
 pub mod engine_actor;
 pub mod event_bus;
 pub(crate) mod events_beat;
+pub mod exposure;
 pub mod file_drop_routes;
 pub mod file_routes;
 pub mod first_load_routes;
@@ -128,12 +160,13 @@ pub mod git_routes;
 pub(crate) mod handoff_consent_page;
 pub(crate) mod handoff_csrf;
 pub mod host_guard;
+pub mod operation_routes;
 pub(crate) mod origin_match;
 pub(crate) mod ownership_publish;
+pub mod peer_routes;
 pub mod project_actions;
 pub mod project_reads;
 pub mod pty_log;
-pub(crate) mod rate_window;
 /// The PTY input-ownership registry, re-exported from `yaran-core`: a rule two
 /// surfaces obey belongs in the crate both can see. A glob rather than a named
 /// list, because some names are used only by this crate's test modules and naming
@@ -142,10 +175,13 @@ pub(crate) mod pty_owners {
     pub(crate) use yaran_core::pty_owners::*;
 }
 pub(crate) mod pty_sizes;
+pub(crate) mod rate_window;
+pub(crate) mod reload_signal;
 pub mod resource_routes;
 pub mod rest_common;
 pub mod serve_legs;
 pub mod server;
+pub mod server_inspect_routes;
 pub mod session_actions;
 pub mod startup_logs;
 pub mod tab_actions;
@@ -159,6 +195,7 @@ pub mod workspace_routes;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+use std::io::{IsTerminal, Write as _};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,14 +208,17 @@ use yaran_core::config::{PlanAddr, ServerPlan, TailscaleMode, TailscaleModeOutco
 use yaran_core::engine::Engine;
 use yaran_core::tailscale::TailscaleUnavailable;
 
-use crate::console::{Banner, Console, ListenerRow};
+use crate::console::Console;
 use crate::engine_actor::LoopControl;
 use crate::serve_legs::{
-    LegCommand, LegStatus, LegStep, ModeStep, ServeShutdown, StartupLeg, TailscaleModeControl,
-    WATCH_PERIOD, desired_leg, plan_leg_step, plan_mode_change, wait_for_leg_shutdown,
-    waiting_note, watch_tailscale_leg,
+    FirstLook, LegCommand, LegStatus, LegStep, ModeStep, NoTailscaleFlag, ServeShutdown,
+    StartupLeg, TailscaleModeControl, WATCH_PERIOD, Watch, WatchEvent, WatchScope,
+    admitted_own_name, desired_leg, identity_news, plan_leg_step, plan_mode_change, serve_hint,
+    tailnet_urls, wait_for_leg_shutdown, waiting_note, watch_tailscale,
 };
 use crate::server::RouterParams;
+use yaran_core::serve_log::{Banner, ListenerRow, StartupNotes};
+use yaran_core::tailscale::TailscaleIdentity;
 
 /// Boot the engine on its own thread and serve the web UI on every address in
 /// the plan (one axum task per listener, sharing the router/state). Blocking
@@ -187,12 +227,40 @@ use crate::server::RouterParams;
 /// `version` is the yaran crate version the binary passes in (`CARGO_PKG_VERSION`)
 /// for the console banner header.
 ///
-/// This is the ONLY surface that owns the [`Console`]: it is built here from the
-/// engine's loaded `[server] color`/`access_log` and threaded into the serve
-/// paths. The TUI flip ([`serve_with_engine`]) NEVER constructs a real console:
-/// it keeps its themed status screen and must not print to stdout.
-pub fn run_server(paths: YaranPaths, plan: ServerPlan, version: String) -> Result<()> {
-    run_plain_http(paths, plan, version)
+/// The stdout [`Console`] is built here from the engine's loaded
+/// `[server] color`/`access_log` and threaded into the serve paths. The TUI flip
+/// ([`serve_with_engine`]) builds a capturing console instead, because its
+/// status screen owns the terminal, and records the very same lines.
+///
+/// `startup_warnings` are the warnings the caller raised before anything was
+/// loaded (Tailscale detection, a non-loopback bind). They print as the first
+/// lines of the log, before any address is bound, so they are on screen even if
+/// a bind then fails.
+///
+/// # Errors
+///
+/// When yaran cannot start (the engine does not bootstrap, the runtime cannot be
+/// built, or a required address does not bind), or when a required listener
+/// fails while serving.
+pub fn run_server(
+    paths: &YaranPaths,
+    plan: ServerPlan,
+    version: String,
+    startup_warnings: &[StartupWarning],
+) -> Result<()> {
+    run_plain_http(paths, plan, version, startup_warnings)
+}
+
+/// A warning `yaran server` raised before anything was loaded, for the head of
+/// its log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupWarning {
+    /// The warning's sentence, as the log prints it.
+    pub text: String,
+    /// Already printed to stderr by the caller (the non-loopback alarm, printed
+    /// the moment it is known), so neither the log's stderr echo nor a failed
+    /// load prints it there again.
+    pub already_on_stderr: bool,
 }
 
 /// Log a WARN when this binary has no web UI compiled in (built with
@@ -202,11 +270,10 @@ pub fn run_server(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
 /// different people who look in different places:
 /// - the served page itself (build.rs's notice page), for whoever opens a browser,
 ///   possibly on a phone, with no access to this terminal;
-/// - the `yaran server` startup banner (a ⚠ row), for the operator who launched it
-///   and can rebuild;
-/// - `yaran.log`, which is the ONLY one of the three the TUI flip path reaches: the
-///   flip keeps its themed status screen and must not print to stdout, so it has
-///   no banner to carry the row.
+/// - the startup banner (a ⚠ row), for the operator who launched it and can
+///   rebuild: `yaran server`'s terminal, or the flip's log viewer, which shows the
+///   same banner;
+/// - `yaran.log`.
 ///
 /// Called by both serve entry points so neither can forget it.
 ///
@@ -223,21 +290,49 @@ fn warn_if_ui_not_built() {
 /// Build the `yaran server` console from the engine's loaded config: detect color
 /// from `[server] color` (warning on an unrecognized value, then honoring it as
 /// `auto`), construct a real stdout console, and read the `access_log` toggle.
-/// Returns `(console, access_log)`. Used by both CLI serve paths; the flip does
-/// NOT call this (it uses [`Console::noop`]).
-fn build_console(config: &yaran_core::config::Config) -> (Console, bool) {
+/// Returns `(console, access_log)`. An unrecognized color value is warned about
+/// on the console it built, as its first line. The flip does NOT call this: the
+/// setting governs `yaran server`'s stdout only, and the flip's viewer is themed.
+fn build_console(
+    config: &yaran_core::config::Config,
+    paths: &YaranPaths,
+) -> (Console, server::AccessLog) {
     let setting = &config.server.color;
-    if !crate::console::is_known_color_setting(setting) {
-        yaran_core::logger::warn(&format!(
-            "[server] color = \"{setting}\" is not one of auto/always/never, so yaran is treating \
-             it as \"auto\". Fix [server] color in config.toml to silence this."
-        ));
-        eprintln!(
-            "WARNING: [server] color = \"{setting}\" is not auto/always/never. Using \"auto\"."
-        );
+    let coloring = crate::console::detect(setting);
+    let mut console = Console::stdout(coloring, yaran_core::serve_log::StdStreams::current());
+    if let Some(log) = open_server_log(config, paths) {
+        console = console.with_server_log(log);
     }
-    let color = crate::console::detect(setting);
-    (Console::stdout(color), config.server.access_log)
+    // yaran.log already has it: the load logs every value it reads as another.
+    if !crate::console::is_known_color_setting(setting) {
+        console.warn(&crate::console::unknown_color_warning(setting));
+    }
+    // Only on a terminal: a QR code in a piped log is a screenful of blocks
+    // nobody can scan.
+    if config.server.qr_codes && std::io::stdout().is_terminal() {
+        console.show_qr_codes();
+    }
+    (console, server::AccessLog::of(&config.server))
+}
+
+/// Open `server.log` for a serve. One that cannot be opened is a warning in `yaran.log`
+/// and never stops the serve: the terminal (or the flip's viewer) still shows every line.
+pub(crate) fn open_server_log(
+    config: &yaran_core::config::Config,
+    paths: &YaranPaths,
+) -> Option<Arc<yaran_core::logger::ServerLog>> {
+    match yaran_core::logger::open_server_log(&config.server, paths) {
+        Ok(log) => Some(Arc::new(log)),
+        Err(error) => {
+            yaran_core::logger::warn(&format!(
+                "[server] could not open the server log at {}: {error}. The server runs \
+                 without writing server.log; change [server] log_path to somewhere yaran can \
+                 write.",
+                yaran_core::logger::resolve_server_log_path(&config.server, paths).display()
+            ));
+            None
+        }
+    }
 }
 
 /// The warning shown when a BEST-EFFORT (Tailscale) listener cannot bind because
@@ -245,11 +340,7 @@ fn build_console(config: &yaran_core::config::Config) -> (Console, bool) {
 /// BOTH remedies (stop the other process, or change the port). Emitted as a
 /// `yaran.log` WARN line. Pure so it is unit-testable.
 fn tailscale_bind_warning(addr: SocketAddr, err: &std::io::Error) -> String {
-    format!(
-        "could not bind the Tailscale address {addr}: {err}. Something else is already \
-         listening there, so yaran is serving on the remaining address(es) only. Stop that \
-         process or change [server].port to also serve on Tailscale."
-    )
+    yaran_core::serve_log::tailscale_bind_warning(addr, err)
 }
 
 /// A successfully bound listener paired with its requested address (so the URL
@@ -264,6 +355,15 @@ struct BoundListener {
     listener: tokio::net::TcpListener,
 }
 
+/// Whether a serving leg's death ends the whole serve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LegNeed {
+    /// It does: there is nothing to serve without it.
+    Required,
+    /// It does not: yaran says so and keeps serving its other legs.
+    BestEffort,
+}
+
 /// Bind every [`PlanAddr`], honoring its required/best-effort tag.
 ///
 /// - REQUIRED (the configured `host:port` or an explicit `--bind`): a bind
@@ -273,6 +373,8 @@ struct BoundListener {
 /// - BEST-EFFORT (the Tailscale leg of LOCAL MODE): a bind failure logs a WARN
 ///   naming the address, the cause, and both remedies, collects the SAME text in
 ///   the returned warnings vec, and CONTINUES without that listener.
+/// - The IPv6 loopback leg is REQUIRED, except that a machine without IPv6
+///   skips it silently ([`PlanAddr::skips_bind_failure`]).
 ///
 /// If NOTHING binds (every address failed) the whole serve is fatal: there is
 /// nothing left to serve. Returns the bound listeners (with their addresses) and
@@ -290,6 +392,11 @@ async fn bind_plan_addrs(addrs: &[PlanAddr]) -> Result<(Vec<BoundListener>, Vec<
                 required: plan_addr.is_required(),
                 listener,
             }),
+            Err(err) if plan_addr.skips_bind_failure(&err) => {
+                yaran_core::logger::debug(&format!(
+                    "[server] not serving on {addr}: this machine has no IPv6 ({err})"
+                ));
+            }
             Err(err) if plan_addr.is_required() => {
                 // The operator named this address; refuse to serve silently
                 // without it. Log with address context, then propagate the error.
@@ -350,7 +457,7 @@ fn plain_http_banner(
     security_note: Option<String>,
     ui_warning: Option<&'static str>,
 ) -> Banner {
-    let listeners = bound
+    let listeners: Vec<ListenerRow> = bound
         .iter()
         .map(|(addr, required)| {
             let label = if addr.ip().is_loopback() {
@@ -378,6 +485,62 @@ fn plain_http_banner(
         listeners,
         security_note,
     }
+}
+
+/// Whether a Tailscale address was found before binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TailscaleDetection {
+    /// One was.
+    Found,
+    /// None was.
+    NotFound,
+}
+
+/// The startup banner every serving mode prints, built from the legs that bound
+/// (each an `(addr, required)` pair). The one recipe `yaran server` and the flip
+/// share, so the two print the same rows for the same situation: the bind
+/// warnings, the `auto` mode's waiting note, the reachability note and the
+/// missing-web-UI warning all come from here.
+///
+/// `detection` is whether a Tailscale address was found before binding,
+/// which is what tells "the address would not bind" from "there is no address
+/// yet" when no Tailscale leg is in `bound`.
+pub(crate) fn serve_banner(
+    version: &str,
+    bound: &[(SocketAddr, bool)],
+    bind_warnings: &[String],
+    tailscale: TailscaleMode,
+    detection: TailscaleDetection,
+    auth: &yaran_core::config::ServerAuthConfig,
+) -> Banner {
+    let bound_plan_addrs: Vec<PlanAddr> = bound
+        .iter()
+        .map(|(addr, required)| {
+            if *required {
+                PlanAddr::required(*addr)
+            } else {
+                PlanAddr::best_effort(*addr)
+            }
+        })
+        .collect();
+    let leg_bound = bound
+        .iter()
+        .any(|(addr, required)| !required && !addr.ip().is_loopback());
+    let startup_leg = match (detection, leg_bound) {
+        (_, true) => StartupLeg::Bound,
+        (TailscaleDetection::Found, false) => StartupLeg::BindFailed,
+        (TailscaleDetection::NotFound, false) => StartupLeg::Undetected,
+    };
+    let note = safety_note(&bound_plan_addrs, tailscale, auth);
+    let mut warnings = bind_warnings.to_vec();
+    warnings.extend(waiting_note(tailscale, startup_leg));
+    plain_http_banner(
+        version,
+        bound,
+        &warnings,
+        note,
+        web_assets::ui_startup_warning(),
+    )
 }
 
 /// How far the server can be reached, classified from the BOUND legs (each an
@@ -411,32 +574,70 @@ fn reachability(bound: &[(SocketAddr, bool)]) -> Reachability {
     result
 }
 
-/// Safety note shown when the server is reachable on the tailnet (loopback
-/// primary + a best-effort Tailscale leg). Exported so the TUI flip path in
-/// `crates/yaran/src/main.rs` can reference the same text without a separate
-/// copy.
-pub const SAFETY_NOTE_TAILNET: &str = "Reachable by other devices on your tailnet whenever this machine is connected to it \
-     (no login). Set tailscale = \"no\" under [server] to serve without that address.";
+/// What a reachability note says about the password, for the one yaran has
+/// right now. With none, every note says so and how to set one; with one, it
+/// says who is asked for it.
+fn tailnet_password_clause(auth: &yaran_core::config::ServerAuthConfig) -> &'static str {
+    use yaran_core::config::AuthRequire;
+    match (auth.has_password(), auth.require) {
+        (false, _) => {
+            // backtick-ok: the startup banner's safety note, printed to the
+            // serve's console only.
+            " with no password set. Set one with `yaran config set server.auth.password`, or set \
+             tailscale = \"no\" under [server] to serve without that address."
+        }
+        (true, AuthRequire::Network) => {
+            ". Tailnet devices need no password under [server.auth] require = \"network\"; \
+             set it to \"tailnet\" to ask them too."
+        }
+        (true, AuthRequire::Tailnet | AuthRequire::Everywhere) => {
+            ", and they must sign in with the password."
+        }
+    }
+}
 
-/// The tailnet safety note for a serve that is WATCHING the interface (the `auto`
+/// The note for a serve on loopback plus the Tailscale leg.
+pub fn safety_note_tailnet(auth: &yaran_core::config::ServerAuthConfig) -> String {
+    format!(
+        "Reachable by other devices on your tailnet whenever this machine is connected to it{}",
+        tailnet_password_clause(auth)
+    )
+}
+
+/// The tailnet note for a serve that is WATCHING the interface (the `auto`
 /// mode) rather than holding a Tailscale listener right now.
 ///
 /// A separate sentence because the plain note would be a lie in both directions:
 /// yaran is not reachable on the tailnet at this instant, and it is not going to
 /// stay unreachable either. The note has to cover the whole run, because it is
 /// printed once and the leg comes and goes behind it.
-pub const SAFETY_NOTE_TAILNET_WATCHED: &str = "Reachable by other devices on your tailnet whenever this machine is connected to it \
-     (no login), including after a reconnect: yaran binds your Tailscale address by itself \
-     when the interface appears. Set tailscale = \"no\" under [server] to serve without it.";
+pub fn safety_note_tailnet_watched(auth: &yaran_core::config::ServerAuthConfig) -> String {
+    format!(
+        "Reachable by other devices on your tailnet whenever this machine is connected to it, \
+         including after a reconnect (yaran binds your Tailscale address by itself when the \
+         interface appears){}",
+        tailnet_password_clause(auth)
+    )
+}
 
-/// Safety note shown when the server is bound on a required non-loopback
-/// (public/LAN) address. Exported alongside [`SAFETY_NOTE_TAILNET`] so both
-/// operator-facing strings live in one place.
-pub const SAFETY_NOTE_PUBLIC: &str = "Reachable on your network with NO login. \
-     Anyone who can reach this address controls your agents and worktrees. \
-     Put it behind Tailscale or a trusted reverse proxy.";
+/// The note for a serve bound on a required non-loopback (public/LAN) address.
+pub fn safety_note_public(auth: &yaran_core::config::ServerAuthConfig) -> String {
+    if auth.has_password() {
+        "Reachable on your network; every request from it must sign in with the password. Over \
+         plain HTTP the password and the session can be overheard on the way, so prefer HTTPS \
+         (tailscale serve, or an HTTPS front end of your own with [server.auth] require = \"everywhere\")."
+            .to_string()
+    } else {
+        // backtick-ok: the startup banner's safety note, printed to the serve's
+        // console only.
+        "Reachable on your network with NO password set. Anyone who can reach this address \
+         controls your agents and worktrees. Set one with `yaran config set \
+         server.auth.password`, or put yaran behind Tailscale."
+            .to_string()
+    }
+}
 
-/// Suffix appended to [`SAFETY_NOTE_PUBLIC`] when a Tailscale best-effort leg
+/// Suffix appended to [`safety_note_public`] when a Tailscale best-effort leg
 /// is ALSO bound alongside the required public/LAN primary.
 pub const SAFETY_NOTE_TAILSCALE_ALSO_BOUND: &str = " (The Tailscale address is bound too.)";
 
@@ -451,23 +652,24 @@ pub const SAFETY_NOTE_TAILSCALE_ALSO_BOUND: &str = " (The Tailscale address is b
 /// comes and goes behind it on `auto`. A loopback-only serve that is watching the
 /// interface is a serve that will be reachable on the tailnet the moment the
 /// laptop reconnects, and saying nothing would be the wrong half of the truth.
-pub fn safety_note(addrs: &[PlanAddr], tailscale: TailscaleMode) -> Option<String> {
+pub fn safety_note(
+    addrs: &[PlanAddr],
+    tailscale: TailscaleMode,
+    auth: &yaran_core::config::ServerAuthConfig,
+) -> Option<String> {
     let pairs: Vec<(SocketAddr, bool)> =
         addrs.iter().map(|a| (a.addr(), a.is_required())).collect();
     match reachability(&pairs) {
-        Reachability::LoopbackOnly if tailscale.watches_interface() => {
-            Some(SAFETY_NOTE_TAILNET_WATCHED.to_string())
+        Reachability::LoopbackOnly | Reachability::Tailscale if tailscale.watches_interface() => {
+            Some(safety_note_tailnet_watched(auth))
         }
         Reachability::LoopbackOnly => None,
-        Reachability::Tailscale if tailscale.watches_interface() => {
-            Some(SAFETY_NOTE_TAILNET_WATCHED.to_string())
-        }
-        Reachability::Tailscale => Some(SAFETY_NOTE_TAILNET.to_string()),
+        Reachability::Tailscale => Some(safety_note_tailnet(auth)),
         Reachability::Public => {
             let has_tailscale = pairs
                 .iter()
                 .any(|(addr, required)| !addr.ip().is_loopback() && !required);
-            let mut msg = SAFETY_NOTE_PUBLIC.to_string();
+            let mut msg = safety_note_public(auth);
             if has_tailscale {
                 msg.push_str(SAFETY_NOTE_TAILSCALE_ALSO_BOUND);
             }
@@ -490,32 +692,110 @@ pub fn safety_note(addrs: &[PlanAddr], tailscale: TailscaleMode) -> Option<Strin
 /// startup bind, so a startup broadcast would reach zero receivers. `yaran.log` and
 /// the startup banner are the delivery surfaces here; MID-RUN leg changes (the
 /// watcher's doing) go to `yaran.log` and the console, which is this terminal for
-/// `yaran server` and the flip status screen's activity panel for the flip.
-fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Result<()> {
-    let ServerPlan {
-        addrs,
-        primary,
-        tailscale,
-        forced_no,
-    } = plan;
+/// `yaran server` and the status screen's log viewer for the flip.
+fn run_plain_http(
+    paths: &YaranPaths,
+    plan: ServerPlan,
+    version: String,
+    startup_warnings: &[StartupWarning],
+) -> Result<()> {
     warn_if_ui_not_built();
-    let engine = bootstrap::bootstrap_engine(&paths)?;
+    let mut engine = bootstrap_or_report(paths, startup_warnings, &mut std::io::stderr())?;
     // Now that the single-instance lock is held: reconcile the shared AMQ
     // registry and let agent launches reserve their inbox. Never fatal.
-    yaran_core::peer::init_for_process(&paths);
+    yaran_core::peer::init_for_process(paths);
+    // The lock is held and the config read, so the control socket is bound
+    // now, before anything is served; a yaran without it still serves the web.
+    let socket_path = engine.paths.socket_path.clone();
+    let socket_warning =
+        yaran_core::control_socket::open(&mut engine.single_instance_lock, &socket_path);
+    let control_listener = control_socket::listener_of(&engine);
     // Build the vite-style CLI console (color from [server] color) + the access-log
     // toggle before the engine moves into the actor thread.
-    let (console, access_log) = build_console(&engine.config);
-    // The router's whole `[server]` input, snapshotted before the engine moves
-    // into the actor thread. One clone rather than a field-by-field capture, so
-    // this path and the two in-app ones derive their router from the same
-    // `router_params` recipe and a new limit cannot reach two of the three.
-    let router_config = engine.config.clone();
+    let (console, access_log) = build_console(&engine.config, paths);
+    print_startup_warnings(&console, startup_warnings, socket_warning.as_deref());
+    // A second stop signal and the engine's shutdown share this, so a forced
+    // quit kills the children and logs what the flip logs.
+    let quit = Arc::new(QuitForce::default());
+    // Held past the serve so the run's last lines (its shutdown) are flushed to
+    // the terminal before the process exits.
+    let exit_console = console.clone();
+    // The engine thread's handle, kept so the run joins it (the engine drops and
+    // its queued config writes land) before the process ends.
+    let engine_thread: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+    // How long the run waits for cloudflared to be reaped before SIGKILL.
     let cloud_config = engine.config.clone();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let result = runtime.block_on(async move {
+    flushing(&exit_console, || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        let result = runtime.block_on(
+            PlainServe {
+                plan,
+                version,
+                // The router's whole `[server]` input, snapshotted before the
+                // engine moves into the actor thread. One clone rather than a
+                // field-by-field capture, so this path and the two in-app ones
+                // derive their router from the same `router_params` recipe and a
+                // new limit cannot reach two of the three.
+                router_config: engine.config.clone(),
+                engine,
+                console,
+                access_log,
+                control_listener,
+                engine_thread: Arc::clone(&engine_thread),
+                quit: Arc::clone(&quit),
+            }
+            .run(),
+        );
+        // The cloud loop SIGTERMed its cloudflared; wait for the reap, then SIGKILL.
+        crate::cloud_loop::wait_for_children(&cloud_config);
+        join_engine_thread(&engine_thread, &quit, &exit_console);
+        result
+    })
+}
+
+/// Everything the `yaran server` run's serving future takes over from the setup
+/// that ran before the runtime existed.
+struct PlainServe {
+    plan: ServerPlan,
+    version: String,
+    router_config: yaran_core::config::Config,
+    engine: Engine,
+    console: Console,
+    access_log: server::AccessLog,
+    control_listener: Option<std::os::unix::net::UnixListener>,
+    /// Where the engine thread's handle is left, for the run to join.
+    engine_thread: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
+    quit: Arc<QuitForce>,
+}
+
+impl PlainServe {
+    /// Bind, serve until a stop signal or a required listener's death, then
+    /// wind the engine down.
+    async fn run(self) -> Result<()> {
+        let Self {
+            plan:
+                ServerPlan {
+                    addrs,
+                    primary,
+                    tailscale,
+                    forced_no,
+                },
+            version,
+            router_config,
+            engine,
+            console,
+            access_log,
+            control_listener,
+            engine_thread,
+            quit,
+        } = self;
+        let no_tailscale = if forced_no {
+            NoTailscaleFlag::Given
+        } else {
+            NoTailscaleFlag::Absent
+        };
         // Bind every address first, honoring the required/best-effort tags. A
         // failed REQUIRED bind aborts here (with the address logged + in the
         // error); a failed BEST-EFFORT (Tailscale) bind is dropped with a warning
@@ -528,55 +808,26 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
         // bound listeners into (addr, required) pairs for the pure banner builder.
         let banner_legs: Vec<(SocketAddr, bool)> =
             bound.iter().map(|b| (b.addr, b.required)).collect();
-        let bound_plan_addrs: Vec<PlanAddr> = bound
-            .iter()
-            .map(|b| {
-                if b.required {
-                    PlanAddr::required(b.addr)
-                } else {
-                    PlanAddr::best_effort(b.addr)
-                }
-            })
-            .collect();
         let initial_tailscale_leg = bound
             .iter()
             .find(|b| !b.required && !b.addr.ip().is_loopback())
             .map(|b| b.addr);
-        // Detection outcome versus bind outcome: the PLAN carries the first (a
-        // best-effort address is only in it when an address was detected), `bound`
-        // carries the second. The note has to tell them apart, because "yaran is
-        // waiting for the interface" is false when the interface is up and it was
-        // the bind that failed.
-        let startup_leg = match (
-            addrs.iter().any(|p| !p.is_required()),
-            initial_tailscale_leg,
-        ) {
-            (_, Some(_)) => StartupLeg::Bound,
-            (true, None) => StartupLeg::BindFailed,
-            (false, None) => StartupLeg::Undetected,
-        };
-        let note = safety_note(&bound_plan_addrs, tailscale);
-        // The third state the banner has to be able to say: on `auto` with no
-        // address yet, yaran is not "without Tailscale", it is waiting for it.
-        let mut banner_warnings = bind_warnings.clone();
-        banner_warnings.extend(waiting_note(tailscale, startup_leg));
-        console.banner(&plain_http_banner(
+        // The PLAN says whether an address was detected (a best-effort address
+        // is only in it when one was); `bound` says whether it bound.
+        console.banner(&serve_banner(
             &version,
             &banner_legs,
-            &banner_warnings,
-            note,
-            web_assets::ui_startup_warning(),
+            &bind_warnings,
+            tailscale,
+            if addrs.iter().any(|p| !p.is_required()) {
+                TailscaleDetection::Found
+            } else {
+                TailscaleDetection::NotFound
+            },
+            &router_config.server.auth,
         ));
 
-        // Spawn the engine on its own std thread (it runs the synchronous engine
-        // loop, not a tokio task).
-        //
-        // AMQ starts here and at the flip, not in `spawn_global_workers`: it
-        // claims files from the user's real inject queue, which the many test
-        // engines built on `spawn_engine_thread` must never touch.
-        let mut engine = engine;
-        engine.start_amq();
-        let (handle, _join) = engine_actor::spawn_engine_thread(engine);
+        let handle = spawn_plain_engine(engine, &console, &quit, &engine_thread);
 
         // The shared shutdown primitive: a SIGINT/SIGTERM or a first-listener
         // failure flips its watch and every serve task awaits it. It carries the
@@ -584,21 +835,10 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
         // anything is going to bind it again.
         // The live-mode collaborators, created BEFORE the router so the Host
         // guard can read the mode from the same cell the serve loop writes.
-        let (mode_control, mode_requests) = TailscaleModeControl::new(
-            tokio::runtime::Handle::current(),
-            Arc::new(AtomicBool::new(tailscale.watches_interface())),
-            Arc::new(AtomicBool::new(tailscale.wants_tailscale())),
-        );
-        handle.set_tailscale_mode_control(mode_control.clone());
-        let (cloud_control, cloud_loop) = crate::cloud_loop::build(
-            tokio::runtime::Handle::current(),
-            &paths.root,
-            &router_config,
-            Some(primary.port()),
-            Some(handle.clone()),
-            console.clone(),
-        );
-        handle.set_cloud_mode_control(cloud_control.clone());
+        let (mode_control, mode_requests) =
+            live_mode_control(tokio::runtime::Handle::current(), tailscale, &handle);
+        let (cloud_control, cloud) =
+            start_cloud_lane(&handle, &router_config, Some(primary.port()), &console);
         let shutdown = ServeShutdown::new(mode_control.watched());
         // Collect the IPs the server actually bound to (for the host allowlist).
         // Uses the bound addresses captured above, BEFORE the listeners move into
@@ -626,103 +866,416 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             // serves under the EFFECTIVE one, so `--no-tailscale` would otherwise
             // leave the guard admitting tailnet literals. The live cell is what
             // the guard actually reads, and it starts from the effective mode.
-            .with_tailscale_host_literals(tailscale.wants_tailscale())
+            .with_tailscale_host_literals(host_guard::TailscaleLiteralRule::for_mode(tailscale))
             .with_live_tailscale_host_literals(mode_control.host_literals())
-            .with_tailscale_mode_control(mode_control.clone(), forced_no)
-            .with_cloud_ingress(cloud_control.ingress().clone())
-            .with_cloud_mode_control(cloud_control),
+            .with_live_own_magicdns_name(mode_control.own_magicdns_name())
+            .with_live_exposure(mode_control.exposure())
+            .with_tailscale_mode_control(mode_control.clone(), no_tailscale)
+            .with_cloud(cloud_control),
         );
 
-        // Translate a SIGINT/SIGTERM into a watch trip so every listener winds
-        // down gracefully (the same trigger a first-listener failure uses).
-        {
-            let shutdown = shutdown.clone();
-            tokio::spawn(async move {
-                shutdown_signal().await;
-                shutdown.trigger();
-            });
-        }
+        spawn_stop_signals(&shutdown, &handle, &console, &quit);
 
-        // Serve every BOUND address, each on its own leg (its own stop lane), so
-        // the Tailscale leg can be added and dropped later without disturbing the
-        // required one.
-        //
-        // The leg's news goes to the surfaces as well as to the console: the
-        // console is this process's terminal, and a browser reaching yaran over
-        // the tailnet is exactly the client that loses the address.
-        let leg_status = LegStatus::new(handle.clone());
-        let mut tasks = tokio::task::JoinSet::new();
-        for BoundListener {
-            listener,
-            addr,
-            required,
-        } in bound
-        {
-            spawn_leg(
-                &mut tasks,
-                app.clone(),
-                listener,
-                addr,
-                required,
-                &shutdown,
-                console.clone(),
-                leg_status.clone(),
-            );
-        }
+        let control_leg = spawn_plain_control_leg(control_listener, &app, &shutdown, &console);
 
-        // On `auto`, watch the Tailscale interface for the rest of the run.
-        let mut tailscale_loop = TailscaleLoop::new(
+        let shared = LegShared {
+            app,
+            shutdown: shutdown.clone(),
+            console: console.clone(),
+            status: LegStatus::new(handle.clone()),
+        };
+        let tasks = spawn_bound_legs(bound, &shared);
+
+        let (tailscale_loop, leg_commands) = plain_http_tailscale_loop(
             tailscale,
-            forced_no,
-            Some(primary),
+            no_tailscale,
+            primary,
             initial_tailscale_leg,
             &mode_control,
-            Arc::new(yaran_core::tailscale::detect_ip),
-        );
-        let leg_commands = tailscale_loop.take_leg_receiver();
-        tailscale_loop.start_watcher_if_wanted();
+            &shared,
+        )
+        .await;
 
         run_serve_loop(
             tasks,
-            shutdown.clone(),
+            shared,
             leg_commands,
             mode_requests,
-            app,
-            console.clone(),
-            leg_status,
             tailscale_loop,
-            Some(cloud_loop),
+            cloud,
         )
         .await;
         // SIGTERM the agents (they save state for a later resume), mark their
         // sessions Detached, then exit; Drop hard-kills any straggler.
         shutdown.trigger();
-        handle.shutdown().await;
-        match shutdown.take_error() {
-            Some(e) => Err(e),
-            None => Ok::<(), anyhow::Error>(()),
+        if let Some(control_leg) = control_leg {
+            let _ = tokio::time::timeout(SERVER_JOIN_TIMEOUT, control_leg).await;
         }
-    });
-    // The cloud loop SIGTERMed its cloudflared; wait for the reap, then SIGKILL.
-    crate::cloud_loop::wait_for_children(&cloud_config);
+        handle.shutdown().await;
+        shutdown.take_error().map_or(Ok(()), Err)
+    }
+}
+
+/// Spawn the `yaran server` engine on its own std thread (it runs the
+/// synchronous engine loop, not a tokio task), leaving its join handle where
+/// the run joins it. Its shutdown progress prints on `console`.
+///
+/// AMQ starts here and at the flip, not in `spawn_global_workers`: it claims
+/// files from the user's real inject queue, which the many test engines built
+/// on `spawn_engine_thread` must never touch.
+fn spawn_plain_engine(
+    mut engine: Engine,
+    console: &Console,
+    quit: &Arc<QuitForce>,
+    engine_thread: &std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+) -> engine_actor::EngineHandle {
+    engine.start_amq();
+    let (handle, join) =
+        engine_actor::spawn_engine_thread_with_console(engine, console.clone(), Arc::clone(quit));
+    *engine_thread
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
+    handle
+}
+
+/// Build a serve's Cloud Connect lane (its ingress and loop, the loop already
+/// watching the credentials) and hand the engine actor its control.
+/// `serving_port` is the loopback listener's, the tunnel's origin.
+/// Needs an entered runtime.
+fn start_cloud_lane(
+    handle: &engine_actor::EngineHandle,
+    config: &yaran_core::config::Config,
+    serving_port: Option<u16>,
+    console: &Console,
+) -> (
+    crate::cloud_mode::CloudModeControl,
+    Option<crate::cloud_loop::CloudLoop>,
+) {
+    let (control, cloud_loop) = crate::cloud_loop::build(
+        tokio::runtime::Handle::current(),
+        &handle.paths().root,
+        config,
+        serving_port,
+        Some(handle.clone()),
+        console.clone(),
+    );
+    handle.set_cloud_mode_control(control.clone());
+    (control, Some(cloud_loop))
+}
+
+/// Print what the caller learned before anything was loaded, and the control
+/// socket's warning, ahead of the bind, so they are on screen even if a bind
+/// then fails.
+fn print_startup_warnings(
+    console: &Console,
+    startup_warnings: &[StartupWarning],
+    socket_warning: Option<&str>,
+) {
+    for warning in startup_warnings {
+        if warning.already_on_stderr {
+            console.warn_already_on_stderr(&warning.text);
+        } else {
+            console.warn(&warning.text);
+        }
+    }
+    if let Some(warning) = socket_warning {
+        console.warn(warning);
+    }
+}
+
+/// Translate a SIGINT/SIGTERM into a trip of `shutdown`, so every listener winds
+/// down gracefully (the same trigger a first-listener failure uses), and run the
+/// engine actor's reload on SIGUSR1 (`kill -USR1`, for a hand edit) until the
+/// serve stops. Needs an entered runtime.
+fn spawn_stop_signals(
+    shutdown: &ServeShutdown,
+    handle: &engine_actor::EngineHandle,
+    console: &Console,
+    quit: &Arc<QuitForce>,
+) {
+    {
+        let shutdown = shutdown.clone();
+        let force_exit = ForceExit::new(console.clone(), None, Arc::clone(quit));
+        tokio::spawn(async move {
+            shutdown_signal(force_exit).await;
+            shutdown.trigger();
+        });
+    }
+    tokio::spawn(reload_signal::reload_on_signal(
+        handle.clone(),
+        shutdown.subscribe(),
+    ));
+}
+
+/// Serve the control socket, when there is one, with the same router as every
+/// web leg, stopped by the same trigger. A socket that cannot be served is said
+/// on the console and in the log, and the web is served without it.
+fn spawn_plain_control_leg(
+    control_listener: Option<std::os::unix::net::UnixListener>,
+    app: &Router,
+    shutdown: &ServeShutdown,
+    console: &Console,
+) -> Option<tokio::task::JoinHandle<()>> {
+    control_listener.and_then(|listener| {
+        control_socket::spawn_control_leg(
+            app.clone(),
+            listener,
+            crate::serve_legs::wait_for_shutdown(shutdown.subscribe()),
+        )
+        .inspect_err(|err| {
+            let message = format!(
+                "could not serve the control socket: {err}. Command-line clients \
+                 cannot reach this yaran until it restarts."
+            );
+            yaran_core::logger::error(&format!("[server] {message}"));
+            console.warn(&message);
+        })
+        .ok()
+    })
+}
+
+/// Serve every BOUND address, each on its own leg (its own stop lane), so the
+/// Tailscale leg can be added and dropped later without disturbing the required
+/// one.
+///
+/// The leg's news goes to the surfaces as well as to the console: the console
+/// is this process's terminal, and a browser reaching yaran over the tailnet is
+/// exactly the client that loses the address.
+fn spawn_bound_legs(bound: Vec<BoundListener>, shared: &LegShared) -> tokio::task::JoinSet<()> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for BoundListener {
+        listener,
+        addr,
+        required,
+    } in bound
+    {
+        spawn_leg(
+            &mut tasks,
+            shared,
+            listener,
+            addr,
+            if required {
+                LegNeed::Required
+            } else {
+                LegNeed::BestEffort
+            },
+        );
+    }
+    tasks
+}
+
+/// The `yaran server` run's Tailscale loop, after its first look, with its
+/// watcher started, and the command lane the serve loop listens on.
+///
+/// This machine's tailnet name, its `tailscale serve` routes and its Funnel
+/// state are read AFTER every listener is serving and on a blocking thread,
+/// never on the caller's own future: the CLI calls are bounded but can take
+/// seconds on a wedged daemon, and serving must not wait on them. Until this
+/// lands, loopback is not taken for this machine (the Funnel state starts
+/// checking on every mode but `no`), which is the fail-closed reading of
+/// "nobody has looked yet".
+async fn plain_http_tailscale_loop(
+    tailscale: TailscaleMode,
+    no_tailscale: NoTailscaleFlag,
+    primary: SocketAddr,
+    initial_tailscale_leg: Option<SocketAddr>,
+    mode_control: &TailscaleModeControl,
+    shared: &LegShared,
+) -> (
+    TailscaleLoop,
+    tokio::sync::mpsc::Receiver<(u64, WatchEvent)>,
+) {
+    let identity_port = primary.port();
+    let first_look = if tailscale.wants_tailscale() {
+        Some(
+            tokio::task::spawn_blocking(move || {
+                yaran_core::tailscale::detect_identity(identity_port)
+            })
+            .await
+            .unwrap_or(Err(TailscaleUnavailable::CommandFailed)),
+        )
+    } else {
+        None
+    };
+
+    // On `auto`, watch the Tailscale interface for the rest of the run.
+    let mut tailscale_loop = TailscaleLoop::new(
+        tailscale,
+        no_tailscale,
+        Some(primary),
+        initial_tailscale_leg,
+        mode_control,
+        Arc::new(yaran_core::tailscale::detect_ip),
+    )
+    .with_identity(
+        Arc::new(move || yaran_core::tailscale::detect_identity(identity_port)),
+        None,
+    );
+    // The first look's Funnel verdict and its warnings, before the watcher
+    // starts, so a look that succeeded leaves it parked rather than looking
+    // again at once. The tailnet rows and QR codes follow on the serve loop's
+    // first turn.
+    if let Some(look) = first_look {
+        tailscale_loop.apply_look(look, &shared.console, &shared.status);
+    }
+    let leg_commands = tailscale_loop.take_leg_receiver();
+    tailscale_loop.start_watcher_if_wanted();
+    tailscale_loop.say_not_checking(&shared.console);
+    tailscale_loop.say_serve_hint_once(&shared.console);
+    (tailscale_loop, leg_commands)
+}
+
+/// Join the engine thread once the serve is over, so the engine drops and its
+/// queued config writes land before the process ends. Exits the process when a
+/// second stop signal forced the quit.
+fn join_engine_thread(
+    engine_thread: &std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+    quit: &QuitForce,
+    console: &Console,
+) {
+    let join = engine_thread
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(join) = join {
+        match finish_engine_thread(join, quit, console, FORCE_SETTLE_BOUND) {
+            OwnerExit::Normal => {}
+            // A second signal forced the quit and this thread took the exit:
+            // the engine is dropped and the log flushed, so it can go.
+            OwnerExit::Forced => {
+                yaran_core::kill_live_child_groups();
+                yaran_core::cloud::cloudflared::child_registry::kill_all_now();
+                std::process::exit(130)
+            }
+            // The hatch took the exit because this thread was late; it is
+            // exiting now, and a second exit must not race it.
+            OwnerExit::HatchExiting => loop {
+                std::thread::park();
+            },
+        }
+    }
+}
+
+/// Run `body`, then flush `console` (bounded) whichever way it returned, so the
+/// lines logged before an early failure still reach their stream.
+pub(crate) fn flushing<T>(console: &Console, body: impl FnOnce() -> Result<T>) -> Result<T> {
+    let result = body();
+    console.flush();
     result
+}
+
+/// How the engine's owner ends a `yaran server` run, once the serve is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnerExit {
+    /// No forced quit: return normally.
+    Normal,
+    /// A forced quit, and this thread took the exit: exit 130.
+    Forced,
+    /// A forced quit, and the signal hatch took the exit first: it is exiting,
+    /// so this thread must not call exit again.
+    HatchExiting,
+}
+
+/// Join the engine thread, which drops the engine and so lands its queued
+/// config writes, waiting at most `bound` for it; flush the log; then say how
+/// the run ends. The owner side of the hand-over a second stop signal makes:
+/// the hatch leaves the exit to whoever drops the engine, unless that takes
+/// longer than the bound.
+pub(crate) fn finish_engine_thread(
+    join: std::thread::JoinHandle<()>,
+    quit: &QuitForce,
+    console: &Console,
+    bound: Duration,
+) -> OwnerExit {
+    let deadline = std::time::Instant::now() + bound;
+    while !join.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if join.is_finished() {
+        let _ = join.join();
+    }
+    console.flush();
+    if !quit.is_requested() {
+        OwnerExit::Normal
+    } else if quit.claim_exit() {
+        OwnerExit::Forced
+    } else {
+        OwnerExit::HatchExiting
+    }
+}
+
+/// Load the engine for `yaran server`, and when that fails, print the startup
+/// warnings to `err` before giving up: they were going to open the log, and a
+/// start that never gets as far as the log must not swallow them (the
+/// non-loopback alarm least of all).
+pub(crate) fn bootstrap_or_report(
+    paths: &YaranPaths,
+    startup_warnings: &[StartupWarning],
+    err: &mut dyn std::io::Write,
+) -> Result<Engine> {
+    bootstrap::bootstrap_engine(paths).inspect_err(|_| {
+        for warning in startup_warnings.iter().filter(|w| !w.already_on_stderr) {
+            let _ = writeln!(err, "WARNING: {}", warning.text);
+        }
+    })
 }
 
 /// What the status-screen tick asks `serve_with_engine` to do after the current
 /// iteration. `Continue` keeps serving; `ReturnToTui` flips back to the TUI
 /// (server torn down, PTYs preserved); `QuitProcess` exits the whole process
-/// (server torn down, agents SIGTERMed).
+/// (server torn down, agents `SIGTERMed`).
+#[derive(Debug)]
 pub enum ServerTick {
+    /// Keep serving.
     Continue,
+    /// Stop serving and give the terminal back to the TUI, agents still running.
     ReturnToTui,
+    /// Stop serving and quit, winding the agents down.
     QuitProcess,
 }
 
 /// How `serve_with_engine` exited, so the binary's orchestration loop knows
 /// whether to resume the TUI or quit.
+#[derive(Debug)]
 pub enum ServerExit {
+    /// Resume the TUI around the same, still running agents.
     ReturnToTui,
+    /// Quit: the agents have been wound down.
     QuitProcess,
+    /// A second Ctrl-c during the quit's shutdown wait cut it short: the
+    /// children were killed rather than waited for. The caller gives the
+    /// terminal back and hands the handle to [`finish_forced_quit`], which
+    /// drops the engine and exits with 130 unless the signal hatch already did.
+    ForceQuit(ForceQuitHandle),
+}
+
+/// The flip's forced quit, carried to the binary so it and the signal hatch
+/// agree on which of them exits.
+#[derive(Clone, Default)]
+pub struct ForceQuitHandle(pub(crate) Arc<QuitForce>);
+
+impl std::fmt::Debug for ForceQuitHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ForceQuitHandle").finish_non_exhaustive()
+    }
+}
+
+/// What the flip's status screen lends the serve, when it is on screen. Both are
+/// `None` without one (no TTY), and then there is nothing to restore and Ctrl-c
+/// is an ordinary signal.
+#[derive(Default)]
+pub struct FlipHooks {
+    /// Gives the terminal back before a second stop SIGNAL forces the process
+    /// out, because that exit runs no destructor.
+    pub restore_terminal: Option<RestoreTerminal>,
+}
+
+impl std::fmt::Debug for FlipHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlipHooks")
+            .field("restore_terminal", &self.restore_terminal.is_some())
+            .finish()
+    }
 }
 
 /// Upper bound on how long the flip waits for the axum server task to finish
@@ -744,6 +1297,17 @@ const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// bound exists so a wedged serve loop cannot make the watcher grow memory.
 const LEG_COMMAND_QUEUE: usize = 8;
 
+/// What every serve leg of one serve shares: the one router they all serve,
+/// the shutdown lanes they wind down on, and the console and surfaces a leg's
+/// news goes to. Cheap to clone; each leg's task holds its own clone.
+#[derive(Clone)]
+pub(crate) struct LegShared {
+    pub(crate) app: Router,
+    pub(crate) shutdown: ServeShutdown,
+    pub(crate) console: Console,
+    pub(crate) status: LegStatus,
+}
+
 /// Spawn one listener's serve task into `tasks`, registering its per-leg stop
 /// lane so it can be stopped on its own. The task's graceful-shutdown future
 /// waits on BOTH that lane and the parent's, so a per-leg stop and a whole-server
@@ -751,37 +1315,40 @@ const LEG_COMMAND_QUEUE: usize = 8;
 ///
 /// A REQUIRED leg's accept-loop death is fatal for the serve; a BEST-EFFORT leg's
 /// is logged and isolated. That split is the whole reason legs exist.
-#[allow(clippy::too_many_arguments)]
 fn spawn_leg(
     tasks: &mut tokio::task::JoinSet<()>,
-    app: Router,
+    shared: &LegShared,
     listener: tokio::net::TcpListener,
     addr: SocketAddr,
-    required: bool,
-    shutdown: &ServeShutdown,
-    console: Console,
-    status: LegStatus,
+    need: LegNeed,
 ) {
+    let LegShared {
+        app,
+        shutdown,
+        console,
+        status,
+    } = shared.clone();
     let leg_lane = shutdown.register_leg(addr);
     let parent_lane = shutdown.subscribe();
-    let shutdown = shutdown.clone();
     tasks.spawn(async move {
-        // Serve with connect-info so the access-log middleware can include the
-        // peer IP in each log line. `tap_io` disables Nagle on each accepted
-        // socket: terminal traffic is many tiny packets (keystrokes, per-char
-        // echo/redraws), and Nagle batches them into laggy clumps that make
-        // remote typing stutter and flicker.
+        // Serve with both ends of each connection recorded: the auth layer
+        // classifies a request by the address yaran was reached at and the peer
+        // (see `auth::provenance`), and hands the peer on to every handler that
+        // reads it. `tap_io` disables Nagle on each accepted socket: terminal
+        // traffic is many tiny packets (keystrokes, per-char echo/redraws), and
+        // Nagle batches them into laggy clumps that make remote typing stutter
+        // and flicker.
         let result = axum::serve(
-            listener.tap_io(|stream| {
+            crate::auth::provenance::Recorded(listener.tap_io(|stream| {
                 let _ = stream.set_nodelay(true);
-            }),
-            app.into_make_service_with_connect_info::<SocketAddr>(),
+            })),
+            app.into_make_service_with_connect_info::<crate::auth::Arrival>(),
         )
         .with_graceful_shutdown(wait_for_leg_shutdown(parent_lane, leg_lane))
         .await;
-        match (&result, required) {
+        match (&result, need) {
             (Ok(()), _) => shutdown.forget_leg(addr),
-            (Err(err), true) => {
+            (Err(err), LegNeed::Required) => {
                 // The accept loop died while serving (graceful shutdown returns
                 // Ok). Record the first error and trip the parent so the OTHER
                 // listeners wind down too: never let the server limp on with one
@@ -791,7 +1358,7 @@ fn spawn_leg(
                 ));
                 shutdown.record_failure(anyhow::anyhow!("web server listener failed: {err}"));
             }
-            (Err(err), false) => {
+            (Err(err), LegNeed::BestEffort) => {
                 let err = anyhow::anyhow!("{err}");
                 let warning = shutdown.record_best_effort_failure(addr, &err);
                 console.bind_degraded(&format!(
@@ -818,7 +1385,7 @@ pub(crate) struct TailscaleLoop {
     mode: TailscaleMode,
     /// Set by `--no-tailscale`. Refuses every live mode that wants Tailscale for
     /// as long as this run lasts; the config value still saves for the next one.
-    forced_no: bool,
+    no_tailscale: NoTailscaleFlag,
     /// The primary listener's address, which is where the leg's PORT comes from.
     /// `None` when it could not be read, in which case there is nothing to hang a
     /// leg on.
@@ -834,9 +1401,9 @@ pub(crate) struct TailscaleLoop {
     /// The sender the loop keeps for the WHOLE serve, so the command lane never
     /// closes under it and there is no "the watcher has ended" state to track.
     /// Each watcher gets a clone stamped with its own generation.
-    leg_tx: tokio::sync::mpsc::Sender<(u64, LegCommand)>,
+    leg_tx: tokio::sync::mpsc::Sender<(u64, WatchEvent)>,
     /// Taken once by the serve path and handed to the loop.
-    leg_rx: Option<tokio::sync::mpsc::Receiver<(u64, LegCommand)>>,
+    leg_rx: Option<tokio::sync::mpsc::Receiver<(u64, WatchEvent)>>,
     /// The current generation. Bumped by every watcher STOP (a start stops the
     /// watcher it replaces) and every one-shot detection, so a command from a
     /// watcher the mode already left is dropped rather than re-binding a leg
@@ -848,7 +1415,61 @@ pub(crate) struct TailscaleLoop {
     /// The Tailscale address probe. Injected so the loop's mode transitions are
     /// testable without a Tailscale binary.
     detect: Arc<dyn Fn() -> Result<IpAddr, TailscaleUnavailable> + Send + Sync>,
+    /// The name probe: this machine's `MagicDNS` name and the `tailscale serve`
+    /// routes that end at yaran. Injected for the same reason as `detect`.
+    identify: IdentityProbe,
+    /// The identity this serve holds. Written only here; the URL lists read it.
+    identity: crate::serve_legs::IdentityCell,
+    /// The name the Host guard admits (rule 6). Written only here.
+    own_name: crate::host_guard::LiveHostNames,
+    /// Whether the one-time `tailscale serve` tip has been given this run.
+    serve_hint_given: bool,
+    /// The URLs the QR codes last showed, so they are shown again only when
+    /// those change. `None` until the loop's first look.
+    last_qr: Option<Vec<String>>,
+    /// The URL list last handed to the surfaces, for the same reason.
+    last_urls: Option<Vec<String>>,
+    /// The tailnet address rows last printed, for the same reason.
+    last_rows: Vec<ListenerRow>,
+    /// Whether the held identity is CURRENT: set by a successful look, cleared
+    /// by a failed one. While it is clear the Host guard admits no name, and
+    /// the watcher treats the identity as unknown, so the next successful look
+    /// is sent (and re-admits the name) even when nothing about it changed.
+    identity_confirmed: Arc<AtomicBool>,
+    /// How long a watcher parks between looks. [`WATCH_PERIOD`] outside tests.
+    watch_period: Duration,
+    /// What yaran knows about a Funnel or forward to its port, which decides how
+    /// a loopback request is classified. Written only here, from what each
+    /// look at Tailscale found.
+    exposure: crate::exposure::ExposureCell,
+    /// Whether a password is set, which decides what a Funnel means and so
+    /// what the news about one says.
+    password_set: crate::host_guard::PasswordSet,
+    /// Whether yaran runs inside a container, where a Tailscale outside it is
+    /// invisible. Read once; injected by tests.
+    container: Container,
+    /// Whether any look has landed yet, so the container warning is said at
+    /// start or not at all.
+    first_look_landed: bool,
+    /// Test-only: refuse to start watcher threads, standing in for a system
+    /// that cannot spawn one.
+    #[cfg(test)]
+    refuse_watcher_threads: bool,
 }
+
+/// Whether yaran runs inside a container, where a Tailscale outside it is
+/// invisible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Container {
+    /// Inside one.
+    Inside,
+    /// Not inside one.
+    Outside,
+}
+
+/// The injected name probe, see [`TailscaleLoop::with_identity`].
+pub(crate) type IdentityProbe =
+    Arc<dyn Fn() -> Result<TailscaleIdentity, TailscaleUnavailable> + Send + Sync>;
 
 /// A one-shot detection the loop is waiting on, kept OUT of the mode arm so the
 /// parent lane, leg deaths and watcher commands keep flowing while it runs.
@@ -857,13 +1478,19 @@ struct PendingDetect {
     /// counter, and the answer of an older one is discarded.
     generation: u64,
     reply: tokio::sync::oneshot::Sender<TailscaleModeOutcome>,
-    task: tokio::task::JoinHandle<Result<IpAddr, TailscaleUnavailable>>,
+    task: tokio::task::JoinHandle<OneShotLook>,
 }
+
+/// What a one-shot `yes` detection found: the address, and the name.
+type OneShotLook = (
+    Result<IpAddr, TailscaleUnavailable>,
+    Result<TailscaleIdentity, TailscaleUnavailable>,
+);
 
 impl TailscaleLoop {
     pub(crate) fn new(
         mode: TailscaleMode,
-        forced_no: bool,
+        no_tailscale: NoTailscaleFlag,
         primary: Option<SocketAddr>,
         initial_leg: Option<SocketAddr>,
         control: &TailscaleModeControl,
@@ -872,9 +1499,15 @@ impl TailscaleLoop {
         let (leg_tx, leg_rx) = tokio::sync::mpsc::channel(LEG_COMMAND_QUEUE);
         Self {
             mode,
-            forced_no,
+            no_tailscale,
             primary,
-            bound: Arc::new(std::sync::Mutex::new(initial_leg)),
+            bound: {
+                let bound = control.bound_leg();
+                *bound
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = initial_leg;
+                bound
+            },
             host_literals: control.host_literals(),
             watched: control.watched(),
             leg_tx,
@@ -882,19 +1515,341 @@ impl TailscaleLoop {
             generation: 0,
             watcher_stop: None,
             detect,
+            identify: Arc::new(|| Err(TailscaleUnavailable::CommandMissing)),
+            identity: control.identity(),
+            own_name: control.own_magicdns_name(),
+            serve_hint_given: false,
+            last_qr: None,
+            last_urls: None,
+            last_rows: Vec::new(),
+            identity_confirmed: Arc::new(AtomicBool::new(false)),
+            watch_period: WATCH_PERIOD,
+            exposure: control.exposure(),
+            password_set: control.password_set(),
+            // Unit tests default to a plain host, so a suite run inside a
+            // container is not told about it by every test.
+            container: if !cfg!(test) && yaran_core::container::running_in_container() {
+                Container::Inside
+            } else {
+                Container::Outside
+            },
+            first_look_landed: false,
+            #[cfg(test)]
+            refuse_watcher_threads: false,
         }
     }
 
+    /// Say whether yaran runs inside a container, instead of asking the system.
+    #[cfg(test)]
+    pub(crate) fn in_container(mut self, container: Container) -> Self {
+        self.container = container;
+        self
+    }
+
+    /// Fail every watcher start, as a system that cannot spawn a thread would.
+    #[cfg(test)]
+    pub(crate) fn refusing_watcher_threads(mut self) -> Self {
+        self.refuse_watcher_threads = true;
+        self
+    }
+
+    /// Look every `period` instead of every [`WATCH_PERIOD`], so a test of what
+    /// a later look finds does not wait seconds for it.
+    #[cfg(test)]
+    pub(crate) fn with_watch_period(mut self, period: Duration) -> Self {
+        self.watch_period = period;
+        self
+    }
+
+    /// Give the loop its name probe and, when the serve path already looked,
+    /// the identity it found, which the Host guard admits before the first
+    /// request arrives. Without this the loop never learns a name, which is what
+    /// a test that is not about names wants.
+    pub(crate) fn with_identity(
+        mut self,
+        identify: IdentityProbe,
+        initial: Option<TailscaleIdentity>,
+    ) -> Self {
+        self.identify = identify;
+        if let Some(identity) = initial {
+            self.hold_identity(Some(identity));
+        }
+        self
+    }
+
+    /// Hold `identity` (or forget the one held) and move the Host guard with it.
+    /// Answers with the identity it replaced. Holding one marks it current;
+    /// forgetting marks nothing current.
+    fn hold_identity(&self, identity: Option<TailscaleIdentity>) -> Option<TailscaleIdentity> {
+        self.identity_confirmed
+            .store(identity.is_some(), Ordering::SeqCst);
+        // The name itself, Funnel or not: the Host guard withdraws it while a
+        // Funnel is on with no password, reading both live.
+        let admitted: Vec<String> = identity
+            .as_ref()
+            .and_then(|identity| admitted_own_name(identity, crate::serve_legs::Password::Set))
+            .into_iter()
+            .collect();
+        self.exposure
+            .set_identity(identity.as_ref().map(crate::exposure::IdentityFacts::of));
+        let previous = {
+            let mut slot = self
+                .identity
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::replace(&mut *slot, identity)
+        };
+        self.own_name.replace(&admitted);
+        previous
+    }
+
+    /// A look at the identity failed after one had succeeded: stop admitting the
+    /// name until a look succeeds again. The identity stays held for the URLs on
+    /// screen; only the Host guard's answer, which must not rest on a stale
+    /// Funnel reading, is withdrawn.
+    fn identity_lost(&self) {
+        self.identity_confirmed.store(false, Ordering::SeqCst);
+        self.own_name.replace(&[]);
+        self.exposure.set_identity(None);
+        yaran_core::logger::debug(
+            "[server] could not read this machine's Tailscale name and Funnel state; yaran stops \
+             answering to the name until the next look succeeds.",
+        );
+    }
+
+    /// Adopt an identity the watcher (or a one-shot look) read, and say what
+    /// changed about it: a rename, a serve route arriving or leaving, Funnel.
+    fn apply_identity(
+        &mut self,
+        identity: &TailscaleIdentity,
+        console: &Console,
+        status: &LegStatus,
+    ) {
+        self.first_look_landed = true;
+        let previous = self.hold_identity(Some(identity.clone()));
+        self.settle_funnel_state(
+            crate::serve_legs::funnel_state_after_look(identity),
+            crate::serve_legs::Because::Look,
+            console,
+            status,
+        );
+        for (tone, message) in identity_news(
+            previous.as_ref(),
+            identity,
+            crate::serve_legs::Password::now(&self.password_set),
+        ) {
+            say(tone, &message, console, status);
+        }
+        self.say_serve_hint_once(console);
+    }
+
+    /// A look at Tailscale failed. The name is withdrawn until a look succeeds,
+    /// and the reason decides the Funnel state: no CLI or no daemon means
+    /// nothing can be published through Funnel, so loopback is this machine; a
+    /// CLI that fails leaves it unknown, which distrusts loopback on a serve that
+    /// never got an answer and keeps whatever an earlier answer decided (a Funnel
+    /// stays one).
+    fn look_failed(
+        &mut self,
+        reason: &TailscaleUnavailable,
+        console: &Console,
+        status: &LegStatus,
+    ) {
+        let first_look = !std::mem::replace(&mut self.first_look_landed, true);
+        if self.identity_confirmed.load(Ordering::SeqCst) {
+            self.identity_lost();
+        }
+        let next = crate::serve_legs::funnel_state_after_failure(self.exposure.funnel(), reason);
+        self.settle_funnel_state(
+            next,
+            crate::serve_legs::Because::NoTailscaleHere,
+            console,
+            status,
+        );
+        // Inside a container, "no Tailscale here" says nothing about a
+        // Tailscale outside it. yaran serves anyway (that setup is the
+        // operator's), and says so once, at start.
+        if first_look
+            && self.container == Container::Inside
+            && matches!(
+                reason,
+                TailscaleUnavailable::CommandMissing | TailscaleUnavailable::DaemonStopped
+            )
+        {
+            say(
+                yaran_core::statusline::StatusTone::Warning,
+                &crate::serve_legs::container_warning(crate::serve_legs::Password::now(
+                    &self.password_set,
+                )),
+                console,
+                status,
+            );
+        }
+    }
+
+    /// Adopt the outcome of a look the serve path ran itself (`yaran server`'s
+    /// startup look), exactly as a watcher's would be.
+    pub(crate) fn apply_look(
+        &mut self,
+        look: Result<TailscaleIdentity, TailscaleUnavailable>,
+        console: &Console,
+        status: &LegStatus,
+    ) {
+        match look {
+            Ok(identity) => self.apply_identity(&identity, console, status),
+            Err(reason) => self.look_failed(&reason, console, status),
+        }
+    }
+
+    /// Move the Funnel state and say so when that is news.
+    fn settle_funnel_state(
+        &self,
+        next: crate::exposure::FunnelState,
+        because: crate::serve_legs::Because,
+        console: &Console,
+        status: &LegStatus,
+    ) {
+        let before = self.exposure.set_funnel(next);
+        if let Some((tone, message)) = crate::serve_legs::funnel_state_news(
+            before,
+            next,
+            because,
+            crate::serve_legs::Password::now(&self.password_set),
+        ) {
+            say(tone, &message, console, status);
+        }
+    }
+
+    /// Say once, at start, that this serve does not consult Tailscale and what
+    /// that costs. Both serves call it right after building their loop; a live
+    /// switch to `no` says its own sentence.
+    pub(crate) fn say_not_checking(&self, console: &Console) {
+        if self.no_tailscale == NoTailscaleFlag::Given || !self.mode.wants_tailscale() {
+            let message = crate::serve_legs::not_checking_tailscale(self.no_tailscale);
+            yaran_core::logger::warn(&format!("[server] {message}"));
+            console.bind_degraded(&message);
+        }
+    }
+
+    /// Say, once per run and on the console only, that `tailscale serve` would
+    /// give yaran an HTTPS address, when the identity says it would help. yaran never
+    /// runs that command itself.
+    pub(crate) fn say_serve_hint_once(&mut self, console: &Console) {
+        if self.serve_hint_given {
+            return;
+        }
+        let Some(port) = self.primary.map(|primary| primary.port()) else {
+            return;
+        };
+        let hint = self
+            .identity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|identity| serve_hint(identity, port));
+        if let Some(hint) = hint {
+            self.serve_hint_given = true;
+            yaran_core::logger::info(&format!("[server] {hint}"));
+            console.leg_changed(&hint);
+        }
+    }
+
+    /// Hand the surfaces the serve's URL list when it changed (the flip's header
+    /// reads it), and show the QR codes again when the URLs they carry changed:
+    /// on the loop's
+    /// first turn, when the leg binds or drops, and when the name or a serve
+    /// route changes. The pair is the Tailscale IP URL and the `MagicDNS` one (the
+    /// HTTPS serve URL when there is one). `legs` is `None` when the leg
+    /// registry could not be read, which shows nothing new rather than a guess.
+    ///
+    /// Nothing is said while nothing has ever been shown: an empty pair only
+    /// matters to a surface that is still showing an older one.
+    pub(crate) fn refresh_surfaces(&mut self, legs: Option<Vec<SocketAddr>>, console: &Console) {
+        let Some(legs) = legs else {
+            return;
+        };
+        let identity = self.held_identity();
+        let urls = tailnet_urls(
+            &legs,
+            identity.as_ref(),
+            host_guard::TailscaleLiteralRule::of_cell(&self.host_literals),
+            crate::serve_legs::Password::now(&self.password_set),
+        );
+        let listed: Vec<String> = legs
+            .iter()
+            .map(|addr| format!("http://{addr}"))
+            .chain(urls.extra())
+            .collect();
+        if self.last_urls.as_ref() != Some(&listed) {
+            console.serve_urls(&listed);
+            self.last_urls = Some(listed);
+        }
+        // The addresses the banner could not name, because they were not known
+        // yet when it printed: listed again whenever they change, in the
+        // banner's own row style, the same on both surfaces.
+        let rows: Vec<ListenerRow> = urls
+            .name
+            .iter()
+            .map(|url| ListenerRow {
+                label: "Tailscale (MagicDNS)".to_string(),
+                url: url.clone(),
+            })
+            .chain(urls.serve.iter().map(|url| ListenerRow {
+                label: "Tailscale (HTTPS, tailscale serve)".to_string(),
+                url: url.clone(),
+            }))
+            .collect();
+        if self.last_rows != rows {
+            if !rows.is_empty() {
+                console.tailnet_rows(&rows);
+            }
+            self.last_rows = rows;
+        }
+        // No codes before the first look lands. A serve that cannot wait for it
+        // (the flip, the background server) turns here first with the IP alone,
+        // and printing that code means a second set a moment later when the
+        // name arrives; every request answers "checking" until then anyway.
+        if self.exposure.funnel() == crate::exposure::FunnelState::Checking {
+            return;
+        }
+        let magic_dns = urls.magic_dns().map(str::to_string);
+        let pair: Vec<String> = urls.ip.into_iter().chain(magic_dns).collect();
+        if self.last_qr.as_ref() == Some(&pair) {
+            return;
+        }
+        let shown_before = self.last_qr.as_ref().is_some_and(|last| !last.is_empty());
+        if !pair.is_empty() || shown_before {
+            console.qr_codes(&pair);
+        }
+        self.last_qr = Some(pair);
+    }
+
+    fn held_identity(&self) -> Option<TailscaleIdentity> {
+        self.identity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// The command lane the serve loop listens on. Taken once.
-    pub(crate) fn take_leg_receiver(&mut self) -> tokio::sync::mpsc::Receiver<(u64, LegCommand)> {
+    pub(crate) fn take_leg_receiver(&mut self) -> tokio::sync::mpsc::Receiver<(u64, WatchEvent)> {
         self.leg_rx.take().expect("the leg receiver is taken once")
     }
 
-    /// Start the startup watcher when the mode is `auto`. It PARKS first: the
-    /// startup bind answered the same question a moment ago.
+    /// Start the startup watcher on every mode but `no`. It PARKS before its
+    /// first address look (the startup bind answered that a moment ago), but
+    /// looks up a name it does not have yet at once. On `yes` it watches the
+    /// name alone: the address is looked up once, but a Funnel switched on later
+    /// must still withdraw the name.
     pub(crate) fn start_watcher_if_wanted(&mut self) {
-        if self.mode.watches_interface() {
-            self.start_watcher(false);
+        match self.mode {
+            TailscaleMode::Auto => {
+                self.start_watcher(FirstLook::AfterPeriod, WatchScope::AddressAndName);
+            }
+            TailscaleMode::Yes => {
+                self.start_watcher(FirstLook::AfterPeriod, WatchScope::NameOnly);
+            }
+            TailscaleMode::No => {}
         }
     }
 
@@ -920,49 +1875,94 @@ impl TailscaleLoop {
     /// the probe is a bounded but blocking call, and a wedged `tailscaled` (a
     /// suspend and resume, which is the exact scenario the watcher serves) must
     /// not be able to occupy a tokio worker.
-    fn start_watcher(&mut self, probe_now: bool) -> bool {
+    fn start_watcher(&mut self, first: FirstLook, scope: WatchScope) -> bool {
         self.stop_watcher();
-        let Some(primary) = self.primary else {
-            yaran_core::logger::warn(
-                "[server] not starting the Tailscale interface watcher: the address of the \
-                 primary listener could not be read, so there is no port to serve the Tailscale \
-                 leg on. yaran is serving on the addresses it bound at startup.",
-            );
-            return false;
+        let addresses = scope == WatchScope::AddressAndName;
+        // Without a primary there is no port to hang the Tailscale leg on, but
+        // the Funnel check still has to run, so such a serve watches the name
+        // alone. The address it is handed is never bound.
+        let (primary, addresses) = if let Some(primary) = self.primary {
+            (primary, addresses)
+        } else {
+            if addresses {
+                yaran_core::logger::warn(
+                    "[server] not watching for the Tailscale address: the address of the \
+                     primary listener could not be read, so there is no port to serve the \
+                     Tailscale leg on. yaran still checks Tailscale for a Funnel.",
+                );
+            }
+            (SocketAddr::from(([127, 0, 0, 1], 0)), false)
         };
+        #[cfg(test)]
+        if self.refuse_watcher_threads {
+            self.watcher_failed_to_start();
+            return false;
+        }
         let generation = self.generation;
         let stop = Arc::new(AtomicBool::new(false));
         let watcher_stop = Arc::clone(&stop);
         let bound = Arc::clone(&self.bound);
         let tx = self.leg_tx.clone();
         let detect = Arc::clone(&self.detect);
+        let name_probe = Arc::clone(&self.identify);
+        let identity = Arc::clone(&self.identity);
+        let confirmed = Arc::clone(&self.identity_confirmed);
+        let period = self.watch_period;
         let started = std::thread::Builder::new()
             .name("yaran-tailscale-watch".to_string())
             .spawn(move || {
-                watch_tailscale_leg(
+                watch_tailscale(&Watch {
                     primary,
-                    WATCH_PERIOD,
-                    probe_now,
-                    &*detect,
-                    &|| bound.lock().ok().and_then(|slot| *slot),
-                    &|command| tx.blocking_send((generation, command)).is_ok(),
-                    &|| watcher_stop.load(Ordering::SeqCst),
-                );
+                    period,
+                    probe_first: first == FirstLook::Immediately,
+                    addresses,
+                    detect: &*detect,
+                    identify: &*name_probe,
+                    bound: &|| bound.lock().ok().and_then(|slot| *slot),
+                    // An identity that is not current counts as unknown, so the
+                    // next successful look is sent and re-admits the name.
+                    known_identity: &|| {
+                        if !confirmed.load(Ordering::SeqCst) {
+                            return None;
+                        }
+                        identity
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                    },
+                    emit: &|event| tx.blocking_send((generation, event)).is_ok(),
+                    stop: &|| watcher_stop.load(Ordering::SeqCst),
+                });
             })
             .is_ok();
         if started {
             self.watcher_stop = Some(stop);
-            self.watched.store(true, Ordering::SeqCst);
+            // Only an ADDRESS watcher binds the leg again, which is what this
+            // flag tells a dying leg it may promise.
+            self.watched.store(addresses, Ordering::SeqCst);
         } else {
-            // A thread yaran cannot start is not a reason to refuse to serve; it is
-            // a reason to say the Tailscale leg is now static for this run.
-            yaran_core::logger::warn(
-                "[server] could not start the Tailscale interface watcher. yaran is serving on \
-                 the addresses it bound at startup; restart yaran to pick up a Tailscale address \
-                 that appears later.",
-            );
+            self.watcher_failed_to_start();
         }
         started
+    }
+
+    /// A thread yaran cannot start is not a reason to refuse to serve; it is a
+    /// reason to say the Tailscale leg is now static for this run, and to stop
+    /// answering to the `MagicDNS` name, whose Funnel state nothing would watch.
+    fn watcher_failed_to_start(&mut self) {
+        self.identity_lost();
+        // Nothing will look again, so the Funnel state cannot be known until a
+        // restart: unknown, whatever an earlier look said (a Funnel stays one).
+        if self.exposure.funnel() != crate::exposure::FunnelState::Funnel {
+            self.exposure
+                .set_funnel(crate::exposure::FunnelState::Unconfirmed);
+        }
+        yaran_core::logger::warn(
+            "[server] could not start the Tailscale watcher. yaran is serving on the addresses it \
+             bound at startup, and stops answering to this machine's MagicDNS name because \
+             nothing would notice a Tailscale Funnel being switched on; restart yaran to watch \
+             again.",
+        );
     }
 
     /// Serving is over: let the current watcher finish its park and exit rather
@@ -980,7 +1980,7 @@ impl TailscaleLoop {
 
     /// A generation-stamping sender, so a test can play the part of a watcher.
     #[cfg(test)]
-    pub(crate) fn leg_sender(&self) -> tokio::sync::mpsc::Sender<(u64, LegCommand)> {
+    pub(crate) fn leg_sender(&self) -> tokio::sync::mpsc::Sender<(u64, WatchEvent)> {
         self.leg_tx.clone()
     }
 }
@@ -994,18 +1994,20 @@ impl TailscaleLoop {
 /// there, but a moment where every task has just been replaced is possible), and
 /// exiting on set-empty would end a server nobody asked to stop. The exit
 /// condition is the shutdown lane and nothing else.
-#[allow(clippy::too_many_arguments)]
 async fn run_serve_loop(
     mut tasks: tokio::task::JoinSet<()>,
-    shutdown: ServeShutdown,
-    mut commands: tokio::sync::mpsc::Receiver<(u64, LegCommand)>,
+    shared: LegShared,
+    mut commands: tokio::sync::mpsc::Receiver<(u64, WatchEvent)>,
     mut mode_requests: tokio::sync::mpsc::Receiver<crate::serve_legs::ModeRequest>,
-    app: Router,
-    console: Console,
-    status: LegStatus,
     mut ts: TailscaleLoop,
     mut cloud: Option<crate::cloud_loop::CloudLoop>,
 ) {
+    let LegShared {
+        shutdown,
+        console,
+        status,
+        ..
+    } = &shared;
     let mut parent = shutdown.subscribe();
     // The address whose bind failed on the previous attempt, so a permanently
     // occupied Tailscale port is reported once instead of once every period. The
@@ -1015,6 +2017,10 @@ async fn run_serve_loop(
     let mut pending_detect: Option<PendingDetect> = None;
     let mut mode_lane_open = true;
     while !*parent.borrow_and_update() {
+        // Every arm below can move a URL the QR codes carry (a leg bound or
+        // dropped, a name read, a mode changed), so the codes are checked once
+        // per turn rather than at each of those places.
+        ts.refresh_surfaces(shutdown.leg_addrs(), console);
         tokio::select! {
             _ = parent.changed() => {}
             request = mode_requests.recv(), if mode_lane_open => {
@@ -1025,10 +2031,7 @@ async fn run_serve_loop(
                             &mut ts,
                             &mut pending_detect,
                             &mut tasks,
-                            &shutdown,
-                            &app,
-                            &console,
-                            &status,
+                            &shared,
                             &mut last_bind_failure,
                         )
                         .await;
@@ -1053,19 +2056,19 @@ async fn run_serve_loop(
                     .expect("guarded by the arm's condition");
                 finish_detection(
                     pending,
-                    detected.unwrap_or(Err(TailscaleUnavailable::CommandFailed)),
+                    detected.unwrap_or((
+                        Err(TailscaleUnavailable::CommandFailed),
+                        Err(TailscaleUnavailable::CommandFailed),
+                    )),
                     &mut ts,
                     &mut tasks,
-                    &shutdown,
-                    &app,
-                    &console,
-                    &status,
+                    &shared,
                     &mut last_bind_failure,
                 )
                 .await;
             }
             Some(joined) = tasks.join_next(), if !tasks.is_empty() => {
-                finish_leg_task(joined, &shutdown, &ts.bound, &mut last_bind_failure);
+                finish_leg_task(joined, shutdown, &ts.bound, &mut last_bind_failure);
             }
             // The dwell a leg transition is held for. The status is the only
             // thing delayed: the console line and the log went out at once. A
@@ -1095,12 +2098,9 @@ async fn run_serve_loop(
             command = commands.recv() => {
                 apply_current_generation_command(
                     command,
-                    &ts,
+                    &mut ts,
                     &mut tasks,
-                    &shutdown,
-                    &app,
-                    &console,
-                    &status,
+                    &shared,
                     &mut last_bind_failure,
                 )
                 .await;
@@ -1130,34 +2130,34 @@ async fn run_serve_loop(
 /// change just let go. `None` cannot arrive while the loop runs: the loop holds a
 /// sender for its whole life, so a mode that runs no watcher simply has nobody
 /// sending.
-#[allow(clippy::too_many_arguments)]
 async fn apply_current_generation_command(
-    command: Option<(u64, LegCommand)>,
-    ts: &TailscaleLoop,
+    command: Option<(u64, WatchEvent)>,
+    ts: &mut TailscaleLoop,
     tasks: &mut tokio::task::JoinSet<()>,
-    shutdown: &ServeShutdown,
-    app: &Router,
-    console: &Console,
-    status: &LegStatus,
+    shared: &LegShared,
     last_bind_failure: &mut Option<SocketAddr>,
 ) {
-    let Some((generation, command)) = command else {
+    let LegShared {
+        console, status, ..
+    } = shared;
+    let Some((generation, event)) = command else {
         return;
     };
     if generation != ts.generation {
         return;
     }
-    apply_leg_command(
-        command,
-        tasks,
-        shutdown,
-        app,
-        console,
-        status,
-        &ts.bound,
-        last_bind_failure,
-    )
-    .await;
+    let command = match event {
+        WatchEvent::Leg(command) => command,
+        WatchEvent::IdentityFailed(reason) => {
+            ts.look_failed(&reason, console, status);
+            return;
+        }
+        WatchEvent::Identity(identity) => {
+            ts.apply_identity(&identity, console, status);
+            return;
+        }
+    };
+    apply_leg_command(command, tasks, shared, &ts.bound, last_bind_failure).await;
 }
 
 /// Account for one serve leg's task having ended.
@@ -1193,18 +2193,17 @@ fn finish_leg_task(
 /// Every request is answered exactly once: here for the steps that finish
 /// immediately, and in [`finish_detection`] for a `yes`, whose bounded probe runs
 /// as its own select arm so the parent lane and the legs keep flowing under it.
-#[allow(clippy::too_many_arguments)]
 async fn apply_mode_request(
     request: crate::serve_legs::ModeRequest,
     ts: &mut TailscaleLoop,
     pending_detect: &mut Option<PendingDetect>,
     tasks: &mut tokio::task::JoinSet<()>,
-    shutdown: &ServeShutdown,
-    app: &Router,
-    console: &Console,
-    status: &LegStatus,
+    shared: &LegShared,
     last_bind_failure: &mut Option<SocketAddr>,
 ) {
+    let LegShared {
+        console, status, ..
+    } = shared;
     let crate::serve_legs::ModeRequest { mode, reply } = request;
     // A request that arrives while a probe is in flight replaces it. The older
     // caller is told so rather than being left holding a lane that never answers.
@@ -1213,7 +2212,7 @@ async fn apply_mode_request(
         let _ = previous.reply.send(TailscaleModeOutcome::Superseded);
     }
 
-    let steps = plan_mode_change(ts.mode, mode, ts.bound_addr(), ts.forced_no);
+    let steps = plan_mode_change(ts.mode, mode, ts.bound_addr(), ts.no_tailscale);
     // Before the first step, not part way through one: without a primary there
     // is no port to hang a leg on, so a mode that wants one must not open the
     // Host guard's tailnet-literal rule or move the recorded mode either. A
@@ -1233,15 +2232,37 @@ async fn apply_mode_request(
                 return;
             }
             ModeStep::StopWatcher => ts.stop_watcher(),
-            ModeStep::SetHostLiterals(allowed) => ts.host_literals.store(allowed, Ordering::SeqCst),
+            ModeStep::SetHostLiterals(allowed) => {
+                // Coming back from `no`, nothing is known about Funnel yet, so
+                // nothing is served until this mode's first look lands.
+                if allowed && matches!(ts.mode, TailscaleMode::No) {
+                    ts.exposure
+                        .set_funnel(crate::exposure::FunnelState::Checking);
+                }
+                ts.host_literals.store(allowed, Ordering::SeqCst);
+            }
+            ModeStep::ForgetIdentity => {
+                ts.hold_identity(None);
+                // `no` is the mode in which yaran does not consult Tailscale at
+                // all, so it cannot rule out a Funnel or forward: loopback stays
+                // the network, and the change is said loudly.
+                let before = ts
+                    .exposure
+                    .set_funnel(crate::exposure::FunnelState::Unchecked);
+                if before != crate::exposure::FunnelState::Unchecked {
+                    say(
+                        yaran_core::statusline::StatusTone::Warning,
+                        &crate::serve_legs::no_longer_checking_funnel().into(),
+                        console,
+                        status,
+                    );
+                }
+            }
             ModeStep::Unbind(addr) => {
                 apply_leg_command(
                     LegCommand::Unbind(addr),
                     tasks,
-                    shutdown,
-                    app,
-                    console,
-                    status,
+                    shared,
                     &ts.bound,
                     last_bind_failure,
                 )
@@ -1253,7 +2274,12 @@ async fn apply_mode_request(
                 // The primary is there, so the only failure left is a thread
                 // that would not start, which the log names; either way the
                 // answer the caller needs is that nothing is watching.
-                if !ts.start_watcher(probe_now) {
+                let first = if probe_now {
+                    FirstLook::Immediately
+                } else {
+                    FirstLook::AfterPeriod
+                };
+                if !ts.start_watcher(first, WatchScope::AddressAndName) {
                     let _ = reply.send(TailscaleModeOutcome::NoPrimary);
                     return;
                 }
@@ -1264,13 +2290,14 @@ async fn apply_mode_request(
                 // cannot land a command against the answer of this probe.
                 ts.generation += 1;
                 let detect = Arc::clone(&ts.detect);
+                let identify = Arc::clone(&ts.identify);
                 *pending_detect = Some(PendingDetect {
                     generation: ts.generation,
                     reply,
-                    // `spawn_blocking`, never the loop: the probe is a bounded
-                    // but blocking subprocess call, and awaiting it inline would
-                    // stop the legs and the parent lane for its whole window.
-                    task: tokio::task::spawn_blocking(move || detect()),
+                    // `spawn_blocking`, never the loop: the probes are bounded
+                    // but blocking subprocess calls, and awaiting them inline
+                    // would stop the legs and the parent lane for their window.
+                    task: tokio::task::spawn_blocking(move || (detect(), identify())),
                 });
                 return;
             }
@@ -1293,18 +2320,17 @@ async fn apply_mode_request(
 /// A FAILED probe deliberately leaves a leg that is already serving alone: `yes`
 /// means "bind it once and keep it", and dropping a working listener because one
 /// local daemon call did not answer is the wrong way to be wrong.
-#[allow(clippy::too_many_arguments)]
 async fn finish_detection(
     pending: PendingDetect,
-    detected: Result<IpAddr, TailscaleUnavailable>,
+    (detected, identified): OneShotLook,
     ts: &mut TailscaleLoop,
     tasks: &mut tokio::task::JoinSet<()>,
-    shutdown: &ServeShutdown,
-    app: &Router,
-    console: &Console,
-    status: &LegStatus,
+    shared: &LegShared,
     last_bind_failure: &mut Option<SocketAddr>,
 ) {
+    let LegShared {
+        console, status, ..
+    } = shared;
     let PendingDetect {
         generation,
         reply,
@@ -1318,6 +2344,20 @@ async fn finish_detection(
         let _ = reply.send(TailscaleModeOutcome::NoPrimary);
         return;
     };
+    // The name is read whatever became of the address: `yes` is the mode's one
+    // look, and a name that answered is worth holding either way.
+    match identified {
+        Ok(identity) => ts.apply_identity(&identity, console, status),
+        // A failed look is handled exactly as a watcher's: the name is
+        // withdrawn and the reason decides the Funnel state.
+        Err(reason) => ts.look_failed(&reason, console, status),
+    }
+    // `yes` looked for the address once, just now, and never looks again; the
+    // name it keeps watching, so a Funnel switched on later is noticed. The
+    // watcher's first look waits a period, because this look just happened.
+    if matches!(ts.mode, TailscaleMode::Yes) {
+        ts.start_watcher(FirstLook::AfterPeriod, WatchScope::NameOnly);
+    }
     let already = ts.bound_addr();
     if detected.is_err() {
         let _ = reply.send(match already {
@@ -1336,17 +2376,7 @@ async fn finish_detection(
         LegStep::Unbind(addr) => vec![LegCommand::Unbind(addr)],
         LegStep::Rebind { old, new } => vec![LegCommand::Unbind(old), LegCommand::Bind(new)],
     } {
-        apply_leg_command(
-            command,
-            tasks,
-            shutdown,
-            app,
-            console,
-            status,
-            &ts.bound,
-            last_bind_failure,
-        )
-        .await;
+        apply_leg_command(command, tasks, shared, &ts.bound, last_bind_failure).await;
     }
     let bound = ts.bound_addr();
     let _ = reply.send(match (desired, bound) {
@@ -1399,38 +2429,28 @@ fn reconcile_bound_tailscale(
 /// Act on one watcher command: bind and start serving the Tailscale leg, or stop
 /// it. Records what is bound so the watcher's next period compares against
 /// reality (which is what makes a failed bind retry rather than vanish).
-#[allow(clippy::too_many_arguments)]
 async fn apply_leg_command(
     command: LegCommand,
     tasks: &mut tokio::task::JoinSet<()>,
-    shutdown: &ServeShutdown,
-    app: &Router,
-    console: &Console,
-    status: &LegStatus,
+    shared: &LegShared,
     bound_tailscale: &Arc<std::sync::Mutex<Option<SocketAddr>>>,
     last_bind_failure: &mut Option<SocketAddr>,
 ) {
+    let LegShared {
+        shutdown,
+        console,
+        status,
+        ..
+    } = shared;
     match command {
         LegCommand::Bind(addr) => match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
                 *last_bind_failure = None;
-                spawn_leg(
-                    tasks,
-                    app.clone(),
-                    listener,
-                    addr,
-                    false,
-                    shutdown,
-                    console.clone(),
-                    status.clone(),
-                );
+                spawn_leg(tasks, shared, listener, addr, LegNeed::BestEffort);
                 if let Ok(mut slot) = bound_tailscale.lock() {
                     *slot = Some(addr);
                 }
-                let message = format!(
-                    "Tailscale interface is back: yaran is now also serving on http://{addr}. \
-                     Nothing else changed; your other address is untouched."
-                );
+                let message = crate::serve_legs::leg_back_message(addr);
                 yaran_core::logger::info(&format!("[server] {message}"));
                 console.leg_changed(&message);
                 status.changed(&message);
@@ -1440,7 +2460,7 @@ async fn apply_leg_command(
                 // what is BOUND, so it asks again next period. Say it ONCE per
                 // streak, though: a port somebody else holds permanently would
                 // otherwise repeat the same sentence for as long as yaran runs.
-                let warning = tailscale_bind_warning(addr, &err);
+                let warning = yaran_core::serve_log::tailscale_bind_warning_text(addr, &err);
                 if *last_bind_failure == Some(addr) {
                     yaran_core::logger::debug(&format!("[server] still {warning}"));
                 } else {
@@ -1465,11 +2485,7 @@ async fn apply_leg_command(
             // than being silenced by a streak that predates the flap.
             *last_bind_failure = None;
             if stopped {
-                let message = format!(
-                    "Tailscale interface went away: yaran stopped serving on {addr} and is still \
-                     serving on its other address(es). Browsers that were on the tailnet \
-                     reconnect by themselves when it comes back."
-                );
+                let message = crate::serve_legs::leg_gone_message(addr);
                 yaran_core::logger::info(&format!("[server] {message}"));
                 console.leg_changed(&message);
                 status.changed(&message);
@@ -1478,13 +2494,31 @@ async fn apply_leg_command(
     }
 }
 
-/// The hooks only the BACKGROUND serve wants, because it is the only serve with a
-/// terminal UI beside it: somewhere for `build_app` to leave this serve's
-/// ownership publisher, and a counter for its connection registry to keep the live
-/// browser-tab count in.
+/// Say one Tailscale sentence everywhere it belongs: the log, the console (the
+/// `yaran server` terminal or the flip's activity panel), and both surfaces.
+fn say(
+    tone: yaran_core::statusline::StatusTone,
+    message: &yaran_core::status_text::StatusText,
+    console: &Console,
+    status: &LegStatus,
+) {
+    if tone == yaran_core::statusline::StatusTone::Warning {
+        yaran_core::logger::warn(&format!("[server] {message}"));
+        console.bind_degraded(message);
+    } else {
+        yaran_core::logger::info(&format!("[server] {message}"));
+        console.leg_changed(message);
+    }
+    status.identity_news(tone, message);
+}
+
+/// The hooks a serve with a screen of its own wants: somewhere for `build_app` to
+/// leave this serve's ownership publisher (the background serve, the only one with
+/// a terminal UI beside it), and a counter for its connection registry to keep the
+/// live browser count in (the background serve's chip, the flip's status screen).
 ///
 /// Bundled rather than passed side by side. They travel together through the same
-/// three functions, every other serve path passes the default, and two adjacent
+/// three functions, the other serve paths pass the default, and two adjacent
 /// slots is the shape where a third one gets threaded into two callers out of
 /// three.
 #[derive(Default)]
@@ -1505,7 +2539,7 @@ pub(crate) struct BackgroundHooks {
 fn router_params(
     config: &yaran_core::config::Config,
     console: Console,
-    access_log: bool,
+    access_log: server::AccessLog,
     bound_ips: Vec<std::net::IpAddr>,
     hooks: BackgroundHooks,
 ) -> RouterParams {
@@ -1524,15 +2558,24 @@ fn router_params(
             server.max_websocket_tabs_per_agent,
         )
         .with_search_index_max_files(server.search_index_max_files)
-        .with_pty_send_timeout_seconds(server.pty_send_timeout_seconds)
-        .with_heartbeat_deadline_seconds(server.heartbeat_deadline_seconds)
+        .with_pty_send_timeout_seconds(
+            yaran_core::config_effective::effective_pty_send_timeout_seconds(
+                server.pty_send_timeout_seconds,
+            ),
+        )
+        .with_heartbeat_deadline_seconds(
+            yaran_core::config_effective::effective_heartbeat_deadline_seconds(
+                server.heartbeat_deadline_seconds,
+                server.heartbeat_seconds,
+            ),
+        )
         .with_tree_list_max_concurrency(server.tree_list_max_concurrency)
         .with_release_notes_max_concurrency(server.release_notes_max_concurrency)
         .with_file_drop_limits(server.file_drop_max_bytes, server.file_drop_max_concurrency)
         .with_host_allowlist(
             bound_ips,
             server.allowed_hosts.clone(),
-            server.tailscale_mode().wants_tailscale(),
+            host_guard::TailscaleLiteralRule::for_mode(server.tailscale_mode()),
         );
     let params = match ownership_publisher {
         Some(slot) => params.with_ownership_publisher(slot),
@@ -1544,12 +2587,46 @@ fn router_params(
     }
 }
 
+/// The serve's live Tailscale-mode handle and the request lane its serve loop
+/// answers, already handed to the engine actor. Created BEFORE the router, so
+/// the Host guard reads the mode from the same cell the serve loop writes.
+fn live_mode_control(
+    runtime: tokio::runtime::Handle,
+    tailscale: TailscaleMode,
+    handle: &engine_actor::EngineHandle,
+) -> (
+    TailscaleModeControl,
+    tokio::sync::mpsc::Receiver<crate::serve_legs::ModeRequest>,
+) {
+    let (mode_control, mode_requests) = TailscaleModeControl::new(
+        runtime,
+        Arc::new(AtomicBool::new(tailscale.watches_interface())),
+        Arc::new(AtomicBool::new(tailscale.wants_tailscale())),
+    );
+    let mode_control = mode_control.with_password_set(password_set_of(handle));
+    handle.set_tailscale_mode_control(mode_control.clone());
+    (mode_control, mode_requests)
+}
+
+/// Whether the web password is set, read live from the engine's `[server.auth]`.
+fn password_set_of(handle: &engine_actor::EngineHandle) -> crate::host_guard::PasswordSet {
+    let auth = handle.live_limits().auth();
+    Arc::new(move || auth.has_password())
+}
+
 /// Whether a serve owns the process's stop signals.
 pub(crate) enum SignalPolicy {
-    /// Install the tokio SIGINT/SIGTERM handler and trip this flag when one
+    /// Install the tokio SIGINT/SIGTERM handler and trip `flag` when one
     /// arrives. For a serve that is the only thing running: the flip, whose
-    /// status screen has taken the terminal over.
-    Adopt(Arc<AtomicBool>),
+    /// status screen has taken the terminal over. `restore_terminal` gives the
+    /// terminal back before a second signal forces the process out, because
+    /// that exit runs no destructor and would leave the status screen's raw
+    /// mode and alternate screen behind.
+    Adopt {
+        flag: Arc<AtomicBool>,
+        restore_terminal: Option<RestoreTerminal>,
+        quit: Arc<QuitForce>,
+    },
     /// Install NOTHING. Another surface's handlers already own the process, and
     /// two sets of handlers for one signal is a race over who tears down what.
     /// The background server runs behind a live terminal UI whose own handlers
@@ -1582,6 +2659,7 @@ pub(crate) struct ServeCore {
     /// UI's companion in background mode).
     tailscale_mode: TailscaleModeControl,
     /// The live `[cloud] mode` lane this serve built, for the terminal UI's companion.
+    /// A control-socket-only core answers every mode request "not serving".
     cloud_mode: crate::cloud_mode::CloudModeControl,
     /// How long `finish` waits for cloudflared to be reaped before SIGKILL.
     cloud_config: yaran_core::config::Config,
@@ -1591,6 +2669,214 @@ pub(crate) struct ServeCore {
     /// "the background server installs no signal handlers" is a checkable fact
     /// about the code path rather than a claim in a comment.
     installed_signal_handlers: bool,
+    /// The control socket's serve task, when this core serves the socket.
+    control: Option<ControlLeg>,
+    /// Flipped when this core starts handing the engine over, so the operation
+    /// waits its router holds answer at once (see `AppState::hand_over`).
+    hand_over: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+/// One core's serve task over its clone of the control socket, with its own stop lane so
+/// the owner can stop it accepting and let taken requests finish before the next core.
+struct ControlLeg {
+    stop: tokio::sync::watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+    /// How many requests this leg has begun handling.
+    #[cfg(test)]
+    started: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ControlLeg {
+    /// Serve `app` on `listener` until this leg's lane or the serve's parent lane trips;
+    /// needs an entered runtime. A listener that cannot be adopted is logged and skipped.
+    fn spawn(
+        app: Router,
+        listener: std::os::unix::net::UnixListener,
+        shutdown: &ServeShutdown,
+    ) -> Option<Self> {
+        let (stop, own_lane) = tokio::sync::watch::channel(false);
+        let parent_lane = shutdown.subscribe();
+        #[cfg(test)]
+        let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        #[cfg(test)]
+        let app = control_socket::counting_requests(app, Arc::clone(&started));
+        match control_socket::spawn_control_leg(
+            app,
+            listener,
+            wait_for_leg_shutdown(parent_lane, own_lane),
+        ) {
+            Ok(task) => Some(Self {
+                stop,
+                task,
+                #[cfg(test)]
+                started,
+            }),
+            Err(err) => {
+                yaran_core::logger::error(&format!(
+                    "[server] could not serve the control socket: {err}. Command-line clients \
+                     cannot reach this yaran until it restarts."
+                ));
+                None
+            }
+        }
+    }
+}
+
+/// The pre-bound listeners a serve adopts: its web legs, and the control
+/// socket when this serve also serves that.
+pub(crate) struct ServeListeners {
+    pub(crate) web: Vec<std::net::TcpListener>,
+    pub(crate) control: Option<std::os::unix::net::UnixListener>,
+}
+
+/// Adopt the pre-bound std listeners into `runtime`.
+///
+/// The std listeners travel here already bound, so there is no rebind race;
+/// tokio needs them non-blocking. Adoption failures are rare (the bind already
+/// succeeded in the caller's pre-flight), but the failing address is logged
+/// before propagating so a serve that cannot start leaves a forensic record in
+/// yaran.log, not just a status line.
+fn adopt_listeners(
+    runtime: &tokio::runtime::Runtime,
+    listeners: Vec<std::net::TcpListener>,
+) -> Result<Vec<tokio::net::TcpListener>> {
+    let _guard = runtime.enter();
+    let mut out = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let addr = listener
+            .local_addr()
+            .map_or_else(|_| "<unknown address>".to_string(), |a| a.to_string());
+        if let Err(err) = listener.set_nonblocking(true) {
+            yaran_core::logger::error(&format!(
+                "[server] could not adopt the pre-bound listener on {addr} \
+                 (set_nonblocking failed): {err}"
+            ));
+            return Err(err.into());
+        }
+        match tokio::net::TcpListener::from_std(listener) {
+            Ok(l) => out.push(l),
+            Err(err) => {
+                yaran_core::logger::error(&format!(
+                    "[server] could not adopt the pre-bound listener on {addr} \
+                     (tokio from_std failed): {err}"
+                ));
+                return Err(err.into());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// An in-app serve's Tailscale loop, its watcher started. Needs an entered
+/// runtime. Neither in-app mode is ever a forced-no run: `--no-tailscale` is a
+/// `yaran server` flag.
+fn in_app_tailscale_loop(
+    config: &yaran_core::config::Config,
+    primary: Option<SocketAddr>,
+    tailscale_leg: Option<SocketAddr>,
+    mode_control: &TailscaleModeControl,
+    console: &Console,
+) -> TailscaleLoop {
+    let mut tailscale_loop = TailscaleLoop::new(
+        config.server.tailscale_mode(),
+        NoTailscaleFlag::Absent,
+        // No loopback listener address means no port to hang the leg on,
+        // so this deliberately starts no watcher rather than guessing one.
+        primary,
+        tailscale_leg,
+        mode_control,
+        Arc::new(yaran_core::tailscale::detect_ip),
+    );
+    // Not read here: this runs on the terminal UI's thread, which must
+    // not wait on a subprocess. The watcher looks it up before its first
+    // park, and on `yes` a one-shot look runs off this thread.
+    // Every leg shares one port; the configured one is the last resort
+    // for a serve whose listener addresses could not be read, so the
+    // Funnel check runs whatever happened to the primary.
+    let identity_port = primary
+        .or(tailscale_leg)
+        .map_or(config.server.port, |addr| addr.port());
+    tailscale_loop = tailscale_loop.with_identity(
+        Arc::new(move || yaran_core::tailscale::detect_identity(identity_port)),
+        None,
+    );
+    tailscale_loop.start_watcher_if_wanted();
+    tailscale_loop.say_not_checking(console);
+    tailscale_loop
+}
+
+/// Serve every adopted listener on a leg of its own. Needs an entered runtime.
+///
+/// Loopback is the REQUIRED leg (there is nothing to serve without it); the
+/// Tailscale leg is best-effort, exactly as in the CLI path. A listener whose
+/// own address cannot be read is served BEST-EFFORT: it cannot be identified as
+/// the loopback leg, and treating an unknown address as the one whose death
+/// ends the whole server is the wrong way to be wrong. Its placeholder address
+/// is a registry key and a log label only, never a bind target.
+fn spawn_adopted_legs(
+    tokio_listeners: Vec<tokio::net::TcpListener>,
+    shared: &LegShared,
+) -> tokio::task::JoinSet<()> {
+    let mut legs = tokio::task::JoinSet::new();
+    for tokio_listener in tokio_listeners {
+        let (addr, required) = match tokio_listener.local_addr() {
+            Ok(addr) => (addr, addr.ip().is_loopback()),
+            Err(err) => {
+                yaran_core::logger::warn(&format!(
+                    "[server] serving a pre-bound listener whose address could not be \
+                     read ({err}); it is treated as best-effort, so its failure alone \
+                     will not stop the server. The web UI is still reachable on the \
+                     addresses yaran reported."
+                ));
+                (SocketAddr::from(([127, 0, 0, 1], 0)), false)
+            }
+        };
+        spawn_leg(
+            &mut legs,
+            shared,
+            tokio_listener,
+            addr,
+            if required {
+                LegNeed::Required
+            } else {
+                LegNeed::BestEffort
+            },
+        );
+    }
+    legs
+}
+
+/// Take the branch of [`SignalPolicy`] a serve was started with, answering
+/// whether it installed signal handlers.
+fn install_signal_policy(
+    runtime: &tokio::runtime::Runtime,
+    signals: SignalPolicy,
+    console: &Console,
+    reload_handle: engine_actor::EngineHandle,
+    shutdown: &ServeShutdown,
+) -> bool {
+    match signals {
+        SignalPolicy::Adopt {
+            flag,
+            restore_terminal,
+            quit,
+        } => {
+            let force_exit = ForceExit::new(console.clone(), restore_terminal, quit);
+            runtime.spawn(async move {
+                shutdown_signal(force_exit).await;
+                flag.store(true, Ordering::SeqCst);
+            });
+            // The flip owns the engine, so SIGUSR1 runs the engine actor's
+            // reload here; the terminal UI's loop is not running to do it.
+            runtime.spawn(reload_signal::reload_on_signal(
+                reload_handle,
+                shutdown.subscribe(),
+            ));
+            true
+        }
+        // Nothing installed on purpose. See `SignalPolicy::Inherited`.
+        SignalPolicy::Inherited => false,
+    }
 }
 
 impl ServeCore {
@@ -1605,19 +2891,21 @@ impl ServeCore {
     /// `handle` is consumed: the router keeps its own clones, so holding one here
     /// would keep the request channel alive past the point where the serve is
     /// meant to be over.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         handle: engine_actor::EngineHandle,
-        listeners: Vec<std::net::TcpListener>,
+        listeners: ServeListeners,
         config: &yaran_core::config::Config,
-        cloud_root: &std::path::Path,
-        console: Console,
-        access_log: bool,
+        console: &Console,
+        access_log: server::AccessLog,
         signals: SignalPolicy,
         // Passed straight through to `build_app`. Default for every serve but the
         // background one, which is the only one with a terminal UI beside it.
         hooks: BackgroundHooks,
     ) -> Result<Self> {
+        let ServeListeners {
+            web: listeners,
+            control: control_socket,
+        } = listeners;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
@@ -1643,67 +2931,24 @@ impl ServeCore {
             .filter_map(|l| l.local_addr().ok())
             .find(|a| !a.ip().is_loopback());
 
-        // The std listeners travel here already bound, so there is no rebind race;
-        // tokio needs them non-blocking. Adoption failures are rare (the bind
-        // already succeeded in the caller's pre-flight), but log the failing
-        // address before propagating so a serve that cannot start leaves a
-        // forensic record in yaran.log, not just a status line.
-        let tokio_listeners = {
-            let _guard = runtime.enter();
-            let mut out = Vec::with_capacity(listeners.len());
-            for listener in listeners {
-                let addr = listener
-                    .local_addr()
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|_| "<unknown address>".to_string());
-                if let Err(err) = listener.set_nonblocking(true) {
-                    yaran_core::logger::error(&format!(
-                        "[server] could not adopt the pre-bound listener on {addr} \
-                         (set_nonblocking failed): {err}"
-                    ));
-                    return Err(err.into());
-                }
-                match tokio::net::TcpListener::from_std(listener) {
-                    Ok(l) => out.push(l),
-                    Err(err) => {
-                        yaran_core::logger::error(&format!(
-                            "[server] could not adopt the pre-bound listener on {addr} \
-                             (tokio from_std failed): {err}"
-                        ));
-                        return Err(err.into());
-                    }
-                }
-            }
-            out
-        };
+        let tokio_listeners = adopt_listeners(&runtime, listeners)?;
 
         // The live-mode collaborators, created BEFORE the router so the Host
         // guard reads the mode from the same cell the serve loop writes. Neither
         // in-app mode is ever a forced-no run: `--no-tailscale` is a `yaran server`
         // flag, so both can change the mode live.
-        let (mode_control, mode_requests) = TailscaleModeControl::new(
-            runtime.handle().clone(),
-            Arc::new(AtomicBool::new(tailscale.watches_interface())),
-            Arc::new(AtomicBool::new(tailscale.wants_tailscale())),
-        );
-        handle.set_tailscale_mode_control(mode_control.clone());
+        let (mode_control, mode_requests) =
+            live_mode_control(runtime.handle().clone(), tailscale, &handle);
         let (cloud_control, cloud_loop) = {
             let _guard = runtime.enter();
-            crate::cloud_loop::build(
-                runtime.handle().clone(),
-                cloud_root,
-                config,
-                primary.map(|p| p.port()),
-                Some(handle.clone()),
-                console.clone(),
-            )
+            start_cloud_lane(&handle, config, primary.map(|p| p.port()), console)
         };
-        handle.set_cloud_mode_control(cloud_control.clone());
 
         // The shared shutdown primitive: the SAME [`ServeShutdown`] the CLI serve
         // path uses. Its watch is the graceful-shutdown lane every serve task and
         // the sweep await; a dying listener flips it via `record_failure`.
         let shutdown = ServeShutdown::new(mode_control.watched());
+        let hand_over = Arc::new(tokio::sync::watch::Sender::new(false));
 
         // Build ONE app, shared across listeners (the router is a cheap
         // `Arc`-backed service). `build_app` constructs the `ChangesService`,
@@ -1715,103 +2960,60 @@ impl ServeCore {
                 handle.clone(),
                 axum::Router::new(),
                 router_params(config, console.clone(), access_log, bound_ips, hooks)
+                    .with_hand_over(Arc::clone(&hand_over))
                     .with_live_tailscale_host_literals(mode_control.host_literals())
-                    .with_tailscale_mode_control(mode_control.clone(), false)
-                    .with_cloud_ingress(cloud_control.ingress().clone())
-                    .with_cloud_mode_control(cloud_control.clone()),
+                    .with_live_own_magicdns_name(mode_control.own_magicdns_name())
+                    .with_live_exposure(mode_control.exposure())
+                    .with_tailscale_mode_control(mode_control.clone(), NoTailscaleFlag::Absent)
+                    .with_cloud(cloud_control.clone()),
             )
         };
 
         // On `auto`, watch the Tailscale interface for the rest of the serve.
         let mut tailscale_loop = {
             let _guard = runtime.enter();
-            let mut tailscale_loop = TailscaleLoop::new(
-                tailscale,
-                false,
-                // No loopback listener address means no port to hang the leg on,
-                // so this deliberately starts no watcher rather than guessing one.
-                primary,
-                tailscale_leg,
-                &mode_control,
-                Arc::new(yaran_core::tailscale::detect_ip),
-            );
-            tailscale_loop.start_watcher_if_wanted();
-            tailscale_loop
+            in_app_tailscale_loop(config, primary, tailscale_leg, &mode_control, console)
         };
         let leg_commands = tailscale_loop.take_leg_receiver();
 
-        // One serve leg per listener plus the loop that acts on the watcher, all
-        // as ONE supervisor task, so teardown is a single bounded join and a leg
-        // the watcher added later winds down through the same trigger.
+        // Every web leg and the watcher loop run as one supervisor task, so teardown is one
+        // bounded join; the control socket's leg stands apart so it can be stopped first.
+        let control;
         let supervisor = {
-            let shutdown = shutdown.clone();
-            let app = app.clone();
-            let console = console.clone();
-            // Cloned before `handle` is dropped below: the leg's news is owed to
-            // the terminal UI beside this serve as much as to the browsers.
-            let leg_status = LegStatus::new(handle.clone());
-            let mut legs = tokio::task::JoinSet::new();
+            let shared = LegShared {
+                app: app.clone(),
+                shutdown: shutdown.clone(),
+                console: console.clone(),
+                // Cloned before `handle` is dropped below: the leg's news is owed
+                // to the terminal UI beside this serve as much as to the browsers.
+                status: LegStatus::new(handle.clone()),
+            };
             let guard = runtime.enter();
-            for tokio_listener in tokio_listeners {
-                // Loopback is the REQUIRED leg (there is nothing to serve
-                // without it); the Tailscale leg is best-effort, exactly as in
-                // the CLI path. A listener whose own address cannot be read is
-                // served BEST-EFFORT: it cannot be identified as the loopback
-                // leg, and treating an unknown address as the one whose death
-                // ends the whole server is the wrong way to be wrong. Its
-                // placeholder address is a registry key and a log label only,
-                // never a bind target.
-                let (addr, required) = match tokio_listener.local_addr() {
-                    Ok(addr) => (addr, addr.ip().is_loopback()),
-                    Err(err) => {
-                        yaran_core::logger::warn(&format!(
-                            "[server] serving a pre-bound listener whose address could not be \
-                             read ({err}); it is treated as best-effort, so its failure alone \
-                             will not stop the server. The web UI is still reachable on the \
-                             addresses yaran reported."
-                        ));
-                        (SocketAddr::from(([127, 0, 0, 1], 0)), false)
-                    }
-                };
-                spawn_leg(
-                    &mut legs,
-                    app.clone(),
-                    tokio_listener,
-                    addr,
-                    required,
-                    &shutdown,
-                    console.clone(),
-                    leg_status.clone(),
-                );
-            }
+            let legs = spawn_adopted_legs(tokio_listeners, &shared);
             drop(guard);
+            control = {
+                let _guard = runtime.enter();
+                control_socket
+                    .and_then(|listener| ControlLeg::spawn(app.clone(), listener, &shared.shutdown))
+            };
             runtime.spawn(run_serve_loop(
                 legs,
-                shutdown,
+                shared,
                 leg_commands,
                 mode_requests,
-                app,
-                console,
-                leg_status,
                 tailscale_loop,
-                Some(cloud_loop),
+                cloud_loop,
             ))
         };
+        // Kept for the SIGUSR1 reload task, which ends with the serve and so
+        // never holds the request side open past it.
+        let reload_handle = handle.clone();
         // The router holds its own cloned handle(s); drop ours so only the serve
         // tasks keep the request side alive.
         drop(handle);
 
-        let installed_signal_handlers = match signals {
-            SignalPolicy::Adopt(flag) => {
-                runtime.spawn(async move {
-                    shutdown_signal().await;
-                    flag.store(true, Ordering::SeqCst);
-                });
-                true
-            }
-            // Nothing installed on purpose. See `SignalPolicy::Inherited`.
-            SignalPolicy::Inherited => false,
-        };
+        let installed_signal_handlers =
+            install_signal_policy(&runtime, signals, console, reload_handle, &shutdown);
 
         Ok(Self {
             runtime,
@@ -1821,6 +3023,90 @@ impl ServeCore {
             cloud_config: config.clone(),
             supervisor: Some(supervisor),
             installed_signal_handlers,
+            control,
+            hand_over,
+        })
+    }
+
+    /// Serve the control socket and nothing else: the plain terminal UI's core, with no web
+    /// listener, Tailscale watcher, signal handlers or access log.
+    pub(crate) fn start_control_only(
+        handle: engine_actor::EngineHandle,
+        control_socket: std::os::unix::net::UnixListener,
+        config: &yaran_core::config::Config,
+    ) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        // A mode handle no loop answers: nothing here serves the web, and it is never
+        // handed to the router or the engine.
+        let (mode_control, _no_loop) = TailscaleModeControl::new(
+            runtime.handle().clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        // Likewise a cloud lane no loop answers: Cloud Connect runs only while the
+        // web is served, so a mode request here is answered "not serving".
+        let (cloud_mode, _) = crate::cloud_mode::CloudModeControl::new(
+            runtime.handle().clone(),
+            crate::cloud_ingress::CloudIngress::new(Arc::new(
+                yaran_core::cloud::paths::CloudPaths::from_root(&handle.paths().root),
+            )),
+        );
+        let shutdown = ServeShutdown::new(mode_control.watched());
+        let hand_over = Arc::new(tokio::sync::watch::Sender::new(false));
+        let guard = runtime.enter();
+        let app = server::build_app(
+            handle,
+            axum::Router::new(),
+            router_params(
+                config,
+                Console::noop(),
+                crate::server::AccessLog::Off,
+                Vec::new(),
+                BackgroundHooks::default(),
+            )
+            .with_hand_over(Arc::clone(&hand_over)),
+        );
+        let control = ControlLeg::spawn(app, control_socket, &shutdown);
+        drop(guard);
+        Ok(Self {
+            runtime,
+            shutdown,
+            tailscale_mode: mode_control,
+            cloud_mode,
+            cloud_config: config.clone(),
+            supervisor: None,
+            installed_signal_handlers: false,
+            control,
+            hand_over,
+        })
+    }
+
+    /// Stop accepting on the control socket and begin the hand-over: accepted requests finish,
+    /// new connections wait in the backlog for the next core, and every operation wait this
+    /// core's router holds answers now with the record as it stands.
+    pub(crate) fn stop_control_socket(&self) {
+        self.hand_over.send_replace(true);
+        if let Some(control) = &self.control {
+            let _ = control.stop.send(true);
+        }
+    }
+
+    /// Whether the control socket's serve task has finished, every request it
+    /// accepted answered. True when this core never served the socket.
+    pub(crate) fn control_socket_drained(&self) -> bool {
+        self.control
+            .as_ref()
+            .is_none_or(|control| control.task.is_finished())
+    }
+
+    /// How many requests the control socket has begun handling, for a test that
+    /// must know one is in flight before it hands the core over.
+    #[cfg(test)]
+    pub(crate) fn control_requests_started(&self) -> usize {
+        self.control.as_ref().map_or(0, |control| {
+            control.started.load(std::sync::atomic::Ordering::Relaxed)
         })
     }
 
@@ -1836,12 +3122,18 @@ impl ServeCore {
     ///
     /// The Tailscale leg comes and goes under a running serve, so a list captured
     /// at start goes stale the first time the interface moves.
+    ///
+    /// This machine's `MagicDNS` URL and its `tailscale serve` routes follow the
+    /// listener addresses, read from what the Tailscale watcher last saw, so the
+    /// first entry is always a listener (the loopback one) and a rename or a new
+    /// serve route shows up here with no restart.
     pub(crate) fn live_urls(&self) -> Option<Vec<String>> {
+        let legs = self.shutdown.leg_addrs()?;
+        let extra = self.tailscale_mode.tailnet_urls(&legs).extra();
         Some(
-            self.shutdown
-                .leg_addrs()?
-                .into_iter()
+            legs.into_iter()
                 .map(|addr| format!("http://{addr}"))
+                .chain(extra)
                 .collect(),
         )
     }
@@ -1878,6 +3170,7 @@ impl ServeCore {
     /// watcher and take the operator's escape hatch with it.
     pub(crate) fn wind_down(&mut self, shutdown_flag: &Arc<AtomicBool>) {
         shutdown_flag.store(true, Ordering::SeqCst);
+        self.hand_over.send_replace(true);
 
         // Trigger graceful axum shutdown and wait (bounded) for the supervisor to
         // reap every leg. `trigger` fans out over the leg registry, so a Tailscale
@@ -1885,11 +3178,19 @@ impl ServeCore {
         // its listener into the surface that resumes. The bound keeps a wedged
         // client connection on any listener from hanging the caller.
         self.shutdown.trigger();
-        if let Some(supervisor) = self.supervisor.take() {
-            self.runtime.block_on(async {
-                let _ = tokio::time::timeout(SERVER_JOIN_TIMEOUT, supervisor).await;
-            });
-        }
+        let control = self.control.take().map(|control| control.task);
+        let supervisor = self.supervisor.take();
+        self.runtime.block_on(async {
+            let _ = tokio::time::timeout(SERVER_JOIN_TIMEOUT, async {
+                if let Some(control) = control {
+                    let _ = control.await;
+                }
+                if let Some(supervisor) = supervisor {
+                    let _ = supervisor.await;
+                }
+            })
+            .await;
+        });
     }
 
     /// Tear the runtime down and report the first listener failure, if any.
@@ -1915,6 +3216,76 @@ impl ServeCore {
     }
 }
 
+/// The turns the flip's caller takes on the serving thread, see
+/// [`serve_with_engine`].
+pub struct FlipTurns<Tick, Status, Wait> {
+    /// Runs once per engine-loop iteration; its answer decides whether the
+    /// serve goes on.
+    pub on_tick: Tick,
+    /// Handed each human-readable teardown message once the quit's wind-down
+    /// starts.
+    pub on_shutdown_status: Status,
+    /// Runs on every pass of the quit's wait for the children, and answers true
+    /// to stop waiting.
+    pub on_shutdown_wait: Wait,
+}
+
+impl<Tick, Status, Wait> std::fmt::Debug for FlipTurns<Tick, Status, Wait> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlipTurns").finish_non_exhaustive()
+    }
+}
+
+/// The flip's console, opened with the lines `yaran server` opens its log with,
+/// and the browser count its connection registry keeps.
+///
+/// The flip owns the terminal with its themed status screen, so this console
+/// writes NOTHING to stdout; it records every line into the shared ring the
+/// status screen's log viewer draws, the same lines `yaran server` prints. Its
+/// connection registry keeps the screen's browser count in the same ring.
+fn flip_console(
+    engine: &Engine,
+    activity: yaran_core::activity::ActivityRing,
+    startup: &StartupNotes,
+    listeners: &[std::net::TcpListener],
+) -> (Console, Arc<std::sync::atomic::AtomicUsize>) {
+    let browsers = activity.browsers_gauge();
+    let mut console = Console::capture(activity);
+    // The same lines go to `server.log`, so the flip leaves the log the other two
+    // ways of serving leave.
+    if let Some(log) = open_server_log(&engine.config, &engine.paths) {
+        console = console.with_server_log(log);
+    }
+    // The QR codes reach the log viewer as lines, exactly as `yaran server`
+    // prints them.
+    if engine.config.server.qr_codes {
+        console.show_qr_codes();
+    }
+    for warning in &startup.warnings {
+        console.warn(warning);
+    }
+    // Both in-app serves are LOCAL MODE: the loopback leg is the required one
+    // and anything else is the best-effort Tailscale leg.
+    let legs: Vec<(SocketAddr, bool)> = listeners
+        .iter()
+        .filter_map(|l| l.local_addr().ok())
+        .map(|addr| (addr, addr.ip().is_loopback()))
+        .collect();
+    console.banner(&serve_banner(
+        yaran_core::display_version(),
+        &legs,
+        &startup.bind_warnings,
+        engine.config.server.tailscale_mode(),
+        if startup.tailscale_detected {
+            TailscaleDetection::Found
+        } else {
+            TailscaleDetection::NotFound
+        },
+        &engine.config.server.auth,
+    ));
+    (console, browsers)
+}
+
 /// Serve the web UI over an EXISTING engine on the CALLER's thread, returning
 /// the engine when serving stops. This is the in-process TUI↔server flip's
 /// entry point: the TUI hands its live `Engine` (PTYs running, owned on the main
@@ -1935,28 +3306,44 @@ impl ServeCore {
 ///   and returns `(engine, QuitProcess)`.
 ///
 /// `on_shutdown_status` is called with a human-readable teardown message (e.g.
-/// "Stopping 2 agents...") once QuitProcess teardown starts. This crate has no
+/// "Stopping 2 agents...") once `QuitProcess` teardown starts. This crate has no
 /// terminal of its own, so it hands the message to the caller instead of
 /// printing it directly; the binary's implementation feeds it to the yaran-tui
 /// status screen, which renders it on its own themed line rather than raw text
 /// landing wherever the cursor happens to sit.
+///
+/// The console log is the same one `yaran server` prints: `startup` carries what
+/// the terminal UI's pre-flight learned (its warnings, the Tailscale bind
+/// failures, whether an address was detected), and those lines plus the banner
+/// open the log before anything is served. `hooks` are what the status screen
+/// lends when it is on screen: the terminal restore a forced exit runs.
+/// `on_shutdown_wait` gets a turn on this thread on every pass of the quit's
+/// wait for the children: the status screen reads its keys and redraws there,
+/// and answers true when a second Ctrl-c key asks to stop waiting (the screen
+/// holds the terminal in raw mode, so Ctrl-c is a key, not a signal).
+///
+/// # Errors
+///
+/// When the serve cannot start (its runtime cannot be built or a pre-bound
+/// listener cannot be adopted), or when a listener failed while serving and the
+/// flip was not forced to quit.
 pub fn serve_with_engine(
     mut engine: Engine,
     listeners: Vec<std::net::TcpListener>,
     activity: yaran_core::activity::ActivityRing,
-    mut on_tick: impl FnMut() -> ServerTick,
-    mut on_shutdown_status: impl FnMut(&str),
+    startup: &StartupNotes,
+    hooks: FlipHooks,
+    turns: FlipTurns<impl FnMut() -> ServerTick, impl FnMut(&str), impl FnMut() -> bool>,
 ) -> Result<(Engine, ServerExit)> {
+    let FlipTurns {
+        mut on_tick,
+        mut on_shutdown_status,
+        mut on_shutdown_wait,
+    } = turns;
     warn_if_ui_not_built();
-    // The flip owns the terminal with its themed status screen, so this console
-    // writes NOTHING to stdout, but it captures every lifecycle event into the
-    // shared ring that drives the status screen's Activity panel.
-    let console = Console::capture(activity);
+    let (console, browsers) = flip_console(&engine, activity, startup, &listeners);
     let (handle, ends) = engine_actor::build_actor_channels(&engine);
     engine_actor::spawn_global_workers(&mut engine);
-    // AMQ is not started here: the flip hands over a TUI engine whose drainer
-    // is already running (`App::start_run_services`), and a test flip must
-    // never claim files from the user's real inject queue.
 
     // Grab the teardown flag before the handle moves into the router. `ServeCore`
     // trips it the instant serving ends (before axum graceful shutdown) so any
@@ -1973,57 +3360,84 @@ pub fn serve_with_engine(
 
     // The flip has taken the terminal over with its own status screen, so it OWNS
     // the process's stop signals for as long as it serves.
+    let access_log = server::AccessLog::of(&engine.config.server);
+    let FlipHooks { restore_terminal } = hooks;
+    // Shared by the second-signal hatch and the quit's wait, so either way of
+    // forcing the quit kills the children and logs the same lines.
+    let quit = Arc::new(QuitForce::default());
     let mut core = ServeCore::start(
         handle,
-        listeners,
+        ServeListeners {
+            web: listeners,
+            control: control_socket::listener_of(&engine),
+        },
         &engine.config,
-        &engine.paths.root,
-        console,
-        // The capture console keeps the access log OFF (it is never wanted in the
-        // panel, and access() never reaches emit() to be captured anyway) while
-        // the WS handlers feed lifecycle events into the ring.
-        false,
-        SignalPolicy::Adopt(Arc::clone(&signal_quit)),
+        &console,
+        // `[server] access_log` governs the flip exactly as it does `yaran server`:
+        // the user decided (2026-10-02) that the two logs match completely, so
+        // the viewer carries the access log too.
+        access_log,
+        SignalPolicy::Adopt {
+            flag: Arc::clone(&signal_quit),
+            restore_terminal,
+            quit: Arc::clone(&quit),
+        },
         // The flip has no terminal UI beside it (it took the terminal over), so
-        // there is no second surface to announce ownership changes for, and nowhere
-        // to show a connection count either.
-        BackgroundHooks::default(),
+        // there is no second surface to announce ownership changes for; its status
+        // screen shows the browser count.
+        BackgroundHooks {
+            ownership_publisher: None,
+            connections_gauge: Some(browsers),
+        },
     )?;
 
-    // Run the engine loop on the CURRENT thread. The control closure decides the
-    // exit reason: a serve failure or a tripped signal flag wins (both exit the
-    // loop), otherwise the caller's tick result maps straight through.
+    // A serve failure or a tripped signal flag exits; otherwise the tick result maps through.
+    // Once decided, the loop services on until the control socket's taken requests are answered.
     let mut exit = ServerExit::ReturnToTui;
+    let mut draining_until: Option<std::time::Instant> = None;
     let mut engine = engine_actor::run_engine_loop(
         engine,
         ends,
-        // The flip shares this terminal with a themed status screen, so shutdown
-        // progress goes to yaran.log and the caller's status callback, never to
-        // stderr where it would land wherever the cursor happens to sit.
+        // Silent here because the loop never runs the flip's shutdown: the
+        // flip runs it itself below, after the loop exits, and prints its
+        // progress through its own console (the viewer's log, the same lines
+        // `yaran server` prints) and the status callback.
         engine_actor::ShutdownEcho::Silent,
+        engine_actor::ServeSurface::Flip,
         || {
-            if core.is_failed() {
+            if let Some(deadline) = draining_until {
+                return if core.control_socket_drained() || std::time::Instant::now() >= deadline {
+                    LoopControl::Exit
+                } else {
+                    LoopControl::Continue
+                };
+            }
+            let decided = if core.is_failed() {
                 // A listener died: exit the loop. We RETURN to the TUI rather than
                 // quit the process (PTYs stay intact) and surface the captured error
                 // below so the caller knows the server could not keep serving.
-                exit = ServerExit::ReturnToTui;
+                Some(ServerExit::ReturnToTui)
+            } else if signal_quit.load(Ordering::SeqCst) {
+                Some(ServerExit::QuitProcess)
+            } else {
+                match on_tick() {
+                    ServerTick::Continue => None,
+                    ServerTick::ReturnToTui => Some(ServerExit::ReturnToTui),
+                    ServerTick::QuitProcess => Some(ServerExit::QuitProcess),
+                }
+            };
+            let Some(decided) = decided else {
+                return LoopControl::Continue;
+            };
+            exit = decided;
+            core.stop_control_socket();
+            if core.control_socket_drained() {
                 return LoopControl::Exit;
             }
-            if signal_quit.load(Ordering::SeqCst) {
-                exit = ServerExit::QuitProcess;
-                return LoopControl::Exit;
-            }
-            match on_tick() {
-                ServerTick::Continue => LoopControl::Continue,
-                ServerTick::ReturnToTui => {
-                    exit = ServerExit::ReturnToTui;
-                    LoopControl::Exit
-                }
-                ServerTick::QuitProcess => {
-                    exit = ServerExit::QuitProcess;
-                    LoopControl::Exit
-                }
-            }
+            // Operation waits answered as the socket stopped; any other request
+            // still open is cut past this bound.
+            draining_until = Some(std::time::Instant::now() + SERVER_JOIN_TIMEOUT);
+            LoopControl::Continue
         },
     );
 
@@ -2046,16 +3460,25 @@ pub fn serve_with_engine(
         // Ctrl-C/SIGTERM during the wait force-exits (130) instead of trapping the
         // operator behind a child that ignores SIGTERM. Tearing the runtime down
         // first would kill that watcher and remove the escape hatch.
-        let agents = engine.providers.len();
-        let terminals = engine.companion_terminals.len();
-        if agents + terminals > 0 {
-            let grace =
-                yaran_core::config::shutdown_grace(engine.config.server.shutdown_timeout_seconds);
-            on_shutdown_status(&yaran_core::engine::format_shutdown_start(
-                agents, terminals, grace,
-            ));
-            let report = engine.shutdown_ptys(grace);
-            on_shutdown_status(&yaran_core::engine::format_shutdown_result(&report));
+        let grace =
+            yaran_core::config::shutdown_grace(engine.config.server.shutdown_timeout_seconds);
+        // The one wind-down `yaran server` runs too, so the viewer carries the
+        // lines `yaran server` prints; the status callback gets them as well,
+        // and the status screen gets a turn on every pass of the wait.
+        wind_down_children(
+            &mut engine,
+            &console,
+            grace,
+            &quit,
+            &mut on_shutdown_status,
+            || {
+                if on_shutdown_wait() {
+                    quit.request(&console);
+                }
+            },
+        );
+        if quit.is_requested() {
+            exit = ServerExit::ForceQuit(ForceQuitHandle(Arc::clone(&quit)));
         }
     }
 
@@ -2084,18 +3507,164 @@ pub fn serve_with_engine(
     // than reporting a clean exit. The engine has already been wound down above,
     // so the caller drops it; the TUI shows the failure instead of resuming onto
     // a server that silently stopped serving.
-    if let Some(err) = serve_error {
-        return Err(err);
-    }
-
+    let exit = flip_outcome(exit, serve_error)?;
     Ok((engine, exit))
 }
+
+/// How the flip ends, given how its loop exited and whether the serve failed. A
+/// serve failure is reported rather than a clean exit, except under a forced
+/// quit: the user asked to be out now, so the quit wins and exits 130 with the
+/// force line, and the failure goes to `yaran.log`.
+fn flip_outcome(exit: ServerExit, serve_error: Option<anyhow::Error>) -> Result<ServerExit> {
+    match (exit, serve_error) {
+        (ServerExit::ForceQuit(handle), Some(err)) => {
+            yaran_core::logger::error(&format!(
+                "[server] the web server also failed while being forced to quit: {err:#}"
+            ));
+            Ok(ServerExit::ForceQuit(handle))
+        }
+        (_, Some(err)) => Err(err),
+        (exit, None) => Ok(exit),
+    }
+}
+
+/// Wind the children down at the end of a quit, the one way both modes do it:
+/// SIGTERM, then wait out the grace unless a forced quit cuts the wait short,
+/// then kill what is left. Logs the start, and the result as a warning when
+/// something had to be force-closed, through `console` and `status`; a forced
+/// quit's own line lands between them, at the moment it was asked for. Marks
+/// `quit` started, so a second signal knows there is an owner to hand the exit
+/// to. `on_wait` gets a turn on every pass of the wait. `None` when there was
+/// nothing to wind down.
+pub(crate) fn wind_down_children(
+    engine: &mut Engine,
+    console: &Console,
+    grace: Duration,
+    quit: &QuitForce,
+    mut status: impl FnMut(&str),
+    on_wait: impl FnMut(),
+) -> Option<yaran_core::engine::ShutdownReport> {
+    let agents = engine.providers.len();
+    let terminals = engine.companion_terminals.len();
+    if agents + terminals == 0 {
+        return None;
+    }
+    quit.start();
+    let start = yaran_core::engine::format_shutdown_start(agents, terminals, grace);
+    console.progress(&start);
+    status(&start);
+    let report = engine.shutdown_ptys_waiting(grace, Some(&quit.requested), on_wait);
+    let result = yaran_core::engine::format_shutdown_result(&report);
+    if report.timed_out {
+        console.warn(&result);
+    } else {
+        console.progress(&result);
+    }
+    status(&result);
+    Some(report)
+}
+
+/// A quit being forced: asked for by a second Ctrl-c (a signal anywhere, a key
+/// in the flip), and ended by exactly one thread.
+#[derive(Default)]
+pub(crate) struct QuitForce {
+    requested: AtomicBool,
+    /// The wind-down is under way: only then is a forced exit worth a (bounded)
+    /// wait for the children to be killed.
+    started: AtomicBool,
+    /// Taken by whichever thread ends the process for a forced quit (the
+    /// engine's owner, or the signal hatch when the owner is late), so exactly
+    /// one calls exit.
+    exit_claimed: AtomicBool,
+}
+
+impl QuitForce {
+    /// Ask for the quit to be forced. The first ask logs the force line, so it
+    /// is logged once however many ways it was asked; later asks log nothing.
+    /// Whether this ask was the first.
+    pub(crate) fn request(&self, console: &Console) -> bool {
+        if self
+            .requested
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return false;
+        }
+        yaran_core::logger::error(&format!("[server] {FORCE_EXIT_MESSAGE}"));
+        console.error(FORCE_EXIT_MESSAGE);
+        true
+    }
+
+    pub(crate) fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn start(&self) {
+        self.started.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_started(&self) -> bool {
+        self.started.load(Ordering::SeqCst)
+    }
+
+    /// Take the right to end the process. True for exactly one caller.
+    pub(crate) fn claim_exit(&self) -> bool {
+        self.exit_claimed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    fn is_exit_claimed(&self) -> bool {
+        self.exit_claimed.load(Ordering::SeqCst)
+    }
+
+    /// Wait, at most `bound`, for the engine's owner to take the exit.
+    fn wait_for_owner(&self, bound: Duration) {
+        let deadline = std::time::Instant::now() + bound;
+        while !self.is_exit_claimed() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// End the process after the flip's forced quit: drop the engine first, so the
+/// config writes still queued land on disk (the queue flushes, bounded, as it
+/// drops), then say why on the shell's screen and exit with 130. `exit` is
+/// injected so a test can watch it without ending the test process.
+///
+/// When the signal hatch already took the exit (this thread was late), the
+/// engine is still dropped but exit is not called: the hatch is exiting, and the
+/// caller must not end the process a second time.
+pub fn finish_forced_quit(engine: Engine, handle: &ForceQuitHandle, exit: impl FnOnce(i32)) {
+    drop(engine);
+    if handle.0.claim_exit() {
+        print_force_message_once();
+        exit(130);
+    }
+}
+
+/// Prints the force line to stderr once per process, whichever of the flip's
+/// two exits (the hatch's, or the binary's after a forced quit) gets there
+/// first.
+pub fn print_force_message_once() {
+    static PRINTED: AtomicBool = AtomicBool::new(false);
+    if !PRINTED.swap(true, Ordering::SeqCst) {
+        // On the way out of the process: a stderr nobody can write to has no
+        // one left to tell.
+        let _ = writeln!(std::io::stderr().lock(), "{FORCE_EXIT_MESSAGE}");
+    }
+}
+
+/// How long a forced exit waits for the children to be killed and the result
+/// logged before it exits anyway. A safety bound on an exit path, not a
+/// preference: the hatch has to exit even when the wind-down never started.
+const FORCE_SETTLE_BOUND: Duration = Duration::from_secs(3);
 
 /// Resolves when the process receives SIGINT (Ctrl-C) or SIGTERM. The first such
 /// signal resolves this future (the caller then triggers a graceful shutdown)
 /// and also arms a watcher so a SECOND signal forces an immediate exit, rather
 /// than leaving the operator trapped if the graceful drain wedges.
-async fn shutdown_signal() {
+async fn shutdown_signal(force_exit: ForceExit) {
     // Install both handlers ONCE up front and reuse the same streams for the
     // first wait AND the second-signal force-quit watcher. Re-subscribing fresh
     // after the first signal fired would race: a rapid second signal could arrive
@@ -2105,8 +3674,13 @@ async fn shutdown_signal() {
     let mut interrupt = install_signal(
         tokio::signal::unix::SignalKind::interrupt(),
         "SIGINT (Ctrl-C)",
+        &force_exit.console,
     );
-    let mut terminate = install_signal(tokio::signal::unix::SignalKind::terminate(), "SIGTERM");
+    let mut terminate = install_signal(
+        tokio::signal::unix::SignalKind::terminate(),
+        "SIGTERM",
+        &force_exit.console,
+    );
 
     if interrupt.is_none() && terminate.is_none() {
         // Neither handler installed, so we can observe no stop signal. Park so this
@@ -2126,12 +3700,109 @@ async fn shutdown_signal() {
     // the conventional interrupted-exit code.
     tokio::spawn(async move {
         next_terminate_signal(&mut interrupt, &mut terminate).await;
-        let msg = "[server] second interrupt received during shutdown. Forcing immediate exit.";
-        yaran_core::logger::error(msg);
-        eprintln!("{msg}");
+        fire_force_exit(force_exit, |code| {
+            yaran_core::kill_live_child_groups();
+            yaran_core::cloud::cloudflared::child_registry::kill_all_now();
+            std::process::exit(code)
+        });
+    });
+}
+
+/// Run a forced exit on a thread of its own. Its wait for the engine's owner
+/// sleeps, and parked on a runtime worker that sleep would hold up the owner's
+/// own way out, which tears that runtime down (in the flip, bounded at 2 s) and
+/// would then arrive late for the exit it was meant to take.
+pub(crate) fn fire_force_exit(force_exit: ForceExit, exit: impl FnOnce(i32) + Send + 'static) {
+    let spawned = std::thread::Builder::new()
+        .name("yaran-force-exit".to_string())
+        .spawn(move || force_exit.run(exit));
+    if let Err(err) = spawned {
+        // No thread to be had: exit straight away rather than not at all.
+        yaran_core::logger::error(&format!(
+            "[server] could not start the forced-exit thread ({err}); exiting now"
+        ));
+        yaran_core::kill_live_child_groups();
         yaran_core::cloud::cloudflared::child_registry::kill_all_now();
         std::process::exit(130);
-    });
+    }
+}
+
+/// Hands the terminal back to the shell: the flip's status screen supplies it,
+/// `yaran server` has nothing to restore.
+pub type RestoreTerminal = Arc<dyn Fn() + Send + Sync>;
+
+/// The line a second stop signal leaves on its way out.
+pub const FORCE_EXIT_MESSAGE: &str = "second interrupt received during shutdown: stopping \
+     whatever is still running, then exiting.";
+
+/// What a second stop signal does: force the quit (the same line in both modes,
+/// and the wait for the children cut short so they are killed), wait a bounded
+/// moment for that to settle when a wind-down is under way (and not at all
+/// before one has started), make sure the log is written, give the terminal back
+/// when a status screen had it, and only then exit with 130 (128 + SIGINT).
+///
+/// The order is the point. `std::process::exit` runs no destructor, so the flip's
+/// status screen would otherwise leave raw mode and the alternate screen behind,
+/// and a message printed before the restore would land on the alternate screen
+/// and vanish with it. After the restore it is printed to stderr, on the shell's
+/// own screen, because the viewer that would have shown it is gone.
+#[derive(Clone)]
+pub(crate) struct ForceExit {
+    console: Console,
+    restore_terminal: Option<RestoreTerminal>,
+    quit: Arc<QuitForce>,
+    settle_bound: Duration,
+}
+
+impl ForceExit {
+    pub(crate) fn new(
+        console: Console,
+        restore_terminal: Option<RestoreTerminal>,
+        quit: Arc<QuitForce>,
+    ) -> Self {
+        Self {
+            console,
+            restore_terminal,
+            quit,
+            settle_bound: FORCE_SETTLE_BOUND,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_settle_bound(mut self, bound: Duration) -> Self {
+        self.settle_bound = bound;
+        self
+    }
+
+    /// Run the sequence, ending in `exit(130)`. `exit` is injected so a test can
+    /// watch the order without ending the test process.
+    pub(crate) fn run(&self, exit: impl FnOnce(i32)) {
+        self.quit.request(&self.console);
+        // While a wind-down runs, it is killing the children; its owner then
+        // drops the engine (landing queued config writes) and exits itself.
+        // Leave the exit to it, waiting only up to the bound. Before a
+        // wind-down has started (with no agent or terminal running, one never
+        // starts) there is nothing to wait for and the exit is immediate, so
+        // queued config writes are not waited for then.
+        if self.quit.is_started() {
+            self.quit.wait_for_owner(self.settle_bound);
+        }
+        if !self.quit.claim_exit() {
+            // The owner took it and is exiting: one exit, not two.
+            return;
+        }
+        self.console.flush();
+        if let Some(restore) = &self.restore_terminal {
+            restore();
+        }
+        // The line is on stdout already when this console prints there (`yaran
+        // server`); a flip's console only fed a viewer that is gone, so it is
+        // said on stderr, on the shell's own screen.
+        if !self.console.is_active() {
+            print_force_message_once();
+        }
+        exit(130);
+    }
 }
 
 /// Install a SIGINT/SIGTERM handler, returning the stream, or `None` (logged
@@ -2140,6 +3811,7 @@ async fn shutdown_signal() {
 fn install_signal(
     kind: tokio::signal::unix::SignalKind,
     label: &str,
+    console: &Console,
 ) -> Option<tokio::signal::unix::Signal> {
     match tokio::signal::unix::signal(kind) {
         Ok(sig) => Some(sig),
@@ -2153,7 +3825,9 @@ fn install_signal(
                  SIGTERM)."
             );
             yaran_core::logger::error(&msg);
-            eprintln!("ERROR: {msg}");
+            // On the console rather than raw stderr: in the flip, stderr is
+            // the status screen's alternate screen.
+            console.error(&msg);
             None
         }
     }
@@ -2181,68 +3855,9 @@ async fn next_terminate_signal(
         }
     }
     tokio::select! {
-        _ = recv(interrupt) => {},
-        _ = recv(terminate) => {},
+        () = recv(interrupt) => {},
+        () = recv(terminate) => {},
     }
-}
-
-/// Loopback addresses this host actually has, other than `127.0.0.1`.
-///
-/// Several fixtures need a SECOND local address to stand in for a Tailscale IP,
-/// so a leg can really bind somewhere that is not the primary. They used to name
-/// `127.0.0.2` directly, which is a Linux assumption: the whole `127.0.0.0/8`
-/// range is loopback and bindable there, while macOS configures only
-/// `127.0.0.1` on `lo0` and answers anything else with `EADDRNOTAVAIL`. Those
-/// fixtures failed in setup on macOS, before reaching the behaviour they test.
-///
-/// Adding an alias needs root, so the host is ASKED instead of assumed. Reading
-/// `ifconfig` keeps this free of a new dependency and of `unsafe` FFI for a
-/// test-only question, and finds whatever extra `127.x` aliases a machine
-/// happens to carry. An empty answer is legitimate and means the caller must
-/// skip: there is no second address to stage the state with.
-#[cfg(test)]
-pub(crate) fn secondary_loopback_addrs() -> Vec<std::net::IpAddr> {
-    let Ok(output) = std::process::Command::new("ifconfig").output() else {
-        return Vec::new();
-    };
-    let Ok(text) = std::str::from_utf8(&output.stdout) else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
-    for line in text.lines() {
-        let Some(rest) = line.trim_start().strip_prefix("inet ") else {
-            continue;
-        };
-        let Some(token) = rest.split_whitespace().next() else {
-            continue;
-        };
-        let Ok(ip) = token.parse::<std::net::IpAddr>() else {
-            continue;
-        };
-        if ip.is_loopback() && ip != std::net::IpAddr::from([127, 0, 0, 1]) && !found.contains(&ip)
-        {
-            found.push(ip);
-        }
-    }
-    found
-}
-
-/// The first second-loopback address this process can actually bind, which is
-/// the only proof that matters: an address can be listed and still be
-/// unusable, and it can be usable without being listed.
-///
-/// `127.0.0.2` is tried FIRST, before asking the interface list. On Linux the
-/// whole 127.0.0.0/8 range binds with no configuration, but `ifconfig` there
-/// shows only `127.0.0.1` on `lo`, so interface discovery alone would find
-/// nothing and every two-leg test would silently stop running on the platform
-/// CI uses. CI caught exactly that. Discovery is the fallback for macOS, where
-/// 127.0.0.2 is refused unless an alias was configured.
-#[cfg(test)]
-pub(crate) fn bindable_secondary_loopback() -> Option<std::net::IpAddr> {
-    let direct = std::net::IpAddr::from([127, 0, 0, 2]);
-    std::iter::once(direct)
-        .chain(secondary_loopback_addrs())
-        .find(|ip| std::net::TcpListener::bind((*ip, 0)).is_ok())
 }
 
 #[cfg(test)]
@@ -2251,13 +3866,14 @@ mod tests {
         Reachability, bind_plan_addrs, plain_http_banner, reachability, safety_note,
         tailscale_bind_warning,
     };
-    use yaran_core::config::{PlanAddr, TailscaleMode};
+    use yaran_core::config::{PlanAddr, TailscaleMode, YaranPaths};
     use yaran_core::engine::Command;
 
     #[tokio::test]
     async fn a_panicking_serve_task_trips_the_lane_while_a_clean_end_does_not() {
         let ts: std::net::SocketAddr = "100.64.0.5:8080".parse().unwrap();
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let _leg = shutdown.register_leg(ts);
         let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(ts)));
         let mut streak = None;
@@ -2278,7 +3894,8 @@ mod tests {
     #[tokio::test]
     async fn a_leg_task_that_ends_clears_a_cell_the_registry_no_longer_backs() {
         let ts: std::net::SocketAddr = "100.64.0.5:8080".parse().unwrap();
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(ts)));
         let mut streak = Some(ts);
         super::finish_leg_task(Ok(()), &shutdown, &cell, &mut streak);
@@ -2296,7 +3913,8 @@ mod tests {
         // blanked, or every reaped sibling task would have the watcher rebind a
         // healthy listener.
         let ts: std::net::SocketAddr = "100.64.0.5:8080".parse().unwrap();
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let _leg = shutdown.register_leg(ts);
         let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(ts)));
         let mut streak = Some(ts);
@@ -2318,7 +3936,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
         let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
@@ -2330,7 +3949,8 @@ mod tests {
         );
 
         let ts: std::net::SocketAddr = "100.64.0.5:8080".parse().unwrap();
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let _leg = shutdown.register_leg(ts);
         let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(ts)));
         let mut streak = None;
@@ -2340,10 +3960,12 @@ mod tests {
         super::apply_leg_command(
             crate::serve_legs::LegCommand::Unbind(ts),
             &mut tasks,
-            &shutdown,
-            &axum::Router::new(),
-            &crate::console::Console::noop(),
-            &status_lane,
+            &crate::LegShared {
+                app: axum::Router::new(),
+                shutdown: shutdown.clone(),
+                console: crate::console::Console::noop(),
+                status: status_lane.clone(),
+            },
             &cell,
             &mut streak,
         )
@@ -2363,6 +3985,11 @@ mod tests {
         );
         assert_eq!(status.tone, yaran_core::statusline::StatusTone::Info);
         assert!(status.message.contains("went away"), "{}", status.message);
+        assert_eq!(
+            leg_status_names(&status),
+            [("100.64.0.5:8080", false)],
+            "the address reaches the web as a bare name chip"
+        );
     }
 
     /// An interface that comes and goes inside one dwell is one story, not four.
@@ -2379,7 +4006,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
         let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
@@ -2393,7 +4021,8 @@ mod tests {
         // A real loopback address, so the bind half of the flap genuinely binds
         // and the unbind half genuinely stops a registered leg.
         let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let cell = std::sync::Arc::new(std::sync::Mutex::new(None));
         let mut streak = None;
         let mut tasks = tokio::task::JoinSet::new();
@@ -2408,10 +4037,12 @@ mod tests {
             super::apply_leg_command(
                 command,
                 &mut tasks,
-                &shutdown,
-                &axum::Router::new(),
-                &crate::console::Console::noop(),
-                &status_lane,
+                &crate::LegShared {
+                    app: axum::Router::new(),
+                    shutdown: shutdown.clone(),
+                    console: crate::console::Console::noop(),
+                    status: status_lane.clone(),
+                },
                 &cell,
                 &mut streak,
             )
@@ -2439,6 +4070,11 @@ mod tests {
             "{}",
             settled.message
         );
+        assert_eq!(
+            leg_status_names(&settled),
+            [(addr.to_string().as_str(), false)],
+            "the settled sentence keeps the address it wraps as a bare name chip"
+        );
         assert!(
             engine.worker_rx.try_recv().is_err(),
             "and the settling is one answer, on the same key"
@@ -2458,7 +4094,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
         let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
@@ -2473,7 +4110,8 @@ mod tests {
         // suppression exists for.
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy a port");
         let addr = occupied.local_addr().expect("the occupied address");
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let cell = std::sync::Arc::new(std::sync::Mutex::new(None));
         let mut streak = None;
         let mut tasks = tokio::task::JoinSet::new();
@@ -2482,10 +4120,12 @@ mod tests {
         super::apply_leg_command(
             crate::serve_legs::LegCommand::Bind(addr),
             &mut tasks,
-            &shutdown,
-            &axum::Router::new(),
-            &crate::console::Console::noop(),
-            &status_lane,
+            &crate::LegShared {
+                app: axum::Router::new(),
+                shutdown: shutdown.clone(),
+                console: crate::console::Console::noop(),
+                status: status_lane.clone(),
+            },
             &cell,
             &mut streak,
         )
@@ -2501,6 +4141,23 @@ mod tests {
             "the warning names the address that would not bind: {}",
             status.message
         );
+    }
+
+    /// The names a leg status marks for the web to draw as chips, each with
+    /// whether its plain spelling quotes it.
+    fn leg_status_names(status: &yaran_core::engine::StatusUpdate) -> Vec<(&str, bool)> {
+        status
+            .segments
+            .as_deref()
+            .expect("the leg's sentence is built from parts")
+            .iter()
+            .filter_map(|segment| match segment {
+                yaran_core::prose::ProseSegment::Name { name, quoted } => {
+                    Some((name.as_str(), *quoted))
+                }
+                yaran_core::prose::ProseSegment::Text(_) => None,
+            })
+            .collect()
     }
 
     /// The one leg status on the lane, or a panic naming what came instead.
@@ -2525,9 +4182,11 @@ mod tests {
         // and its bind failure must be said out loud rather than swallowed by a
         // streak that predates the flap.
         let ts: std::net::SocketAddr = "100.64.0.5:8080".parse().unwrap();
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let _leg = shutdown.register_leg(ts);
-        let console = crate::console::Console::capture(yaran_core::activity::ActivityRing::new());
+        let console =
+            crate::console::Console::capture(yaran_core::activity::ActivityRing::default());
         let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(ts)));
         let mut streak = Some(ts);
         let mut tasks = tokio::task::JoinSet::new();
@@ -2535,10 +4194,12 @@ mod tests {
         super::apply_leg_command(
             crate::serve_legs::LegCommand::Unbind(ts),
             &mut tasks,
-            &shutdown,
-            &axum::Router::new(),
-            &console,
-            &crate::serve_legs::LegStatus::default(),
+            &crate::LegShared {
+                app: axum::Router::new(),
+                shutdown: shutdown.clone(),
+                console: console.clone(),
+                status: crate::serve_legs::LegStatus::default(),
+            },
             &cell,
             &mut streak,
         )
@@ -2560,9 +4221,11 @@ mod tests {
         // death that leaves the cell naming the dead address makes every period
         // plan Nothing and the leg stays down until the interface itself flaps.
         let ts: std::net::SocketAddr = "100.64.0.5:8080".parse().unwrap();
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(true);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Watched);
         let leg_lane = shutdown.register_leg(ts);
-        let console = crate::console::Console::capture(yaran_core::activity::ActivityRing::new());
+        let console =
+            crate::console::Console::capture(yaran_core::activity::ActivityRing::default());
 
         // The leg's accept loop dies mid-run: exactly what `spawn_leg`'s
         // best-effort arm does, without the flakiness of forcing a real axum
@@ -2585,7 +4248,7 @@ mod tests {
         );
         let mut tailscale_loop = super::TailscaleLoop::new(
             TailscaleMode::Auto,
-            false,
+            crate::serve_legs::NoTailscaleFlag::Absent,
             Some("127.0.0.1:8080".parse().unwrap()),
             Some(ts),
             &control,
@@ -2595,12 +4258,14 @@ mod tests {
         let bound_tailscale = tailscale_loop.bound_cell();
         let loop_task = tokio::spawn(super::run_serve_loop(
             legs,
-            shutdown.clone(),
+            crate::LegShared {
+                app: axum::Router::new(),
+                shutdown: shutdown.clone(),
+                console,
+                status: crate::serve_legs::LegStatus::default(),
+            },
             commands_rx,
             mode_rx,
-            axum::Router::new(),
-            console,
-            crate::serve_legs::LegStatus::default(),
             tailscale_loop,
             None,
         ));
@@ -2644,16 +4309,10 @@ mod tests {
     fn flip_console_captures_into_the_shared_ring() {
         // The flip path builds its console from the shared ring; a client-connect
         // event on that console must land in the ring the status screen reads.
-        let ring = yaran_core::activity::ActivityRing::new();
+        let ring = yaran_core::activity::ActivityRing::new(10);
         let console = crate::console::Console::capture(ring.clone());
         console.client_connected("10.0.0.7".parse().unwrap());
-        assert_eq!(ring.connections(), 1);
-        assert_eq!(
-            ring.snapshot(yaran_core::activity::ACTIVITY_CAP)
-                .events
-                .len(),
-            1
-        );
+        assert_eq!(ring.snapshot().lines.len(), 1);
     }
 
     #[test]
@@ -2686,22 +4345,18 @@ mod tests {
         // and return a warning naming it. host-only-from-bound is the caller's
         // concern; here we prove the bound set excludes the failed address.
         //
-        // A SECOND loopback address stands in for the Tailscale IP, held on an
-        // ephemeral port for the whole test so the leg is genuinely busy. The
-        // bind-failure path doesn't care that it's not a real Tailscale address,
-        // only that the entry is best-effort.
-        //
-        // Discovered rather than hardcoded: naming `127.0.0.2` assumes the Linux
-        // rule that all of 127.0.0.0/8 is bindable, which macOS does not follow.
-        // See `secondary_loopback_addrs`.
-        let Some(leg_ip) = super::bindable_secondary_loopback() else {
-            eprintln!(
-                "skipping: no second loopback address on this host to stand in \
-                 for a busy Tailscale leg"
-            );
-            return;
+        // A second loopback address stands in for the Tailscale IP: 127.0.0.2
+        // on Linux (all of 127.0.0.0/8 is loopback there), IPv6 loopback on
+        // macOS (which configures only 127.0.0.1 of that range). It is held on
+        // an ephemeral port for the whole test so the leg is genuinely busy.
+        // The bind-failure path doesn't care that it's not a real Tailscale
+        // address, only that the entry is best-effort.
+        let second_loopback = if cfg!(target_os = "macos") {
+            "[::1]:0"
+        } else {
+            "127.0.0.2:0"
         };
-        let held = std::net::TcpListener::bind((leg_ip, 0)).expect("hold a best-effort addr");
+        let held = std::net::TcpListener::bind(second_loopback).expect("hold a best-effort addr");
         let held_addr = held.local_addr().expect("held addr");
 
         // The required leg asks for port 0 and lets the KERNEL pick a free port
@@ -2775,6 +4430,632 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn bind_plan_addrs_a_taken_ipv6_loopback_is_fatal_and_names_it() {
+        let held = match std::net::TcpListener::bind("[::1]:0") {
+            Ok(held) => held,
+            Err(err) if yaran_core::config::ipv6_unavailable(&err) => return,
+            Err(err) => panic!("hold [::1]: {err}"),
+        };
+        let port = held.local_addr().expect("held addr").port();
+
+        let err = bind_plan_addrs(&[PlanAddr::ipv6_loopback(port)])
+            .await
+            .expect_err("a program on [::1] must stop the serve");
+        let text = format!("{err:#}");
+        assert!(text.contains(&format!("[::1]:{port}")), "{text}");
+    }
+
+    // ── One log, two surfaces ──────────────────────────────────────────────
+
+    /// Everything a serve says over its life, in the order a run says it: the
+    /// warnings raised before binding, the banner, a client, its requests, a
+    /// Tailscale leg arriving and failing, and the shutdown. Driven through the
+    /// same calls `run_plain_http` and `serve_with_engine` make.
+    fn a_whole_run(console: &crate::console::Console) {
+        let notes = [
+            "Tailscale not detected (the tailscale CLI is not installed), so yaran is serving on \
+             loopback only for now."
+                .to_string(),
+        ];
+        for warning in &notes {
+            console.warn(warning);
+        }
+        let bind_warning = tailscale_bind_warning(
+            addr("100.64.0.1:3890"),
+            &std::io::Error::new(std::io::ErrorKind::AddrInUse, "address already in use"),
+        );
+        console.banner(&super::serve_banner(
+            "v1.2.3",
+            &[(addr("127.0.0.1:3890"), true)],
+            &[bind_warning],
+            TailscaleMode::Auto,
+            crate::TailscaleDetection::Found,
+            &yaran_core::config::ServerAuthConfig::default(),
+        ));
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        console.client_connected(ip);
+        console.access("GET", "/api/v1/build", 200, 3);
+        console.access("GET", "/nope", 404, 1);
+        console.leg_changed("Tailscale address 100.64.0.1:3890 is serving again.");
+        console.bind_degraded("the Tailscale listener on 100.64.0.1:3890 stopped serving: gone");
+        console.client_disconnected(ip);
+        console.info(&yaran_core::engine::format_shutdown_start(
+            1,
+            0,
+            std::time::Duration::from_secs(30),
+        ));
+        console.error(super::FORCE_EXIT_MESSAGE);
+    }
+
+    /// The user asked for the two logs to match completely: `yaran server`'s stdout
+    /// (colors stripped) and the flip's viewer must hold the same lines, word for
+    /// word, for the same run.
+    #[test]
+    fn yaran_server_and_the_flip_log_the_same_lines_for_the_same_run() {
+        let (stdout, sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Colored);
+        let ring = yaran_core::activity::ActivityRing::new(1000);
+        let flip = crate::console::Console::test_ring_capture(ring.clone());
+        a_whole_run(&stdout);
+        a_whole_run(&flip);
+
+        let printed: Vec<String> = sink
+            .contents()
+            .lines()
+            .map(crate::console::strip_ansi)
+            .collect();
+        let viewed: Vec<String> = ring
+            .snapshot()
+            .lines
+            .iter()
+            .map(yaran_core::serve_log::LogLine::text)
+            .collect();
+        assert_eq!(printed, viewed);
+
+        // And the run really said everything it should: the startup warning,
+        // the banner with its bind-failure and waiting rows, the access log.
+        let joined = viewed.join("\n");
+        for expected in [
+            "12:00:00 \u{26a0} Tailscale not detected",
+            "yaran v1.2.3  plain HTTP",
+            "  \u{279c} Local (loopback): http://127.0.0.1:3890",
+            "  \u{26a0} could not bind the Tailscale address 100.64.0.1:3890",
+            "  \u{26a0} Tailscale: the interface is here, but its address would not bind",
+            "12:00:00 GET /api/v1/build 200 3ms",
+            "12:00:00 \u{279c} client connected from 127.0.0.1",
+            "12:00:00 \u{279c} Requesting 1 agent and 0 terminals to gracefully shut down",
+            "12:00:00 \u{2717} second interrupt received during shutdown",
+        ] {
+            assert!(
+                joined.contains(expected),
+                "missing {expected:?} in:\n{joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_banner_waits_for_the_interface_when_no_address_was_detected() {
+        let banner = super::serve_banner(
+            "v1",
+            &[(addr("127.0.0.1:3890"), true)],
+            &[],
+            TailscaleMode::Auto,
+            crate::TailscaleDetection::NotFound,
+            &yaran_core::config::ServerAuthConfig::default(),
+        );
+        assert!(
+            banner
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("Tailscale: waiting for the interface")),
+            "{banner:?}"
+        );
+        assert_eq!(
+            banner.security_note,
+            Some(super::safety_note_tailnet_watched(
+                &yaran_core::config::ServerAuthConfig::default()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_banner_labels_a_bound_tailscale_leg_and_waits_for_nothing() {
+        let banner = super::serve_banner(
+            "v1",
+            &[
+                (addr("127.0.0.1:3890"), true),
+                (addr("100.64.0.1:3890"), false),
+            ],
+            &[],
+            TailscaleMode::Yes,
+            crate::TailscaleDetection::Found,
+            &yaran_core::config::ServerAuthConfig::default(),
+        );
+        let labels: Vec<&str> = banner.listeners.iter().map(|l| l.label.as_str()).collect();
+        assert_eq!(labels, vec!["Local (loopback)", "Tailscale"]);
+        assert!(!banner.warnings.iter().any(|w| w.contains("waiting")));
+        assert_eq!(
+            banner.security_note,
+            Some(super::safety_note_tailnet(
+                &yaran_core::config::ServerAuthConfig::default()
+            ))
+        );
+    }
+
+    // ── A second stop signal ──────────────────────────────────────────────
+
+    /// In the flip, a second Ctrl-C mid-shutdown gives the terminal back BEFORE
+    /// the process exits (an exit runs no destructor, so nothing else would),
+    /// and logs the same line `yaran server` prints.
+    #[test]
+    fn a_forced_exit_restores_the_terminal_before_exiting() {
+        let ring = yaran_core::activity::ActivityRing::new(10);
+        let console = crate::console::Console::test_ring_capture(ring.clone());
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let restore: super::RestoreTerminal = {
+            let events = std::sync::Arc::clone(&events);
+            std::sync::Arc::new(move || events.lock().unwrap().push("restore".to_string()))
+        };
+        let quit = settled_quit();
+        let force = super::ForceExit::new(console, Some(restore), quit);
+        force.run(|code| events.lock().unwrap().push(format!("exit {code}")));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["restore".to_string(), "exit 130".to_string()]
+        );
+        let lines: Vec<String> = ring
+            .snapshot()
+            .lines
+            .iter()
+            .map(yaran_core::serve_log::LogLine::text)
+            .collect();
+        assert_eq!(
+            lines,
+            vec![format!("12:00:00 \u{2717} {}", super::FORCE_EXIT_MESSAGE)]
+        );
+    }
+
+    /// In `yaran server`, the line is on stdout before the exit: the console is
+    /// flushed first, so the writer thread cannot lose it.
+    /// The hatch has to exit even when stdout has stopped draining (`yaran server
+    /// | less` that nobody is reading): its flush is bounded.
+    #[test]
+    fn a_forced_exit_exits_even_when_stdout_is_stuck() {
+        let console = crate::console::Console::test_stuck_writer();
+        let force = super::ForceExit::new(console, None, settled_quit());
+        let (exited_tx, exited_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            force.run(|code| {
+                let _ = exited_tx.send(code);
+            });
+        });
+        assert_eq!(
+            exited_rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(130)
+        );
+    }
+
+    /// A start that fails while loading still shows what it had to warn about
+    /// (the non-loopback alarm among them), on stderr.
+    #[test]
+    fn a_failed_bootstrap_still_prints_the_startup_warnings() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let file_root = tmp.path().join("not-a-dir");
+        std::fs::write(&file_root, "x").unwrap();
+        let paths = YaranPaths {
+            root: file_root.clone(),
+            config_path: file_root.join("config.toml"),
+            sessions_db_path: file_root.join("sessions.sqlite3"),
+            worktrees_root: file_root.join("worktrees"),
+            lock_path: file_root.join("dux.lock"),
+            socket_path: file_root.join("yaran.sock"),
+        };
+        let mut err = Vec::new();
+        let result = super::bootstrap_or_report(
+            &paths,
+            &[
+                // Printed to stderr before anything loaded: not again.
+                super::StartupWarning {
+                    text: "yaran is binding 0.0.0.0:3890, a non-loopback address".to_string(),
+                    already_on_stderr: true,
+                },
+                super::StartupWarning {
+                    text: "Tailscale not detected.".to_string(),
+                    already_on_stderr: false,
+                },
+            ],
+            &mut err,
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            String::from_utf8(err).unwrap(),
+            "WARNING: Tailscale not detected.\n",
+            "the alarm is on stderr once, from before the load"
+        );
+    }
+
+    /// A quit force with no wind-down under way, so a forced exit does not wait.
+    fn settled_quit() -> std::sync::Arc<super::QuitForce> {
+        std::sync::Arc::new(super::QuitForce::default())
+    }
+
+    /// Both modes wind their children down through one function, so a forced
+    /// quit logs the same lines in both: the start, the force line at the
+    /// moment it was asked for, then the result saying what was force-closed
+    /// (a warning, since something did not stop in time).
+    #[test]
+    fn a_forced_quit_logs_the_same_lines_in_either_mode() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let root = tmp.path().to_path_buf();
+        let paths = YaranPaths {
+            root: root.clone(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        engine.config.terminal.command = "sh".to_string();
+        engine.config.terminal.args = vec![
+            "-c".to_string(),
+            "trap '' TERM HUP; exec sleep 120".to_string(),
+        ];
+        engine
+            .create_standalone_terminal(24, 80)
+            .expect("a terminal to wind down");
+        // Let the shell install its trap before the SIGTERM arrives.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let ring = yaran_core::activity::ActivityRing::new(100);
+        let console = crate::console::Console::test_ring_capture(ring.clone());
+        let quit = std::sync::Arc::new(super::QuitForce::default());
+        {
+            let quit = std::sync::Arc::clone(&quit);
+            let console = console.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                assert!(quit.request(&console), "the first ask logs the line");
+                assert!(!quit.request(&console), "a second ask logs nothing");
+            });
+        }
+        let started = std::time::Instant::now();
+        let report = super::wind_down_children(
+            &mut engine,
+            &console,
+            std::time::Duration::from_secs(60),
+            &quit,
+            |_| {},
+            || {},
+        )
+        .expect("there was a child to wind down");
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert!(report.timed_out, "{report:?}");
+        let lines: Vec<String> = ring
+            .snapshot()
+            .lines
+            .iter()
+            .map(yaran_core::serve_log::LogLine::text)
+            .collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("12:00:00 \u{279c} Requesting 0 agents and 1 terminal"));
+        assert_eq!(
+            lines[1],
+            format!("12:00:00 \u{2717} {}", super::FORCE_EXIT_MESSAGE)
+        );
+        assert!(
+            lines[2].starts_with("12:00:00 \u{26a0} 0 agents and 0 terminals exited"),
+            "{}",
+            lines[2]
+        );
+    }
+
+    /// In the flip a forced quit wins over a serve that also failed: the process
+    /// still exits 130 with the force line, and the failure goes to `yaran.log`.
+    #[test]
+    fn a_forced_quit_wins_over_a_serve_error() {
+        assert!(matches!(
+            super::flip_outcome(
+                super::ServerExit::ForceQuit(super::ForceQuitHandle::default()),
+                Some(anyhow::anyhow!("boom"))
+            ),
+            Ok(super::ServerExit::ForceQuit(_))
+        ));
+        assert!(
+            super::flip_outcome(
+                super::ServerExit::QuitProcess,
+                Some(anyhow::anyhow!("boom"))
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            super::flip_outcome(super::ServerExit::ReturnToTui, None),
+            Ok(super::ServerExit::ReturnToTui)
+        ));
+    }
+
+    /// A forced exit waits for the children to be killed, but never for long:
+    /// when nothing settles (the shutdown never started), it exits anyway.
+    #[test]
+    fn a_forced_exit_does_not_wait_forever_for_the_children() {
+        let (console, _sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let quit = std::sync::Arc::new(super::QuitForce::default());
+        // The wind-down started and never finished.
+        quit.start();
+        let force = super::ForceExit::new(console, None, quit)
+            .with_settle_bound(std::time::Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let mut code = None;
+        force.run(|c| code = Some(c));
+        assert_eq!(code, Some(130));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// A second Ctrl-c before anything is
+    /// being wound down does not sit out the settle bound.
+    #[test]
+    fn a_second_ctrl_c_before_the_wind_down_exits_at_once() {
+        let (console, _sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let quit = std::sync::Arc::new(super::QuitForce::default());
+        let force = super::ForceExit::new(console, None, quit)
+            .with_settle_bound(std::time::Duration::from_secs(10));
+        let started = std::time::Instant::now();
+        let mut code = None;
+        force.run(|c| code = Some(c));
+        assert_eq!(code, Some(130));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Exiting after a forced quit drops the engine first, so a config write
+    /// still queued (a lazy save) lands on disk rather than dying with the
+    /// process.
+    #[test]
+    fn a_forced_quit_lets_pending_config_writes_land() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let root = tmp.path().to_path_buf();
+        let paths = YaranPaths {
+            root: root.clone(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        let engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let mut config = engine.config.clone();
+        config.server.port = 4567;
+        engine.config_writer.save_lazy(config);
+        let mut code = None;
+        let handle = super::ForceQuitHandle::default();
+        super::finish_forced_quit(engine, &handle, |c| code = Some(c));
+        assert_eq!(code, Some(130));
+        let saved = std::fs::read_to_string(&paths.config_path).expect("config written");
+        assert!(saved.contains("port = 4567"), "{saved}");
+    }
+
+    /// When the signal hatch already took the exit (the owner was too slow),
+    /// the owner still drops the engine but never calls exit a second time.
+    #[test]
+    fn the_flip_owner_leaves_the_exit_to_a_hatch_that_took_it() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let root = tmp.path().to_path_buf();
+        let paths = YaranPaths {
+            root: root.clone(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        let engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let handle = super::ForceQuitHandle::default();
+        assert!(handle.0.claim_exit(), "the hatch claims first");
+        let mut code = None;
+        super::finish_forced_quit(engine, &handle, |c| code = Some(c));
+        assert_eq!(code, None, "only one thread exits");
+    }
+
+    /// A second stop signal while the wind-down runs hands the exit to the
+    /// engine's owner, which drops the engine (flushing config writes) and
+    /// exits 130; the hatch exits only if the owner does not get there in time.
+    #[test]
+    fn a_second_signal_during_the_wind_down_hands_the_exit_to_the_owner() {
+        let (console, _sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let quit = std::sync::Arc::new(super::QuitForce::default());
+        quit.start();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let owner = {
+            let quit = std::sync::Arc::clone(&quit);
+            let events = std::sync::Arc::clone(&events);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if quit.claim_exit() {
+                    events.lock().unwrap().push("owner exits 130".to_string());
+                }
+            })
+        };
+        let force = super::ForceExit::new(console, None, quit)
+            .with_settle_bound(std::time::Duration::from_secs(5));
+        force.run(|c| events.lock().unwrap().push(format!("hatch exits {c}")));
+        owner.join().unwrap();
+        assert_eq!(*events.lock().unwrap(), vec!["owner exits 130".to_string()]);
+    }
+
+    /// The hatch waits for the owner on a thread of its own, never on a runtime
+    /// worker: in the flip the owner's way out tears that runtime down (bounded
+    /// at 2 s), and a worker parked in the hatch's wait would eat that budget
+    /// and leave the owner late.
+    #[test]
+    fn the_hatch_does_not_hold_the_runtime_while_it_waits() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (console, _sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let quit = std::sync::Arc::new(super::QuitForce::default());
+        quit.start();
+        let force = super::ForceExit::new(console, None, std::sync::Arc::clone(&quit))
+            .with_settle_bound(std::time::Duration::from_secs(5));
+        let (exited_tx, exited_rx) = std::sync::mpsc::channel();
+        runtime.spawn(async move {
+            super::fire_force_exit(force, move |code| {
+                let _ = exited_tx.send(code);
+            });
+        });
+        // Let the hatch get into its wait.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "the runtime tore down in {:?}",
+            started.elapsed()
+        );
+        // The owner gets there well inside the bound and takes the exit.
+        assert!(quit.claim_exit());
+        assert!(
+            exited_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .is_err(),
+            "the hatch saw the owner take the exit and did not exit too"
+        );
+    }
+
+    /// `yaran server`'s owner side of that hand-over: after the engine thread
+    /// has run the forced wind-down it is joined (so the engine is dropped and
+    /// its queued config writes land) before the process exits 130.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn yaran_server_drops_its_engine_before_a_forced_exit() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let root = tmp.path().to_path_buf();
+        let paths = YaranPaths {
+            root: root.clone(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        let engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let mut config = engine.config.clone();
+        config.server.port = 4568;
+        engine.config_writer.save_lazy(config);
+        let (console, _sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let quit = std::sync::Arc::new(super::QuitForce::default());
+        let (handle, join) = crate::engine_actor::spawn_engine_thread_with_console(
+            engine,
+            console.clone(),
+            std::sync::Arc::clone(&quit),
+        );
+        quit.request(&console);
+        handle.shutdown().await;
+        drop(handle);
+        let outcome = tokio::task::spawn_blocking({
+            let quit = std::sync::Arc::clone(&quit);
+            move || {
+                super::finish_engine_thread(
+                    join,
+                    &quit,
+                    &console,
+                    std::time::Duration::from_secs(5),
+                )
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(outcome, super::OwnerExit::Forced);
+        let saved = std::fs::read_to_string(&paths.config_path).expect("config written");
+        assert!(saved.contains("port = 4568"), "{saved}");
+    }
+
+    /// Lines logged before an early failure (the runtime refusing to build)
+    /// still reach stdout: the flush covers every way out.
+    #[test]
+    fn an_early_failure_still_flushes_what_was_logged() {
+        let (console, sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let result: anyhow::Result<()> = super::flushing(&console, || {
+            console.warn("a startup warning");
+            Err(anyhow::anyhow!("the runtime would not build"))
+        });
+        assert!(result.is_err());
+        assert!(sink.raw_contents().contains("a startup warning"));
+    }
+
+    #[test]
+    fn a_forced_exit_flushes_the_console_before_exiting() {
+        let (console, sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let force = super::ForceExit::new(console, None, settled_quit());
+        let printed_at_exit = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        force.run(|_| {
+            // Read straight from the buffer, without the test's own barrier,
+            // so only the run's own flush can have put the line there.
+            *printed_at_exit.lock().unwrap() = sink.raw_contents();
+        });
+        assert_eq!(
+            *printed_at_exit.lock().unwrap(),
+            format!("12:00:00 error {}\n", super::FORCE_EXIT_MESSAGE)
+        );
+    }
+
+    fn paths_in(root: &std::path::Path) -> YaranPaths {
+        YaranPaths {
+            root: root.to_path_buf(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        }
+    }
+
+    /// `yaran server`'s console keeps `server.log` beside printing, at the path
+    /// `[server] log_path` names.
+    #[test]
+    fn yaran_servers_console_also_writes_the_server_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = yaran_core::config::Config::default();
+        config.server.log_path = "logs/web.log".to_string();
+        let (console, access_log) = super::build_console(&config, &paths_in(dir.path()));
+        assert_eq!(access_log, crate::server::AccessLog::On);
+        console.error("listener lost");
+        console.flush();
+        let written = std::fs::read_to_string(dir.path().join("logs/web.log")).unwrap();
+        let line = written.lines().next().expect("one line");
+        let (stamp, rest) = line.split_once(' ').expect("a dated line");
+        chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 date");
+        assert_eq!(&rest[9..], "error listener lost", "{written}");
+    }
+
+    /// A log yaran cannot open costs the file, not the serve.
+    #[test]
+    fn a_server_log_that_cannot_be_opened_does_not_stop_the_serve() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "a file where the log's folder should be").unwrap();
+        let mut config = yaran_core::config::Config::default();
+        config.server.log_path = blocker.join("server.log").to_string_lossy().into_owned();
+        assert!(super::open_server_log(&config, &paths_in(dir.path())).is_none());
+        let (console, _) = super::build_console(&config, &paths_in(dir.path()));
+        console.info("still printing");
+        console.flush();
+    }
+
     // ── Startup banner builders ────────────────────────────────────────────
 
     fn addr(s: &str) -> std::net::SocketAddr {
@@ -2810,21 +5091,82 @@ mod tests {
 
     // ── safety_note ───────────────────────────────────────────────────────────
 
-    fn plan_addr(s: &str, required: bool) -> PlanAddr {
-        if required {
-            PlanAddr::required(s.parse().unwrap())
-        } else {
-            PlanAddr::best_effort(s.parse().unwrap())
+    fn required_addr(s: &str) -> PlanAddr {
+        PlanAddr::required(s.parse().unwrap())
+    }
+
+    fn best_effort_addr(s: &str) -> PlanAddr {
+        PlanAddr::best_effort(s.parse().unwrap())
+    }
+
+    fn no_password() -> yaran_core::config::ServerAuthConfig {
+        yaran_core::config::ServerAuthConfig::default()
+    }
+
+    fn with_password(
+        require: yaran_core::config::AuthRequire,
+    ) -> yaran_core::config::ServerAuthConfig {
+        yaran_core::config::ServerAuthConfig {
+            password_hash: yaran_core::auth::hash_password(&yaran_core::auth::Password::new(
+                "orbit velvet quarry lantern cobalt".to_string(),
+            ))
+            .unwrap(),
+            require,
+            ..Default::default()
         }
     }
 
     #[test]
+    fn safety_notes_say_who_is_asked_for_the_password_once_one_is_set() {
+        use yaran_core::config::AuthRequire;
+        let tailnet = vec![
+            required_addr("127.0.0.1:8080"),
+            best_effort_addr("100.64.0.5:8080"),
+        ];
+        let open = safety_note(&tailnet, TailscaleMode::Yes, &no_password()).unwrap();
+        assert!(open.contains("no password set"), "{open}");
+        assert!(
+            open.contains("yaran config set server.auth.password"),
+            "{open}"
+        );
+        let network = safety_note(
+            &tailnet,
+            TailscaleMode::Yes,
+            &with_password(AuthRequire::Network),
+        )
+        .unwrap();
+        assert!(network.contains("need no password"), "{network}");
+        assert!(!network.contains("no password set"), "{network}");
+        let asked = safety_note(
+            &tailnet,
+            TailscaleMode::Yes,
+            &with_password(AuthRequire::Tailnet),
+        )
+        .unwrap();
+        assert!(asked.contains("must sign in"), "{asked}");
+
+        let public = vec![required_addr("0.0.0.0:8080")];
+        let guarded = safety_note(
+            &public,
+            TailscaleMode::Auto,
+            &with_password(AuthRequire::Network),
+        )
+        .unwrap();
+        assert!(guarded.contains("must sign in"), "{guarded}");
+        assert!(!guarded.contains("NO password"), "{guarded}");
+        assert!(guarded.contains("HTTPS"), "{guarded}");
+    }
+
+    #[test]
     fn safety_note_loopback_only_is_none_when_tailscale_is_off() {
-        let addrs = vec![plan_addr("127.0.0.1:8080", true)];
-        assert_eq!(safety_note(&addrs, TailscaleMode::No), None);
+        let addrs = vec![required_addr("127.0.0.1:8080")];
+        assert_eq!(safety_note(&addrs, TailscaleMode::No, &no_password()), None);
         // `yes` looked once and found nothing, so this run stays loopback-only and
         // there is genuinely nothing to warn about either.
-        assert_eq!(safety_note(&addrs, TailscaleMode::Yes), None);
+        assert_eq!(
+            safety_note(&addrs, TailscaleMode::Yes, &no_password()),
+            None
+        );
     }
 
     #[test]
@@ -2833,8 +5175,8 @@ mod tests {
         // that is watching the interface will be reachable on the tailnet the
         // moment the laptop reconnects, and saying nothing is the wrong half of
         // the truth.
-        let addrs = vec![plan_addr("127.0.0.1:8080", true)];
-        let note = safety_note(&addrs, TailscaleMode::Auto)
+        let addrs = vec![required_addr("127.0.0.1:8080")];
+        let note = safety_note(&addrs, TailscaleMode::Auto, &no_password())
             .expect("a watching serve must still warn about the tailnet");
         assert!(note.contains("tailnet"), "must mention tailnet: {note}");
         assert!(
@@ -2846,27 +5188,31 @@ mod tests {
     #[test]
     fn safety_note_loopback_plus_tailscale_mentions_tailnet() {
         let addrs = vec![
-            plan_addr("127.0.0.1:8080", true),
-            plan_addr("100.64.0.5:8080", false),
+            required_addr("127.0.0.1:8080"),
+            best_effort_addr("100.64.0.5:8080"),
         ];
-        let note =
-            safety_note(&addrs, TailscaleMode::Yes).expect("must have a note for tailscale leg");
+        let note = safety_note(&addrs, TailscaleMode::Yes, &no_password())
+            .expect("must have a note for tailscale leg");
         assert!(note.contains("tailnet"), "must mention tailnet: {note}");
         assert!(
             note.contains("connected"),
             "must scope it to being connected to the tailnet: {note}"
         );
         assert!(
-            !note.contains("NO login"),
-            "tailscale note must NOT say NO login: {note}"
+            !note.contains("NO password"),
+            "tailscale note must NOT shout like the public one: {note}"
         );
     }
 
     #[test]
-    fn safety_note_wildcard_primary_mentions_no_login() {
-        let addrs = vec![plan_addr("0.0.0.0:8080", true)];
-        let note = safety_note(&addrs, TailscaleMode::Auto).expect("must warn for 0.0.0.0");
-        assert!(note.contains("NO login"), "must contain 'NO login': {note}");
+    fn safety_note_wildcard_primary_with_no_password_says_so() {
+        let addrs = vec![required_addr("0.0.0.0:8080")];
+        let note = safety_note(&addrs, TailscaleMode::Auto, &no_password())
+            .expect("must warn for 0.0.0.0");
+        assert!(
+            note.contains("NO password"),
+            "must contain 'NO password': {note}"
+        );
     }
 
     #[test]
@@ -2874,11 +5220,15 @@ mod tests {
         // Overlap case: non-loopback required primary AND a Tailscale best-effort leg.
         // LAN warning wins (severity), and appends the Tailscale parenthetical.
         let addrs = vec![
-            plan_addr("192.168.1.5:8080", true),
-            plan_addr("100.64.0.5:8080", false),
+            required_addr("192.168.1.5:8080"),
+            best_effort_addr("100.64.0.5:8080"),
         ];
-        let note = safety_note(&addrs, TailscaleMode::Auto).expect("must warn for LAN primary");
-        assert!(note.contains("NO login"), "must contain 'NO login': {note}");
+        let note = safety_note(&addrs, TailscaleMode::Auto, &no_password())
+            .expect("must warn for LAN primary");
+        assert!(
+            note.contains("NO password"),
+            "must contain 'NO password': {note}"
+        );
         assert!(
             note.contains("Tailscale address is bound too"),
             "must note the tailscale leg: {note}"
@@ -2990,7 +5340,7 @@ mod tests {
 /// the detector injected and no Tailscale binary anywhere.
 ///
 /// The Tailscale leg is stood in for by a second loopback address: `desired_leg`
-/// only refuses an address the primary already covers, so `127.0.0.2` is a leg
+/// only refuses an address the primary already covers, so [`leg_ip`] is a leg
 /// like any other and binds for real, which is what makes "did the listener
 /// actually move" a fact rather than a claim about a cell.
 #[cfg(test)]
@@ -3004,63 +5354,120 @@ mod live_tailscale_mode_tests {
     /// trips it, short enough that a regression fails instead of hanging.
     const WAIT: Duration = Duration::from_secs(5);
 
-    /// The stand-in Tailscale address: a real second loopback address this host
-    /// can bind.
-    ///
-    /// Discovered rather than named, because `127.0.0.2` is only guaranteed
-    /// bindable on Linux; macOS refuses it and every test in this module failed
-    /// in setup there. Resolved once per test binary, so the `ifconfig` read
-    /// does not repeat across the dozen call sites below.
-    /// See `secondary_loopback_addrs`.
-    fn leg_ip_opt() -> Option<IpAddr> {
-        static LEG: std::sync::OnceLock<Option<IpAddr>> = std::sync::OnceLock::new();
-        *LEG.get_or_init(super::bindable_secondary_loopback)
-    }
-
-    /// [`leg_ip_opt`] for the call sites that have already passed
-    /// [`skip_without_leg_ip`], which is every use inside a test body.
+    /// The stand-in Tailscale address: `127.0.0.2` on Linux, where all of
+    /// `127.0.0.0/8` answers, and IPv6 loopback on macOS, which configures
+    /// only `127.0.0.1` of that range.
     fn leg_ip() -> IpAddr {
-        leg_ip_opt().expect("the test guarded on skip_without_leg_ip first")
-    }
-
-    /// Returns `true` when this host cannot supply a second loopback address, in
-    /// which case the calling test must return without asserting: the two-leg
-    /// state it is about cannot be staged at all.
-    fn skip_without_leg_ip(test: &str) -> bool {
-        if leg_ip_opt().is_some() {
-            return false;
+        if cfg!(target_os = "macos") {
+            "::1".parse().unwrap()
+        } else {
+            "127.0.0.2".parse().unwrap()
         }
-        eprintln!(
-            "skipping {test}: this host has no second loopback address to stand \
-             in for a Tailscale leg"
-        );
-        true
     }
 
     /// A primary listener held open for the whole test, so its port stays
-    /// reserved on `127.0.0.1` while the leg binds the same port on `127.0.0.2`.
+    /// reserved on `127.0.0.1` while the leg binds the same port on [`leg_ip`].
     fn primary_listener() -> (std::net::TcpListener, SocketAddr) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free loopback port");
         let addr = listener.local_addr().expect("its address");
         (listener, addr)
     }
 
+    /// How a harness's loop looks at Tailscale: its name probe, how often, and
+    /// whether it believes it runs in a container.
+    struct Looks {
+        identify: Option<crate::IdentityProbe>,
+        period: Duration,
+        container: Container,
+    }
+
     struct Harness {
         shutdown: ServeShutdown,
         control: TailscaleModeControl,
         bound: Arc<std::sync::Mutex<Option<SocketAddr>>>,
-        legs: tokio::sync::mpsc::Sender<(u64, LegCommand)>,
+        legs: tokio::sync::mpsc::Sender<(u64, WatchEvent)>,
         task: tokio::task::JoinHandle<()>,
     }
 
     impl Harness {
         fn start(
             mode: TailscaleMode,
-            forced_no: bool,
+            no_tailscale: NoTailscaleFlag,
             primary: Option<SocketAddr>,
             initial_leg: Option<SocketAddr>,
             detect: Arc<dyn Fn() -> Result<IpAddr, TailscaleUnavailable> + Send + Sync>,
         ) -> Self {
+            Self::start_inner(
+                mode,
+                no_tailscale,
+                primary,
+                initial_leg,
+                detect,
+                None,
+                Console::noop(),
+            )
+        }
+
+        fn start_inner(
+            mode: TailscaleMode,
+            no_tailscale: NoTailscaleFlag,
+            primary: Option<SocketAddr>,
+            initial_leg: Option<SocketAddr>,
+            detect: Arc<dyn Fn() -> Result<IpAddr, TailscaleUnavailable> + Send + Sync>,
+            identify: Option<crate::IdentityProbe>,
+            console: Console,
+        ) -> Self {
+            Self::start_inner_every(
+                mode,
+                no_tailscale,
+                primary,
+                initial_leg,
+                detect,
+                console,
+                Looks {
+                    identify,
+                    period: FAST_LOOK,
+                    container: Container::Outside,
+                },
+            )
+        }
+
+        /// A harness whose loop reads names through `identify`, prints to
+        /// `console`, and believes yaran runs in a container or not.
+        fn start_in_container(
+            identify: crate::IdentityProbe,
+            console: Console,
+            container: Container,
+        ) -> Self {
+            Self::start_inner_every(
+                TailscaleMode::Auto,
+                NoTailscaleFlag::Absent,
+                None,
+                None,
+                Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+                console,
+                Looks {
+                    identify: Some(identify),
+                    period: FAST_LOOK,
+                    container,
+                },
+            )
+        }
+
+        fn start_inner_every(
+            mode: TailscaleMode,
+            no_tailscale: NoTailscaleFlag,
+            primary: Option<SocketAddr>,
+            initial_leg: Option<SocketAddr>,
+            detect: Arc<dyn Fn() -> Result<IpAddr, TailscaleUnavailable> + Send + Sync>,
+            console: Console,
+            looks: Looks,
+        ) -> Self {
+            let Looks {
+                identify,
+                period,
+                container,
+            } = looks;
             let (control, mode_rx) = TailscaleModeControl::new(
                 tokio::runtime::Handle::current(),
                 Arc::new(AtomicBool::new(mode.watches_interface())),
@@ -3073,19 +5480,25 @@ mod live_tailscale_mode_tests {
                 let _ = shutdown.register_leg(addr);
             }
             let mut ts =
-                TailscaleLoop::new(mode, forced_no, primary, initial_leg, &control, detect);
+                TailscaleLoop::new(mode, no_tailscale, primary, initial_leg, &control, detect)
+                    .in_container(container);
+            if let Some(identify) = identify {
+                ts = ts.with_identity(identify, None).with_watch_period(period);
+            }
             let leg_rx = ts.take_leg_receiver();
             let bound = ts.bound_cell();
             let legs = ts.leg_sender();
             ts.start_watcher_if_wanted();
             let task = tokio::spawn(run_serve_loop(
                 tokio::task::JoinSet::new(),
-                shutdown.clone(),
+                crate::LegShared {
+                    app: axum::Router::new(),
+                    shutdown: shutdown.clone(),
+                    console,
+                    status: LegStatus::default(),
+                },
                 leg_rx,
                 mode_rx,
-                axum::Router::new(),
-                Console::noop(),
-                LegStatus::default(),
                 ts,
                 None,
             ));
@@ -3096,6 +5509,67 @@ mod live_tailscale_mode_tests {
                 legs,
                 task,
             }
+        }
+
+        /// A harness whose loop reads names through `identify`, the way both
+        /// serve paths wire it, with no initial identity (the background and
+        /// flip serves, which may not wait on the CLI as they start).
+        fn start_with_identity(
+            mode: TailscaleMode,
+            primary: Option<SocketAddr>,
+            detect: Arc<dyn Fn() -> Result<IpAddr, TailscaleUnavailable> + Send + Sync>,
+            identify: crate::IdentityProbe,
+        ) -> Self {
+            Self::start_inner(
+                mode,
+                NoTailscaleFlag::Absent,
+                primary,
+                None,
+                detect,
+                Some(identify),
+                Console::noop(),
+            )
+        }
+
+        /// As [`Self::start_with_identity`], looking every `period`.
+        fn start_with_identity_every(
+            mode: TailscaleMode,
+            primary: Option<SocketAddr>,
+            identify: crate::IdentityProbe,
+            period: Duration,
+        ) -> Self {
+            Self::start_inner_every(
+                mode,
+                NoTailscaleFlag::Absent,
+                primary,
+                None,
+                Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+                Console::noop(),
+                Looks {
+                    identify: Some(identify),
+                    period,
+                    container: Container::Outside,
+                },
+            )
+        }
+
+        /// As [`Self::start_with_identity`], printing to `console`, which is
+        /// how a test watches the QR codes the loop shows.
+        fn start_with_console(
+            mode: TailscaleMode,
+            primary: Option<SocketAddr>,
+            identify: crate::IdentityProbe,
+            console: Console,
+        ) -> Self {
+            Self::start_inner(
+                mode,
+                NoTailscaleFlag::Absent,
+                primary,
+                None,
+                Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+                Some(identify),
+                console,
+            )
         }
 
         fn bound(&self) -> Option<SocketAddr> {
@@ -3111,21 +5585,1119 @@ mod live_tailscale_mode_tests {
         }
     }
 
+    // ── This machine's tailnet name, through the real router ──────────────
+
+    fn named(name: &str, serve: &[(&str, bool)]) -> TailscaleIdentity {
+        TailscaleIdentity {
+            status: yaran_core::tailscale::SelfStatus {
+                dns_name: Some(name.to_string()),
+                magic_dns_enabled: true,
+                magic_dns_suffix: name.split_once('.').map(|(_, suffix)| suffix.to_string()),
+                cert_domains: vec![name.to_string()],
+                tailscale_ips: Vec::new(),
+            },
+            serve: serve
+                .iter()
+                .map(|(url, funnel)| yaran_core::tailscale::ServeRoute {
+                    url: url.to_string(),
+                    funnel: *funnel,
+                })
+                .collect(),
+            funnel: serve.iter().any(|(_, funnel)| *funnel),
+            funnel_to_yaran: false,
+            node_down: false,
+            forward_to_yaran: false,
+        }
+    }
+
+    /// A raw TCP Funnel forwarding to yaran's port.
+    fn tcp_funnelled(name: &str) -> TailscaleIdentity {
+        TailscaleIdentity {
+            funnel: true,
+            funnel_to_yaran: true,
+            ..named(name, &[])
+        }
+    }
+
+    /// A Funnel this machine has to ANOTHER port may be the operator's own
+    /// relay to yaran, and that deliberate setup is theirs: yaran keeps serving,
+    /// withdraws its `MagicDNS` name and warns, but does not lock.
+    #[tokio::test]
+    async fn a_funnel_to_another_port_withdraws_the_name_but_never_locks() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let elsewhere = TailscaleIdentity {
+            funnel: true,
+            funnel_to_yaran: false,
+            ..named("box.tail.ts.net", &[])
+        };
+        let (identify, _slot) = scripted_identity(elsewhere);
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+        until_status(&app, "localhost", StatusCode::OK).await;
+        tokio::time::sleep(FAST_LOOK * 10).await;
+        assert_eq!(
+            h.control.exposure().funnel(),
+            crate::exposure::FunnelState::Open
+        );
+        assert_eq!(status_for(&app, "localhost").await, StatusCode::OK);
+        assert_eq!(
+            status_for(&app, "box.tail.ts.net").await,
+            StatusCode::FORBIDDEN,
+            "with no password the name stays withdrawn while any Funnel is on"
+        );
+        let guarded_tmp = yaran_core::test_scratch::ScratchDir::new();
+        let guarded = router_with_password(&h, guarded_tmp.path());
+        assert_eq!(
+            status_for(&guarded, "box.tail.ts.net").await,
+            StatusCode::OK,
+            "with a password the name stays, so the Funnel's visitors reach the login"
+        );
+        h.finish().await;
+    }
+
+    /// A raw TCP Funnel to yaran's port hands yaran bare loopback streams from the
+    /// internet, so while one stands loopback is not this machine: with a
+    /// password set, this machine signs in like everyone else; with none, yaran
+    /// serves (the owner's call) and nothing is refused.
+    #[tokio::test]
+    async fn a_tcp_funnel_to_yaran_makes_this_machine_sign_in_until_it_goes() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let open_tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(tcp_funnelled("box.tail.ts.net"));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let guarded = router_with_password(&h, tmp.path());
+        let open = router_over(&h, open_tmp.path());
+        until_this_machine(&guarded, StatusCode::UNAUTHORIZED).await;
+        assert_eq!(
+            from_this_machine(&open).await,
+            StatusCode::OK,
+            "no password: served, with warnings"
+        );
+        assert_eq!(
+            status_for(&guarded, "localhost").await,
+            StatusCode::OK,
+            "the public routes still answer"
+        );
+
+        // A look that fails does not lift it: fail closed.
+        *slot.lock().unwrap() = Err(TailscaleUnavailable::CommandFailed);
+        tokio::time::sleep(FAST_LOOK * 10).await;
+        assert_eq!(from_this_machine(&guarded).await, StatusCode::UNAUTHORIZED);
+
+        // The Funnel goes away and this machine is trusted again by itself.
+        *slot.lock().unwrap() = Ok(named("box.tail.ts.net", &[]));
+        until_this_machine(&guarded, StatusCode::OK).await;
+        h.finish().await;
+    }
+
+    /// A tailnet-only raw TCP forward is headerless too, so it distrusts
+    /// loopback the same way.
+    #[tokio::test]
+    async fn a_tailnet_tcp_forward_to_yaran_makes_this_machine_sign_in() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let forwarded = TailscaleIdentity {
+            forward_to_yaran: true,
+            ..named("box.tail.ts.net", &[])
+        };
+        let (identify, slot) = scripted_identity(forwarded);
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let guarded = router_with_password(&h, tmp.path());
+        until_this_machine(&guarded, StatusCode::UNAUTHORIZED).await;
+        *slot.lock().unwrap() = Ok(named("box.tail.ts.net", &[]));
+        until_this_machine(&guarded, StatusCode::OK).await;
+        h.finish().await;
+    }
+
+    /// The Tailscale CLI as a test holds it: the first look waits until the
+    /// test releases it with an answer.
+    fn parked_identity() -> (
+        crate::IdentityProbe,
+        std::sync::mpsc::Sender<Result<TailscaleIdentity, TailscaleUnavailable>>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rx = std::sync::Mutex::new(rx);
+        let last = std::sync::Mutex::new(None);
+        let probe: crate::IdentityProbe = Arc::new(move || {
+            let mut last = last.lock().unwrap();
+            if let Ok(answer) = rx.lock().unwrap().try_recv() {
+                *last = Some(answer);
+            }
+            while last.is_none() {
+                match rx.lock().unwrap().recv_timeout(Duration::from_millis(20)) {
+                    Ok(answer) => *last = Some(answer),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(TailscaleUnavailable::CommandFailed);
+                    }
+                }
+            }
+            last.clone().expect("set above")
+        });
+        (probe, tx)
+    }
+
+    #[tokio::test]
+    async fn this_machine_signs_in_until_the_first_funnel_check_lands() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, answer) = parked_identity();
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_with_password(&h, tmp.path());
+        assert_eq!(from_this_machine(&app).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status_for(&app, "localhost").await, StatusCode::OK);
+        answer.send(Ok(named("box.tail.ts.net", &[]))).unwrap();
+        until_this_machine(&app, StatusCode::OK).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn no_tailscale_cli_or_no_daemon_means_no_funnel_and_this_machine_is_trusted() {
+        use axum::http::StatusCode;
+        // The two answers: no Tailscale here at all, and a daemon the CLI says
+        // is not running. A daemon it merely cannot reach is not one of them.
+        for reason in [
+            TailscaleUnavailable::CommandMissing,
+            TailscaleUnavailable::DaemonStopped,
+        ] {
+            let tmp = yaran_core::test_scratch::ScratchDir::new();
+            let (_primary, primary_addr) = primary_listener();
+            let (identify, _slot) = scripted_identity(named("box.tail.ts.net", &[]));
+            let identify: crate::IdentityProbe = {
+                let reason = reason.clone();
+                let _ = identify;
+                Arc::new(move || Err(reason.clone()))
+            };
+            let h = Harness::start_with_identity(
+                TailscaleMode::Auto,
+                Some(primary_addr),
+                Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+                identify,
+            );
+            let app = router_with_password(&h, tmp.path());
+            until_this_machine(&app, StatusCode::OK).await;
+            h.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cli_that_keeps_failing_distrusts_loopback_until_a_look_succeeds() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        *slot.lock().unwrap() = Err(TailscaleUnavailable::CommandFailed);
+        let h = Harness::start_with_identity(
+            TailscaleMode::Yes,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_with_password(&h, tmp.path());
+        tokio::time::sleep(FAST_LOOK * 10).await;
+        assert_eq!(from_this_machine(&app).await, StatusCode::UNAUTHORIZED);
+        *slot.lock().unwrap() = Ok(named("box.tail.ts.net", &[]));
+        until_this_machine(&app, StatusCode::OK).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_web_funnel_to_yaran_distrusts_loopback_and_keeps_the_name_for_the_login() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let web_funnel = TailscaleIdentity {
+            funnel_to_yaran: true,
+            ..named("box.tail.ts.net", &[("https://box.tail.ts.net", true)])
+        };
+        let (identify, _slot) = scripted_identity(web_funnel);
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_with_password(&h, tmp.path());
+        // The name is held once the first look lands.
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+        assert_eq!(from_this_machine(&app).await, StatusCode::UNAUTHORIZED);
+        for host in ["localhost", "100.101.102.103:3890"] {
+            assert_eq!(status_for(&app, host).await, StatusCode::OK, "{host}");
+        }
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_serve_with_no_primary_address_still_checks_for_funnel() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (identify, _slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            None,
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_with_password(&h, tmp.path());
+        // Checking until the first look lands, then known clear.
+        until_this_machine(&app, StatusCode::OK).await;
+        assert_eq!(
+            h.control.exposure().funnel(),
+            crate::exposure::FunnelState::Open
+        );
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn switching_to_no_keeps_distrusting_this_machine_and_says_so() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let ring = yaran_core::activity::ActivityRing::new(2000);
+        let (identify, _slot) = scripted_identity(tcp_funnelled("box.tail.ts.net"));
+        let h = Harness::start_with_console(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            identify,
+            Console::capture(ring.clone()),
+        );
+        let app = router_with_password(&h, tmp.path());
+        // Wait for the Funnel verdict itself, not just a refusal (a refusal is
+        // also what the checking state answers before the first look lands).
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while h.control.exposure().funnel() != crate::exposure::FunnelState::Funnel {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the Funnel was never seen"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(from_this_machine(&app).await, StatusCode::UNAUTHORIZED);
+        h.control.set_mode(TailscaleMode::No).await;
+        // yaran can no longer check, so it keeps distrusting: never lifted by
+        // looking away.
+        assert_eq!(
+            h.control.exposure().funnel(),
+            crate::exposure::FunnelState::Unchecked
+        );
+        tokio::time::sleep(FAST_LOOK * 10).await;
+        assert_eq!(from_this_machine(&app).await, StatusCode::UNAUTHORIZED);
+        let said = ring_texts(&ring);
+        assert!(
+            said.iter()
+                .any(|m| m.contains("no longer checks") && m.contains("signs in too")),
+            "{said:?}"
+        );
+        // And choosing to check again trusts this machine once a look finds
+        // nothing.
+        h.control.set_mode(TailscaleMode::Auto).await;
+        h.finish().await;
+    }
+
+    /// Once a Funnel to yaran has been seen, only a look that SEES it gone lifts
+    /// the refusal: a daemon that stops (so nothing can be checked) keeps it.
+    #[tokio::test]
+    async fn a_funnel_outlives_a_daemon_outage_until_a_look_sees_it_gone() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(tcp_funnelled("box.tail.ts.net"));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_with_password(&h, tmp.path());
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while h.control.exposure().funnel() != crate::exposure::FunnelState::Funnel {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the Funnel was never seen"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        *slot.lock().unwrap() = Err(TailscaleUnavailable::DaemonStopped);
+        tokio::time::sleep(FAST_LOOK * 10).await;
+        assert_eq!(
+            from_this_machine(&app).await,
+            StatusCode::UNAUTHORIZED,
+            "the daemon stopped, but nothing has seen the Funnel go"
+        );
+        *slot.lock().unwrap() = Ok(named("box.tail.ts.net", &[]));
+        until_this_machine(&app, StatusCode::OK).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_look_on_choosing_yes_again_withdraws_the_name() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        // A watcher that never gets to its second look, so only the one-shot
+        // look that choosing `yes` runs can withdraw the name.
+        let h = Harness::start_with_identity_every(
+            TailscaleMode::Yes,
+            Some(primary_addr),
+            identify,
+            Duration::from_secs(3600),
+        );
+        let app = router_over(&h, tmp.path());
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+        *slot.lock().unwrap() = Err(TailscaleUnavailable::CommandFailed);
+        h.control.set_mode(TailscaleMode::Yes).await;
+        // The name is withdrawn until a look succeeds.
+        assert_eq!(
+            h.control.own_magicdns_name().snapshot(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            status_for(&app, "box.tail.ts.net").await,
+            StatusCode::FORBIDDEN
+        );
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_watcher_that_will_not_start_takes_the_startup_name_with_it() {
+        // Nothing would watch the name's Funnel state, so nothing may admit it.
+        let (_primary, primary_addr) = primary_listener();
+        let (control, _mode_rx) = TailscaleModeControl::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let (identify, _slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        let mut ts = TailscaleLoop::new(
+            TailscaleMode::Auto,
+            NoTailscaleFlag::Absent,
+            Some(primary_addr),
+            None,
+            &control,
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+        )
+        .with_identity(identify, Some(named("box.tail.ts.net", &[])))
+        .refusing_watcher_threads();
+        assert_eq!(
+            control.own_magicdns_name().snapshot(),
+            vec!["box.tail.ts.net".to_string()],
+            "precondition: the startup look admitted it"
+        );
+        ts.start_watcher_if_wanted();
+        assert_eq!(control.own_magicdns_name().snapshot(), Vec::<String>::new());
+    }
+
+    /// Funnel on for something yaran does not show (a TCP forward, another port).
+    fn funnelled_elsewhere(name: &str) -> TailscaleIdentity {
+        TailscaleIdentity {
+            funnel: true,
+            ..named(name, &[])
+        }
+    }
+
+    /// The period an identity harness's watcher looks at, so a test of what a
+    /// LATER look finds takes milliseconds.
+    const FAST_LOOK: Duration = Duration::from_millis(20);
+
+    #[tokio::test]
+    async fn on_yes_a_funnel_switched_on_later_withdraws_the_name() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Yes,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+
+        // `yes` looks for the ADDRESS once, but the name's Funnel state is
+        // watched for as long as the guard may admit it.
+        *slot.lock().unwrap() = Ok(funnelled_elsewhere("box.tail.ts.net"));
+        until_status(&app, "box.tail.ts.net", StatusCode::FORBIDDEN).await;
+
+        *slot.lock().unwrap() = Ok(named("box.tail.ts.net", &[]));
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_funnel_to_anything_withdraws_the_name_on_auto() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+        *slot.lock().unwrap() = Ok(funnelled_elsewhere("box.tail.ts.net"));
+        until_status(&app, "box.tail.ts.net", StatusCode::FORBIDDEN).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_withdraws_the_name_until_one_succeeds() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+
+        let guarded_tmp = yaran_core::test_scratch::ScratchDir::new();
+        let guarded = router_with_password(&h, guarded_tmp.path());
+        until_this_machine(&guarded, StatusCode::OK).await;
+
+        // A look that fails after one succeeded leaves the Funnel state unknown:
+        // the name is withdrawn, and loopback is not trusted, until a look
+        // succeeds.
+        *slot.lock().unwrap() = Err(TailscaleUnavailable::CommandFailed);
+        until_status(&app, "box.tail.ts.net", StatusCode::FORBIDDEN).await;
+        assert_eq!(from_this_machine(&guarded).await, StatusCode::UNAUTHORIZED);
+
+        // The same answer as before comes back, and is admitted again: an
+        // unconfirmed identity is not "unchanged".
+        *slot.lock().unwrap() = Ok(named("box.tail.ts.net", &[]));
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_name_tailscale_did_not_assign_is_never_served_by_itself() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let mut headscale = named("box.vpn.example.com", &[]);
+        headscale.status.magic_dns_suffix = Some("vpn.example.com".to_string());
+        let (identify, _slot) = scripted_identity(headscale);
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+        // Give the watcher a few looks before asserting the refusal holds.
+        tokio::time::sleep(FAST_LOOK * 10).await;
+        assert_eq!(
+            status_for(&app, "box.vpn.example.com").await,
+            StatusCode::FORBIDDEN
+        );
+        h.finish().await;
+    }
+
+    /// The Tailscale CLI as the tests script it: whatever identity the test
+    /// last put in the slot. Nothing else about the serve is faked.
+    fn scripted_identity(
+        first: TailscaleIdentity,
+    ) -> (
+        crate::IdentityProbe,
+        Arc<std::sync::Mutex<Result<TailscaleIdentity, TailscaleUnavailable>>>,
+    ) {
+        let slot = Arc::new(std::sync::Mutex::new(Ok(first)));
+        let reader = Arc::clone(&slot);
+        let probe: crate::IdentityProbe = Arc::new(move || reader.lock().unwrap().clone());
+        (probe, slot)
+    }
+
+    /// The real router, built the way both serve paths build it, wired to the
+    /// harness's live cells.
+    fn router_over(h: &Harness, tmp: &std::path::Path) -> axum::Router {
+        crate::server::build_app(
+            crate::test_support::test_engine_handle(tmp),
+            axum::Router::new(),
+            crate::server::RouterParams::plain_http()
+                .with_host_allowlist(
+                    vec!["127.0.0.1".parse().unwrap()],
+                    vec![],
+                    crate::host_guard::TailscaleLiteralRule::Refuse,
+                )
+                .with_live_tailscale_host_literals(h.control.host_literals())
+                .with_live_own_magicdns_name(h.control.own_magicdns_name())
+                .with_live_exposure(h.control.exposure()),
+        )
+    }
+
+    /// A strong password's hash, made once for the whole module (each costs
+    /// tens of milliseconds on purpose).
+    fn password_hash() -> &'static str {
+        static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        HASH.get_or_init(|| {
+            yaran_core::auth::hash_password(&yaran_core::auth::Password::new(
+                "orbit velvet quarry lantern cobalt".to_string(),
+            ))
+            .expect("hash")
+        })
+    }
+
+    /// [`router_over`], with a password set.
+    fn router_with_password(h: &Harness, tmp: &std::path::Path) -> axum::Router {
+        let handle = crate::test_support::test_engine_handle(tmp);
+        handle.live_limits().auth().store(
+            &yaran_core::config::ServerAuthConfig {
+                password_hash: password_hash().to_string(),
+                ..Default::default()
+            },
+            None,
+        );
+        crate::server::build_app(
+            handle,
+            axum::Router::new(),
+            crate::server::RouterParams::plain_http()
+                .with_host_allowlist(
+                    vec!["127.0.0.1".parse().unwrap()],
+                    vec![],
+                    crate::host_guard::TailscaleLiteralRule::Refuse,
+                )
+                .with_live_tailscale_host_literals(h.control.host_literals())
+                .with_live_own_magicdns_name(h.control.own_magicdns_name())
+                .with_live_exposure(h.control.exposure()),
+        )
+    }
+
+    /// A protected route, asked by a browser on this machine over loopback
+    /// with no session and no forwarding header.
+    async fn from_this_machine(app: &axum::Router) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+        let mut request = axum::http::Request::builder()
+            .uri("/api/v1/projects")
+            .header("Host", "localhost")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(crate::auth::Arrival::Tcp {
+                peer: "127.0.0.1:40000".parse().unwrap(),
+                local: "127.0.0.1:3890".parse().unwrap(),
+            }));
+        app.clone().oneshot(request).await.unwrap().status()
+    }
+
+    /// Poll [`from_this_machine`] until it answers `want`, bounded by [`WAIT`].
+    async fn until_this_machine(app: &axum::Router, want: axum::http::StatusCode) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let got = from_this_machine(app).await;
+            if got == want {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "this machine still answers {got}, wanted {want}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn status_for(app: &axum::Router, host: &str) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+        app.clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/healthz")
+                    .header("Host", host)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Poll the router until `host` answers `want`, bounded by [`WAIT`].
+    async fn until_status(app: &axum::Router, host: &str, want: axum::http::StatusCode) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let got = status_for(app, host).await;
+            if got == want {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{host} still answers {got}, wanted {want}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn on_auto_the_watcher_reads_the_name_and_the_router_serves_it_then_follows_a_rename() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(named("demo-box.old-tailnet.ts.net", &[]));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+
+        // The watcher parks before its first ADDRESS look, but an unknown name
+        // is looked up at once, so this needs no five-second wait.
+        until_status(&app, "demo-box.old-tailnet.ts.net:3890", StatusCode::OK).await;
+        assert_eq!(
+            status_for(&app, "laptop.old-tailnet.ts.net").await,
+            StatusCode::FORBIDDEN,
+            "another machine on the same tailnet is still refused"
+        );
+
+        // The tailnet is renamed. Choosing auto again restarts the watcher with
+        // an immediate look, which is the live mode seam doing its job.
+        *slot.lock().unwrap() = Ok(named("demo-box.example-tailnet.ts.net", &[]));
+        assert_eq!(
+            h.control.set_mode(TailscaleMode::Auto).await,
+            TailscaleModeOutcome::Applied { bound: None }
+        );
+        until_status(&app, "demo-box.example-tailnet.ts.net", StatusCode::OK).await;
+        until_status(&app, "demo-box.old-tailnet.ts.net", StatusCode::FORBIDDEN).await;
+        h.finish().await;
+    }
+
+    /// Every line text the flip's ring holds right now.
+    fn ring_texts(ring: &yaran_core::activity::ActivityRing) -> Vec<String> {
+        ring.snapshot()
+            .lines
+            .iter()
+            .map(yaran_core::serve_log::LogLine::text)
+            .collect()
+    }
+
+    /// Wait until some line the ring holds contains every one of `needles`.
+    async fn until_ring_says(ring: &yaran_core::activity::ActivityRing, needles: &[&str]) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let texts = ring_texts(ring);
+            if needles.iter().all(|n| texts.iter().any(|t| t.contains(n))) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the log never said {needles:?}: {texts:#?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// The start-web-server flip's path end to end: as soon as the name is read
+    /// the loop logs the tailnet rows and the QR codes, the same lines
+    /// `yaran server` prints, and again when a rename changes them.
+    #[tokio::test]
+    async fn the_tailnet_rows_and_qr_codes_follow_the_name_into_the_flips_log() {
+        let (_primary, primary_addr) = primary_listener();
+        let ring = yaran_core::activity::ActivityRing::new(2000);
+        let console = Console::capture(ring.clone());
+        console.show_qr_codes();
+        let (identify, slot) = scripted_identity(named(
+            "demo-box.old-tailnet.ts.net",
+            &[("https://demo-box.old-tailnet.ts.net", false)],
+        ));
+        let h =
+            Harness::start_with_console(TailscaleMode::Auto, Some(primary_addr), identify, console);
+        until_ring_says(
+            &ring,
+            &[
+                "Tailscale (HTTPS, tailscale serve): https://demo-box.old-tailnet.ts.net",
+                "Scan to open yaran from your phone:",
+            ],
+        )
+        .await;
+
+        *slot.lock().unwrap() = Ok(named(
+            "demo-box.example-tailnet.ts.net",
+            &[("https://demo-box.example-tailnet.ts.net", false)],
+        ));
+        h.control.set_mode(TailscaleMode::Auto).await;
+        until_ring_says(
+            &ring,
+            &["Tailscale (HTTPS, tailscale serve): https://demo-box.example-tailnet.ts.net"],
+        )
+        .await;
+        let captions = ring_texts(&ring)
+            .iter()
+            .filter(|t| t.contains("Scan to open yaran"))
+            .count();
+        assert_eq!(captions, 2, "a fresh pair of codes for the new name");
+        h.finish().await;
+    }
+
+    /// The flip cannot wait for its first look before serving, so the loop
+    /// turns while that look is still out. No QR code is printed until it lands:
+    /// a code for the Tailscale IP alone, superseded a moment later by the
+    /// pair, is a second set of codes for one serve, and every request answers
+    /// "checking" until then anyway.
+    #[tokio::test]
+    async fn no_qr_code_is_printed_until_the_first_look_lands() {
+        let (_primary, primary_addr) = primary_listener();
+        let ring = yaran_core::activity::ActivityRing::new(2000);
+        let console = Console::capture(ring.clone());
+        console.show_qr_codes();
+        let opened = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&opened);
+        let identify: crate::IdentityProbe = Arc::new(move || {
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(named(
+                "demo-box.example-tailnet.ts.net",
+                &[("https://demo-box.example-tailnet.ts.net", false)],
+            ))
+        });
+        let leg: SocketAddr = format!("100.101.102.103:{}", primary_addr.port())
+            .parse()
+            .unwrap();
+        let h = Harness::start_inner(
+            TailscaleMode::Auto,
+            NoTailscaleFlag::Absent,
+            Some(primary_addr),
+            Some(leg),
+            Arc::new(move || Ok(leg.ip())),
+            Some(identify),
+            console,
+        );
+        tokio::time::sleep(FAST_LOOK * 10).await;
+        let early: Vec<String> = ring_texts(&ring)
+            .into_iter()
+            .filter(|t| t.contains("Scan to open yaran"))
+            .collect();
+        assert!(early.is_empty(), "codes before the first look: {early:?}");
+
+        opened.store(true, Ordering::SeqCst);
+        until_ring_says(&ring, &["Scan to open yaran from your phone:"]).await;
+        tokio::time::sleep(FAST_LOOK * 5).await;
+        let captions = ring_texts(&ring)
+            .iter()
+            .filter(|t| t.contains("Scan to open yaran"))
+            .count();
+        assert_eq!(captions, 1, "one set of codes, the pair");
+        h.finish().await;
+    }
+
+    fn container_warnings(ring: &yaran_core::activity::ActivityRing) -> usize {
+        ring_texts(ring)
+            .iter()
+            .filter(|t| t.contains("inside a container"))
+            .count()
+    }
+
+    /// Inside a container yaran cannot see a Tailscale outside it, so when its
+    /// checks find none it serves (that setup is the operator's own) and says
+    /// once, at start, what that means. The flip and the background serve take
+    /// their first look on the watcher.
+    #[tokio::test]
+    async fn a_container_with_no_tailscale_in_sight_serves_and_warns_once_at_start() {
+        for (reason, in_container, warned) in [
+            (TailscaleUnavailable::CommandMissing, true, 1),
+            (TailscaleUnavailable::DaemonStopped, true, 1),
+            (TailscaleUnavailable::CommandMissing, false, 0),
+        ] {
+            let ring = yaran_core::activity::ActivityRing::new(2000);
+            let console = Console::capture(ring.clone());
+            let answer = reason.clone();
+            let probe: crate::IdentityProbe = Arc::new(move || Err(answer.clone()));
+            let h = Harness::start_in_container(
+                probe,
+                console,
+                if in_container {
+                    Container::Inside
+                } else {
+                    Container::Outside
+                },
+            );
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while h.control.exposure().funnel() != crate::exposure::FunnelState::Open {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{reason:?} never served"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // Several more looks, all saying the same: still said once.
+            tokio::time::sleep(FAST_LOOK * 10).await;
+            assert_eq!(
+                container_warnings(&ring),
+                warned,
+                "{reason:?} in_container={in_container}: {:#?}",
+                ring_texts(&ring)
+            );
+            h.finish().await;
+        }
+    }
+
+    /// A container where Tailscale IS in sight is checked like anywhere else
+    /// and says nothing about being in a container.
+    #[tokio::test]
+    async fn a_container_that_sees_tailscale_says_nothing_about_it() {
+        let ring = yaran_core::activity::ActivityRing::new(2000);
+        let console = Console::capture(ring.clone());
+        let (identify, _slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        let h = Harness::start_in_container(identify, console, Container::Inside);
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while h.control.exposure().funnel() != crate::exposure::FunnelState::Open {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(FAST_LOOK * 5).await;
+        assert_eq!(container_warnings(&ring), 0);
+        h.finish().await;
+    }
+
+    /// `yaran server` takes its first look itself, before the watcher: the same
+    /// warning, through the same console line.
+    #[tokio::test]
+    async fn yaran_servers_startup_look_warns_about_the_container_the_same_way() {
+        let ring = yaran_core::activity::ActivityRing::new(2000);
+        let console = Console::capture(ring.clone());
+        let (control, _mode_rx) = TailscaleModeControl::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let mut ts = TailscaleLoop::new(
+            TailscaleMode::Auto,
+            NoTailscaleFlag::Absent,
+            None,
+            None,
+            &control,
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+        )
+        .in_container(Container::Inside);
+        ts.apply_look(
+            Err(TailscaleUnavailable::CommandMissing),
+            &console,
+            &LegStatus::default(),
+        );
+        assert_eq!(container_warnings(&ring), 1, "{:#?}", ring_texts(&ring));
+        let text = ring_texts(&ring)
+            .into_iter()
+            .find(|t| t.contains("inside a container"))
+            .unwrap();
+        for needle in [
+            "no password is set",
+            "outside this container",
+            "terminals",
+            "private",
+        ] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
+        assert_eq!(
+            control.exposure().funnel(),
+            crate::exposure::FunnelState::Open,
+            "a warning, never a refusal"
+        );
+    }
+
+    /// With Tailscale checks off, the start says once what that costs: no
+    /// Funnel is noticed, and a request through one would look like this
+    /// machine. Both serves call this right
+    /// after building their loop.
+    #[tokio::test]
+    async fn a_serve_that_does_not_check_tailscale_says_so_at_start() {
+        let (control, _mode_rx) = TailscaleModeControl::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        for (mode, forced_no, says) in [
+            (TailscaleMode::No, false, Some("tailscale = \"no\"")),
+            (TailscaleMode::Auto, true, Some("--no-tailscale")),
+            (TailscaleMode::Yes, true, Some("--no-tailscale")),
+            (TailscaleMode::Auto, false, None),
+            (TailscaleMode::Yes, false, None),
+        ] {
+            let ring = yaran_core::activity::ActivityRing::new(100);
+            let console = Console::capture(ring.clone());
+            let ts = TailscaleLoop::new(
+                mode,
+                if forced_no {
+                    NoTailscaleFlag::Given
+                } else {
+                    NoTailscaleFlag::Absent
+                },
+                None,
+                None,
+                &control,
+                Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            );
+            ts.say_not_checking(&console);
+            let texts = ring_texts(&ring);
+            match says {
+                Some(why) => {
+                    assert_eq!(texts.len(), 1, "{mode:?} {forced_no}: {texts:#?}");
+                    for needle in ["not checking Tailscale", why, "Funnel", "signs in too"] {
+                        assert!(texts[0].contains(needle), "{needle}: {}", texts[0]);
+                    }
+                }
+                None => assert!(texts.is_empty(), "{mode:?}: {texts:#?}"),
+            }
+        }
+    }
+
+    /// The flip's header URL list follows the serve live: the `MagicDNS` URL (the
+    /// https serve URL when a route points at yaran) arrives when the name is
+    /// read, moves with a rename, and goes when the mode says `no`.
+    #[tokio::test]
+    async fn the_flips_url_list_follows_the_name_live() {
+        let (_primary, primary_addr) = primary_listener();
+        let ring = yaran_core::activity::ActivityRing::new(2000);
+        let console = Console::capture(ring.clone());
+        let (identify, slot) = scripted_identity(named(
+            "demo-box.old-tailnet.ts.net",
+            &[("https://demo-box.old-tailnet.ts.net", false)],
+        ));
+        let h =
+            Harness::start_with_console(TailscaleMode::Auto, Some(primary_addr), identify, console);
+        // The harness registers no legs, so the list is the tailnet extras alone.
+        let wait_for = |want: Vec<String>| {
+            let ring = ring.clone();
+            async move {
+                let deadline = tokio::time::Instant::now() + WAIT;
+                loop {
+                    let got = ring.serve_urls();
+                    if got == want {
+                        return;
+                    }
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "serve URLs are {got:?}, wanted {want:?}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        };
+        wait_for(vec!["https://demo-box.old-tailnet.ts.net".to_string()]).await;
+        *slot.lock().unwrap() = Ok(named(
+            "demo-box.example-tailnet.ts.net",
+            &[("https://demo-box.example-tailnet.ts.net", false)],
+        ));
+        wait_for(vec!["https://demo-box.example-tailnet.ts.net".to_string()]).await;
+        h.control.set_mode(TailscaleMode::No).await;
+        wait_for(Vec::new()).await;
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn switching_to_no_forgets_the_name_and_yes_reads_it_again() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, _slot) = scripted_identity(named("box.tail.ts.net", &[]));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+        until_status(&app, "box.tail.ts.net", StatusCode::OK).await;
+
+        h.control.set_mode(TailscaleMode::No).await;
+        assert_eq!(
+            status_for(&app, "box.tail.ts.net").await,
+            StatusCode::FORBIDDEN
+        );
+        assert!(
+            h.control.own_magicdns_name().snapshot().is_empty(),
+            "no is a promise to stay off the tailnet, name included"
+        );
+
+        // `yes` looks once, the name included.
+        assert_eq!(
+            h.control.set_mode(TailscaleMode::Yes).await,
+            TailscaleModeOutcome::NothingDetected,
+            "no address in this test, which is not what this test is about"
+        );
+        assert_eq!(status_for(&app, "box.tail.ts.net").await, StatusCode::OK);
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_serve_route_shows_up_in_the_urls_and_funnel_withdraws_the_name() {
+        use axum::http::StatusCode;
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let (_primary, primary_addr) = primary_listener();
+        let (identify, slot) = scripted_identity(named(
+            "box.tail.ts.net",
+            &[("https://box.tail.ts.net", false)],
+        ));
+        let h = Harness::start_with_identity(
+            TailscaleMode::Auto,
+            Some(primary_addr),
+            Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
+            identify,
+        );
+        let app = router_over(&h, tmp.path());
+        until_status(&app, "box.tail.ts.net:443", StatusCode::OK).await;
+        let urls = h.control.tailnet_urls(&[primary_addr]);
+        assert_eq!(urls.serve, vec!["https://box.tail.ts.net".to_string()]);
+
+        // The same route, now published to the internet.
+        *slot.lock().unwrap() = Ok(named(
+            "box.tail.ts.net",
+            &[("https://box.tail.ts.net", true)],
+        ));
+        h.control.set_mode(TailscaleMode::Auto).await;
+        until_status(&app, "box.tail.ts.net:443", StatusCode::FORBIDDEN).await;
+        assert_eq!(
+            h.control.tailnet_urls(&[primary_addr]),
+            crate::serve_legs::TailnetUrls::default(),
+            "no URL is offered on a name the guard refuses"
+        );
+        h.finish().await;
+    }
+
     #[tokio::test]
     async fn switching_to_no_drops_the_leg_stops_the_watcher_and_closes_the_host_rule() {
-        if skip_without_leg_ip(
-            "switching_to_no_drops_the_leg_stops_the_watcher_and_closes_the_host_rule",
-        ) {
-            return;
-        }
         let (_primary, primary_addr) = primary_listener();
         let leg = SocketAddr::new(leg_ip(), primary_addr.port());
         let h = Harness::start(
             TailscaleMode::Auto,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             Some(leg),
-            Arc::new(|| Ok("127.0.0.2".parse().unwrap())),
+            Arc::new(|| Ok(leg_ip())),
         );
         assert!(
             h.control.watched().load(Ordering::SeqCst),
@@ -3148,13 +6720,10 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn switching_to_yes_binds_what_the_detection_found() {
-        if skip_without_leg_ip("switching_to_yes_binds_what_the_detection_found") {
-            return;
-        }
         let (_primary, primary_addr) = primary_listener();
         let h = Harness::start(
             TailscaleMode::No,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             None,
             Arc::new(|| Ok(leg_ip())),
@@ -3189,7 +6758,7 @@ mod live_tailscale_mode_tests {
         let (_primary, primary_addr) = primary_listener();
         let h = Harness::start(
             TailscaleMode::No,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             None,
             Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
@@ -3209,7 +6778,7 @@ mod live_tailscale_mode_tests {
         let (probed_tx, probed_rx) = std::sync::mpsc::channel();
         let h = Harness::start(
             TailscaleMode::No,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             None,
             Arc::new(move || {
@@ -3232,14 +6801,11 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn switching_from_yes_to_auto_keeps_the_leg_that_is_already_serving() {
-        if skip_without_leg_ip("switching_from_yes_to_auto_keeps_the_leg_that_is_already_serving") {
-            return;
-        }
         let (_primary, primary_addr) = primary_listener();
         let leg = SocketAddr::new(leg_ip(), primary_addr.port());
         let h = Harness::start(
             TailscaleMode::Yes,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             Some(leg),
             // The interface is still there, so the watcher's first probe plans
@@ -3257,13 +6823,10 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn a_run_started_with_no_tailscale_refuses_and_changes_nothing() {
-        if skip_without_leg_ip("a_run_started_with_no_tailscale_refuses_and_changes_nothing") {
-            return;
-        }
         let (_primary, primary_addr) = primary_listener();
         let h = Harness::start(
             TailscaleMode::No,
-            true,
+            NoTailscaleFlag::Given,
             Some(primary_addr),
             None,
             Arc::new(|| Ok(leg_ip())),
@@ -3286,9 +6849,6 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn the_leg_command_lane_stays_open_in_the_static_modes() {
-        if skip_without_leg_ip("the_leg_command_lane_stays_open_in_the_static_modes") {
-            return;
-        }
         // The loop holds a sender for its whole life, so a mode with no watcher
         // behind it is not a closed channel: switching back to `auto` later must
         // find the arm still listening.
@@ -3296,19 +6856,19 @@ mod live_tailscale_mode_tests {
         let leg = SocketAddr::new(leg_ip(), primary_addr.port());
         let h = Harness::start(
             TailscaleMode::Yes,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             None,
             Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
         );
         assert!(
             !h.control.watched().load(Ordering::SeqCst),
-            "yes starts no watcher thread"
+            "yes starts no ADDRESS watcher, only one for the name"
         );
 
-        // Generation 0 is what a serve that never started a watcher is on.
+        // Generation 1: the one the name watcher `yes` starts with is on.
         h.legs
-            .send((0, LegCommand::Bind(leg)))
+            .send((1, WatchEvent::Leg(LegCommand::Bind(leg))))
             .await
             .expect("the lane must still be open");
         let bound = tokio::time::timeout(WAIT, async {
@@ -3326,9 +6886,6 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn a_command_from_a_replaced_watcher_generation_is_dropped() {
-        if skip_without_leg_ip("a_command_from_a_replaced_watcher_generation_is_dropped") {
-            return;
-        }
         // A watcher parked in a probe when the mode changed comes back with a
         // command for the mode yaran already left. Acting on it would re-bind the
         // leg the change just let go.
@@ -3342,7 +6899,7 @@ mod live_tailscale_mode_tests {
         let parked = std::sync::Mutex::new(parked);
         let h = Harness::start(
             TailscaleMode::Auto,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             None,
             Arc::new(move || {
@@ -3359,8 +6916,14 @@ mod live_tailscale_mode_tests {
 
         // One lane, so these arrive in order: once the current-generation command
         // has been acted on, the stale one has already been decided.
-        h.legs.send((1, LegCommand::Bind(stale))).await.unwrap();
-        h.legs.send((2, LegCommand::Bind(current))).await.unwrap();
+        h.legs
+            .send((1, WatchEvent::Leg(LegCommand::Bind(stale))))
+            .await
+            .unwrap();
+        h.legs
+            .send((2, WatchEvent::Leg(LegCommand::Bind(current))))
+            .await
+            .unwrap();
         let landed = tokio::time::timeout(WAIT, async {
             loop {
                 if h.bound() == Some(current) {
@@ -3381,9 +6944,6 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn a_watcher_command_from_before_the_switch_to_no_is_dropped() {
-        if skip_without_leg_ip("a_watcher_command_from_before_the_switch_to_no_is_dropped") {
-            return;
-        }
         // A watcher whose probe returned in the window between the switch to
         // `no` storing its stop flag and the loop reading the next command is
         // still allowed to emit. Its bind must not put the leg back.
@@ -3396,7 +6956,7 @@ mod live_tailscale_mode_tests {
         let parked = std::sync::Mutex::new(parked);
         let h = Harness::start(
             TailscaleMode::Auto,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             Some(leg),
             Arc::new(move || {
@@ -3411,10 +6971,16 @@ mod live_tailscale_mode_tests {
         );
 
         // Generation 1 is the startup watcher's, which `no` stopped.
-        h.legs.send((1, LegCommand::Bind(stale))).await.unwrap();
+        h.legs
+            .send((1, WatchEvent::Leg(LegCommand::Bind(stale))))
+            .await
+            .unwrap();
         // One lane, so once this has been acted on the stale one has already
         // been decided.
-        h.legs.send((2, LegCommand::Bind(leg))).await.unwrap();
+        h.legs
+            .send((2, WatchEvent::Leg(LegCommand::Bind(leg))))
+            .await
+            .unwrap();
         let landed = tokio::time::timeout(WAIT, async {
             loop {
                 if h.bound() == Some(leg) {
@@ -3444,10 +7010,10 @@ mod live_tailscale_mode_tests {
         for mode in [TailscaleMode::Auto, TailscaleMode::Yes] {
             let h = Harness::start(
                 TailscaleMode::No,
-                false,
+                NoTailscaleFlag::Absent,
                 None,
                 None,
-                Arc::new(|| Ok("127.0.0.2".parse().unwrap())),
+                Arc::new(|| Ok(leg_ip())),
             );
             assert_eq!(
                 h.control.set_mode(mode).await,
@@ -3467,9 +7033,6 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn choosing_yes_again_leaves_a_leg_that_is_already_bound_alone() {
-        if skip_without_leg_ip("choosing_yes_again_leaves_a_leg_that_is_already_bound_alone") {
-            return;
-        }
         // Re-binding yaran's own port fails with EADDRINUSE and warns about a
         // conflict that is yaran itself, so the idempotence guard has to hold on
         // the mode the serve is already in.
@@ -3480,7 +7043,7 @@ mod live_tailscale_mode_tests {
         let _occupied = std::net::TcpListener::bind(leg).expect("the leg address is free");
         let h = Harness::start(
             TailscaleMode::Yes,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             Some(leg),
             Arc::new(|| Ok(leg_ip())),
@@ -3526,7 +7089,13 @@ mod live_tailscale_mode_tests {
     async fn a_superseded_request_is_answered_rather_than_left_hanging() {
         let (_primary, primary_addr) = primary_listener();
         let (detect, mut started, release) = parked_detector();
-        let h = Harness::start(TailscaleMode::No, false, Some(primary_addr), None, detect);
+        let h = Harness::start(
+            TailscaleMode::No,
+            NoTailscaleFlag::Absent,
+            Some(primary_addr),
+            None,
+            detect,
+        );
 
         let control = h.control.clone();
         let first = tokio::spawn(async move { control.set_mode(TailscaleMode::Yes).await });
@@ -3554,7 +7123,13 @@ mod live_tailscale_mode_tests {
         // cannot hold a teardown, a leg death or a watcher command behind it.
         let (_primary, primary_addr) = primary_listener();
         let (detect, mut started, release) = parked_detector();
-        let h = Harness::start(TailscaleMode::No, false, Some(primary_addr), None, detect);
+        let h = Harness::start(
+            TailscaleMode::No,
+            NoTailscaleFlag::Absent,
+            Some(primary_addr),
+            None,
+            detect,
+        );
 
         let control = h.control.clone();
         let pending = tokio::spawn(async move { control.set_mode(TailscaleMode::Yes).await });
@@ -3577,9 +7152,6 @@ mod live_tailscale_mode_tests {
 
     #[tokio::test]
     async fn a_closed_mode_lane_leaves_the_rest_of_the_loop_working() {
-        if skip_without_leg_ip("a_closed_mode_lane_leaves_the_rest_of_the_loop_working") {
-            return;
-        }
         // Every control handle is gone, so no mode change can arrive again. The
         // loop keeps serving: the legs, the parent lane and the teardown all
         // still work, and the mode arm is simply disabled rather than left
@@ -3587,7 +7159,7 @@ mod live_tailscale_mode_tests {
         let (_primary, primary_addr) = primary_listener();
         let h = Harness::start(
             TailscaleMode::No,
-            false,
+            NoTailscaleFlag::Absent,
             Some(primary_addr),
             None,
             Arc::new(|| Err(TailscaleUnavailable::NoAddress)),
@@ -3603,7 +7175,7 @@ mod live_tailscale_mode_tests {
 
         // Ordinary work, on the same runtime, after the lane closed.
         let leg = SocketAddr::new(leg_ip(), primary_addr.port());
-        legs.send((0, LegCommand::Bind(leg)))
+        legs.send((0, WatchEvent::Leg(LegCommand::Bind(leg))))
             .await
             .expect("the leg lane is still open");
         tokio::time::timeout(WAIT, async {
@@ -3647,10 +7219,14 @@ mod config_surface_tests {
     use yaran_core::worker::WorkerEvent;
 
     /// Minimal web-layer `ConfigSurface`: reload re-reads config (here a default)
-    /// and posts `ConfigReloadReady`; recover_render produces a plain config text.
+    /// and posts `ConfigReloadReady`; `recover_render` produces a plain config text.
     struct WebConfigSurface;
 
     impl ConfigSurface for WebConfigSurface {
+        fn start_surface(&self) -> yaran_core::config::Surface {
+            yaran_core::config::Surface::YaranServer
+        }
+
         fn reload(&self, _paths: YaranPaths, worker_tx: Sender<WorkerEvent>) {
             // Drive completion through the guard, matching the production surfaces
             // so the test exercises the guarded completion path rather than a bare send.
@@ -3674,7 +7250,8 @@ mod config_surface_tests {
                 config_path: std::path::PathBuf::from("/tmp/yaran-web-test/config.toml"),
                 sessions_db_path: std::path::PathBuf::from("/tmp/yaran-web-test/sessions.sqlite3"),
                 worktrees_root: std::path::PathBuf::from("/tmp/yaran-web-test/worktrees"),
-                lock_path: std::path::PathBuf::from("/tmp/yaran-web-test/yaran.lock"),
+                lock_path: std::path::PathBuf::from("/tmp/yaran-web-test/dux.lock"),
+                socket_path: std::path::PathBuf::from("/tmp/yaran-web-test/yaran.sock"),
             },
             tx,
         );
@@ -3689,5 +7266,199 @@ mod config_surface_tests {
             body.contains("[defaults]"),
             "render missing defaults: {body}"
         );
+    }
+}
+
+/// The no-password alarm in each of the three serving modes. Every mode builds
+/// its router through `server::build_app`, so the alarm is worded once; these
+/// prove each mode's own start path wires it to that mode's surface: the
+/// console `yaran server` prints, the log the start-web-server flip shows, and the
+/// status lane the terminal UI reads beside its background serve.
+#[cfg(test)]
+mod auth_warning_mode_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    const WAIT: Duration = Duration::from_secs(10);
+    const ALARM: &str = "No password is set and yaran is reachable beyond this machine";
+
+    fn engine_in(tmp: &std::path::Path) -> yaran_core::engine::Engine {
+        let paths = YaranPaths {
+            root: tmp.to_path_buf(),
+            config_path: tmp.join("config.toml"),
+            sessions_db_path: tmp.join("sessions.sqlite3"),
+            worktrees_root: tmp.join("worktrees"),
+            lock_path: tmp.join("dux.lock"),
+            socket_path: tmp.join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        crate::test_support::bootstrap_test_engine(&paths).unwrap()
+    }
+
+    fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// `yaran server` builds its router with `router_params` and its own stdout
+    /// console; bound on every address with no password, the console prints
+    /// the alarm in its error tone.
+    #[test]
+    fn yaran_server_prints_the_alarm_on_its_console_in_red() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let engine = engine_in(tmp.path());
+        let config = engine.config.clone();
+        let (handle, _join) = engine_actor::spawn_engine_thread(engine);
+        let (console, sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Colored);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _app = {
+            let _guard = runtime.enter();
+            server::build_app(
+                handle,
+                axum::Router::new(),
+                router_params(
+                    &config,
+                    console,
+                    crate::server::AccessLog::Off,
+                    vec!["0.0.0.0".parse().unwrap()],
+                    BackgroundHooks::default(),
+                ),
+            )
+        };
+        until("yaran server's console never printed the alarm", || {
+            sink.contents().contains(ALARM)
+        });
+        let line = sink
+            .contents()
+            .lines()
+            .find(|l| l.contains(ALARM))
+            .unwrap()
+            .to_string();
+        assert!(line.contains("\x1b[31m"), "red: {line:?}");
+        assert!(
+            line.contains("yaran config set server.auth.password"),
+            "{line}"
+        );
+    }
+
+    /// `yaran server` has no status line, so a reload that moves the control
+    /// socket says on its console that the new path waits for the next start.
+    #[test]
+    fn yaran_server_says_on_its_console_that_a_new_control_socket_waits_for_a_restart() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let engine = engine_in(tmp.path());
+        let (console, sink) =
+            crate::console::Console::test_capture(crate::console::Coloring::Plain);
+        let (handle, _join) = engine_actor::spawn_engine_thread_with_console(
+            engine,
+            console,
+            Arc::new(QuitForce::default()),
+        );
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            "[server]\ncontrol_socket = \"/run/user/1000/yaran.sock\"\n",
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(handle.apply_wire(yaran_core::wire::WireCommand::ReloadConfig {}))
+            .expect("the reload runs");
+        until(
+            "yaran server's console never said the socket moves at the next start",
+            || sink.contents().contains("control_socket"),
+        );
+        assert!(
+            sink.contents().contains("next time yaran starts"),
+            "{}",
+            sink.contents()
+        );
+    }
+
+    /// The flip serves through `ServeCore` with a capturing console; its log
+    /// shows the alarm once the Tailscale leg puts yaran on the tailnet.
+    #[test]
+    fn the_flip_shows_the_alarm_in_its_log_when_the_tailnet_leg_binds() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let engine = engine_in(tmp.path());
+        let config = engine.config.clone();
+        let (handle, _ends) = engine_actor::build_actor_channels(&engine);
+        let ring = yaran_core::activity::ActivityRing::new(500);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let core = ServeCore::start(
+            handle,
+            ServeListeners {
+                web: vec![listener],
+                control: None,
+            },
+            &config,
+            &Console::capture(ring.clone()),
+            crate::server::AccessLog::Off,
+            SignalPolicy::Inherited,
+            BackgroundHooks::default(),
+        )
+        .unwrap();
+        let texts = || -> Vec<String> {
+            ring.snapshot()
+                .lines
+                .iter()
+                .map(yaran_core::serve_log::LogLine::text)
+                .collect()
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !texts().iter().any(|t| t.contains(ALARM)),
+            "loopback alone is not beyond this machine"
+        );
+        *core.tailscale_mode().bound_leg().lock().unwrap() =
+            Some("100.64.0.5:3890".parse().unwrap());
+        until("the flip's log never showed the alarm", || {
+            texts().iter().any(|t| t.contains(ALARM))
+        });
+        let line = texts().into_iter().find(|t| t.contains(ALARM)).unwrap();
+        assert!(line.contains("100.64.0.5"), "names where: {line}");
+        let _ = core.stop(&Arc::new(AtomicBool::new(false)));
+    }
+
+    /// The background serve has no console; the alarm reaches the terminal UI
+    /// beside it through the engine's status lane, which its status line reads.
+    #[test]
+    fn the_background_serve_hands_the_alarm_to_the_terminal_ui() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let mut engine = engine_in(tmp.path());
+        engine
+            .changed_files_poller_started
+            .store(true, Ordering::Relaxed);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut server = crate::background::BackgroundServer::start(
+            &mut engine,
+            vec![listener],
+            Vec::new(),
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
+        )
+        .unwrap();
+        *server.tailscale_mode_control().bound_leg().lock().unwrap() =
+            Some("100.64.0.5:3890".parse().unwrap());
+        let mut said = None;
+        until("the terminal UI was never told", || {
+            server.service(&mut engine);
+            while let Ok(event) = engine.worker_rx.try_recv() {
+                if let yaran_core::worker::WorkerEvent::PollerStatus(status) = event
+                    && status.message.contains(ALARM)
+                {
+                    said = Some(status);
+                }
+            }
+            said.is_some()
+        });
+        let status = said.unwrap();
+        assert_eq!(status.tone, yaran_core::statusline::StatusTone::Warning);
+        assert!(status.quiet_on.web, "the web shows its own banner instead");
+        assert!(!status.quiet_on.tui, "the terminal UI shows it");
+        let _ = server.stop();
     }
 }

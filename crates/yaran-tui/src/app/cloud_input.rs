@@ -7,6 +7,7 @@
 //! - A click lands the login's caret, or arms a confirm button that acts on release.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_input.rs
 //! ├── app
@@ -18,6 +19,7 @@
 //! Used by:
 //! app/cloud_input.rs
 //! └── app
+//! ```
 //! <module-headers:end>
 
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -25,7 +27,7 @@ use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use super::cloud_commands::CloudPrompt;
 use super::input::{contains_point, cursor_from_single_line_position};
 use super::modal::{ModalKeyStep, binding_lookup_is_suppressed, click_target, modal_key_step};
-use super::*;
+use super::{App, BindingScope, ConfirmFocus, OverlayMouseLayout, PromptState, Rect};
 
 /// What a key does, decided before anything is mutated.
 enum CloudKey {
@@ -42,14 +44,22 @@ impl App {
         let PromptState::Cloud(prompt) = &self.prompt else {
             return None;
         };
-        let field = matches!(prompt, CloudPrompt::Login(_));
-        let action = if binding_lookup_is_suppressed(key, field) {
+        let field = if matches!(prompt, CloudPrompt::Login(_)) {
+            super::modal::TextFieldFocus::Field
+        } else {
+            super::modal::TextFieldFocus::Elsewhere
+        };
+        let action = if binding_lookup_is_suppressed(key, field, self.extended_keys) {
             None
         } else {
             self.bindings.lookup(&key, BindingScope::Dialog)
         };
         let todo = match (prompt, modal_key_step(action, key, field)) {
-            (_, ModalKeyStep::Close) => CloudKey::Close,
+            (_, ModalKeyStep::Close)
+            | (
+                CloudPrompt::Status(_) | CloudPrompt::PairPhone(_),
+                ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus,
+            ) => CloudKey::Close,
             (CloudPrompt::Login(_), ModalKeyStep::Confirm) => CloudKey::Submit,
             (CloudPrompt::Login(_), ModalKeyStep::FallThroughToField) => CloudKey::Type,
             (CloudPrompt::Logout(_) | CloudPrompt::Rotate(_), ModalKeyStep::MoveFocus(_)) => {
@@ -59,10 +69,6 @@ impl App {
                 CloudPrompt::Logout(_) | CloudPrompt::Rotate(_),
                 ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus,
             ) => CloudKey::Resolve,
-            (
-                CloudPrompt::Status(_) | CloudPrompt::PairPhone(_),
-                ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus,
-            ) => CloudKey::Close,
             _ => CloudKey::Nothing,
         };
         self.cloud.pressed = None;
@@ -80,8 +86,8 @@ impl App {
                 CloudKey::Resolve,
                 PromptState::Cloud(CloudPrompt::Logout(focus) | CloudPrompt::Rotate(focus)),
             ) => {
-                let confirm = focus.is_confirm();
-                self.resolve_cloud_confirm(confirm);
+                let answer = focus.answer();
+                self.resolve_cloud_confirm(answer);
             }
             _ => {}
         }
@@ -91,7 +97,7 @@ impl App {
     /// A click lands the login's caret, or presses a confirm's button (acting on
     /// the release over the same button). Anything else falls through to the
     /// generic outside-click handling.
-    pub(crate) fn handle_cloud_mouse(&mut self, mouse: &MouseEvent) -> Option<bool> {
+    pub(crate) fn handle_cloud_mouse(&mut self, mouse: MouseEvent) -> Option<bool> {
         let OverlayMouseLayout::Cloud {
             field,
             cancel,
@@ -131,7 +137,7 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 let pressed = self.cloud.pressed.take()?;
                 if hit == Some(pressed) {
-                    self.resolve_cloud_confirm(pressed.is_confirm());
+                    self.resolve_cloud_confirm(pressed.answer());
                 }
                 Some(false)
             }

@@ -22,6 +22,12 @@
 //! which meant `cargo install` and every release build shipped a test helper to
 //! users. Folding it in here means it only exists when tests are built.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "a harness = false test speaks the libtest protocol, and its re-executed images report on stdout"
+)]
+
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -63,6 +69,16 @@ const CASES: &[Case] = &[
 ];
 
 fn main() {
+    // Positional arguments are name filters, except the value that follows a
+    // libtest flag which takes one in the separate-word form.
+    const TAKES_VALUE: &[&str] = &[
+        "--test-threads",
+        "--skip",
+        "--format",
+        "--color",
+        "--logfile",
+        "-Z",
+    ];
     match std::env::var(ROLE_VAR).as_deref() {
         Ok("gen1") => return generation_one(&handoff_from_env()),
         Ok("gen2") => return generation_two(&handoff_from_env()),
@@ -93,16 +109,6 @@ fn main() {
         println!("\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed");
         return;
     }
-    // Positional arguments are name filters, except the value that follows a
-    // libtest flag which takes one in the separate-word form.
-    const TAKES_VALUE: &[&str] = &[
-        "--test-threads",
-        "--skip",
-        "--format",
-        "--color",
-        "--logfile",
-        "-Z",
-    ];
     let mut filters: Vec<&String> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -129,12 +135,11 @@ fn main() {
     println!("\nrunning {} tests", selected.len());
     let mut failed = Vec::new();
     for (name, case) in &selected {
-        match std::panic::catch_unwind(case) {
-            Ok(()) => println!("test {name} ... ok"),
-            Err(_) => {
-                println!("test {name} ... FAILED");
-                failed.push(*name);
-            }
+        if let Ok(()) = std::panic::catch_unwind(case) {
+            println!("test {name} ... ok");
+        } else {
+            println!("test {name} ... FAILED");
+            failed.push(*name);
         }
     }
     println!(
@@ -230,7 +235,6 @@ fn generation_one(handoff_path: &Path) {
     // is deliberately leaked into the exec.
     std::mem::forget(client);
 
-    use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().expect("current exe");
     let err = Command::new(exe)
         .env(ROLE_VAR, "gen2")

@@ -79,9 +79,8 @@ function clamp(value: number, low: number, high: number): number {
  * for a wide glyph, 0 for the CONTINUATION cell after it, 1 otherwise; `chars`
  * is empty for a continuation cell and for a cell never written.
  *
- * Which glyphs are wide is xterm's answer, and it is narrower than "anything
- * that looks big": under its default Unicode v6 provider, CJK and the fullwidth
- * forms are the two-cell case and a U+1F300-block emoji is a single cell.
+ * Which glyphs are wide is xterm's answer, under the Unicode 11 table every
+ * pane selects: CJK, the fullwidth forms and emoji are the two-cell case.
  */
 export interface RowCell {
   chars: string
@@ -322,6 +321,34 @@ export interface SelectSpan {
   col: number
   row: number
   length: number
+}
+
+/**
+ * Whether a forward span covers any cell with text in it, stopping at the
+ * first one. Cheaper than building the selected string, which matters because
+ * a drag asks on every move; a row the buffer does not have counts as blank.
+ */
+export function spanHasText(
+  rowAt: (row: number) => readonly RowCell[] | undefined,
+  span: SelectSpan,
+  cols: number,
+): boolean {
+  let row = span.row
+  let col = span.col
+  let remaining = span.length
+  while (remaining > 0) {
+    const cells = rowAt(row)
+    const end = Math.min(cols, col + remaining)
+    if (cells) {
+      for (let x = col; x < end && x < cells.length; x++) {
+        if (!isBlank(cells[x])) return true
+      }
+    }
+    remaining -= end - col
+    row += 1
+    col = 0
+  }
+  return false
 }
 
 /**

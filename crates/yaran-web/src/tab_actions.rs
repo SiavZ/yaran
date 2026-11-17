@@ -5,17 +5,18 @@
 //! "Detach agent" action, which stops every tab at once, is `POST .../kill`.)
 //!
 //! Every tab of `:id` is addressable at `.../tabs/:tab`, the session-slot tab
-//! included, and so is its PTY socket. What each verb does with the slot tab is a
-//! stated decision per route rather than a consequence of the slot tab having no
-//! `agent_tabs` row: `DELETE` closes it by PROMOTING the next tab in strip order
-//! into the slot, which is a pointer move, so the successor keeps its own id, row,
-//! process and sockets and only changes role; `PATCH` accepts it and delegates to
-//! the session-level provider change. Neither infers slot-ness from a missing row;
-//! both ask `EngineHandle::is_slot_tab`.
+//! included, and so is its PTY socket. `DELETE` closes the slot tab by PROMOTING
+//! the leftmost other tab into the slot, a pointer move, so the successor keeps
+//! its own id, row, process and sockets and only changes role; `PATCH` accepts it
+//! and delegates to the session-level provider change. Both ask
+//! `EngineHandle::is_slot_tab` rather than infer slot-ness from a missing row.
 //!
 //! Closing an agent's ONLY tab is refused with a 400: an agent always has a slot,
 //! and that gesture is the agent's detach. A `:tab` not owned by `:id` is a 404,
 //! and a provider that is not configured is a 400.
+//!
+//! `POST .../tabs/:tab/stop` ends one tab's process and keeps the tab; the
+//! agent detaches only when it was the last running one.
 //!
 //! `POST .../tabs/:tab/start` is the only start that gets past a recorded launch
 //! failure: opening a failed tab's PTY socket deliberately refuses to launch it, so
@@ -27,25 +28,33 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, patch, post, put},
 };
 use serde::{Deserialize, Serialize};
 
+use yaran_core::operations::OperationKind;
 use yaran_core::wire::WireCommand;
 
+use crate::engine_actor::OperationTicket;
 use crate::git_routes::resolve_worktree;
-use crate::rest_common::{id_within_bound, scope_from_headers, unknown_session};
+use crate::rest_common::{
+    ForceConnectedQuery, OperationQuery, dispatch_guarded, id_within_bound, operation_accepted,
+    refusal, scope_from_headers, ticket_accepted, unknown_session,
+};
 use crate::server::AppState;
+use std::sync::Arc;
 
-pub fn routes() -> Router<AppState> {
+pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/sessions/{id}/tabs", post(create_tab))
+        .route("/api/v1/sessions/{id}/tabs/reorder", post(reorder_tabs))
         .route("/api/v1/sessions/{id}/tabs/{tab}", delete(delete_tab))
         .route("/api/v1/sessions/{id}/tabs/{tab}", patch(retarget_tab))
         .route("/api/v1/sessions/{id}/tabs/{tab}/start", post(start_tab))
+        .route("/api/v1/sessions/{id}/tabs/{tab}/stop", post(stop_tab))
         .route(
             "/api/v1/sessions/{id}/focused-tab",
             put(set_focused_tab_route),
@@ -93,6 +102,7 @@ struct SetFocusedTabBody {
 async fn create_tab(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
     body: Option<Json<CreateTabBody>>,
 ) -> Response {
     if !id_within_bound(&id) {
@@ -102,7 +112,17 @@ async fn create_tab(
         return resp.into_response();
     }
     let provider = body.and_then(|b| b.0.provider);
-    match state.engine.create_agent_tab(id.clone(), provider).await {
+    // Recorded whether or not the client follows it; the answer is the
+    // record only when it asked.
+    let ticket = OperationTicket::new(OperationKind::TabCreate);
+    let followed = operation.asked().then(|| Arc::clone(&ticket.record));
+    let ticket = Some(ticket);
+    match state
+        .engine
+        .create_agent_tab(id.clone(), provider, ticket)
+        .await
+    {
+        Ok(_) if let Some(record) = &followed => ticket_accepted(record),
         Ok((tab_id, provider)) => {
             let location = format!("/api/v1/sessions/{id}/tabs/{tab_id}");
             (
@@ -112,7 +132,72 @@ async fn create_tab(
             )
                 .into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// Body for a tab reorder: every tab of the agent, in the desired order.
+#[derive(Deserialize)]
+struct ReorderTabsBody {
+    tab_ids: Vec<String>,
+}
+
+/// 200 body for a tab reorder: the lowest workspace revision that is certain to
+/// show the new order. Pushed documents travel on another channel from this
+/// answer, so one made before the reorder can still arrive after it; the browser
+/// keeps its own order on screen until a document at or past this revision (or a
+/// fetch begun after the answer) replaces it.
+#[derive(Serialize)]
+struct ReorderedTabs {
+    min_workspace_rev: u64,
+}
+
+/// `POST /api/v1/sessions/:id/tabs/reorder` - persist a new left-to-right order
+/// for the agent's provider tabs, the slot tab included. `tab_ids` must be the
+/// complete set of the agent's tabs; the engine validates it strictly. Which
+/// tab holds the slot does not change.
+///
+/// The revision is read once the engine has answered that the command was
+/// applied: the document published then may or may not show the change, and
+/// every later one was built after it and does. The cached document trails the
+/// engine by up to one spine check, so a read of it right after this answer can
+/// still be the older revision.
+async fn reorder_tabs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ReorderTabsBody>,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_session();
+    }
+    if let Err(resp) = resolve_worktree(&state, id.clone()).await {
+        return resp.into_response();
+    }
+    match state
+        .engine
+        .apply_wire_scoped(
+            WireCommand::ReorderAgentTabs {
+                session_id: id,
+                tab_ids: body.tab_ids,
+            },
+            scope_from_headers(&headers, &state.connections),
+        )
+        .await
+    {
+        Ok(_) => {
+            let published = state
+                .engine
+                .workspace_docs()
+                .borrow()
+                .as_ref()
+                .map_or(0, |doc| doc.rev);
+            Json(ReorderedTabs {
+                min_workspace_rev: published.saturating_add(1),
+            })
+            .into_response()
+        }
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
 }
 
@@ -151,34 +236,53 @@ async fn resolve_tab_of_session(
 }
 
 /// `DELETE /api/v1/sessions/:id/tabs/:tab` - close one tab. Naming the
-/// session-slot tab promotes the next tab in strip order into it; the agent's
+/// session-slot tab promotes the leftmost other tab into it; the agent's
 /// only tab is refused by the engine, because an agent always has a slot. A
 /// `:tab` not owned by `:id` is a 404.
 async fn delete_tab(
     State(state): State<AppState>,
     Path((id, tab)): Path<(String, String)>,
+    Query(operation): Query<OperationQuery>,
+    Query(force): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
     headers: HeaderMap,
 ) -> Response {
     if let Err(resp) = resolve_tab_of_session(&state, &id, &tab).await {
         return *resp;
     }
-    match state
-        .engine
-        .apply_wire_scoped(
-            WireCommand::CloseAgentTab {
-                session_id: id.clone(),
-                tab_id: tab,
-            },
-            scope_from_headers(&headers, &state.connections),
-        )
-        .await
+    let command = WireCommand::CloseAgentTab {
+        session_id: id.clone(),
+        tab_id: tab,
+    };
+    let result = match dispatch_guarded(
+        &state,
+        command,
+        &headers,
+        OperationKind::TabClose,
+        &operation,
+        &force,
+        &client,
+    )
+    .await
     {
+        Ok(result) => result,
+        Err(refused) => return refused.into_response(),
+    };
+    let result = result.and_then(|guarded| {
+        if operation.asked() {
+            guarded.followed().map(|(outcome, op)| (outcome, Some(op)))
+        } else {
+            Ok((guarded.outcome, None))
+        }
+    });
+    match result {
+        Ok((_, Some(op))) => operation_accepted(&op),
         // `Engine::close_tab` detaches the agent the same way `KillSessionPty`
         // does when this was the session's LAST live tab, and returns that
         // in-flight-aware outcome on the wire result. Consume it directly rather
         // than re-deriving from `has_live_process`, which cannot see a launch
         // still in flight for a sibling tab.
-        Ok(outcome) => {
+        Ok((outcome, None)) => {
             let detached = outcome.detached.unwrap_or(true);
             (
                 StatusCode::OK,
@@ -192,7 +296,7 @@ async fn delete_tab(
         // A concurrent close removed the row between the ownership check and the
         // command: "gone" is 404, not a validation error (mirrors kill_session).
         Err(e) if e.contains("unknown tab") => (StatusCode::NOT_FOUND, e).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
 }
 
@@ -202,13 +306,66 @@ async fn delete_tab(
 async fn start_tab(
     State(state): State<AppState>,
     Path((id, tab)): Path<(String, String)>,
+    Query(operation): Query<OperationQuery>,
 ) -> Response {
     if let Err(resp) = resolve_tab_of_session(&state, &id, &tab).await {
         return *resp;
     }
-    match state.engine.start_agent_tab(tab).await {
+    // Recorded whether or not the client follows it, as a tab create is.
+    let ticket = OperationTicket::new(OperationKind::TabStart);
+    let followed = operation.asked().then(|| Arc::clone(&ticket.record));
+    let ticket = Some(ticket);
+    match state.engine.start_agent_tab(tab, ticket).await {
+        Ok(()) if let Some(record) = &followed => ticket_accepted(record),
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// `POST /api/v1/sessions/:id/tabs/:tab/stop` - end any tab's process and keep it dormant;
+/// the agent detaches only when it was its last running tab, and a stopped tab is a no-op
+/// that says so. `409 attached` while somebody else is attached, unless `force_connected`.
+async fn stop_tab(
+    State(state): State<AppState>,
+    Path((id, tab)): Path<(String, String)>,
+    Query(operation): Query<OperationQuery>,
+    Query(force): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = resolve_tab_of_session(&state, &id, &tab).await {
+        return *resp;
+    }
+    let command = WireCommand::StopAgentTab {
+        session_id: id,
+        tab_id: tab,
+    };
+    let result = match dispatch_guarded(
+        &state,
+        command,
+        &headers,
+        OperationKind::TabStop,
+        &operation,
+        &force,
+        &client,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(refused) => return refused.into_response(),
+    };
+    let result = result.and_then(|guarded| {
+        if operation.asked() {
+            guarded.followed().map(|(_, op)| Some(op))
+        } else {
+            Ok(None)
+        }
+    });
+    match result {
+        Ok(Some(op)) => operation_accepted(&op),
+        Ok(None) => StatusCode::OK.into_response(),
+        Err(e) if e.contains("unknown tab") => (StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
 }
 

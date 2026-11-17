@@ -17,8 +17,10 @@ import {
   EXPLORER_LAYOUT_KEY,
   EXPLORER_MIN_SIZE_PX,
 } from "@/lib/editorLayout"
+import { type ReactNode, useEffect } from "react"
 import { agentRoot, rootKey } from "@/lib/editorRoot"
 import { OPEN_IN_EDITORS } from "@/lib/editors"
+import { openModals } from "@yaran/ui-kit/modalHistory"
 
 // These cases render the whole editor shell and then wait on `waitFor` polls, so
 // a busy machine can push a perfectly healthy run past the default per-test
@@ -62,6 +64,7 @@ const TYPED = "original contents\nplus a great deal more that the server refuses
 
 let mockState: YaranState
 const editorSetTabDirtyMock = vi.fn()
+const editorSetTabModeMock = vi.fn()
 const closeEditorMock = vi.fn()
 // The two ways a tab can be closed, spied so the deleted-file banner's "Close
 // tab" can be checked for taking the SAME route the tab strip's own close
@@ -69,16 +72,35 @@ const closeEditorMock = vi.fn()
 // dirty-tab confirm when there is.
 const editorCloseTabMock = vi.fn()
 const openEditorCloseTabMock = vi.fn()
+// The view reports the editor makes up to the address.
+const editorSyncViewMock = vi.fn()
+const editorConsumeArrivalMock = vi.fn()
+// On for the cases that run the REAL store loop: the editor's reports land in
+// the store, and what the store then holds is what the editor renders from.
+let realStore = false
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
   return {
     ...actual,
-    useYaran: () => mockState,
+    useYaran: () => (realStore ? actual.useYaran() : mockState),
     editorSetTabDirty: editorSetTabDirtyMock,
+    editorSetTabMode: (...a: unknown[]) => editorSetTabModeMock(...a),
     closeEditor: (...a: unknown[]) => closeEditorMock(...a),
     editorCloseTab: (...a: unknown[]) => editorCloseTabMock(...a),
     openEditorCloseTab: (...a: unknown[]) => openEditorCloseTabMock(...a),
+    editorSyncView: (...a: Parameters<typeof actual.editorSyncView>) =>
+      realStore ? actual.editorSyncView(...a) : editorSyncViewMock(...a),
+    editorConsumeArrival: (...a: Parameters<typeof actual.editorConsumeArrival>) =>
+      realStore ? actual.editorConsumeArrival(...a) : editorConsumeArrivalMock(...a),
   }
+})
+
+// Whether the page counts as opened locally. jsdom's own host is localhost, so
+// this is on unless a case turns it off.
+let localAccess = true
+vi.mock("@/lib/localAccess", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/localAccess")>()
+  return { ...actual, isLocalAccessHost: () => localAccess }
 })
 
 // Resolves with the save route's real success body (the file's fresh stamp),
@@ -159,7 +181,8 @@ vi.mock("@/lib/fileApi", async (importOriginal) => ({
     // mocked: the image-pane test asserts the exact URL the <img> gets.
     rawUrl: (_root: unknown, path: string) =>
       `/api/v1/sessions/s1/files/raw?path=${encodeURIComponent(path)}`,
-    diff: () => diffMock(),
+    diff: (...a: unknown[]) =>
+      (diffMock as unknown as (...x: unknown[]) => unknown)(...a),
     write: (...args: unknown[]) => writeMock(...args),
     openInEditor: vi.fn(),
     createFile: (...a: unknown[]) => createFileMock(...a),
@@ -181,19 +204,65 @@ vi.mock("@/lib/fileApi", async (importOriginal) => ({
 // the only thing that knows in production, so the stub hands `onReady` a fake
 // instance shaped like the one narrow read `EditorBody` makes of it.
 let selectionActive = false
+// The live editor the stand-in hands the status bar: a cursor parked at a known
+// place in a known model, with events that never fire.
+// The file the stand-in editor's model is for, and where the person is in it.
+let stubModelPath = PATH
+const STATUS_EDITOR = {
+  getModel: () => ({
+    uri: { toString: () => stubModelPath },
+    getLineCount: () => 42,
+    getEOL: () => "\n",
+    getOptions: () => ({ insertSpaces: true, tabSize: 4, indentSize: 4 }),
+    getValueLengthInRange: () => 0,
+  }),
+  getPosition: () => ({ lineNumber: 4, column: 2 }),
+  getVisibleRanges: () => [{ startLineNumber: 2 }],
+  getLayoutInfo: () => ({ height: 400 }),
+  onDidLayoutChange: () => ({ dispose() {} }),
+  setPosition: vi.fn(),
+  setScrollTop: vi.fn(),
+  revealLineInCenter: vi.fn(),
+  getTopForLineNumber: (line: number) => line * 20,
+  getSelection: () => ({ isEmpty: () => true }),
+  onDidChangeCursorSelection: () => ({ dispose() {} }),
+  onDidChangeModelContent: () => ({ dispose() {} }),
+  onDidChangeModel: () => ({ dispose() {} }),
+  onDidChangeModelOptions: () => ({ dispose() {} }),
+}
+function StubEditorLifecycle({
+  onEditorChange,
+}: {
+  onEditorChange?: (ed: unknown) => void
+}) {
+  useEffect(() => {
+    onEditorChange?.(STATUS_EDITOR)
+    return () => onEditorChange?.(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return null
+}
 function codeEditorStub() {
   return {
     default: ({
       value,
+      path,
       onChange,
       language,
       onReady,
+      onEditorChange,
+      readOnly,
     }: {
       value: string
-      onChange: (v: string) => void
+      onChange: (v: string, path: string) => void
+      path: string
       language?: string
       onReady?: (mon: unknown) => void
+      onEditorChange?: (ed: unknown) => void
+      readOnly?: boolean
     }) => (
+      <>
+      <StubEditorLifecycle onEditorChange={onEditorChange} />
       <textarea
         ref={() => {
           // The whole surface `EditorBody` touches on the instance: the
@@ -214,9 +283,11 @@ function codeEditorStub() {
         // picker tests can read what was actually handed to Monaco. Empty
         // means no override, which is "let Monaco infer from the URI".
         data-language={language ?? ""}
+        data-read-only={String(readOnly ?? false)}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value, path)}
       />
+      </>
     ),
   }
 }
@@ -291,16 +362,25 @@ const LANGUAGES = [
   { id: "plaintext", aliases: ["Plain Text", "text"], extensions: [".txt"] },
   { id: "typescript", aliases: ["TypeScript"], extensions: [".ts"] },
   { id: "toml", aliases: ["TOML"], extensions: [".toml"] },
+  { id: "yaml", aliases: ["YAML", "yaml"], extensions: [".yaml", ".yml"] },
 ]
 vi.mock("@/lib/monacoSetup", () => ({
   monaco: { languages: { getLanguages: () => LANGUAGES } },
   monacoLanguageForPath: () => undefined,
 }))
+// The picker's registry read, mocked statically: a mock of the dynamically
+// imported `monacoSetup` alone was now and then not applied, and real Monaco
+// loaded under jsdom (see `loadRegisteredLanguages`).
+vi.mock("@/lib/monacoLanguages", () => ({
+  loadRegisteredLanguages: async () => LANGUAGES,
+}))
 
 const toastError = vi.fn()
 const toastSuccess = vi.fn()
+const toastInfo = vi.fn()
 vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), {
+    info: (...a: unknown[]) => toastInfo(...a),
     success: (...a: unknown[]) => toastSuccess(...a),
     error: (...a: unknown[]) => toastError(...a),
     warning: vi.fn(),
@@ -381,6 +461,11 @@ async function mountWithDirtyTab() {
   return box as HTMLTextAreaElement
 }
 
+// Loaded at collection, where no test timeout applies: the first load of the
+// editor and the store behind it is the slowest step in the file, and inside a
+// test it is charged to whichever case happens to run first.
+await import("@/components/EditorOverlay")
+
 describe("a save the server refuses", () => {
   beforeEach(async () => {
     vi.clearAllMocks()
@@ -459,8 +544,12 @@ describe("drafts survive the editor closing", () => {
     vi.unstubAllGlobals()
   })
 
-  it("closing with a dirty tab does not prompt, it just closes", async () => {
+  it("takes no history entry of a dialog's, and closing with a dirty tab does not prompt, it just closes", async () => {
     await mountWithDirtyTab()
+    // The open editor is a position in the URL, which Back already leaves
+    // through the router; a dialog's own entry on top would make that Back
+    // close it by pushing the closed position instead.
+    expect(openModals()).toEqual([])
     fireEvent.click(screen.getByRole("button", { name: /^close$/i }))
     // No discard dialog: the close is immediate and non-destructive.
     expect(screen.queryByText(/discard unsaved changes/i)).toBeNull()
@@ -510,11 +599,33 @@ describe("drafts survive the editor closing", () => {
 // so a buffer-gated image tab would park on a spinner forever. Instead the
 // pane renders straight from /raw. SVG stays a TEXT tab (Monaco) whose
 // Preview toggle renders the current draft through a Blob URL.
-async function mountWithTab(path: string, mode: "file" | "diff" = "file") {
+function changesSlice(paths: string[]) {
+  return {
+    sessionId: SESSION,
+    phase: "loaded" as const,
+    rev: 1,
+    staged: [],
+    unstaged: paths.map((path) => ({
+      path,
+      status: "M",
+      additions: 1,
+      deletions: 0,
+      staged: false,
+    })),
+    error: null,
+  }
+}
+
+async function mountWithTab(
+  path: string,
+  mode: "file" | "diff" = "file",
+  changed: string[] = [],
+) {
   const { EditorOverlay } = await import("@/components/EditorOverlay")
   const { getSnapshot } = await import("@/lib/store")
   mockState = {
     ...getSnapshot(),
+    changes: changesSlice(changed),
     editorTarget: { root: agentRoot(SESSION), initialPath: path },
     editorTabs: {
       [rootKey(agentRoot(SESSION))]: {
@@ -558,6 +669,8 @@ async function mountTerminalRootedTab(path = "notes.md") {
   const { getSnapshot } = await import("@/lib/store")
   mockState = {
     ...getSnapshot(),
+    // Lists the open path, so only the root can be what hides the switch.
+    changes: { ...changesSlice([path]), sessionId: null },
     editorTarget: { root: TERMINAL_ROOT, initialPath: path },
     editorTabs: {
       [rootKey(TERMINAL_ROOT)]: {
@@ -594,9 +707,88 @@ describe("a terminal-rooted editor has no diff view at all", () => {
   })
 
   it("still keeps the switch for an agent root, so the absence above is the root's", async () => {
-    await mountWithTab("src/a.ts")
+    await mountWithTab("src/a.ts", "file", ["src/a.ts"])
     await screen.findByTestId("code-editor")
     expect(screen.queryByRole("group", { name: "View mode" })).not.toBeNull()
+  })
+})
+
+describe("the File/Diff switch follows the active file's changes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    installBootStubs()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  const switchGroup = () => screen.queryByRole("group", { name: "View mode" })
+
+  async function setChanges(
+    view: ReturnType<typeof render>,
+    changes: unknown,
+  ) {
+    const { EditorOverlay } = await import("@/components/EditorOverlay")
+    mockState = { ...mockState, changes } as unknown as YaranState
+    view.rerender(<EditorOverlay />)
+  }
+
+  it("offers no switch on a file the changes slice does not list, on the bar or the phone fold", async () => {
+    await mountWithTab("src/a.ts", "file", ["src/other.ts"])
+    await screen.findByTestId("code-editor")
+    expect(switchGroup()).toBeNull()
+    fireEvent.click(screen.getByLabelText("More editor actions"))
+    await screen.findByRole("menu")
+    expect(screen.queryByText("Diff view")).toBeNull()
+  })
+
+  it("offers it on a changed file", async () => {
+    await mountWithTab("src/a.ts", "file", ["src/a.ts"])
+    await screen.findByTestId("code-editor")
+    expect(switchGroup()).not.toBeNull()
+    fireEvent.click(screen.getByLabelText("More editor actions"))
+    await screen.findByRole("menu")
+    expect(screen.queryByText("Diff view")).not.toBeNull()
+  })
+
+  it("keeps the switch through a reload of the changes, and through one that errors", async () => {
+    const view = await mountWithTab("src/a.ts", "file", ["src/a.ts"])
+    await screen.findByTestId("code-editor")
+    const reloading = { ...changesSlice([]), phase: "loading" as const, rev: 0 }
+    await setChanges(view, reloading)
+    expect(switchGroup()).not.toBeNull()
+    await setChanges(view, { ...reloading, phase: "error", error: "boom" })
+    expect(switchGroup()).not.toBeNull()
+  })
+
+  it("offers it on the old path of a renamed file", async () => {
+    const view = await mountWithTab("src/old.ts", "file")
+    await screen.findByTestId("code-editor")
+    expect(switchGroup()).toBeNull()
+    const renamed = changesSlice(["src/new.ts"])
+    renamed.unstaged[0] = Object.assign(renamed.unstaged[0], {
+      renamed_from: "src/old.ts",
+    })
+    await setChanges(view, renamed)
+    expect(switchGroup()).not.toBeNull()
+  })
+
+  it("keeps it for a file in Diff that stops being changed until File is chosen, then moves focus off the vanishing button", async () => {
+    const view = await mountWithTab("src/a.ts", "diff", ["src/a.ts"])
+    await setChanges(view, changesSlice([]))
+    expect(switchGroup()).not.toBeNull()
+    const fileButton = within(switchGroup()!).getByRole("button", { name: /file/i })
+    fileButton.focus()
+    fireEvent.click(fileButton)
+    expect(editorSetTabModeMock).toHaveBeenCalledWith(
+      agentRoot(SESSION),
+      TAB_ID,
+      "file",
+    )
+    expect(document.activeElement).not.toBe(fileButton)
+    expect(document.activeElement).not.toBe(document.body)
   })
 })
 
@@ -680,7 +872,7 @@ describe("image and svg preview", () => {
     )
   })
 
-  it("the caption shows the pixel dimensions once the image loads", async () => {
+  it("the status bar shows the pixel dimensions once the image loads", async () => {
     await mountWithTab("assets/logo.png")
     const img = (await screen.findByAltText("assets/logo.png")) as HTMLImageElement
     // jsdom never decodes images; stamp the natural size and fire load.
@@ -688,6 +880,20 @@ describe("image and svg preview", () => {
     Object.defineProperty(img, "naturalHeight", { value: 480 })
     fireEvent.load(img)
     expect(screen.getByText(/640\s*×\s*480/)).toBeTruthy()
+  })
+
+  it("forgets the pixel size when a reload of the image fails, and on Retry", async () => {
+    await mountWithTab("assets/logo.png")
+    const img = (await screen.findByAltText("assets/logo.png")) as HTMLImageElement
+    Object.defineProperty(img, "naturalWidth", { value: 640 })
+    Object.defineProperty(img, "naturalHeight", { value: 480 })
+    fireEvent.load(img)
+    expect(screen.getByText(/640\s*×\s*480/)).toBeTruthy()
+    fireEvent.error(img)
+    expect(screen.queryByText(/640\s*×\s*480/)).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }))
+    await screen.findByAltText("assets/logo.png")
+    expect(screen.queryByText(/640\s*×\s*480/)).toBeNull()
   })
 
   it("an svg tab opens as text and its Preview renders the draft as an image", async () => {
@@ -1223,10 +1429,20 @@ describe("editor panel units and scroll surfaces", () => {
 // external-link arrow, so the pair read as one control accidentally
 // duplicated. The link keeps the arrow, which is what the arrow means on the
 // web; the local spawn takes a laptop.
-describe("the header's two open controls are told apart by their icons", () => {
-  beforeEach(() => {
+describe("the overlay's header names the root, and the status bar names the file", () => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     installBootStubs()
+    // An earlier describe's settled buffer would be seeded straight back in.
+    const { clearRootDrafts } = await import("@/lib/editorDrafts")
+    clearRootDrafts(rootKey(agentRoot(SESSION)))
+    readMock.mockResolvedValue({
+      path: PATH,
+      content: ON_DISK,
+      binary: false,
+      read_only: false,
+      size: 2048,
+    })
   })
 
   afterEach(() => {
@@ -1234,9 +1450,100 @@ describe("the header's two open controls are told apart by their icons", () => {
     vi.unstubAllGlobals()
   })
 
-  it("gives them different icons, and the arrow to the one that is a link", async () => {
+  it("says Editor for the agent, as a chip, and keeps its own two ways out", async () => {
     await mountWithTab(PATH)
-    const local = screen.getByText("Open local editor").closest("button")!
+    await screen.findByTestId("code-editor")
+    const header = screen
+      .getByRole("button", { name: /the file explorer/i })
+      .closest("div.border-b") as HTMLElement
+    expect(within(header).getByText("Editor for")).toBeTruthy()
+    // No spine in this harness, so the name falls back to the session id,
+    // which is poor but truthful.
+    const chip = within(header).getByText(SESSION)
+    expect(chip.getAttribute("data-slot")).toBe("inline-code")
+    // The path is no longer the header's.
+    expect(within(header).queryByText(PATH)).toBeNull()
+    // The overlay is desktop-only and keeps Open in new tab and Close; the
+    // phone's Back is the standalone tab's alone.
+    expect(within(header).getByRole("link", { name: /open in new tab/i })).toBeTruthy()
+    expect(within(header).getByRole("button", { name: /^close$/i })).toBeTruthy()
+    expect(within(header).queryByRole("button", { name: "Back" })).toBeNull()
+  })
+
+  it("follows the live editor's cursor and model while it is on screen, and drops them in diff mode", async () => {
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    expect(await screen.findByText("Ln 4, Col 2")).toBeTruthy()
+    expect(screen.getByText("42 lines")).toBeTruthy()
+    expect(screen.getByText("Spaces: 4")).toBeTruthy()
+    expect(screen.getByText("LF")).toBeTruthy()
+    cleanup()
+    diffMock.mockResolvedValue({
+      path: PATH,
+      original: "a\n",
+      modified: "b\n",
+      binary: false,
+    })
+    await mountWithTab(PATH, "diff")
+    await screen.findByTestId("diff-viewer")
+    expect(screen.getByText(PATH).closest("div.border-t")).toBeTruthy()
+    expect(screen.queryByText("Ln 4, Col 2")).toBeNull()
+    expect(screen.queryByText("42 lines")).toBeNull()
+    // The diff editor highlights by the picked language, so the picker stays.
+    expect(
+      screen.getByRole("button", { name: /^syntax language:/i }),
+    ).toBeTruthy()
+  })
+
+  it("puts the path, the dirty dot and the size on disk in the status bar", async () => {
+    await mountWithDirtyTab()
+    const path = screen.getByText(PATH)
+    const bar = path.closest("div.border-t") as HTMLElement
+    expect(bar).toBeTruthy()
+    expect(within(bar).getByText("unsaved changes")).toBeTruthy()
+    expect(within(bar).getByText("2.0 KiB")).toBeTruthy()
+  })
+})
+
+describe("Open local editor sits in the status bar, on a local instance only", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    installBootStubs()
+    localAccess = true
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    localAccess = true
+  })
+
+  it("puts it in the status bar, not the header, and lists the editors", async () => {
+    await mountWithTab(PATH)
+    const local = screen.getByRole("button", { name: /open local editor/i })
+    expect(local.closest("div.border-t")).toBeTruthy()
+    expect(local.closest("div.border-b")).toBeNull()
+    // Desktop only: a phone reaches it through the header's fold instead.
+    expect(local.closest(".max-md\\:hidden")).toBeTruthy()
+    fireEvent.click(local)
+    for (const editor of OPEN_IN_EDITORS) {
+      expect(await screen.findByRole("menuitem", { name: editor.label })).toBeTruthy()
+    }
+  })
+
+  it("is absent from the status bar, the header and the phone fold over a remote URL", async () => {
+    localAccess = false
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    expect(screen.queryByRole("button", { name: /open local editor/i })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "More editor actions" }))
+    await screen.findByRole("menu")
+    expect(screen.queryByRole("menuitem", { name: /open local editor/i })).toBeNull()
+  })
+
+  it("gives it and Open in new tab different icons, and the arrow to the link", async () => {
+    await mountWithTab(PATH)
+    const local = screen.getByRole("button", { name: /open local editor/i })
     const newTab = screen.getByText("Open in new tab").closest("a")!
     // Exact class match, not a substring: lucide names are prefixes of each
     // other ("lucide-laptop" of "lucide-laptop-minimal").
@@ -1246,10 +1553,10 @@ describe("the header's two open controls are told apart by their icons", () => {
     expect(newTab.querySelector("svg.lucide-laptop")).toBeNull()
   })
 
-  it("offers the same local editors in the desktop and mobile menus", async () => {
+  it("offers the same local editors in the status bar and the phone fold", async () => {
     await mountWithTab(PATH)
 
-    fireEvent.click(screen.getByText("Open local editor").closest("button")!)
+    fireEvent.click(screen.getByRole("button", { name: /open local editor/i }))
     for (const editor of OPEN_IN_EDITORS) {
       expect(await screen.findByRole("menuitem", { name: editor.label })).toBeTruthy()
     }
@@ -1265,11 +1572,162 @@ describe("the header's two open controls are told apart by their icons", () => {
   })
 })
 
-// The header row must not change height as its controls come and go: the
-// File/Diff segmented control (an h-7 button inside p-0.5 + border) is the
-// tallest thing the row can hold, and without a floor the row shrinks when no
-// file is open and jumps when one opens. jsdom cannot measure pixels, so what
-// is pinned is the min-h floor class; the pixel truth is the screenshot pass.
+// Every control across the editor's header is one of a cluster: the shared
+// Button's outline variant at the one h-8 height token, with the 40px floor on a
+// phone wherever the control is painted there. The File/Diff switch is the same
+// outline buttons joined as the shared ButtonGroup, its current mode marked by
+// the variant's pressed state rather than a filled button. jsdom cannot paint,
+// so the variant and size classes are what is pinned; the pixel truth is the
+// screenshot pass.
+describe("editor header controls share one outline look", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    installBootStubs()
+    // `clearAllMocks` keeps implementations, and earlier describes leave
+    // `readMock` refusing; answer with a plain file so this is order-independent.
+    readMock.mockResolvedValue({
+      path: "README.md",
+      content: ON_DISK,
+      binary: false,
+      read_only: false,
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  function expectOutline(control: HTMLElement, phoneFloor: boolean) {
+    expect(control.getAttribute("data-slot")).not.toBeNull()
+    expect(control.className).toContain("border-border")
+    expect(control.className).not.toMatch(/(^|\s)bg-primary(\s|$)/)
+    expect(control.className).toMatch(/(^|\s)(h-8|size-8)(\s|$)/)
+    // A finger at desktop width (a tablet) gets the 40px floor too, and the
+    // whole row moves together, so the one-height rule holds there as well.
+    expect(control.className).toMatch(/pointer-coarse:(h-10|size-10)/)
+    if (phoneFloor) {
+      expect(control.className).toMatch(/max-md:(h-10|size-10)/)
+    } else {
+      // Hidden on a phone by itself or by the wrapper it sits in.
+      expect(control.closest(".max-md\\:hidden")).not.toBeNull()
+    }
+  }
+
+  it("draws every acting control as an outline button at one height", async () => {
+    await mountWithTab("README.md")
+    await screen.findByTestId("code-editor")
+
+    // Painted on a phone too, so each keeps the touch floor there.
+    expectOutline(
+      screen.getByRole("button", { name: /hide the file explorer/i }),
+      true,
+    )
+    expectOutline(screen.getByLabelText("More editor actions"), true)
+    expectOutline(screen.getByRole("link", { name: /open in new tab/i }), true)
+    expectOutline(screen.getByRole("button", { name: /^close$/i }), true)
+
+    // Desktop only: the phone reaches these through the fold.
+    expectOutline(screen.getByRole("button", { name: /preview/i }), false)
+  })
+
+  // Save is the cluster's one filled primary action, because it commits the
+  // user's work; it keeps the one height, and nothing else in the header is
+  // filled.
+  it("fills Save alone, at the header's one height", async () => {
+    await mountWithTab("README.md")
+    await screen.findByTestId("code-editor")
+    const save = screen.getByRole("button", { name: /save/i })
+    expect(save.className).toMatch(/(^|\s)bg-primary(\s|$)/)
+    expect(save.className).not.toContain("border-border")
+    expect(save.className).toMatch(/(^|\s)h-8(\s|$)/)
+    expect(save.className).toContain("pointer-coarse:h-10")
+    expect(save.className).toContain("max-md:h-10")
+
+    const row = save.closest("div.border-b") as HTMLElement
+    const filled = [...row.querySelectorAll<HTMLElement>("button, a")].filter(
+      (control) => /(^|\s)bg-primary(\s|$)/.test(control.className),
+    )
+    expect(filled).toEqual([save])
+    for (const control of row.querySelectorAll<HTMLElement>("button, a")) {
+      if (control === save) continue
+      expect(control.className, control.textContent ?? "").toContain("border-border")
+    }
+  })
+
+  // The header must fit from the md breakpoint up, where its labelled controls
+  // did not: below xl each drops its words to a screen-reader-only label (so its
+  // accessible name is unchanged) and becomes an icon square, named on hover and
+  // focus by the shared tooltip. jsdom cannot lay out, so the responsive classes
+  // are pinned; the pixel truth is the screenshot pass.
+  it("drops the labelled controls to icons below xl, each named by the shared tooltip", async () => {
+    await mountWithTab("README.md", "file", ["README.md"])
+    await screen.findByTestId("code-editor")
+    const controls: [HTMLElement, string][] = [
+      [screen.getByRole("button", { name: /^file$/i }), "File"],
+      [screen.getByRole("button", { name: /^diff$/i }), "Diff"],
+      [screen.getByRole("button", { name: /preview/i }), "Preview"],
+      [screen.getByRole("link", { name: /open in new tab/i }), "Open in new tab"],
+      [screen.getByRole("button", { name: /^close$/i }), "Close"],
+    ]
+    for (const [control, label] of controls) {
+      const words = within(control).getByText(label)
+      expect(words.className, label).toContain("max-xl:sr-only")
+      // Square below xl: the padding shrinks to centre the lone icon.
+      expect(control.className, label).toContain("max-xl:px-2")
+    }
+    for (const [control, label] of controls) {
+      fireEvent.focus(control)
+      await waitFor(() =>
+        expect(
+          [...document.querySelectorAll("[data-slot=tooltip-content]")].some(
+            (node) => node.textContent === label,
+          ),
+          label,
+        ).toBe(true),
+      )
+      fireEvent.blur(control)
+    }
+  })
+
+  it("floors the header row for a finger at desktop width", async () => {
+    await mountWithTab("README.md")
+    const btn = await screen.findByRole("button", { name: /the file explorer/i })
+    const row = btn.closest("div.border-b") as HTMLElement
+    // 40px controls + py-2 + border-b = 57px.
+    expect(row.className).toContain("pointer-coarse:min-h-14.25")
+  })
+
+  it("joins File and Diff as one outline button group, the current mode pressed", async () => {
+    await mountWithTab("README.md", "file", ["README.md"])
+    await screen.findByTestId("code-editor")
+    const group = screen.getByRole("group", { name: "View mode" })
+    expect(group.getAttribute("data-slot")).toBe("button-group")
+    expect(group.className).toContain("max-md:hidden")
+
+    const file = within(group).getByRole("button", { name: /file/i })
+    const diff = within(group).getByRole("button", { name: /diff/i })
+    for (const control of [file, diff]) {
+      expect(control.className).toContain("border-border")
+      expect(control.className).not.toMatch(/(^|\s)bg-primary(\s|$)/)
+      expect(control.className).toMatch(/(^|\s)h-8(\s|$)/)
+      // The variant marks the pressed one, so a mode is visible at a glance.
+      expect(control.className).toContain("aria-pressed:bg-primary")
+    }
+    expect(file.getAttribute("aria-pressed")).toBe("true")
+    expect(diff.getAttribute("aria-pressed")).toBe("false")
+    // Preview is the header's other toggle, so it wears the same pressed look.
+    expect(
+      screen.getByRole("button", { name: /preview/i }).className,
+    ).toContain("aria-pressed:bg-primary")
+  })
+})
+
+// The header row must not change height as its controls come and go. Every
+// control is the one h-8 (32px) token, and without a floor the row would still
+// shrink to the path's line box when no file is open. jsdom cannot measure
+// pixels, so what is pinned is the min-h floor class; the pixel truth is the
+// screenshot pass.
 describe("editor header keeps a stable height", () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -1294,7 +1752,7 @@ describe("editor header keeps a stable height", () => {
     await mountWithTab(PATH)
     await screen.findByRole("button", { name: /save/i })
     const row = await headerRow()
-    expect(row.className).toContain("min-h-12.75")
+    expect(row.className).toContain("min-h-12.25")
   })
 
   it("carries the same floor with no file open (Save absent)", async () => {
@@ -1308,7 +1766,7 @@ describe("editor header keeps a stable height", () => {
     render(<EditorOverlay />)
     expect(screen.queryByRole("button", { name: /save/i })).toBeNull()
     const row = await headerRow()
-    expect(row.className).toContain("min-h-12.75")
+    expect(row.className).toContain("min-h-12.25")
   })
 })
 
@@ -1453,13 +1911,17 @@ describe("file mutations confirm themselves when nothing else does", () => {
     expect(toastError).not.toHaveBeenCalled()
   })
 
-  it("renames without a word, because the row and the tab carry the new name", async () => {
+  it("says what it renamed, because the re-sorted row can leave the part of the tree in view", async () => {
     await rowMenu(/^Rename…$/)
     const field = await screen.findByDisplayValue("notes.md")
     fireEvent.change(field, { target: { value: "notes.txt" } })
     fireEvent.click(screen.getByRole("button", { name: /^rename$/i }))
     await waitFor(() => expect(renameMock).toHaveBeenCalled())
-    expect(toastSuccess).not.toHaveBeenCalled()
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1))
+    const said = render(<>{toastSuccess.mock.calls[0][0] as ReactNode}</>)
+    expect(said.container.textContent).toBe("Renamed notes.md to notes.txt.")
+    // Both names are chips, not quotations.
+    expect(said.container.querySelectorAll("code")).toHaveLength(2)
     expect(toastError).not.toHaveBeenCalled()
   })
 
@@ -1504,7 +1966,7 @@ describe("file mutations confirm themselves when nothing else does", () => {
 // and remains the default; this is the per-file escape hatch for the file it
 // guesses wrong, which for a ".lock" or an extensionless script is every
 // time. The override is session-lived and keyed by path.
-describe("the header's language picker", () => {
+describe("the status bar's language picker", () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     installBootStubs()
@@ -1556,7 +2018,7 @@ describe("the header's language picker", () => {
     await mountWithTab(PATH)
     await screen.findByTestId("code-editor")
     fireEvent.click(await picker())
-    fireEvent.click(await screen.findByRole("menuitem", { name: /^TOML$/ }))
+    fireEvent.click(await screen.findByRole("option", { name: /^TOML$/ }))
     await waitFor(() =>
       expect(
         screen.getByTestId("code-editor").getAttribute("data-language"),
@@ -1569,14 +2031,14 @@ describe("the header's language picker", () => {
     await mountWithTab(PATH)
     await screen.findByTestId("code-editor")
     fireEvent.click(await picker())
-    fireEvent.click(await screen.findByRole("menuitem", { name: /^TOML$/ }))
+    fireEvent.click(await screen.findByRole("option", { name: /^TOML$/ }))
     await waitFor(() =>
       expect(
         screen.getByTestId("code-editor").getAttribute("data-language"),
       ).toBe("toml"),
     )
     fireEvent.click(await picker())
-    fireEvent.click(await screen.findByRole("menuitem", { name: /^Auto$/ }))
+    fireEvent.click(await screen.findByRole("option", { name: /^Auto$/ }))
     await waitFor(() =>
       expect(
         screen.getByTestId("code-editor").getAttribute("data-language"),
@@ -1607,7 +2069,7 @@ describe("the header's language picker", () => {
     const view = await mountWithTab(PATH)
     await screen.findByTestId("code-editor")
     fireEvent.click(await picker())
-    fireEvent.click(await screen.findByRole("menuitem", { name: /^TOML$/ }))
+    fireEvent.click(await screen.findByRole("option", { name: /^TOML$/ }))
     await waitFor(() =>
       expect(
         screen.getByTestId("code-editor").getAttribute("data-language"),
@@ -1691,7 +2153,7 @@ describe("the header's language picker", () => {
     view.rerender(<EditorOverlay />)
     await screen.findByTestId("code-editor")
     fireEvent.click(await picker())
-    fireEvent.click(await screen.findByRole("menuitem", { name: /^TOML$/ }))
+    fireEvent.click(await screen.findByRole("option", { name: /^TOML$/ }))
     await waitFor(() =>
       expect(
         screen.getByTestId("code-editor").getAttribute("data-language"),
@@ -1738,12 +2200,100 @@ describe("the header's language picker", () => {
     await mountWithTab(PATH, "diff")
     await screen.findByTestId("diff-viewer")
     fireEvent.click(await picker())
-    fireEvent.click(await screen.findByRole("menuitem", { name: /^TOML$/ }))
+    fireEvent.click(await screen.findByRole("option", { name: /^TOML$/ }))
     await waitFor(() =>
       expect(
         screen.getByTestId("diff-viewer").getAttribute("data-language"),
       ).toBe("toml"),
     )
+  })
+
+  it("sits in the status bar and the phone's fold, never in the header", async () => {
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    const trigger = await picker()
+    expect(trigger.closest("div.border-t")).toBeTruthy()
+    expect(trigger.closest("div.border-b")).toBeNull()
+    // The phone reaches it through the header's one fold, as before.
+    fireEvent.click(screen.getByRole("button", { name: /more editor actions/i }))
+    expect(
+      await screen.findByRole("menuitem", { name: /plain text/i }),
+    ).toBeTruthy()
+  })
+
+  function search(): HTMLElement {
+    return screen.getByRole("combobox", { name: "Search languages" })
+  }
+  function shownLanguages(): string[] {
+    return screen.getAllByRole("option").map((o) => o.textContent ?? "")
+  }
+
+  it("opens on a focused search that filters by extension as you type, Auto pinned above", async () => {
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    fireEvent.click(await picker())
+    await waitFor(() => expect(document.activeElement).toBe(search()))
+    fireEvent.change(search(), { target: { value: "yml" } })
+    expect(shownLanguages()).toEqual(["Auto", "YAML"])
+    fireEvent.change(search(), { target: { value: "" } })
+    expect(shownLanguages()).toEqual(["Auto", "Plain text", "TOML", "TypeScript", "YAML"])
+  })
+
+  it("picks the best match on Enter, and checks it the next time it opens", async () => {
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    fireEvent.click(await picker())
+    fireEvent.change(search(), { target: { value: "yml" } })
+    fireEvent.keyDown(search(), { key: "Enter" })
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("code-editor").getAttribute("data-language"),
+      ).toBe("yaml"),
+    )
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull())
+    fireEvent.click(await picker())
+    expect(
+      (await screen.findByRole("option", { name: /^YAML$/ })).getAttribute("data-checked"),
+    ).toBe("true")
+    expect(
+      screen.getByRole("option", { name: /^Auto$/ }).getAttribute("data-checked"),
+    ).toBe("false")
+  })
+
+  it("moves the highlight through the matches with the arrow keys", async () => {
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    fireEvent.click(await picker())
+    // "t" leads with Plain text (its "text" alias), then TOML.
+    fireEvent.change(search(), { target: { value: "t" } })
+    fireEvent.keyDown(search(), { key: "ArrowDown" })
+    fireEvent.keyDown(search(), { key: "Enter" })
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("code-editor").getAttribute("data-language"),
+      ).toBe("toml"),
+    )
+  })
+
+  it("closes on Escape without changing the language", async () => {
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    fireEvent.click(await picker())
+    fireEvent.change(search(), { target: { value: "toml" } })
+    fireEvent.keyDown(search(), { key: "Escape" })
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull())
+    expect(
+      screen.getByTestId("code-editor").getAttribute("data-language"),
+    ).toBe("")
+  })
+
+  it("says so when nothing matches, and still offers Auto", async () => {
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    fireEvent.click(await picker())
+    fireEvent.change(search(), { target: { value: "cobol" } })
+    expect(screen.getByText("No language matches that search.")).toBeTruthy()
+    expect(shownLanguages()).toEqual(["Auto"])
   })
 
   it("does not render for an image tab, which has no language to pick", async () => {
@@ -2284,6 +2834,52 @@ describe("when the file changes on disk underneath the editor", () => {
     await waitFor(() => expect(editor().value).toBe(AGENT_TEXT))
   })
 
+  /// Reload from disk replaces the text whatever it holds when the read lands,
+  /// so while that read is out the editor takes no typing: anything typed
+  /// meanwhile would be thrown away and the tab marked saved, with no confirm.
+  /// Every ending gives the typing back.
+  it("takes no typing while an asked reload is out, and gives it back however it ends", async () => {
+    const view = await mountOne()
+    selectionActive = true
+    put(PATH, AGENT_TEXT, "2026-02-02T00:00:00+00:00")
+    setTabs([tab(TAB_ID, PATH)], TAB_ID, slice(9, 1))
+    view.rerender(<Overlay />)
+    await screen.findByRole("status")
+
+    const answer = pending<{ path: string; content: string; binary: boolean }>()
+    readMock.mockReturnValueOnce(answer.promise)
+    fireEvent.click(screen.getByRole("button", { name: /reload from disk/i }))
+    await waitFor(() => expect(editor().getAttribute("data-read-only")).toBe("true"))
+    // A keystroke that got through anyway is the editor's echo, never an edit.
+    fireEvent.change(editor(), { target: { value: TYPED } })
+    expect(editor().value).toBe(ON_DISK)
+    answer.resolve({ path: PATH, content: AGENT_TEXT, binary: false })
+    await waitFor(() => expect(editor().value).toBe(AGENT_TEXT))
+    expect(editor().getAttribute("data-read-only")).toBe("false")
+
+  })
+
+  it("gives the typing back when an asked reload fails", async () => {
+    const view = await mountOne()
+    selectionActive = true
+    put(PATH, AGENT_TEXT, "2026-02-02T00:00:00+00:00")
+    setTabs([tab(TAB_ID, PATH)], TAB_ID, slice(9, 1))
+    view.rerender(<Overlay />)
+    await screen.findByRole("status")
+
+    let fail!: (e: Error) => void
+    readMock.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        fail = reject
+      }),
+    )
+    fireEvent.click(screen.getByRole("button", { name: /reload from disk/i }))
+    await waitFor(() => expect(editor().getAttribute("data-read-only")).toBe("true"))
+    fail(new Error("the disk went away"))
+    await waitFor(() => expect(editor().getAttribute("data-read-only")).toBe("false"))
+    expect(editor().value).toBe(ON_DISK)
+  })
+
   // The interleaving: a check goes out against the pre-save stamp, the save
   // lands and re-baselines, and the check's answer arrives describing the
   // file the buffer now holds. Adopting the signal without clearing the state
@@ -2340,6 +2936,44 @@ describe("when the file changes on disk underneath the editor", () => {
     // exactly. That is the moment the banner has to come down.
     fireEvent(window, new Event("focus"))
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
+  })
+
+  // A revisit that lands while a check is still out is not dropped: the check
+  // in flight may have been asked before the change the user came back for,
+  // so its answer cannot stand in for the revisit. One more check follows it.
+  it("runs one more check when a revisit arrives while a check is out", async () => {
+    await mountOne(true)
+    let releaseInfo: (() => void) | null = null
+    const held = new Promise<void>((resolve) => {
+      releaseInfo = resolve
+    })
+    const entry = disk.get(PATH)!
+    infoMock.mockImplementationOnce(async () => {
+      await held
+      return {
+        path: PATH,
+        kind: "file" as const,
+        size: entry.content.length,
+        modified: entry.modified,
+        mode: "644",
+        permissions: "rw-r--r--",
+        symlink_target: null,
+        git: { state: "clean" as const },
+      }
+    })
+    const before = infoMock.mock.calls.length
+    fireEvent(window, new Event("focus"))
+    await waitFor(() => expect(infoMock).toHaveBeenCalledTimes(before + 1))
+
+    // Two revisits while the first check is held: they fold into ONE more.
+    fireEvent(window, new Event("focus"))
+    fireEvent(window, new Event("focus"))
+    expect(infoMock).toHaveBeenCalledTimes(before + 1)
+
+    releaseInfo!()
+    await waitFor(() => expect(infoMock).toHaveBeenCalledTimes(before + 2))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(infoMock).toHaveBeenCalledTimes(before + 2)
   })
 
   // A symlinked file. The read followed the link and stamped the file it
@@ -2583,7 +3217,44 @@ describe("the file tree follows what the agent writes", () => {
     fireEvent.change(screen.getByPlaceholderText("Search files…"), {
       target: { value: "one.txt" },
     })
-    expect(await screen.findByText("newdir/one.txt")).toBeTruthy()
+    // The result row, with the part of its path the search matched lit.
+    const mark = await screen.findByText("one.txt", { selector: "mark" })
+    expect(mark.parentElement?.textContent).toBe("newdir/one.txt")
+  })
+
+  // A revisit can arrive the moment the tree's listing is on screen: the user
+  // comes back to the window as the root renders. The directories the tree
+  // has loaded must already be known then, or the revisit finds none to
+  // refetch and is dropped without a trace. Fired from a MutationObserver,
+  // which runs as soon as the listing is in the DOM and before any work React
+  // defers past the commit, so this is the exact moment rather than a timing
+  // a slow machine happens to hit.
+  it("a revisit the moment the listing renders still refetches it", async () => {
+    const { getSnapshot } = await import("@/lib/store")
+    mockState = {
+      ...getSnapshot(),
+      changes: changes([]),
+      editorTarget: { root: agentRoot(SESSION), initialPath: null },
+      editorTabs: tabsState([], null),
+    } as unknown as YaranState
+    let fired = false
+    const observer = new MutationObserver(() => {
+      if (fired || !document.body.textContent?.includes("notes.md")) return
+      fired = true
+      rootEntries = [entry("notes.md", false), entry("later.ts", false)]
+      fireEvent(window, new Event("focus"))
+    })
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+    try {
+      render(<Overlay />)
+      expect(await screen.findByText("later.ts")).toBeTruthy()
+    } finally {
+      observer.disconnect()
+    }
   })
 
   it("walks the search index once for a revisit, however many events it fires", async () => {
@@ -2733,5 +3404,1083 @@ describe("phone file selection", () => {
     } finally {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: oldWidth })
     }
+  })
+})
+
+describe("a file that is not plain UTF-8", () => {
+  const LATIN1 = {
+    path: PATH,
+    content: "café\n",
+    binary: false,
+    read_only: false,
+    encoding: "windows-1252",
+    bom: false,
+    encoding_fallback: true,
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    installBootStubs()
+    const { clearRootDrafts } = await import("@/lib/editorDrafts")
+    clearRootDrafts(rootKey(agentRoot(SESSION)))
+    const { resetEncodingNotices } = await import("@/lib/editorEncoding")
+    resetEncodingNotices()
+    // A test that leaves a request pending leaves its file's lane held.
+    const { resetLanes } = await import("@/lib/editorLane")
+    resetLanes()
+    readMock.mockResolvedValue(LATIN1)
+    writeMock.mockResolvedValue({
+      modified: "2026-01-01T00:00:00+00:00",
+      size: 5,
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  async function encodingButton(): Promise<HTMLElement> {
+    return await screen.findByRole("button", { name: /^file encoding:/i })
+  }
+
+  async function pick(submenu: RegExp, row: RegExp): Promise<void> {
+    fireEvent.click(await encodingButton())
+    fireEvent.click(await screen.findByRole("menuitem", { name: submenu }))
+    fireEvent.click(await screen.findByRole("menuitem", { name: row }))
+  }
+
+  // The Latin-1 file, open with an edit typed into it, in the dirty state the
+  // store reports for it.
+  async function mountDirty(onDisk = "café\n", typed = "thé\n"): Promise<HTMLTextAreaElement> {
+    const { EditorOverlay } = await import("@/components/EditorOverlay")
+    const { getSnapshot } = await import("@/lib/store")
+    mockState = {
+      ...getSnapshot(),
+      editorTarget: { root: agentRoot(SESSION), initialPath: PATH },
+      editorTabs: {
+        [rootKey(agentRoot(SESSION))]: {
+          tabs: [{ id: TAB_ID, path: PATH, dirty: true, preview: false, mode: "file" }],
+          activeId: TAB_ID,
+        },
+      },
+    } as YaranState
+    render(<EditorOverlay />)
+    const box = await loaded(onDisk)
+    fireEvent.change(box, { target: { value: typed } })
+    await waitFor(() => expect(box.value).toBe(typed))
+    return box
+  }
+
+  async function loaded(text: string): Promise<HTMLTextAreaElement> {
+    const box = (await screen.findByTestId("code-editor")) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe(text))
+    return box
+  }
+
+  it("says it opened as the fallback, names the file as a chip, and points at the status bar", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    const notice = (await screen.findByText(/isn.t valid UTF-8/)).closest(
+      "[role=status]",
+    ) as HTMLElement
+    expect(within(notice).getByText(PATH).getAttribute("data-slot")).toBe(
+      "inline-code",
+    )
+    expect(notice.textContent).toContain("opened as Windows-1252")
+    expect(notice.textContent).toContain("the status bar")
+    expect((await encodingButton()).textContent).toContain("Windows-1252")
+  })
+
+  it("stays dismissed for that file for the rest of the session", async () => {
+    await mountWithTab(PATH)
+    await screen.findByText(/isn.t valid UTF-8/)
+    fireEvent.click(
+      screen.getByRole("button", { name: /dismiss this notice/i }),
+    )
+    expect(screen.queryByText(/isn.t valid UTF-8/)).toBeNull()
+    cleanup()
+    const { clearRootDrafts } = await import("@/lib/editorDrafts")
+    clearRootDrafts(rootKey(agentRoot(SESSION)))
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    await encodingButton()
+    expect(screen.queryByText(/isn.t valid UTF-8/)).toBeNull()
+  })
+
+  it("names plain UTF-8 in the status bar too, with no notice, and reopens it in any encoding", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "plain\n",
+      encoding: "UTF-8",
+      encoding_fallback: false,
+    })
+    await mountWithTab(PATH)
+    await loaded("plain\n")
+    expect((await encodingButton()).textContent).toContain("UTF-8")
+    expect(screen.queryByText(/isn.t valid UTF-8/)).toBeNull()
+    // Garbled is the person's call: a lossless decode in another encoding
+    // is asked for and shown, and the server alone refuses a lossy one.
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "plain\n",
+      encoding: "windows-1252",
+      encoding_fallback: false,
+    })
+    await pick(/reopen with encoding/i, /^Windows-1252/)
+    await waitFor(() => expect(readMock.mock.calls.at(-1)?.[2]).toBe("windows-1252"))
+    await waitFor(async () =>
+      expect((await encodingButton()).textContent).toContain("Windows-1252"),
+    )
+    expect(screen.queryByText(/isn.t valid UTF-8/)).toBeNull()
+  })
+
+  it("keeps the encoding rows out of the phone's ⋯ menu, since the bar carries them", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    fireEvent.click(screen.getByRole("button", { name: "More editor actions" }))
+    expect(await screen.findByRole("menuitem", { name: /open local editor/i })).toBeTruthy()
+    expect(screen.queryByText(/^Encoding:/)).toBeNull()
+    expect(screen.queryByRole("menuitem", { name: /reopen with encoding/i })).toBeNull()
+    expect(screen.queryByRole("menuitem", { name: /save with encoding/i })).toBeNull()
+  })
+
+  it("offers no Save with encoding for a read-only file", async () => {
+    readMock.mockResolvedValue({ ...LATIN1, read_only: true })
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    fireEvent.click(await encodingButton())
+    expect(
+      await screen.findByRole("menuitem", { name: /reopen with encoding/i }),
+    ).toBeTruthy()
+    expect(screen.queryByRole("menuitem", { name: /save with encoding/i })).toBeNull()
+  })
+
+  it("opens text its encoding cannot write back read-only, says why, and still converts it", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "\u2252\n",
+      encoding: "Shift_JIS",
+      encoding_fallback: false,
+      read_only: true,
+      unwritable: "round_trip",
+    })
+    await mountWithTab(PATH)
+    await loaded("\u2252\n")
+    const notice = (await screen.findByText(/opened read-only/)).closest(
+      "[role=status]",
+    ) as HTMLElement
+    expect(notice.textContent).toContain("Shift_JIS can\u2019t write it back")
+    expect(within(notice).getByText(PATH).getAttribute("data-slot")).toBe("inline-code")
+    // The editor itself refuses typing, which would otherwise be kept nowhere.
+    expect(screen.getByTestId("code-editor").getAttribute("data-read-only")).toBe("true")
+    // Not binary: it is text, and the status bar still offers the way out.
+    expect(screen.queryByText(/binary/)).toBeNull()
+    fireEvent.click(await encodingButton())
+    fireEvent.click(await screen.findByRole("menuitem", { name: /save with encoding/i }))
+    // Saving back in the same encoding is the one thing it cannot do.
+    expect(
+      (await screen.findByRole("menuitem", { name: /^Shift_JIS/ })).getAttribute("aria-disabled"),
+    ).toBe("true")
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^UTF-8$/ }))
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    expect(writeMock.mock.calls[0][4]).toEqual({ encoding: "UTF-8", bom: false })
+  })
+
+  it("never promises a save when a reopen lands read-only", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "≒\n",
+      encoding: "Shift_JIS",
+      encoding_fallback: false,
+      read_only: true,
+      unwritable: "round_trip",
+    })
+    await pick(/reopen with encoding/i, /^Shift_JIS/)
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled())
+    const said = render(<>{toastSuccess.mock.calls.at(-1)?.[0]}</>).container.textContent
+    expect(said).toContain("read-only")
+    expect(said).not.toContain("A save now writes")
+  })
+
+  it("offers no conversion for a file that is read-only for where it is, whatever its encoding", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "\u2252\n",
+      encoding: "Shift_JIS",
+      encoding_fallback: false,
+      read_only: true,
+      unwritable: "round_trip",
+      path_read_only: true,
+    })
+    await mountWithTab(PATH)
+    await loaded("\u2252\n")
+    fireEvent.click(await encodingButton())
+    expect(
+      await screen.findByRole("menuitem", { name: /reopen with encoding/i }),
+    ).toBeTruthy()
+    expect(screen.queryByRole("menuitem", { name: /save with encoding/i })).toBeNull()
+  })
+
+  it("holds the text still while a save is out: no reopen, no reload underneath it", async () => {
+    // A stamp, so the freshness check has something to compare.
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      modified: "2026-01-01T00:00:00+00:00",
+      size: 5,
+    } as typeof LATIN1)
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    const write = pending<{ modified: string; size: number }>()
+    writeMock.mockReturnValueOnce(write.promise)
+    await pick(/save with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    const reads = readMock.mock.calls.length
+    // The disk now says something else, and the window comes back: with a
+    // save out, nothing replaces the text it is about.
+    infoMock.mockResolvedValue({
+      path: PATH,
+      kind: "file" as const,
+      size: 99,
+      modified: "2027-01-01T00:00:00+00:00",
+      mode: "644",
+      permissions: "rw-r--r--",
+      symlink_target: null,
+      git: { state: "clean" as const },
+    })
+    fireEvent(window, new Event("focus"))
+    fireEvent.click(await encodingButton())
+    expect(
+      (await screen.findByRole("menuitem", { name: /reopen with encoding/i })).getAttribute(
+        "aria-disabled",
+      ),
+    ).toBe("true")
+    await new Promise((r) => setTimeout(r, 300))
+    expect(readMock.mock.calls.length).toBe(reads)
+    write.resolve({ modified: "2027-01-01T00:00:00+00:00", size: 99 })
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: /^file encoding:/i })).getAttribute("aria-label")).toBe(
+        "File encoding: UTF-8",
+      ),
+    )
+  })
+
+  /// A preview tab reuses its id for the next file. A save of the first file
+  /// answering late must not touch the second: not its text, and above all
+  /// not its unsaved mark, or its edits close without a confirm.
+  it("never lets a late save's answer clear another file's unsaved mark", async () => {
+    const view = await mountWithTab(PATH)
+    await loaded("café\n")
+    const write = pending<{ modified: string; size: number }>()
+    writeMock.mockReturnValueOnce(write.promise)
+    await pick(/save with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+
+    readMock.mockResolvedValue({ ...LATIN1, path: "src/other.txt", content: "other\n" })
+    const { EditorOverlay } = await import("@/components/EditorOverlay")
+    mockState = {
+      ...mockState,
+      editorTabs: {
+        [rootKey(agentRoot(SESSION))]: {
+          tabs: [
+            { id: TAB_ID, path: "src/other.txt", dirty: true, preview: true, mode: "file" as const },
+          ],
+          activeId: TAB_ID,
+        },
+      },
+    } as YaranState
+    view.rerender(<EditorOverlay />)
+    await loaded("other\n")
+    editorSetTabDirtyMock.mockClear()
+
+    write.resolve({ modified: "2027-01-01T00:00:00+00:00", size: 5 })
+    await new Promise((r) => setTimeout(r, 300))
+    expect(
+      editorSetTabDirtyMock.mock.calls.filter((c) => c[1] === TAB_ID && c[2] === false),
+    ).toEqual([])
+    expect(
+      (screen.getByTestId("code-editor") as HTMLTextAreaElement).value,
+    ).toBe("other\n")
+  })
+
+  /// The save took the text as it was when Save was pressed; anything typed
+  /// while it was out is still unsaved, and closing must still ask.
+  for (const kind of ["ordinary", "conversion"] as const) {
+    it(`keeps the tab unsaved when typing went on during a pending ${kind} save`, async () => {
+      const box = await mountDirty()
+      const write = pending<{ modified: string; size: number }>()
+      writeMock.mockReturnValueOnce(write.promise)
+      if (kind === "ordinary") {
+        fireEvent.click(screen.getByRole("button", { name: /^save/i }))
+      } else {
+        await pick(/save with encoding/i, /^UTF-8$/)
+      }
+      await waitFor(() => expect(writeMock).toHaveBeenCalled())
+      expect(writeMock.mock.calls[0][2]).toBe("th\u00e9\n")
+      fireEvent.change(box, { target: { value: "th\u00e9 and more\n" } })
+      await waitFor(() => expect(box.value).toBe("th\u00e9 and more\n"))
+      editorSetTabDirtyMock.mockClear()
+      write.resolve({ modified: "2027-01-01T00:00:00+00:00", size: 5 })
+      await new Promise((r) => setTimeout(r, 300))
+      expect(
+        editorSetTabDirtyMock.mock.calls.filter((c) => c[1] === TAB_ID && c[2] === false),
+      ).toEqual([])
+      expect(box.value).toBe("th\u00e9 and more\n")
+    })
+  }
+
+  it("converts a mixed file without an edit in the one style the notice named", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "a\r\nb\nc\n",
+      mixed_line_endings: true,
+      eol: "LF",
+    } as typeof LATIN1)
+    await mountWithTab(PATH)
+    await loaded("a\nb\nc\n")
+    await pick(/save with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    expect(writeMock.mock.calls[0][2]).toBe("a\nb\nc\n")
+  })
+
+  it("warns before a save rewrites mixed line endings, and the bar says Mixed", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "a\nb\nc\n",
+      encoding: "UTF-8",
+      encoding_fallback: false,
+      mixed_line_endings: true,
+      eol: "CRLF",
+    })
+    await mountWithTab(PATH)
+    await loaded("a\nb\nc\n")
+    const notice = (await screen.findByText(/mixes line endings/)).closest(
+      "[role=status]",
+    ) as HTMLElement
+    expect(notice.textContent).toContain("writes every line ending as CRLF")
+    expect(await screen.findByText("Mixed")).toBeTruthy()
+    expect(screen.queryByText("LF")).toBeNull()
+  })
+
+  it("says so when a file read in a chosen code page now looks like UTF-8", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "caf\u00c3\u00a9\n",
+      encoding_fallback: false,
+      looks_like_utf8: true,
+    })
+    await mountWithTab(PATH)
+    const notice = (await screen.findByText(/looks like valid UTF-8/)).closest(
+      "[role=status]",
+    ) as HTMLElement
+    expect(notice.textContent).toContain("open as Windows-1252")
+    expect(notice.textContent).toContain("the status bar")
+  })
+
+  it("names a large file's diff encoding and rereads the diff in a picked one", async () => {
+    const headAnswer = (text: string, encoding: string) =>
+      ({
+        path: PATH,
+        head: {
+          text,
+          shown_lines: 4,
+          total_lines: 4,
+          truncated: false,
+          total_is_at_least: false,
+          binary: false,
+          encoding,
+          encoding_fallback: encoding === "windows-1252",
+        },
+      }) as unknown as Awaited<ReturnType<typeof diffMock>>
+    diffMock.mockResolvedValue(headAnswer("@@ -1 +1 @@\n+\u0093\u00fa\n", "windows-1252"))
+    await mountWithTab(PATH, "diff")
+    await screen.findByTestId("diff-head-viewer")
+    expect((await encodingButton()).textContent).toContain("Windows-1252")
+    diffMock.mockResolvedValue(headAnswer("@@ -1 +1 @@\n+\u65e5\n", "Shift_JIS"))
+    fireEvent.click(await encodingButton())
+    fireEvent.click(await screen.findByRole("menuitem", { name: /reopen with encoding/i }))
+    // A diff has no save, so the menu offers no Save with encoding.
+    expect(screen.queryByRole("menuitem", { name: /save with encoding/i })).toBeNull()
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Shift_JIS/ }))
+    await waitFor(() =>
+      expect((diffMock.mock.calls.at(-1) as unknown[])?.[2]).toBe("Shift_JIS"),
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("diff-head-viewer").getAttribute("data-text"),
+      ).toContain("\u65e5"),
+    )
+    expect((await encodingButton()).textContent).toContain("Shift_JIS")
+  })
+
+  it("keeps the diff as it was when a picked encoding is refused", async () => {
+    diffMock.mockResolvedValue({
+      path: PATH,
+      head: {
+        text: "@@ -1 +1 @@\n+caf\u00e9\n",
+        shown_lines: 2,
+        total_lines: 2,
+        truncated: false,
+        total_is_at_least: false,
+        binary: false,
+        encoding: "windows-1252",
+        encoding_fallback: true,
+      },
+    } as unknown as Awaited<ReturnType<typeof diffMock>>)
+    await mountWithTab(PATH, "diff")
+    await screen.findByTestId("diff-head-viewer")
+    diffMock.mockRejectedValueOnce(new Error("the diff is not valid UTF-8"))
+    await pick(/reopen with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    expect(screen.getByTestId("diff-head-viewer").getAttribute("data-text")).toContain(
+      "caf\u00e9",
+    )
+    expect((await encodingButton()).textContent).toContain("Windows-1252")
+  })
+
+  it("names a UTF-16 file in the status bar without calling it a guess", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      encoding: "UTF-16LE",
+      bom: true,
+      encoding_fallback: false,
+    })
+    await mountWithTab(PATH)
+    expect((await encodingButton()).textContent).toContain("UTF-16 LE")
+    expect(screen.queryByText(/isn.t valid UTF-8/)).toBeNull()
+  })
+
+  it("saves in the encoding the file was read in", async () => {
+    await mountDirty()
+    fireEvent.click(screen.getByRole("button", { name: /^save/i }))
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    expect(writeMock.mock.calls[0][4]).toEqual({
+      encoding: "windows-1252",
+      bom: false,
+    })
+    // And says what it was read in, so the server tells a save from a
+    // conversion.
+    expect(writeMock.mock.calls[0][5]).toEqual({
+      encoding: "windows-1252",
+      bom: false,
+    })
+  })
+
+  /// Two reopens out at once: only the later one's answer may touch the
+  /// buffer, and typing stays locked until it lands.
+  /// An editor closed and opened again is a new one. A save the old one
+  /// sent must not touch the new one's tab when it answers: not its unsaved
+  /// mark (or the typing done since closes without a confirm), not a
+  /// conflict dialog offering to overwrite with the old text.
+  for (const answer of ["success", "conflict"] as const) {
+    it(`lets a save from a closed editor reach nothing when it answers (${answer})`, async () => {
+      await mountDirty()
+      let settle!: { ok: (v: unknown) => void; fail: (e: unknown) => void }
+      writeMock.mockReturnValueOnce(
+        new Promise((ok, fail) => {
+          settle = { ok, fail }
+        }) as never,
+      )
+      fireEvent.click(screen.getByRole("button", { name: /^save/i }))
+      await waitFor(() => expect(writeMock).toHaveBeenCalled())
+      cleanup()
+      // Opened again: the draft comes back from the cache, still unsaved.
+      const { EditorOverlay } = await import("@/components/EditorOverlay")
+      render(<EditorOverlay />)
+      const box = (await screen.findByTestId("code-editor")) as HTMLTextAreaElement
+      await waitFor(() => expect(box.value).toBe("thé\n"))
+      fireEvent.change(box, { target: { value: "typed in the new editor\n" } })
+      editorSetTabDirtyMock.mockClear()
+      if (answer === "success") {
+        settle.ok({ modified: "2027-01-01T00:00:00+00:00", size: 5 })
+      } else {
+        const { FileConflictError } = await import("@/lib/fileApi")
+        settle.fail(new FileConflictError({ modified: null, size: 1, deleted: false }))
+      }
+      await new Promise((r) => setTimeout(r, 300))
+      expect(
+        editorSetTabDirtyMock.mock.calls.filter((c) => c[1] === TAB_ID && c[2] === false),
+      ).toEqual([])
+      expect(screen.queryByText(/changed after you opened it/i)).toBeNull()
+    })
+  }
+
+  it("starts no reopen while a save or conversion of the file is out", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    const write = pending<{ modified: string; size: number }>()
+    writeMock.mockReturnValueOnce(write.promise)
+    await pick(/save with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    fireEvent.click(await encodingButton())
+    expect(
+      (await screen.findByRole("menuitem", { name: /reopen with encoding/i })).getAttribute(
+        "aria-disabled",
+      ),
+    ).toBe("true")
+    write.resolve({ modified: "2027-01-01T00:00:00+00:00", size: 5 })
+  })
+
+  /// The mark is a flag and never text: a U+FEFF at the head of the text is a
+  /// character like any other, so the bar names the file by its flag alone and
+  /// a conversion sends the text exactly as the editor holds it (the server is
+  /// the one to refuse a save it could not write back as that text).
+  it("names the file by its mark flag alone and converts the text verbatim", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "\ufeffx",
+      encoding: "UTF-8",
+      bom: false,
+      encoding_fallback: false,
+    })
+    await mountWithTab(PATH)
+    await screen.findByTestId("code-editor")
+    expect((await encodingButton()).textContent).not.toContain("with BOM")
+    fireEvent.click(await encodingButton())
+    fireEvent.click(await screen.findByRole("menuitem", { name: /save with encoding/i }))
+    expect(
+      (await screen.findByRole("menuitem", { name: /^UTF-8$/ })).getAttribute("aria-current"),
+    ).toBe("true")
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^UTF-8 with BOM/ }))
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    expect(writeMock.mock.calls[0][2]).toBe("\ufeffx")
+    expect(writeMock.mock.calls[0][4]).toEqual({ encoding: "UTF-8", bom: true })
+  })
+
+  /// The editor holds LF; a CRLF file is written back in CRLF, converted at
+  /// the save, so an edit never changes the file's style.
+  it("writes a CRLF file's breaks back as CRLF", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "a\r\nb\r\n",
+      encoding: "UTF-8",
+      bom: false,
+      encoding_fallback: false,
+      eol: "CRLF",
+      mixed_line_endings: false,
+    })
+    // The editor holds the text in LF; the bar names what a save writes.
+    await mountDirty("a\nb\n", "a\nb\nc\n")
+    fireEvent.click(screen.getByRole("button", { name: /^save/i }))
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    expect(writeMock.mock.calls[0][2]).toBe("a\r\nb\r\nc\r\n")
+  })
+
+  /// Saving in the encoding and mark the file already has is neither an edit
+  /// nor a conversion; the row is shown as current and does nothing.
+  it("offers the current encoding as current, never as a save", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    fireEvent.click(await encodingButton())
+    fireEvent.click(await screen.findByRole("menuitem", { name: /save with encoding/i }))
+    const current = await screen.findByRole("menuitem", { name: /^Windows-1252/ })
+    expect(current.getAttribute("aria-disabled")).toBe("true")
+    expect(current.getAttribute("aria-current")).toBe("true")
+    fireEvent.click(current)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(writeMock).not.toHaveBeenCalled()
+  })
+
+  /// One operation per file: while a reopen is out, no second reopen, save
+  /// or conversion can start, so no two answers can race on one buffer.
+  it("starts nothing else on a file while a reopen of it is out", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    const first = pending<typeof LATIN1>()
+    readMock.mockReturnValueOnce(first.promise)
+    await pick(/reopen with encoding/i, /^Windows-1252/)
+    await waitFor(() => expect(readMock.mock.calls.at(-1)?.[2]).toBe("windows-1252"))
+    fireEvent.click(await encodingButton())
+    for (const row of [/reopen with encoding/i, /save with encoding/i]) {
+      expect(
+        (await screen.findByRole("menuitem", { name: row })).getAttribute("aria-disabled"),
+      ).toBe("true")
+    }
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" })
+    first.resolve({ ...LATIN1, content: "first\n", encoding_fallback: false })
+    const box = await loaded("first\n")
+    await waitFor(() => expect(box.getAttribute("data-read-only")).toBe("false"))
+  })
+
+  /// A freshness check that finds the file changed while a reopen is out must
+  /// not start a reload of its own: it would supersede the reopen the person
+  /// asked for and apply a reading in the old encoding.
+  it("lets no freshness reload supersede a reopen that is out", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      modified: "2026-01-01T00:00:00+00:00",
+      size: 5,
+    } as typeof LATIN1)
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    const reopen = pending<typeof LATIN1>()
+    readMock.mockReturnValueOnce(reopen.promise)
+    await pick(/reopen with encoding/i, /^Shift_JIS/)
+    await waitFor(() => expect(readMock.mock.calls.at(-1)?.[2]).toBe("Shift_JIS"))
+    const reads = readMock.mock.calls.length
+    infoMock.mockResolvedValue({
+      path: PATH,
+      kind: "file" as const,
+      size: 99,
+      modified: "2027-01-01T00:00:00+00:00",
+      mode: "644",
+      permissions: "rw-r--r--",
+      symlink_target: null,
+      git: { state: "clean" as const },
+    })
+    fireEvent(window, new Event("focus"))
+    await new Promise((r) => setTimeout(r, 300))
+    expect(readMock.mock.calls.length).toBe(reads)
+    reopen.resolve({ ...LATIN1, content: "日\n", encoding: "Shift_JIS", encoding_fallback: false })
+    await loaded("日\n")
+  })
+
+  /// A read-only buffer's text never changes from the editor: nobody can type
+  /// there, so any change event is the editor's own echo (Monaco drops a
+  /// leading U+FEFF on setValue), and taking it would lose the character
+  /// from a conversion.
+  it("never lets an editor event change a read-only buffer's text", async () => {
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "\ufeffx",
+      encoding: "UTF-8",
+      bom: true,
+      encoding_fallback: false,
+      read_only: true,
+      unwritable: "doubled_mark",
+    })
+    await mountWithTab(PATH)
+    const box = (await screen.findByTestId("code-editor")) as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe("\ufeffx"))
+    fireEvent.change(box, { target: { value: "x" } })
+    await pick(/save with encoding/i, /^UTF-16 LE/)
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    expect(writeMock.mock.calls[0][2]).toBe("\ufeffx")
+  })
+
+  it("reopens a clean buffer in the chosen encoding at once, and says so", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "日本\n",
+      encoding: "Shift_JIS",
+      encoding_fallback: false,
+    })
+    await pick(/reopen with encoding/i, /^Shift_JIS/)
+    await waitFor(() => expect(readMock.mock.calls.at(-1)?.[2]).toBe("Shift_JIS"))
+    await loaded("日本\n")
+    expect((await encodingButton()).textContent).toContain("Shift_JIS")
+    // No longer a guess: the person said what it is.
+    expect(screen.queryByText(/isn.t valid UTF-8/)).toBeNull()
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled())
+  })
+
+  it("keeps the chosen encoding through a rename, the way the language pick does", async () => {
+    treeMock.mockImplementation(async () => ({
+      dir: "",
+      entries: [
+        { name: "big.txt", path: PATH, is_dir: false, is_symlink: false, expandable: false },
+      ],
+    }))
+    const { EditorOverlay } = await import("@/components/EditorOverlay")
+    const view = await mountWithTab(PATH)
+    await loaded("café\n")
+    readMock.mockResolvedValue({
+      ...LATIN1,
+      content: "\u65e5\u672c\n",
+      encoding: "Shift_JIS",
+      encoding_fallback: false,
+    })
+    await pick(/reopen with encoding/i, /^Shift_JIS/)
+    await loaded("\u65e5\u672c\n")
+
+    const tree = await screen.findByTestId("file-tree-drop-surface")
+    fireEvent.contextMenu(await within(tree).findByText("big.txt"))
+    fireEvent.click(await screen.findByText(/^Rename…$/))
+    fireEvent.change(await screen.findByDisplayValue("big.txt"), {
+      target: { value: "renamed.txt" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /^rename$/i }))
+    await waitFor(() => expect(renameMock).toHaveBeenCalled())
+    mockState = {
+      ...mockState,
+      editorTabs: {
+        [rootKey(agentRoot(SESSION))]: {
+          tabs: [
+            { id: TAB_ID, path: "src/renamed.txt", dirty: false, preview: false, mode: "file" as const },
+          ],
+          activeId: TAB_ID,
+        },
+      },
+    } as YaranState
+    view.rerender(<EditorOverlay />)
+    await waitFor(() =>
+      expect(readMock.mock.calls.at(-1)?.slice(1, 3)).toEqual([
+        "src/renamed.txt",
+        "Shift_JIS",
+      ]),
+    )
+    treeMock.mockImplementation(async () => ({ dir: "", entries: [] }))
+  })
+
+  /// A reopen of a clean file replaces its text when the read lands; typing
+  /// before then would be thrown away with no confirm. So the editor takes no
+  /// typing until the reopen answers, either way.
+  it("takes no typing while a reopen is out, and gives it back after", async () => {
+    await mountWithTab(PATH)
+    await loaded("caf\u00e9\n")
+    const read = pending<typeof LATIN1>()
+    readMock.mockReturnValueOnce(read.promise)
+    await pick(/reopen with encoding/i, /^Shift_JIS/)
+    await waitFor(() =>
+      expect(screen.getByTestId("code-editor").getAttribute("data-read-only")).toBe("true"),
+    )
+    read.resolve({ ...LATIN1, content: "\u65e5\n", encoding: "Shift_JIS", encoding_fallback: false })
+    await loaded("\u65e5\n")
+    await waitFor(() =>
+      expect(screen.getByTestId("code-editor").getAttribute("data-read-only")).toBe("false"),
+    )
+  })
+
+  it("gives typing back when a reopen is refused", async () => {
+    await mountWithTab(PATH)
+    await loaded("caf\u00e9\n")
+    readMock.mockRejectedValueOnce(new Error("the file is not valid UTF-8"))
+    await pick(/reopen with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    expect(screen.getByTestId("code-editor").getAttribute("data-read-only")).toBe("false")
+  })
+
+  it("asks before a reopen throws away unsaved edits", async () => {
+    await mountDirty()
+    const reads = readMock.mock.calls.length
+    await pick(/reopen with encoding/i, /^Shift_JIS/)
+    const dialog = await screen.findByRole("dialog", {
+      name: /discard your edits and reopen/i,
+    })
+    expect(readMock.mock.calls.length).toBe(reads)
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /discard & reopen/i }),
+    )
+    await waitFor(() => expect(readMock.mock.calls.at(-1)?.[2]).toBe("Shift_JIS"))
+  })
+
+  /// A read that never comes back (the path swapped for a FIFO) must not hold
+  /// the file for the life of the page: past the deadline the reopen fails out
+  /// loud, the text takes typing again, and the file takes another operation.
+  it("gives up on a reopen the server never answers", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      await mountWithTab(PATH)
+      const box = await loaded("café\n")
+      readMock.mockReturnValueOnce(new Promise(() => {}))
+      await pick(/reopen with encoding/i, /^UTF-8$/)
+      await waitFor(() => expect(box.getAttribute("data-read-only")).toBe("true"))
+      vi.advanceTimersByTime(60_000)
+      await waitFor(() => expect(box.getAttribute("data-read-only")).toBe("false"))
+      expect(JSON.stringify(toastError.mock.calls)).toContain("didn't answer")
+      expect(box.value).toBe("café\n")
+      // The lane is free: another reopen starts.
+      readMock.mockClear()
+      await pick(/reopen with encoding/i, /^Windows-1252/)
+      await waitFor(() => expect(readMock).toHaveBeenCalled())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps the buffer as it was when the reopen is refused", async () => {
+    await mountWithTab(PATH)
+    const box = await loaded("café\n")
+    readMock.mockRejectedValueOnce(new Error("the file is not valid UTF-8"))
+    await pick(/reopen with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    expect(box.value).toBe("café\n")
+    expect((await encodingButton()).textContent).toContain("Windows-1252")
+  })
+
+  it("converts the file with Save with encoding, and the item then says UTF-8", async () => {
+    await mountWithTab(PATH)
+    await loaded("café\n")
+    await pick(/save with encoding/i, /^UTF-8$/)
+    await waitFor(() => expect(writeMock).toHaveBeenCalled())
+    expect(writeMock.mock.calls[0][4]).toEqual({ encoding: "UTF-8", bom: false })
+    await waitFor(async () =>
+      expect((await encodingButton()).getAttribute("aria-label")).toBe(
+        "File encoding: UTF-8",
+      ),
+    )
+    expect(screen.queryByText(/isn.t valid UTF-8/)).toBeNull()
+  })
+
+  it("refuses a character the encoding cannot hold, says which and where, and keeps the text", async () => {
+    const { FileUnmappableError } = await import("@/lib/fileApi")
+    writeMock.mockRejectedValueOnce(
+      new FileUnmappableError({
+        message: "refusing to save",
+        character: "☃",
+        line: 1,
+        column: 6,
+        encoding: "windows-1252",
+      }),
+    )
+    // Dirty, so Save is offered.
+    const box = await mountDirty()
+    fireEvent.change(box, { target: { value: "caf\u00e9 \u2603\n" } })
+    fireEvent.click(screen.getByRole("button", { name: /^save/i }))
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    const shown = render(<>{toastError.mock.calls[0][0]}</>)
+    expect(shown.container.textContent).toContain("U+2603")
+    expect(shown.container.textContent).toContain("line 1, column 6")
+    expect(shown.container.textContent).toContain("nothing was written")
+    expect(box.value).toBe("café ☃\n")
+  })
+})
+
+// "Open in new tab" opens the same file in the same view at the same spot, and
+// an address carrying that view opens the editor in it.
+describe("the editor's view travels with its address", () => {
+  const view = (patch: Record<string, unknown>) => ({
+    preview: false,
+    line: null,
+    top: null,
+    language: null,
+    encoding: null,
+    ...patch,
+  })
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    installBootStubs()
+    // The SVG preview renders through an object URL.
+    installObjectUrlMocks()
+    const { clearRootDrafts } = await import("@/lib/editorDrafts")
+    clearRootDrafts(rootKey(agentRoot(SESSION)))
+    readMock.mockResolvedValue({
+      path: PATH,
+      content: ON_DISK,
+      binary: false,
+      read_only: false,
+    })
+    stubModelPath = PATH
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    removeObjectUrlMocks()
+  })
+
+  // Mount with the store naming `path` and, optionally, a view for it.
+  async function mountRouted(
+    path: string,
+    routeView?: Record<string, unknown>,
+    mode: "file" | "diff" = "file",
+  ) {
+    stubModelPath = path
+    const { EditorOverlay } = await import("@/components/EditorOverlay")
+    const { getSnapshot } = await import("@/lib/store")
+    mockState = {
+      ...getSnapshot(),
+      changes: changesSlice([]),
+      editorTarget: { root: agentRoot(SESSION), initialPath: path },
+      editorRoute: {
+        root: agentRoot(SESSION),
+        mode,
+        path,
+        view: routeView === undefined ? undefined : view(routeView),
+      },
+      editorTabs: {
+        [rootKey(agentRoot(SESSION))]: {
+          tabs: [{ id: TAB_ID, path, dirty: false, preview: false, mode }],
+          activeId: TAB_ID,
+        },
+      },
+    } as YaranState
+    return render(<EditorOverlay />)
+  }
+
+  async function newTabLink(): Promise<HTMLAnchorElement> {
+    return (await screen.findByRole("link", { name: /open in new tab/i })) as HTMLAnchorElement
+  }
+
+  it("carries Preview, and reports it to the address", async () => {
+    await mountRouted("icons/logo.svg")
+    await screen.findByTestId("code-editor")
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }))
+    await waitFor(async () =>
+      expect((await newTabLink()).getAttribute("href")).toBe(
+        "#/editor/agent/s1/file/icons%2Flogo.svg?view=preview",
+      ),
+    )
+    expect(editorSyncViewMock).toHaveBeenCalledWith(agentRoot(SESSION), "icons/logo.svg", {
+      preview: true,
+    })
+  })
+
+  it("carries the diff view", async () => {
+    await mountRouted(PATH, undefined, "diff")
+    expect((await newTabLink()).getAttribute("href")).toBe(
+      "#/editor/agent/s1/diff/src%2Fbig.txt",
+    )
+  })
+
+  it("carries the cursor line and scroll position read when the link is pressed", async () => {
+    await mountRouted(PATH)
+    await screen.findByTestId("code-editor")
+    const link = await newTabLink()
+    expect(link.getAttribute("href")).toBe("#/editor/agent/s1/file/src%2Fbig.txt")
+    fireEvent.pointerDown(link)
+    expect(link.getAttribute("href")).toBe("#/editor/agent/s1/file/src%2Fbig.txt?line=4&top=2")
+  })
+
+  it("carries a language picked by hand", async () => {
+    await mountRouted(PATH)
+    await screen.findByTestId("code-editor")
+    fireEvent.click(await screen.findByRole("button", { name: /^syntax language:/i }))
+    fireEvent.click(await screen.findByRole("option", { name: /^TOML$/ }))
+    await waitFor(async () =>
+      expect((await newTabLink()).getAttribute("href")).toBe(
+        "#/editor/agent/s1/file/src%2Fbig.txt?lang=toml",
+      ),
+    )
+    expect(editorSyncViewMock).toHaveBeenCalledWith(agentRoot(SESSION), PATH, {
+      language: "toml",
+    })
+  })
+
+  it("says in this tab that the new one opens the saved file when there are unsaved edits", async () => {
+    await mountWithDirtyTab()
+    fireEvent.click(await newTabLink())
+    expect(toastInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it("opens in the address's preview", async () => {
+    await mountRouted("icons/logo.svg", { preview: true })
+    const img = await screen.findByAltText("icons/logo.svg")
+    expect(img.getAttribute("src")).toMatch(/^blob:/)
+  })
+
+  it("opens with the address's language once the registry has it", async () => {
+    await mountRouted(PATH, { language: "toml" })
+    await waitFor(() =>
+      expect(screen.getByTestId("code-editor").getAttribute("data-language")).toBe("toml"),
+    )
+  })
+
+  it("reads the file in the address's encoding from the first read, and keeps it", async () => {
+    await mountRouted(PATH, { encoding: "Shift_JIS" })
+    await screen.findByTestId("code-editor")
+    expect(readMock.mock.calls.map((call) => call[2])).toEqual(["Shift_JIS"])
+    // The buffer holds the choice once the read lands: the new-tab link, which
+    // reads it from there, carries it on.
+    await waitFor(async () =>
+      expect((await newTabLink()).getAttribute("href")).toBe(
+        "#/editor/agent/s1/file/src%2Fbig.txt?enc=Shift_JIS",
+      ),
+    )
+  })
+
+  it("goes to the address's spot once, then hands it back to the store", async () => {
+    await mountRouted(PATH, { line: 7, top: 3 })
+    await waitFor(() =>
+      expect(editorConsumeArrivalMock).toHaveBeenCalledWith(agentRoot(SESSION), PATH),
+    )
+    expect(STATUS_EDITOR.setPosition).toHaveBeenCalledTimes(1)
+    expect(STATUS_EDITOR.setPosition).toHaveBeenCalledWith({ lineNumber: 7, column: 1 })
+    expect(STATUS_EDITOR.setScrollTop).toHaveBeenCalledWith(60)
+  })
+
+  it("drops the spot without going anywhere when the file opens in its preview", async () => {
+    await mountRouted("icons/logo.svg", { preview: true, line: 7 })
+    await screen.findByAltText("icons/logo.svg")
+    await waitFor(() =>
+      expect(editorConsumeArrivalMock).toHaveBeenCalledWith(agentRoot(SESSION), "icons/logo.svg"),
+    )
+    expect(STATUS_EDITOR.setPosition).not.toHaveBeenCalled()
+  })
+})
+
+// The same journey through the real store: the editor's report lands there, the
+// address follows, and the view the store then holds is what the editor renders
+// from.
+describe("the editor's view and the store, end to end", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    installBootStubs()
+    installObjectUrlMocks()
+    realStore = true
+    const store = await import("@/lib/store")
+    store.closeEditor()
+    store.editorClearRoot(agentRoot(SESSION))
+    const { clearRootDrafts } = await import("@/lib/editorDrafts")
+    clearRootDrafts(rootKey(agentRoot(SESSION)))
+    readMock.mockResolvedValue({
+      path: PATH,
+      content: ON_DISK,
+      binary: false,
+      read_only: false,
+    })
+    treeMock.mockImplementation(async () => ({
+      dir: "",
+      entries: [
+        { name: "big.txt", path: PATH, is_dir: false, is_symlink: false, expandable: false },
+      ],
+    }))
+    stubModelPath = PATH
+  })
+
+  afterEach(async () => {
+    const store = await import("@/lib/store")
+    store.closeEditor()
+    realStore = false
+    cleanup()
+    vi.unstubAllGlobals()
+    removeObjectUrlMocks()
+    treeMock.mockImplementation(async () => ({ dir: "", entries: [] }))
+  })
+
+  async function openReal(path: string) {
+    const store = await import("@/lib/store")
+    store.openEditor(agentRoot(SESSION), path)
+    const { EditorOverlay } = await import("@/components/EditorOverlay")
+    render(<EditorOverlay />)
+    return store
+  }
+
+  it("writes Preview into the address and renders it from what the store holds", async () => {
+    const store = await openReal("icons/logo.svg")
+    await screen.findByTestId("code-editor")
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }))
+    await screen.findByAltText("icons/logo.svg")
+    expect(store.getSnapshot().editorRoute?.view?.preview).toBe(true)
+    expect(location.hash).toBe("#/agent/s1/editor/file/icons%2Flogo.svg?view=preview")
+  })
+
+  it("keeps a picked language through a rename, in the editor and in the address", async () => {
+    const store = await openReal(PATH)
+    await screen.findByTestId("code-editor")
+    fireEvent.click(await screen.findByRole("button", { name: /^syntax language:/i }))
+    fireEvent.click(await screen.findByRole("option", { name: /^TOML$/ }))
+    await waitFor(() => expect(location.hash).toContain("lang=toml"))
+
+    const tree = await screen.findByTestId("file-tree-drop-surface")
+    fireEvent.contextMenu(await within(tree).findByText("big.txt"))
+    fireEvent.click(await screen.findByText(/^Rename…$/))
+    fireEvent.change(await screen.findByDisplayValue("big.txt"), {
+      target: { value: "renamed.txt" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /^rename$/i }))
+    await waitFor(() =>
+      expect(store.getSnapshot().editorRoute?.path).toBe("src/renamed.txt"),
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId("code-editor").getAttribute("data-language")).toBe("toml"),
+    )
+    expect(store.getSnapshot().editorRoute?.view?.language).toBe("toml")
+    expect(location.hash).toBe("#/agent/s1/editor/file/src%2Frenamed.txt?lang=toml")
   })
 })

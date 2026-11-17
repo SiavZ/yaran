@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]`); nothing here touches the network beyond 127.0.0.1.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: std
 //!
@@ -15,6 +16,7 @@
 //! ├── cloud::cloudflared::supervisor::tests
 //! ├── cloud::cloudflared::version
 //! └── cloud::leg::tests
+//! ```
 //! <module-headers:end>
 
 use std::io::{Read, Write};
@@ -72,7 +74,7 @@ pub(crate) fn http_stub(reply: Reply) -> (String, Arc<Mutex<Reply>>, Arc<Mutex<u
     let base = format!("http://{}", listener.local_addr().unwrap());
     let cell = Arc::new(Mutex::new(reply));
     let hits = Arc::new(Mutex::new(0usize));
-    let (thread_cell, thread_hits) = (cell.clone(), hits.clone());
+    let (thread_cell, thread_hits) = (std::sync::Arc::clone(&cell), std::sync::Arc::clone(&hits));
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };

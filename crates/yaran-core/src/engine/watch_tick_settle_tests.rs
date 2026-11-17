@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::schedule_tests::engine_with_tabs;
 use super::tests::{
-    engine_with_tab, instant_rule, printing_pty, row_state, wait_for, worker_settings,
+    Builtins, engine_with_tab, instant_rule, printing_pty, row_state, wait_for, worker_settings,
 };
 use super::*;
 use crate::pty::PtyClient;
@@ -31,7 +31,7 @@ struct BuiltIn {
 const AUTO_CLEAR: BuiltIn = BuiltIn {
     sentinel: "[task-done]",
     label: AUTO_CLEAR_LABEL,
-    settings: |_| worker_settings(true, false, None),
+    settings: |_| worker_settings(Builtins::Clear, None),
     guard: |e| &e.watch.auto_clear_guard_checks,
 };
 
@@ -40,7 +40,7 @@ const AUTO_COMPACT: BuiltIn = BuiltIn {
     label: AUTO_COMPACT_LABEL,
     settings: |dir| {
         let path = dir.join("compact.txt").to_string_lossy().into_owned();
-        worker_settings(false, true, Some(path))
+        worker_settings(Builtins::Compact, Some(path))
     },
     guard: |e| &e.watch.auto_compact_guard_checks,
 };
@@ -159,8 +159,8 @@ fn assert_adoption_replay_is_held(kind: &BuiltIn) {
     // SAFETY: `openpty` only fills the two fds it is given.
     let rc = unsafe {
         libc::openpty(
-            &mut master,
-            &mut slave,
+            &raw mut master,
+            &raw mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -251,10 +251,10 @@ fn every_tab_of_a_herd_is_rescanned_inside_its_window() {
     let (mut engine, _guard, tabs) = engine_with_tabs(N, || printing_pty("replayed: [task-done]"));
     engine.watch.built_in_startup_settle = None;
     for (i, tab) in tabs.iter().enumerate() {
-        engine
-            .amq
-            .session_settings
-            .insert(format!("s{}", i + 1), worker_settings(true, false, None));
+        engine.amq.session_settings.insert(
+            format!("s{}", i + 1),
+            worker_settings(Builtins::Clear, None),
+        );
         assert!(wait_for(|| engine.providers[tab.as_ref_id()]
             .scan_recent_lines(WATCH_SCAN_ROWS)
             .contains("replayed")));

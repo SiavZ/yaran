@@ -43,7 +43,10 @@ pub enum AddProjectAction {
     /// The path is inside an existing work tree or git dir: blocked from being
     /// added as its own project. `root` names the containing work-tree root when
     /// known (a git-dir hit carries `None`).
-    Blocked { root: Option<String> },
+    Blocked {
+        /// The containing work tree's root, when known.
+        root: Option<String>,
+    },
     /// A repo with an unborn HEAD (no commits): offer to make an initial commit
     /// before adding.
     NeedsInitialCommit,
@@ -60,7 +63,10 @@ pub enum AddProjectWarning {
     None,
     /// The repo is on a non-default branch and yaran resolved the default for
     /// certain, so it may offer to check it out first.
-    NotOnDefaultBranch { default_branch: String },
+    NotOnDefaultBranch {
+        /// The repository's default branch.
+        default_branch: String,
+    },
     /// The repo is on a non-default branch but yaran cannot identify the default,
     /// so it warns without offering a switch.
     NotOnDefaultBranchUnknown,
@@ -71,8 +77,11 @@ pub enum AddProjectWarning {
 /// switch). Rendered per surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddProjectPlan {
+    /// What adding the path will do, or why it cannot.
     pub action: AddProjectAction,
+    /// What the add should warn about.
     pub warning: AddProjectWarning,
+    /// Whether the surface may offer to check the default branch out first.
     pub can_checkout_default: bool,
 }
 
@@ -161,24 +170,37 @@ pub enum ProjectBase {
 }
 
 impl ProjectBase {
+    /// The branch's name.
     pub fn branch(&self) -> &str {
         match self {
             Self::RemoteDefault(branch) | Self::Other(branch) => branch,
         }
     }
 
+    /// The branch's name, by value.
     pub fn into_branch(self) -> String {
         match self {
             Self::RemoteDefault(branch) | Self::Other(branch) => branch,
         }
     }
 
+    /// Whether it is the remote's default branch.
     pub fn is_remote_default(&self) -> bool {
         match self {
             Self::RemoteDefault(_) => true,
             Self::Other(_) => false,
         }
     }
+}
+
+/// Whether a project add first checks the folder out at the remote's default
+/// branch: the add dialog's "Check out the default branch before adding" box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultCheckout {
+    /// The box is ticked: the folder moves to the default branch.
+    CheckOutDefault,
+    /// The box is unticked: the folder stays on the branch it is on.
+    StayOnCurrent,
 }
 
 /// Which branch becomes a project's base when it is added.
@@ -193,10 +215,12 @@ impl ProjectBase {
 pub fn project_base_at_add(
     current_branch: Option<&str>,
     remote_default: Option<&str>,
-    check_out_default: bool,
+    check_out_default: DefaultCheckout,
 ) -> ProjectBase {
     match (current_branch, remote_default) {
-        (_, Some(default)) if check_out_default => ProjectBase::RemoteDefault(default.to_string()),
+        (_, Some(default)) if check_out_default == DefaultCheckout::CheckOutDefault => {
+            ProjectBase::RemoteDefault(default.to_string())
+        }
         (Some(current), Some(default)) if current == default => {
             ProjectBase::RemoteDefault(default.to_string())
         }
@@ -221,6 +245,13 @@ mod tests {
     }
 
     fn vectors() -> Vec<Vector> {
+        let mut all = vectors_that_stop_short();
+        all.extend(vectors_that_are_ready());
+        all
+    }
+
+    /// The rows whose folder cannot be added as it is.
+    fn vectors_that_stop_short() -> Vec<Vector> {
         vec![
             Vector {
                 name: "inside a work tree is blocked (root named)",
@@ -284,6 +315,12 @@ mod tests {
                     can_checkout_default: false,
                 },
             },
+        ]
+    }
+
+    /// The rows whose folder is ready to add, each with its branch warning.
+    fn vectors_that_are_ready() -> Vec<Vector> {
+        vec![
             Vector {
                 name: "on a non-default branch with a known default: checkout offered",
                 inspection: AddProjectInspection {
@@ -374,7 +411,7 @@ mod tests {
         name: &'static str,
         current_branch: Option<&'static str>,
         remote_default: Option<&'static str>,
-        check_out_default: bool,
+        check_out_default: DefaultCheckout,
         expect: ProjectBase,
     }
 
@@ -384,56 +421,56 @@ mod tests {
                 name: "known default, box ticked: the default branch",
                 current_branch: Some("feature"),
                 remote_default: Some("main"),
-                check_out_default: true,
+                check_out_default: DefaultCheckout::CheckOutDefault,
                 expect: ProjectBase::RemoteDefault("main".to_string()),
             },
             BaseVector {
                 name: "known default, box unticked: the branch the folder is on",
                 current_branch: Some("feature"),
                 remote_default: Some("main"),
-                check_out_default: false,
+                check_out_default: DefaultCheckout::StayOnCurrent,
                 expect: ProjectBase::Other("feature".to_string()),
             },
             BaseVector {
                 name: "no known default (heuristic): the current branch",
                 current_branch: Some("wip"),
                 remote_default: None,
-                check_out_default: false,
+                check_out_default: DefaultCheckout::StayOnCurrent,
                 expect: ProjectBase::Other("wip".to_string()),
             },
             BaseVector {
                 name: "already on the known default: the default branch",
                 current_branch: Some("main"),
                 remote_default: Some("main"),
-                check_out_default: false,
+                check_out_default: DefaultCheckout::StayOnCurrent,
                 expect: ProjectBase::RemoteDefault("main".to_string()),
             },
             BaseVector {
                 name: "detached HEAD with a known default: the default branch",
                 current_branch: None,
                 remote_default: Some("trunk"),
-                check_out_default: false,
+                check_out_default: DefaultCheckout::StayOnCurrent,
                 expect: ProjectBase::RemoteDefault("trunk".to_string()),
             },
             BaseVector {
                 name: "detached HEAD checked out to the known default: the default branch",
                 current_branch: None,
                 remote_default: Some("trunk"),
-                check_out_default: true,
+                check_out_default: DefaultCheckout::CheckOutDefault,
                 expect: ProjectBase::RemoteDefault("trunk".to_string()),
             },
             BaseVector {
                 name: "detached HEAD, nothing known: the main fallback",
                 current_branch: None,
                 remote_default: None,
-                check_out_default: false,
+                check_out_default: DefaultCheckout::StayOnCurrent,
                 expect: ProjectBase::Other("main".to_string()),
             },
             BaseVector {
                 name: "a checkout asked for with no known default cannot happen: current wins",
                 current_branch: Some("wip"),
                 remote_default: None,
-                check_out_default: true,
+                check_out_default: DefaultCheckout::CheckOutDefault,
                 expect: ProjectBase::Other("wip".to_string()),
             },
         ]

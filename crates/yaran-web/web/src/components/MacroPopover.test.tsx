@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
-import { setComposeInsertSink } from "@/lib/composeInsert"
+import {
+  registerPaneMacroTarget,
+  resetPaneMacroTargets,
+  type PaneMacroTarget,
+} from "@/lib/paneMacroTarget"
 import type { SelectedTarget } from "@/lib/store"
 
 // Where focus lands after PICKING a macro is a contract, not a nicety. On the
@@ -14,15 +18,30 @@ import type { SelectedTarget } from "@/lib/store"
 // is about to edit. runMacro's returned destination is what steers this, so
 // the store is mocked to answer either way per test.
 
-const runMacro = vi.fn<(name: string) => "compose" | "pty" | "none">()
+const runMacro = vi.fn<
+  (name: string, target: SelectedTarget) => "compose" | "pty" | "none"
+>()
 const openMacrosDialog = vi.fn()
+// The workspace the control reads its tab's state from; a case that needs a
+// dormant tab seeds one.
+let mockSpine: unknown = null
+const mockState = () => ({
+  bootstrap: {
+    macros: [
+      { name: "Greet", text: "hello", surface: "both" },
+      { name: "Prompt", text: "explain", surface: "agent" },
+      { name: "Build", text: "make", surface: "terminal" },
+    ],
+  },
+  spine: mockSpine,
+  startedDormantTabs: [],
+  pendingSlotTab: {},
+  endedInViewTab: null,
+})
 vi.mock("@/lib/store", () => ({
-  useYaran: () => ({
-    bootstrap: {
-      macros: [{ name: "Greet", text: "hello", surface: "both" }],
-    },
-  }),
-  runMacro: (name: string) => runMacro(name),
+  useYaran: () => mockState(),
+  useYaranSelector: (select: (s: unknown) => unknown) => select(mockState()),
+  runMacro: (name: string, target: SelectedTarget) => runMacro(name, target),
   openMacrosDialog: () => openMacrosDialog(),
 }))
 
@@ -36,13 +55,23 @@ const target: SelectedTarget = {
 
 // Base UI runs its open/close transitions and focus moves on timers; a short
 // settle lets them land (the idiom the dropdown-menu tests use).
+function ownerPane(over: Partial<PaneMacroTarget> = {}): PaneMacroTarget {
+  return {
+    takeoverCard: false,
+    send: () => true,
+    compose: null,
+    typingSurface: () => null,
+    ...over,
+  }
+}
+
 const settle = () => new Promise((r) => setTimeout(r, 40))
 
-function stubMatchMedia() {
+function stubMatchMedia(coarse = false) {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: false,
+      matches: coarse && query === "(pointer: coarse)",
       media: query,
       onchange: null,
       addEventListener: () => {},
@@ -64,9 +93,12 @@ function stubMatchMedia() {
 }
 
 beforeEach(() => {
+  mockSpine = null
   runMacro.mockReset()
   openMacrosDialog.mockReset()
-  setComposeInsertSink(null)
+  resetPaneMacroTargets()
+  // The pane under the control, published as its owner: an ordinary pane.
+  registerPaneMacroTarget("s1", ownerPane())
   stubMatchMedia()
   // cmdk scrolls the selected item into view on mount; jsdom has no layout.
   Element.prototype.scrollIntoView = () => {}
@@ -74,7 +106,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  setComposeInsertSink(null)
+  resetPaneMacroTargets()
   vi.unstubAllGlobals()
 })
 
@@ -162,13 +194,16 @@ describe("MacroPopover pick focus routing", () => {
     // surface); its target is the compose textarea the draft lives in.
     const compose = document.createElement("textarea")
     document.body.appendChild(compose)
-    setComposeInsertSink({ insert: () => {}, target: () => compose })
+    registerPaneMacroTarget(
+      "s1",
+      ownerPane({ compose: { insert: () => {}, target: () => compose } }),
+    )
     runMacro.mockReturnValue("compose")
 
     render(<MacroPopover variant="icon" target={target} />)
     await openAndPick()
 
-    expect(runMacro).toHaveBeenCalledWith("Greet")
+    expect(runMacro).toHaveBeenCalledWith("Greet", target)
     expect(document.activeElement).toBe(compose)
     compose.remove()
   })
@@ -185,14 +220,14 @@ describe("MacroPopover pick focus routing", () => {
     )
     await openAndPick()
 
-    expect(runMacro).toHaveBeenCalledWith("Greet")
+    expect(runMacro).toHaveBeenCalledWith("Greet", target)
     expect(document.activeElement).toBe(xtermTextarea)
     xtermTextarea.remove()
   })
 
   it("a direct-to-PTY pick without finalFocus returns focus to the trigger", async () => {
-    // The mobile icon variant with the compose bar OFF: Base UI's default
-    // return-to-trigger behavior, exactly as before this routing existed.
+    // The pane published no typing surface (its terminal is not mounted
+    // yet): Base UI's default return-to-trigger behavior.
     runMacro.mockReturnValue("pty")
 
     render(<MacroPopover variant="icon" target={target} />)
@@ -215,5 +250,280 @@ describe("MacroPopover pick focus routing", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Run a macro" }),
     )
+  })
+})
+
+// With two panes mounted (an agent and its companion terminal), the desktop
+// trigger in the header must hand focus back to the pane the macro went to,
+// not to whichever pane mounted last, or the Enter meant to submit the macro
+// types into the other terminal.
+describe("MacroPopover returns focus to the pane the macro was sent to", () => {
+  function textarea(): HTMLTextAreaElement {
+    const el = document.createElement("textarea")
+    document.body.appendChild(el)
+    return el
+  }
+
+  it("a pick sent to the first pane's terminal focuses that terminal", async () => {
+    const first = textarea()
+    const second = textarea()
+    registerPaneMacroTarget("s1", ownerPane({ typingSurface: () => first }))
+    registerPaneMacroTarget("t9", ownerPane({ typingSurface: () => second }))
+    runMacro.mockReturnValue("pty")
+
+    render(<MacroPopover target={target} />)
+    await openAndPick()
+
+    expect(document.activeElement).toBe(first)
+    first.remove()
+    second.remove()
+  })
+
+  it("a pick sent to the first pane's compose box focuses that box", async () => {
+    const first = textarea()
+    const second = textarea()
+    registerPaneMacroTarget(
+      "s1",
+      ownerPane({
+        compose: { insert: () => {}, target: () => first },
+        typingSurface: () => first,
+      }),
+    )
+    registerPaneMacroTarget(
+      "t9",
+      ownerPane({
+        compose: { insert: () => {}, target: () => second },
+        typingSurface: () => second,
+      }),
+    )
+    runMacro.mockReturnValue("compose")
+
+    render(<MacroPopover target={target} />)
+    await openAndPick()
+
+    expect(document.activeElement).toBe(first)
+    first.remove()
+    second.remove()
+  })
+})
+
+// Over an agent with its dock, the header's picker is handed the part typing goes
+// to, which may be a terminal of the dock: its list and its sends are that
+// part's, never the agent's.
+describe("MacroPopover on a terminal of the agent's dock", () => {
+  const dockTerminal: SelectedTarget = {
+    kind: "terminal",
+    terminalId: "t9",
+    owner: { kind: "session", sessionId: "s1" },
+  }
+
+  it("lists the terminal's macros and sends to the terminal's pane", async () => {
+    const terminalBox = document.createElement("textarea")
+    document.body.appendChild(terminalBox)
+    registerPaneMacroTarget("t9", ownerPane({ typingSurface: () => terminalBox }))
+    runMacro.mockReturnValue("pty")
+
+    render(<MacroPopover target={dockTerminal} />)
+    fireEvent.click(screen.getByRole("button", { name: "Run a macro" }))
+    await settle()
+    expect(screen.getByText("Build")).toBeTruthy()
+    expect(screen.queryByText("Prompt")).toBeNull()
+    fireEvent.click(screen.getByText("Build"))
+    await settle()
+
+    expect(runMacro).toHaveBeenCalledWith("Build", dockTerminal)
+    expect(document.activeElement).toBe(terminalBox)
+    terminalBox.remove()
+  })
+})
+
+// The theater pill and the phone controls sit outside the pane just as the
+// desktop header's trigger does, so a pick written straight to the pty returns
+// focus to that pane's typing surface from every variant: the Enter that
+// submits the macro must reach the terminal, not re-press the trigger. On a
+// coarse pointer that would pop the soft keyboard the user never asked for, so
+// there the trigger keeps focus, as the phone flap always has.
+describe("MacroPopover returns focus to the pane from every variant", () => {
+  function typingSurface(): HTMLTextAreaElement {
+    const el = document.createElement("textarea")
+    document.body.appendChild(el)
+    registerPaneMacroTarget("s1", ownerPane({ typingSurface: () => el }))
+    return el
+  }
+
+  it.each(["labeled", "icon", "pill"] as const)(
+    "a %s pick sent to the pty focuses the pane's typing surface",
+    async (variant) => {
+      const surface = typingSurface()
+      runMacro.mockReturnValue("pty")
+
+      render(<MacroPopover variant={variant} target={target} />)
+      await openAndPick()
+
+      expect(document.activeElement).toBe(surface)
+      surface.remove()
+    },
+  )
+
+  it.each(["icon", "pill"] as const)(
+    "a %s pick on a coarse pointer leaves focus on the trigger",
+    async (variant) => {
+      stubMatchMedia(true)
+      const surface = typingSurface()
+      runMacro.mockReturnValue("pty")
+
+      render(<MacroPopover variant={variant} target={target} />)
+      await openAndPick()
+
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Run a macro" }),
+      )
+      surface.remove()
+    },
+  )
+
+  it("a pill pick that sent nothing leaves focus on the trigger", async () => {
+    const surface = typingSurface()
+    runMacro.mockReturnValue("none")
+
+    render(<MacroPopover variant="pill" target={target} />)
+    await openAndPick()
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Run a macro" }),
+    )
+    surface.remove()
+  })
+})
+
+// While the take-over card covers the pane a Macros control belongs to, this tab
+// is not driving the pty: the control stays on screen at its full size, cannot
+// be pressed, and says why through the shared tooltip. Both card states, another
+// device driving and nobody driving, publish the same `takeoverCard` verdict.
+describe("MacroPopover under the take-over card", () => {
+  const isDisabled = (el: HTMLElement) => (el as HTMLButtonElement).disabled
+  const covered = () =>
+    registerPaneMacroTarget("s1", { ...ownerPane(), takeoverCard: true, send: null })
+
+  it.each(["labeled", "icon", "pill"] as const)(
+    "the %s trigger is disabled and opens nothing",
+    async (variant) => {
+      covered()
+      render(<MacroPopover variant={variant} target={target} />)
+      const trigger = screen.getByRole("button", { name: "Run a macro" })
+      expect(isDisabled(trigger)).toBe(true)
+      fireEvent.click(trigger)
+      await settle()
+      expect(document.querySelector('[data-slot="popover-content"]')).toBeNull()
+      expect(runMacro).not.toHaveBeenCalled()
+    },
+  )
+
+  it("keeps the trigger's own size classes while disabled", () => {
+    covered()
+    render(<MacroPopover variant="pill" target={target} />)
+    expect(screen.getByRole("button", { name: "Run a macro" }).className).toContain(
+      "size-10",
+    )
+  })
+
+  it("explains itself through the shared tooltip, never a title", async () => {
+    covered()
+    render(<MacroPopover target={target} />)
+    const wrapper = screen.getByTestId("macros-disabled")
+    expect(wrapper.getAttribute("title")).toBeNull()
+    expect(
+      screen.getByRole("button", { name: "Run a macro" }).getAttribute("title"),
+    ).toBeNull()
+    act(() => wrapper.focus())
+    expect(await screen.findByText("Take over to send macros")).toBeTruthy()
+  })
+
+  it("re-enables the moment this tab becomes the owner", async () => {
+    const retire = covered()
+    render(<MacroPopover target={target} />)
+    expect(isDisabled(screen.getByRole("button", { name: "Run a macro" }))).toBe(true)
+    act(() => {
+      retire()
+      registerPaneMacroTarget("s1", ownerPane())
+    })
+    const trigger = screen.getByRole("button", { name: "Run a macro" })
+    expect(isDisabled(trigger)).toBe(false)
+    expect(screen.queryByTestId("macros-disabled")).toBeNull()
+    await openAndPick()
+    expect(runMacro).toHaveBeenCalledWith("Greet", target)
+  })
+
+  it("reads the card of its own pane, not another mounted one", () => {
+    registerPaneMacroTarget("t9", { ...ownerPane(), takeoverCard: true, send: null })
+    render(<MacroPopover target={target} />)
+    expect(isDisabled(screen.getByRole("button", { name: "Run a macro" }))).toBe(false)
+  })
+})
+
+// A tab that is not running has no pane, so nothing can carry a macro to it: the
+// control is disabled and says how to get one.
+describe("MacroPopover over a dormant tab", () => {
+  const dormantTarget: SelectedTarget = {
+    kind: "agent",
+    sessionId: "s1",
+    tabId: "t2",
+  } as SelectedTarget
+
+  beforeEach(() => {
+    mockSpine = {
+      projects: [],
+      sessions: [
+        {
+          id: "s1",
+          slot_tab_id: "s1",
+          tabs: [
+            { id: "s1", has_live_process: true },
+            { id: "t2", has_live_process: false },
+          ],
+        },
+      ],
+    }
+  })
+
+  it.each(["labeled", "icon", "pill"] as const)(
+    "the %s trigger is disabled and opens nothing",
+    async (variant) => {
+      render(<MacroPopover variant={variant} target={dormantTarget} />)
+      const trigger = screen.getByRole("button", { name: "Run a macro" })
+      expect((trigger as HTMLButtonElement).disabled).toBe(true)
+      fireEvent.click(trigger)
+      await settle()
+      expect(document.querySelector('[data-slot="popover-content"]')).toBeNull()
+      expect(runMacro).not.toHaveBeenCalled()
+    },
+  )
+
+  it("says to start the tab, through the shared tooltip", async () => {
+    render(<MacroPopover target={dormantTarget} />)
+    const wrapper = screen.getByTestId("macros-disabled")
+    expect(wrapper.getAttribute("title")).toBeNull()
+    act(() => wrapper.focus())
+    expect(await screen.findByText("Start the tab to send macros")).toBeTruthy()
+  })
+
+  it("stays live for the running tab beside it", () => {
+    registerPaneMacroTarget("s1", ownerPane())
+    render(<MacroPopover target={target} />)
+    const trigger = screen.getByRole("button", { name: "Run a macro" })
+    expect((trigger as HTMLButtonElement).disabled).toBe(false)
+  })
+})
+
+describe("MacroPopover search highlight", () => {
+  it("lights the letters the loose search matched", async () => {
+    render(<MacroPopover target={target} />)
+    fireEvent.click(screen.getByRole("button", { name: "Run a macro" }))
+    await settle()
+    const input = document.querySelector('[data-slot="command-input"]')!
+    fireEvent.change(input, { target: { value: "gt" } })
+    await settle()
+    const marks = [...document.querySelectorAll('[data-slot="popover-content"] mark')]
+    expect(marks.map((m) => m.textContent)).toEqual(["G", "t"])
   })
 })

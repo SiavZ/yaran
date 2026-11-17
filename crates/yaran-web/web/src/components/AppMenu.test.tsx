@@ -6,7 +6,9 @@
 // Uses:
 // src/components/AppMenu.test.tsx
 // ├── src/components/AppMenu.tsx
-// └── src/lib/appMenu.ts
+// ├── src/lib/appMenu.ts
+// ├── src/lib/authApi.ts
+// └── src/lib/authGate.ts
 // External: @testing-library/react, vitest
 //
 // Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
@@ -18,6 +20,7 @@ const openCustomizeWebapp = vi.fn()
 const openCreateAgentFromPr = vi.fn()
 const openNewAgentPicker = vi.fn()
 const openAddProject = vi.fn()
+const openCloneProject = vi.fn()
 const createStandaloneTerminal = vi.fn()
 // The renderer reads gh availability from the live bootstrap; tests flip this.
 let ghAvailable = true
@@ -33,6 +36,7 @@ vi.mock("@/lib/store", () => ({
   sortAgents: vi.fn(),
   openAddProject: () => openAddProject(),
   openAddProjectForInit: vi.fn(),
+  openCloneProject: () => openCloneProject(),
   openCreateAgentFromPr: (projectId: string | null) =>
     openCreateAgentFromPr(projectId),
   openNewAgentPicker: (intent: string) => openNewAgentPicker(intent),
@@ -41,6 +45,12 @@ vi.mock("@/lib/store", () => ({
     bootstrap: { gh_available: ghAvailable, github_integration: true },
   }),
 }))
+// The sign-in state the menu reads to offer Sign out; tests flip it.
+let authPhase: import("@/lib/authGate").AuthPhase = { kind: "open", status: null }
+vi.mock("@/lib/authGate", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/authGate")>()
+  return { ...actual, useAuthPhase: () => authPhase }
+})
 vi.mock("@/lib/configApi", () => ({
   configApi: { reload: () => Promise.resolve() },
 }))
@@ -121,6 +131,7 @@ describe("AppMenu", () => {
       githubIntegrationEnabled: true,
       nativeShell: false,
       phonePairing: false,
+      canSignOut: false,
     }).filter((e) => e.kind !== "separator")
     const rendered = screen.getAllByRole("menuitem").map((e) => e.textContent)
     expect(rendered).toHaveLength(topLevel.length)
@@ -154,6 +165,7 @@ describe("AppMenu", () => {
       githubIntegrationEnabled: true,
       nativeShell: false,
       phonePairing: false,
+      canSignOut: false,
     }).filter((e) => e.kind === "submenu")
     expect(subTriggers).toHaveLength(submenus.length)
     for (const t of subTriggers) {
@@ -192,9 +204,9 @@ describe("AppMenu", () => {
     expect(screen.getByText("Name")).toBeTruthy()
   })
 
-  // The creation submenus mirror the launcher corner's ⋯ menu: same items,
-  // same store actions, same gh gating. This is the desktop half; the sheet
-  // test has the mobile twin.
+  // The creation submenus share their lists with the launcher's New dialog:
+  // same items, same store actions, same gh gating. This is the desktop half;
+  // the sheet test has the mobile twin.
   it("expands the New submenu and routes a variant to its store action", async () => {
     render(<AppMenu />)
     fireEvent.click(screen.getByRole("button", { name: /^settings$/i }))
@@ -239,8 +251,9 @@ describe("AppMenu", () => {
     fireEvent.click(screen.getByText("Add project"))
     await settle()
     expect(screen.getByText("Initialize a repository…")).toBeTruthy()
-    fireEvent.click(screen.getByText("Add project…"))
-    expect(openAddProject).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByText("Clone a repository…"))
+    expect(openCloneProject).toHaveBeenCalledOnce()
+    expect(openAddProject).not.toHaveBeenCalled()
   })
 
   it("closes on Escape and returns focus to the trigger", async () => {
@@ -292,7 +305,33 @@ describe("AppMenu", () => {
       githubIntegrationEnabled: true,
       nativeShell: false,
       phonePairing: false,
+      canSignOut: false,
     })
     expect(walk(model).length).toBeGreaterThan(model.length)
+  })
+})
+
+describe("Sign out in this menu", () => {
+  afterEach(() => {
+    authPhase = { kind: "open", status: null }
+  })
+
+  it("is offered to a page signed in with a password", async () => {
+    const { normalizeAuthStatus } = await import("@/lib/authApi")
+    authPhase = {
+      kind: "open",
+      status: normalizeAuthStatus({ password_set: true, signed_in: true }),
+    }
+    render(<AppMenu />)
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }))
+    await screen.findByRole("menu")
+    expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy()
+  })
+
+  it("is absent where there is no session to end", async () => {
+    render(<AppMenu />)
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }))
+    await screen.findByRole("menu")
+    expect(screen.queryByRole("menuitem", { name: "Sign out" })).toBeNull()
   })
 })

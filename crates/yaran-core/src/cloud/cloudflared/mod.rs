@@ -8,6 +8,7 @@
 //! - No tokio: everything here runs on std threads owned by `cloud::leg`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/mod.rs
 //! ├── cloud::cloudflared::acquire
@@ -27,6 +28,7 @@
 //! cloud/cloudflared/mod.rs
 //! ├── cloud
 //! └── cloud::leg_start
+//! ```
 //! <module-headers:end>
 
 pub mod acquire;
@@ -97,7 +99,9 @@ mod tests {
             );
             assert_eq!(
                 pin.kind == pins::AssetKind::Tgz,
-                pin.asset.ends_with(".tgz"),
+                std::path::Path::new(pin.asset)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tgz")),
                 "{pin:?}"
             );
         }

@@ -1,6 +1,10 @@
 use super::test_support::{default_bindings, test_app};
 use super::*;
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the audits loop over both dialogs with a bool they also assert on"
+)]
 fn configure_prompt(app: &App, startup: bool) -> PromptState {
     let project = &app.engine.projects[0];
     let input = TextInput::with_text("AUDIT_DRAFT=keep".to_string()).with_multiline(8);
@@ -10,6 +14,7 @@ fn configure_prompt(app: &App, startup: bool) -> PromptState {
             project_name: project.name.clone(),
             input,
             focus: ConfigureFieldFocus::Save,
+            return_to: None,
         }
     } else {
         PromptState::ConfigureProjectEnv {
@@ -17,6 +22,7 @@ fn configure_prompt(app: &App, startup: bool) -> PromptState {
             project_name: project.name.clone(),
             input,
             focus: ConfigureFieldFocus::Save,
+            return_to: None,
         }
     }
 }
@@ -241,17 +247,27 @@ fn tall_forms_leave_the_complete_status_footer_visible() {
     for macros in [false, true] {
         let mut app = test_app(default_bindings());
         if macros {
-            app.execute_command("edit-macros".into()).unwrap();
+            app.execute_command("edit-macros").unwrap();
         } else {
             app.prompt = configure_prompt(&app, false);
         }
         app.set_error("Could not save project environment variables: the second line is invalid; use KEY=value syntax and retry.");
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
+        // The status wraps by word over the footer's rows, so the rows are
+        // read as one run of words.
         let footer: String = terminal.backend().buffer().content()[22 * 80..]
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
+            .chunks(80)
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             footer.contains("Could not save project environment variables"),
             "{footer}"
@@ -282,6 +298,7 @@ fn narrow_changed_file_rows_keep_stats_for_selected_and_wide_paths() {
         binary: false,
         diff_excluded: false,
         renamed_from: None,
+        kind: yaran_core::model::ChangedFileKind::File,
     })
     .collect();
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -291,7 +308,7 @@ fn narrow_changed_file_rows_keep_stats_for_selected_and_wide_paths() {
         .buffer()
         .content()
         .iter()
-        .map(|cell| cell.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect();
     assert_eq!(screen.matches("+123 -45").count(), 2, "{screen}");
     let header = terminal
@@ -299,7 +316,11 @@ fn narrow_changed_file_rows_keep_stats_for_selected_and_wide_paths() {
         .buffer()
         .content()
         .chunks(80)
-        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
         .find_map(|row| row.find("Changes (2)").map(|at| row[at..].to_string()))
         .expect("the file count stays visible");
     assert!(

@@ -7,6 +7,7 @@
 //! pairing changed during the claim, and the D24 consent key.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/cloud_login.rs
 //! ├── after_claim
@@ -23,6 +24,7 @@
 //! Used by: entry point (cargo test -p yaran-core --test <name> (integration tests))
 //! tests/cloud_login.rs
 //! └── after_claim
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashMap;
@@ -86,7 +88,7 @@ impl FakeIo {
 
 fn query_of(url: &str) -> HashMap<String, String> {
     url::Url::parse(url)
-        .unwrap()
+        .expect("the login fixture")
         .query_pairs()
         .into_owned()
         .collect()
@@ -98,12 +100,12 @@ fn hit_callback(callback: String, query: String) {
             .trim_start_matches("http://")
             .trim_end_matches("/callback")
             .to_string();
-        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        let mut s = std::net::TcpStream::connect(addr).expect("the login fixture");
         write!(
             s,
             "GET /callback?{query} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         )
-        .unwrap();
+        .expect("the login fixture");
         let mut out = String::new();
         let _ = s.read_to_string(&mut out);
     });
@@ -124,8 +126,10 @@ impl LoginIo for FakeIo {
             Browser::Paste => {
                 self.tx
                     .send("http://127.0.0.1:1/callback?code=x&state=y".into())
-                    .unwrap();
-                self.tx.send(format!("{}?{ok}", q["callback"])).unwrap();
+                    .expect("the login fixture");
+                self.tx
+                    .send(format!("{}?{ok}", q["callback"]))
+                    .expect("the login fixture");
             }
             Browser::OpenFailsThenLoopback => {
                 hit_callback(q["callback"].clone(), ok);
@@ -140,7 +144,7 @@ impl LoginIo for FakeIo {
         self.fingerprint = fingerprint.to_string();
     }
     fn pasted_callback(&mut self) -> Receiver<String> {
-        self.rx.take().unwrap()
+        self.rx.take().expect("the login fixture")
     }
     fn cancelled(&mut self) -> bool {
         if self.cancel.load(Ordering::SeqCst) {
@@ -172,12 +176,20 @@ fn meta(min: i64) -> serde_json::Value {
     })
 }
 
-fn worker(min: i64, claim_ok: bool) -> MockWorker {
+/// Whether the fake control plane accepts the claim.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Claim {
+    Accepted,
+    Refused,
+}
+
+fn worker(min: i64, claim: Claim) -> MockWorker {
     MockWorker::start(move |req| match req.path.as_str() {
-        "/v1/meta" => MockResponse::json(200, meta(min)),
-        "/v1/machine/claim" if claim_ok => {
-            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
-        }
+        "/v1/meta" => MockResponse::json(200, &meta(min)),
+        "/v1/machine/claim" if claim == Claim::Accepted => MockResponse::json(
+            200,
+            &serde_json::to_value(sample_claim(SAMPLE_ORG)).expect("the login fixture"),
+        ),
         "/v1/machine/claim" => {
             MockResponse::error(400, "pkce_mismatch", "The verifier does not match.")
         }
@@ -205,7 +217,7 @@ fn login(
 }
 
 fn setup() -> (tempfile::TempDir, CloudPaths) {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("the login fixture");
     let paths = CloudPaths::from_root(root.path());
     (root, paths)
 }
@@ -213,7 +225,7 @@ fn setup() -> (tempfile::TempDir, CloudPaths) {
 #[test]
 fn a_full_login_pairs_and_stores_the_claim() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let mut io = FakeIo::new(Browser::Loopback);
     let out = login(&w, &paths, &mut io, Duration::from_secs(10));
     assert_eq!(
@@ -272,7 +284,7 @@ fn a_full_login_pairs_and_stores_the_claim() {
 #[test]
 fn the_paste_path_works_when_the_browser_cannot_reach_the_listener() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let mut io = FakeIo::new(Browser::Paste);
     assert!(matches!(
         login(&w, &paths, &mut io, Duration::from_secs(10)),
@@ -288,7 +300,7 @@ fn the_paste_path_works_when_the_browser_cannot_reach_the_listener() {
 #[test]
 fn a_failed_browser_open_still_shows_the_url_and_completes() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let mut io = FakeIo::new(Browser::OpenFailsThenLoopback);
     assert!(matches!(
         login(&w, &paths, &mut io, Duration::from_secs(10)),
@@ -302,7 +314,7 @@ fn a_failed_browser_open_still_shows_the_url_and_completes() {
 fn a_different_paired_org_is_refused_before_any_request() {
     let (_root, paths) = setup();
     pair_sample(&paths, "https://other.example.org");
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let out = login(
         &w,
         &paths,
@@ -321,7 +333,7 @@ fn a_different_paired_org_is_refused_before_any_request() {
 fn a_protocol_mismatch_stops_the_login() {
     let (_root, paths) = setup();
     let out = login(
-        &worker(5, true),
+        &worker(5, Claim::Accepted),
         &paths,
         &mut FakeIo::new(Browser::Loopback),
         Duration::from_secs(5),
@@ -336,13 +348,13 @@ fn a_protocol_mismatch_stops_the_login() {
 fn a_refused_claim_leaves_the_old_credentials_and_consent_key() {
     let (_root, paths) = setup();
     assert!(matches!(
-        login(&worker(1, false), &paths, &mut FakeIo::new(Browser::Loopback), Duration::from_secs(10)),
+        login(&worker(1, Claim::Refused), &paths, &mut FakeIo::new(Browser::Loopback), Duration::from_secs(10)),
         CloudActionOutcome::ClaimRefused { ref code, .. } if code == "pkce_mismatch"
     ));
     assert_eq!(credentials::read(&paths).unwrap(), None);
     let before = pair_sample(&paths, SAMPLE_ORG);
     let out = login(
-        &worker(1, false),
+        &worker(1, Claim::Refused),
         &paths,
         &mut FakeIo::new(Browser::Loopback),
         Duration::from_secs(10),
@@ -350,7 +362,7 @@ fn a_refused_claim_leaves_the_old_credentials_and_consent_key() {
     assert!(matches!(out, CloudActionOutcome::ClaimRefused { .. }));
     assert_eq!(credentials::read(&paths).unwrap(), Some(before));
     let denied = login(
-        &worker(1, true),
+        &worker(1, Claim::Accepted),
         &paths,
         &mut FakeIo::new(Browser::Deny),
         Duration::from_secs(10),
@@ -367,7 +379,7 @@ fn a_refused_claim_leaves_the_old_credentials_and_consent_key() {
 #[test]
 fn timeout_and_cancel_end_the_wait() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let out = login(
         &w,
         &paths,
@@ -387,14 +399,17 @@ fn timeout_and_cancel_end_the_wait() {
 /// A Worker whose claim runs `during_claim` before answering, and which accepts W8.
 fn claim_side_effect(during_claim: impl Fn() + Send + Sync + 'static) -> MockWorker {
     MockWorker::start(move |req| match req.path.as_str() {
-        "/v1/meta" => MockResponse::json(200, meta(1)),
+        "/v1/meta" => MockResponse::json(200, &meta(1)),
         "/v1/machine/claim" => {
             during_claim();
-            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+            MockResponse::json(
+                200,
+                &serde_json::to_value(sample_claim(SAMPLE_ORG)).expect("the login fixture"),
+            )
         }
         "/v1/machine/unpair" => MockResponse::json(
             202,
-            serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+            &serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"}),
         ),
         _ => MockResponse::error(404, "not_found", "nope"),
     })
@@ -416,15 +431,17 @@ fn assert_claim_unpair_requested(w: &MockWorker, io: &FakeIo) {
         unpair[0].header("Yaran-Machine-Id"),
         Some(SAMPLE_MACHINE_ID)
     );
-    let pubkey = b64url_decode(&query_of(io.authorize.as_ref().unwrap())["machine_pubkey"]);
-    assert!(unpair[0].signature_verifies(&pubkey.unwrap()));
+    let pubkey = b64url_decode(
+        &query_of(io.authorize.as_ref().expect("the login fixture"))["machine_pubkey"],
+    );
+    assert!(unpair[0].signature_verifies(&pubkey.expect("the login fixture")));
 }
 
 /// This machine's current pairing, distinct from the one `sample_claim` answers with.
 fn pair_previous(paths: &CloudPaths) -> credentials::Credentials {
     let mut previous = sample_credentials(SAMPLE_ORG);
     previous.machine_id = "3c1f6a52-7e0b-4d8e-a1f2-9b8c7d6e5f40".into();
-    credentials::update(paths, |_| Ok(Some(previous.clone()))).unwrap();
+    credentials::update(paths, |_| Ok(Some(previous.clone()))).expect("the login fixture");
     previous
 }
 
@@ -450,11 +467,11 @@ fn a_cancel_after_a_replace_claim_is_sent_is_too_late_and_the_login_completes() 
     let (_root, paths) = setup();
     let previous = pair_previous(&paths);
     let mut io = FakeIo::new(Browser::Loopback);
-    let cancel = io.cancel.clone();
+    let cancel = std::sync::Arc::clone(&io.cancel);
     // The person chose Replace: the Worker tears the previous machine down at claim time,
     // and the cancel lands while that claim is in flight.
     let torn_down = Arc::new(AtomicBool::new(false));
-    let tear = torn_down.clone();
+    let tear = std::sync::Arc::clone(&torn_down);
     let w = claim_side_effect(move || {
         tear.store(true, Ordering::SeqCst);
         cancel.store(true, Ordering::SeqCst);

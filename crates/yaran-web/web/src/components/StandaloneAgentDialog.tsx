@@ -1,5 +1,6 @@
 import { useState } from "react"
 
+import { AgentNameInput } from "@/components/AgentNameFields"
 import { FolderBrowseList } from "@/components/FolderBrowseList"
 import { Button } from "@yaran/ui-kit/button"
 import {
@@ -10,8 +11,8 @@ import {
   DialogTitle,
 } from "@yaran/ui-kit/dialog"
 import { InlineCode } from "@yaran/ui-kit/inline-code"
-import { Input } from "@yaran/ui-kit/input"
-import { standaloneAgentDefaultName } from "@/lib/paths"
+import { isValidAgentName, sanitizeAgentName } from "@/lib/agentName"
+import { standaloneAgentDefaultName } from "@/lib/agentWorkspace"
 import {
   browseDir,
   closeStandaloneAgentPicker,
@@ -34,9 +35,10 @@ function StandaloneAgentBrowser() {
   const { browsePath, browseEntries, browseLoading } = useYaran()
   const [selected, setSelected] = useState<string | null>(null)
   const [name, setName] = useState("")
+  const invalidName = name !== "" && !isValidAgentName(name)
 
   function handleCreate() {
-    if (!selected) return
+    if (!selected || invalidName) return
     createStandaloneAgent(selected, name)
     setSelected(null)
     setName("")
@@ -72,16 +74,24 @@ function StandaloneAgentBrowser() {
 
       {selected ? (
         <div className="flex flex-col gap-2">
-          <Input
-            aria-label="Agent name"
+          {/* Empty is the ordinary case: the server names the agent after the
+            * folder. No branch is created, but the name follows the same rules
+            * as every other agent's, so the field is the New agent dialog's.
+            * The placeholder is derived through the twin of the server's
+            * folder conversion, so it cannot promise another name. */}
+          <AgentNameInput
+            ariaLabel="Agent name"
             value={name}
-            onChange={(e) => setName(e.target.value)}
-            // Empty is the ordinary case: the server names the agent after the
-            // folder. A typed name is used verbatim, no branch being created and
-            // no ref-name rule applying. The placeholder is derived through the
-            // twin of the server's sanitizer, so it cannot promise another name.
+            onChange={(raw) => setName(sanitizeAgentName(raw))}
+            onSubmit={handleCreate}
             placeholder={`Agent name (optional, defaults to "${standaloneAgentDefaultName(selected)}")`}
+            invalid={invalidName}
+            generating={false}
+            autoFocus={false}
           />
+          <p className="text-xs text-muted-foreground">
+            Any name git accepts for a branch.
+          </p>
           <span className="text-xs text-muted-foreground">
             <InlineCode>{selected}</InlineCode>
           </span>
@@ -92,7 +102,7 @@ function StandaloneAgentBrowser() {
         <Button variant="outline" onClick={closeStandaloneAgentPicker}>
           Cancel
         </Button>
-        <Button onClick={handleCreate} disabled={!selected}>
+        <Button onClick={handleCreate} disabled={!selected || invalidName}>
           Create agent
         </Button>
       </DialogFooter>

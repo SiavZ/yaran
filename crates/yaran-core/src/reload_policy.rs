@@ -128,7 +128,9 @@ pub fn without_deleted_mark(path: &Path) -> PathBuf {
 /// underneath a running process.
 #[derive(Debug, Clone)]
 pub struct ReloadTarget {
+    /// The executable to exec into.
     pub path: PathBuf,
+    /// Its modification time when this process started, if it could be read.
     pub started_mtime: Option<SystemTime>,
 }
 
@@ -159,6 +161,10 @@ impl ReloadTarget {
 ///
 /// The caller must have written the handoff and prepared every descriptor
 /// before calling, because after this there is no opportunity to.
+///
+/// # Errors
+///
+/// Fails when the exec itself fails.
 pub fn exec_into_reload(
     exe: &Path,
     handoff_path: &Path,

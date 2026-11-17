@@ -1,77 +1,119 @@
-import { EllipsisVertical, Plus, SquarePlus } from "lucide-react"
+import { ChevronDown, Plus } from "lucide-react"
+import { Fragment } from "react"
 
-import { CreationOverflowMenuItems } from "@/components/CreationOverflowMenuItems"
 import { Button } from "@yaran/ui-kit/button"
+import { ButtonGroup, ButtonGroupSeparator } from "@/components/ui/button-group"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@yaran/ui-kit/dropdown-menu"
-import { launcherVerb } from "@/lib/launcherVerb"
-import { openAddProject, openNewAgentPicker, useYaran } from "@/lib/store"
+import {
+  launcherCornerModel,
+  newLauncherModel,
+  selectAgentCount,
+  selectGhAvailable,
+  selectProjectCount,
+  type NewLauncherRow,
+} from "@/lib/creationMenus"
+import { openAgentTerminalPicker, useYaranSelector } from "@/lib/store"
 import { cn } from "@yaran/ui-kit/cn"
 
 // The launcher corner on every surface: the desktop sidebar's footer and the
-// mobile hub's bottom bar render this one component. One filled verb, one square
-// ⋯, and that is the whole corner.
+// mobile hub's bottom bar render this one component. One filled split button:
+// the main half starts a new agent, and the ▾ half opens every other way to
+// start something, as a menu (a bottom sheet on a phone).
 //
-// The verb is the workspace's one primary creation click: "New agent" whenever a
-// project exists, flipping to "Add project" on a confirmed-empty workspace,
-// where a new-agent picker would open with nothing to pick. The decision is the
-// shared pure helper (lib/launcherVerb.ts), which the empty list's hero button
-// reads too, so the two can never name different next steps.
-//
-// The ⋯ does not flip: it is the constant home of every other way to create
-// something, grouped under Agents, Terminals and Projects, so its rows never
-// move under the cursor.
+// Both halves come from the New dialog's own groups (`newLauncherModel`), so an
+// entry runs exactly what the dialog's copy of it runs, gated the same way.
+// It subscribes to the three inputs alone, since it sits on screen all the time.
 export function LauncherCorner({ className }: { className?: string }) {
-  const { spine } = useYaran()
-  // null while the spine has not arrived: see launcherVerb for why that is not
-  // a zero.
-  const verb = launcherVerb(spine ? spine.projects.length : null)
-  const addProject = verb === "add-project"
+  const ghAvailable = useYaranSelector(selectGhAvailable)
+  const projectCount = useYaranSelector(selectProjectCount)
+  const agentCount = useYaranSelector(selectAgentCount)
+  const { primary, menu } = launcherCornerModel(
+    newLauncherModel({ ghAvailable, projectCount, agentCount }),
+  )
   return (
-    // Two separate rounded buttons with a gap, NOT a seam-joined ButtonGroup:
-    // the ⋯ is the corner's overflow rather than a second half of the verb, and
-    // the gap is also what keeps a mistimed tap off the wrong control.
-    <div className={cn("flex items-center gap-2", className)}>
-      {/* size="sm" is the shared height token for both controls, with
-        * max-md:min-h-11 lifting each over the touch floor. The desktop height
-        * is the per-axis exemption: with a mouse the only neighbour on either
-        * axis is the ⋯, which opens a menu and executes nothing. */}
+    // size="sm" is the one height token for both halves. On a computer they
+    // are 28px tall, the per-axis exemption: the corner has no other control
+    // above or below it. The ▾ half is 32px wide beside the main half, which a
+    // mouse does not miss; where a finger is the pointer (a coarse pointer, or
+    // a phone's width) both halves take the 44px floor in height and the ▾ half
+    // in width as well, because a stray tap there would open the wrong one.
+    <ButtonGroup className={cn("w-full", className)}>
       <Button
         size="sm"
-        className="min-w-0 flex-1 max-md:min-h-11"
-        onClick={addProject ? openAddProject : () => openNewAgentPicker("new")}
+        className="min-w-0 flex-1 max-md:min-h-11 pointer-coarse:min-h-11"
+        onClick={() => run(primary)}
       >
-        {addProject ? <SquarePlus /> : <Plus />}
-        <span className="truncate">
-          {addProject ? "Add project" : "New agent"}
-        </span>
+        <Plus />
+        {primary.menuTitle}
       </Button>
+      <ButtonGroupSeparator className="bg-primary-foreground/20" />
       <DropdownMenu>
-        {/* Outline, deliberately quieter than the filled verb: this corner draws
-          * exactly one primary and the ⋯ only reveals a menu, the reasoning that
-          * also keeps the Agents header's sort trigger quieter than its +.
-          * Outline carries the data-popup-open tint too, since base-ui does not
-          * flip aria-expanded on an open menu trigger. The aria-label names
-          * every group behind it, not just the agents. */}
         <DropdownMenuTrigger
           render={
             <Button
               size="sm"
-              variant="outline"
-              aria-label="More ways to create"
-              className="min-w-7 shrink-0 px-0 max-md:min-h-11 max-md:min-w-11"
+              aria-label="More ways to start"
+              // The chevron points at the menu: down while it is closed and up
+              // while it is open, read from the trigger's own open state.
+              className="w-8 px-0 max-md:min-h-11 max-md:w-11 pointer-coarse:min-h-11 pointer-coarse:w-11 [&[data-popup-open]>svg]:rotate-180"
             >
-              <EllipsisVertical />
+              <ChevronDown className="transition-transform motion-reduce:transition-none" />
             </Button>
           }
         />
-        <DropdownMenuContent align="end" side="top">
-          <CreationOverflowMenuItems />
+        <DropdownMenuContent side="top" align="end" className="md:w-[23rem]">
+          {menu.map((group, index) => (
+            <Fragment key={group.id}>
+              {index > 0 ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>{group.title}</DropdownMenuLabel>
+                {group.lead ? (
+                  <p className="px-1.5 pb-1 text-xs text-foreground">
+                    {group.lead}
+                  </p>
+                ) : null}
+                {group.rows.map((row) => (
+                  <LauncherMenuEntry key={row.id} row={row} />
+                ))}
+              </DropdownMenuGroup>
+            </Fragment>
+          ))}
         </DropdownMenuContent>
       </DropdownMenu>
-    </div>
+    </ButtonGroup>
   )
+}
+
+function LauncherMenuEntry({ row }: { row: NewLauncherRow }) {
+  const Icon = row.icon
+  return (
+    <DropdownMenuItem
+      data-row-id={row.id}
+      disabled={row.disabled}
+      onClick={() => run(row)}
+      className="items-start gap-2.5 py-1.5"
+    >
+      <Icon className="mt-0.5 text-muted-foreground" />
+      <span className="flex min-w-0 flex-col gap-px">
+        <span data-entry-title="" className="font-medium">
+          {row.menuTitle}
+        </span>
+        <span className="text-xs text-muted-foreground">{row.summary}</span>
+      </span>
+    </DropdownMenuItem>
+  )
+}
+
+// The agent-picking step is the New dialog's own, opened on its own here.
+function run(row: NewLauncherRow) {
+  if (row.action.kind === "pick-agent") openAgentTerminalPicker()
+  else row.action.run()
 }

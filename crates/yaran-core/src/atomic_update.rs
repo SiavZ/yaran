@@ -14,6 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// success and the failure path. `f` may run more than once when other
 /// threads change the value meanwhile, so it must be a pure function of its
 /// argument.
+///
+/// # Errors
+///
+/// Answers `Err` with the value seen when `f` declined to change it.
 pub fn update_relaxed(
     counter: &AtomicUsize,
     mut f: impl FnMut(usize) -> Option<usize>,

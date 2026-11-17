@@ -10,11 +10,12 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/qr.rs
 //! ├── cloud::protocol::test_fixtures
 //! └── cloud::protocol::uri
-//! External: qrcode, ring
+//! External: qrcode, ring, std
 //!
 //! Used by:
 //! cloud/qr.rs
@@ -23,6 +24,7 @@
 //! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-tui::app::cloud_tests
 //! └── yaran-web::cloud_phone_routes
+//! ```
 //! <module-headers:end>
 
 use qrcode::render::{svg, unicode};
@@ -38,8 +40,20 @@ pub struct Qr {
     code: QrCode,
 }
 
+impl std::fmt::Debug for Qr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Qr")
+            .field("width", &self.code.width())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Qr {
     /// Encode `data`.
+    ///
+    /// # Errors
+    ///
+    /// Fails, with the sentence to show, when `data` does not fit a QR code.
     pub fn encode(data: &str) -> Result<Self, String> {
         QrCode::new(data.as_bytes())
             .map(|code| Self { code })
@@ -47,6 +61,11 @@ impl Qr {
     }
 
     /// The add-org QR for `org_url`, with its URI.
+    ///
+    /// # Errors
+    ///
+    /// Fails, with the sentence to show, when `org_url` is not an
+    /// organization address or the URI does not fit a QR code.
     pub fn add_org(org_url: &str) -> Result<(String, Self), String> {
         let uri = add_org_uri(org_url)
             .ok_or_else(|| format!("{org_url:?} is not a Yaran Cloud organization address"))?;
@@ -81,7 +100,7 @@ impl Qr {
     /// A standalone SVG, black on white, `module_px` pixels per module.
     pub fn to_svg(&self, module_px: u32) -> String {
         self.code
-            .render::<svg::Color>()
+            .render::<svg::Color<'_>>()
             .module_dimensions(module_px, module_px)
             .dark_color(svg::Color("#000000"))
             .light_color(svg::Color("#ffffff"))
@@ -134,11 +153,8 @@ mod tests {
         assert_eq!(text.lines().count(), qr.size().div_ceil(2));
         // The top quiet-zone line is all light, drawn as full blocks.
         assert!(text.lines().next().unwrap().chars().all(|c| c == '█'));
-        let hex: String = digest(&SHA256, text.as_bytes())
-            .as_ref()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let hex =
+            crate::cloud::protocol::test_fixtures::hex(digest(&SHA256, text.as_bytes()).as_ref());
         assert_eq!(hex, SNAPSHOT_SHA256, "Dense1x2 rendering changed");
         let svg = qr.to_svg(4);
         assert!(svg.starts_with("<?xml") && svg.contains("#000000"));

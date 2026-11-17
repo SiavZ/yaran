@@ -38,7 +38,7 @@ use serde_json::{Value, json};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use super::PeerSession;
-use super::amq::{require_amq_root, sync_amq_agents};
+use super::amq::{AmqSyncReport, require_amq_root, sync_amq_agents};
 use super::handle::{amq_handle, truncate, utf8_lossy};
 use crate::config::YaranPaths;
 
@@ -86,7 +86,7 @@ struct ClaudePeer {
     registered_at: Option<String>,
 }
 
-pub const PEER_HELP: &str = "\
+pub(crate) const PEER_HELP: &str = "\
 yaran peer - route messages between Yaran agent sessions
 
 Subcommands:
@@ -98,28 +98,66 @@ Subcommands:
 
 Agents should use this command instead of calling amq or Claude Peers directly.";
 
-/// Entry point for `yaran peer <args>`.
-pub fn run_peer(args: &[String], paths: &YaranPaths) -> Result<()> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+/// What a running yaran answers `yaran peer` with: the AMQ registry pass it
+/// just ran and the sessions a message can reach.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PeerSnapshot {
+    /// What reconciling the shared AMQ registry changed.
+    pub report: AmqSyncReport,
+    /// The live sessions a message can reach.
+    pub sessions: Vec<PeerSession>,
+}
+
+/// Reconcile the AMQ registry from this store and list the routable sessions.
+/// Only the process holding `dux.lock` runs this: the command line asks a
+/// running yaran for the answer instead of opening the database itself.
+///
+/// # Errors
+///
+/// Fails when the registry or the session database cannot be read.
+pub fn sync_and_list(paths: &YaranPaths) -> Result<PeerSnapshot> {
+    let report = sync_amq_agents(paths)?;
+    let sessions = load_sessions_if_present(paths)?;
+    Ok(PeerSnapshot { report, sessions })
+}
+
+/// Entry point for `yaran peer <args>`. `fetch` asks the running yaran for a
+/// [`PeerSnapshot`]; the command line never opens the session database.
+///
+/// # Errors
+///
+/// Fails on an unknown subcommand or flag, when the running yaran cannot be
+/// asked, or when the message cannot be delivered.
+pub fn run_peer(
+    args: &[String],
+    paths: &YaranPaths,
+    fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let sub = args.first().map_or("", String::as_str);
     match sub {
-        "send" => run_peer_send(&args[1..], paths),
-        "list" => run_peer_list(&args[1..], paths),
-        "sync-amq" | "sync" => run_peer_sync_amq(&args[1..], paths),
+        "send" => run_peer_send(&args[1..], paths, fetch, out),
+        "list" => run_peer_list(&args[1..], paths, fetch, out),
+        "sync-amq" | "sync" => run_peer_sync_amq(&args[1..], fetch, out),
         "" | "--help" | "-h" => {
-            println!("{PEER_HELP}");
+            writeln!(out, "{PEER_HELP}")?;
             Ok(())
         }
         other => bail!("unknown peer subcommand: {other}\nRun `yaran peer --help` for usage."),
     }
 }
 
-fn run_peer_send(args: &[String], paths: &YaranPaths) -> Result<()> {
+fn run_peer_send(
+    args: &[String],
+    paths: &YaranPaths,
+    fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
+) -> Result<()> {
     let Some(parsed) = parse_send_args(args)? else {
-        println!("{PEER_HELP}");
+        writeln!(out, "{PEER_HELP}")?;
         return Ok(());
     };
-    let _ = sync_amq_agents(paths)?;
-    let sessions = load_sessions_if_present(paths)?;
+    let PeerSnapshot { sessions, .. } = fetch()?;
 
     let sender = infer_sender(parsed.from.as_deref(), &sessions)?;
     let target = resolve_target(&parsed.target, &sessions)?;
@@ -146,44 +184,50 @@ fn run_peer_send(args: &[String], paths: &YaranPaths) -> Result<()> {
                     let (from_id, message) =
                         claude_peers_sender(&sender, &peers, &parsed.message, &processes);
                     claude_peers_send(&from_id, &to_id, &message)?;
-                    println!(
+                    writeln!(
+                        out,
                         "sent via claude-peers: {} -> {}",
                         sender.handle, target.handle
-                    );
+                    )?;
                 }
                 Err(why) => {
                     let reason = amq_fallback_reason(parsed.transport, &why, &target.handle)?;
                     let root = require_amq_root(paths)?;
                     amq_send(&root, &sender.handle, &target.handle, &parsed.message)?;
-                    println!(
+                    writeln!(
+                        out,
                         "sent via amq: {} -> {} ({reason})",
                         sender.handle, target.handle
-                    );
+                    )?;
                 }
             }
         }
         ChosenTransport::Amq => {
             let root = require_amq_root(paths)?;
             amq_send(&root, &sender.handle, &target.handle, &parsed.message)?;
-            println!("sent via amq: {} -> {}", sender.handle, target.handle);
+            writeln!(out, "sent via amq: {} -> {}", sender.handle, target.handle)?;
         }
     }
 
     Ok(())
 }
 
-fn run_peer_list(args: &[String], paths: &YaranPaths) -> Result<()> {
+fn run_peer_list(
+    args: &[String],
+    paths: &YaranPaths,
+    fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
+) -> Result<()> {
     reject_unknown_peer_flags(args)?;
-    let report = sync_amq_agents(paths)?;
-    let sessions = load_sessions_if_present(paths)?;
+    let PeerSnapshot { report, sessions } = fetch()?;
 
     let peers = claude_peers_list().ok();
     let processes = peers
         .as_ref()
         .map(|_| ProcessTable::snapshot(yaran_tui_pid(paths)));
-    println!("Yaran peers:");
+    writeln!(out, "Yaran peers:")?;
     if sessions.is_empty() {
-        println!("  (no persisted sessions)");
+        writeln!(out, "  (no persisted sessions)")?;
     } else {
         for session in &sessions {
             let note = match (&peers, &processes) {
@@ -200,56 +244,76 @@ fn run_peer_list(args: &[String], paths: &YaranPaths) -> Result<()> {
                 }
                 _ => "",
             };
-            println!(
+            writeln!(
+                out,
                 "  {:<32} {:<8} {}{note}",
                 session.agent_handle(),
                 session.provider,
                 session.directory
-            );
+            )?;
         }
     }
 
     if report.skipped {
-        println!("AMQ registry: skipped (no configured AMQ root found)");
+        writeln!(out, "AMQ registry: skipped (no configured AMQ root found)")?;
     } else if let Some(root) = report.root {
-        println!(
+        writeln!(
+            out,
             "AMQ registry: {} (added {}, removed stale {}, deconflicted {})",
             root.display(),
             report.configured_agents_added,
             report.stale_config_agents_removed,
             report.handles_deconflicted
-        );
+        )?;
     }
 
     match &peers {
-        Some(peers) => println!("Claude Peers broker: {} peer(s) registered", peers.len()),
-        None => println!("Claude Peers broker: unavailable (messages to Claude agents go via AMQ)"),
+        Some(peers) => writeln!(
+            out,
+            "Claude Peers broker: {} peer(s) registered",
+            peers.len()
+        )?,
+        None => writeln!(
+            out,
+            "Claude Peers broker: unavailable (messages to Claude agents go via AMQ)"
+        )?,
     }
 
     Ok(())
 }
 
-fn run_peer_sync_amq(args: &[String], paths: &YaranPaths) -> Result<()> {
+fn run_peer_sync_amq(
+    args: &[String],
+    fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
+) -> Result<()> {
     reject_unknown_peer_flags(args)?;
-    let report = sync_amq_agents(paths)?;
+    let PeerSnapshot { report, .. } = fetch()?;
     let Some(root) = report.root.as_ref().filter(|_| !report.skipped) else {
-        println!("AMQ sync skipped: no configured AMQ root found");
+        writeln!(out, "AMQ sync skipped: no configured AMQ root found")?;
         return Ok(());
     };
-    println!("AMQ sync: {}", root.display());
-    println!(
+    writeln!(out, "AMQ sync: {}", root.display())?;
+    writeln!(
+        out,
         "  configured agents added: {}",
         report.configured_agents_added
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  stale config agents removed: {}",
         report.stale_config_agents_removed
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  ownership markers created: {}",
         report.ownership_markers_created
-    );
-    println!("  handles deconflicted: {}", report.handles_deconflicted);
+    )?;
+    writeln!(
+        out,
+        "  handles deconflicted: {}",
+        report.handles_deconflicted
+    )?;
     Ok(())
 }
 
@@ -323,6 +387,16 @@ fn reject_unknown_peer_flags(args: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The live sessions a message can reach, read from this store. Only the
+/// process holding `dux.lock` calls it.
+///
+/// # Errors
+///
+/// Fails when the session database cannot be read.
+pub fn routable_sessions(paths: &YaranPaths) -> Result<Vec<PeerSession>> {
+    load_sessions_if_present(paths)
 }
 
 fn load_sessions_if_present(paths: &YaranPaths) -> Result<Vec<PeerSession>> {
@@ -491,8 +565,7 @@ fn ensure_claude_peers_target(target: &PeerTarget) -> Result<()> {
         let provider = target
             .session
             .as_ref()
-            .map(|s| s.provider.as_str())
-            .unwrap_or("unknown");
+            .map_or("unknown", |s| s.provider.as_str());
         bail!("Claude Peers transport cannot target provider {provider}; use AMQ");
     }
     Ok(())
@@ -770,7 +843,7 @@ fn select_claude_peer_id(
 
     let key = |peer: &ClaudePeer| {
         (
-            peer.pid.map(&host_of).unwrap_or(PeerHost::Client),
+            peer.pid.map_or(PeerHost::Client, &host_of),
             peer.registered_at.clone(),
             peer.last_seen.clone(),
         )
@@ -943,9 +1016,8 @@ fn yaran_tui_pid(paths: &YaranPaths) -> Option<u32> {
 /// The handle of the agent session whose directory holds `cwd`, the nearest
 /// one, as `yaran peer send` infers its sender. `None` when no session (or
 /// more than one at the same depth) holds it, or the store cannot be read.
-pub(crate) fn agent_handle_for_cwd(paths: &YaranPaths, cwd: &Path) -> Option<String> {
-    let sessions = load_sessions_if_present(paths).ok()?;
-    session_for_cwd(cwd, &sessions)
+pub(crate) fn agent_handle_for_cwd(cwd: &Path, sessions: &[PeerSession]) -> Option<String> {
+    session_for_cwd(cwd, sessions)
         .ok()
         .flatten()
         .map(|session| session.agent_handle().to_string())

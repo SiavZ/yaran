@@ -20,7 +20,7 @@
 //! because a fork user's database went through it.
 
 use rusqlite::Connection;
-use yaran_core::model::is_valid_agent_handle;
+use yaran_core::model::{SessionStatus, is_valid_agent_handle};
 use yaran_core::storage::SessionStore;
 
 const FORK_MIGRATIONS: &[&str] = &[
@@ -42,7 +42,8 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("sessions.sqlite3");
     let mut conn = Connection::open(&path).expect("open");
-    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("the fixture database");
     for (index, sql) in FORK_MIGRATIONS.iter().enumerate() {
         let version = index + 1;
         if version == 5 {
@@ -71,16 +72,18 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
                 PRAGMA foreign_keys = ON;
                 "#,
             )
-            .unwrap();
+            .expect("the fixture database");
         }
-        let tx = conn.transaction().unwrap();
+        let tx = conn.transaction().expect("the fixture database");
         if version == 5 {
-            let (before, after) = sql.split_once(FORK_HANDLE_BACKFILL_MARKER).unwrap();
-            tx.execute_batch(before).unwrap();
+            let (before, after) = sql
+                .split_once(FORK_HANDLE_BACKFILL_MARKER)
+                .expect("the fixture database");
+            tx.execute_batch(before).expect("the fixture database");
             // The fork runner's backfill: basename-first handle, `-N` on a
             // collision, rows visited in id order.
             tx.execute_batch(
-                r#"
+                r"
                 insert into agent_sessions_new
                   (id, project_id, provider, source_branch, branch_name, worktree_path,
                    title, project_path, started_providers, status, created_at, updated_at,
@@ -92,16 +95,20 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
                        case id when 'legacy-a' then 'lively-otter' else 'lively-otter-2' end,
                        null
                 from agent_sessions;
-                "#,
+                ",
             )
-            .unwrap();
-            tx.execute_batch(after).unwrap();
+            .expect("the fixture database");
+            tx.execute_batch(after).expect("the fixture database");
         } else {
-            tx.execute_batch(sql).unwrap();
+            tx.execute_batch(sql).expect("the fixture database");
         }
-        tx.pragma_update(None, "user_version", version as i64)
-            .unwrap();
-        tx.commit().unwrap();
+        tx.pragma_update(
+            None,
+            "user_version",
+            i64::try_from(version).expect("a small version"),
+        )
+        .expect("the fixture database");
+        tx.commit().expect("the fixture database");
     }
     // Rows a fork build wrote after reaching schema 6.
     conn.execute_batch(
@@ -121,28 +128,28 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
            '2026-02-03T00:00:00Z', null, null, 3, 0, 'gone', '2026-02-04T00:00:00+00:00', '{}');
         "#,
     )
-    .unwrap();
+    .expect("the fixture database");
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
+        .expect("the fixture database");
     assert_eq!(version, 6, "the fixture must be at fork schema 6");
     drop(conn);
     (tmp, path)
 }
 
 fn handles(path: &std::path::Path) -> Vec<(String, String, i64, Option<String>)> {
-    let conn = Connection::open(path).unwrap();
+    let conn = Connection::open(path).expect("the fixture database");
     let mut stmt = conn
         .prepare(
             "select id, agent_handle, shared_workspace, deleted_at from agent_sessions order by id",
         )
-        .unwrap();
+        .expect("the fixture database");
     stmt.query_map([], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
     })
-    .unwrap()
+    .expect("the fixture database")
     .collect::<rusqlite::Result<Vec<_>>>()
-    .unwrap()
+    .expect("the fixture database")
 }
 
 #[test]
@@ -185,7 +192,9 @@ fn a_fork_main_schema_6_database_opens_and_keeps_every_identity_byte_for_byte() 
     assert_eq!(gone.agent_handle(), "gone");
 
     // Upstream-only state the fork never had is created and usable.
-    let prs = store.load_prs("legacy-a").expect("PR history survives");
+    let prs = store
+        .load_agent_prs_of("legacy-a")
+        .expect("PR history survives");
     assert_eq!(prs.len(), 1);
     assert_eq!(prs[0].title, "Add otter");
     assert_eq!(prs[0].host, "github.com");
@@ -236,7 +245,7 @@ fn an_upstream_database_gets_derived_valid_unique_handles_for_every_row() {
         drop(store);
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
-            r#"
+            r"
             drop index idx_agent_sessions_agent_handle;
             alter table agent_sessions drop column agent_handle;
             alter table agent_sessions drop column shared_workspace;
@@ -253,7 +262,7 @@ fn an_upstream_database_gets_derived_valid_unique_handles_for_every_row() {
                '2026-01-01T00:00:00Z', 'folder', '/home/ada/Notes', 2),
               ('u4', 'p', 'claude', 'main', '!!!', '/wt/p/!!!',
                'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'managed', null, 3);
-            "#,
+            ",
         )
         .unwrap();
     }
@@ -315,14 +324,14 @@ fn fork_state_json_rows_load_as_reconnectable_sessions() {
         ),
     ] {
         conn.execute(
-            r#"insert into agent_sessions
+            r"insert into agent_sessions
                  (id, project_id, provider, source_branch, branch_name, worktree_path, title,
                   project_path, started_providers, status, created_at, updated_at, state_json,
                   session_settings, sort_order, shared_workspace, agent_handle, deleted_at,
                   provider_session_ids)
                values (?1, 'proj-1', 'claude', 'main', ?1, '/tmp/' || ?1, null, '/home/ada/widget',
                        '[]', ?3, '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z', ?4, null, 9, 0,
-                       ?2, null, '{}')"#,
+                       ?2, null, '{}')",
             rusqlite::params![id, handle, status, state_json],
         )
         .unwrap();
@@ -337,7 +346,6 @@ fn fork_state_json_rows_load_as_reconnectable_sessions() {
             .unwrap_or_else(|| panic!("{id} lost in the upgrade"))
             .status
     };
-    use yaran_core::model::SessionStatus;
     assert_eq!(
         status_of("spawning-1"),
         SessionStatus::Detached,
