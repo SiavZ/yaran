@@ -28,7 +28,7 @@ export function LanguageSettings() {
   const { locale } = useStore(settingsStore);
   const current: Locale = isLocale(locale) ? locale : 'en';
   return (
-    <Page title={<Trans>Language</Trans>}>
+    <Page title={<Trans>Language</Trans>} back={{ name: 'settings' }}>
       <RadioGroup<Locale>
         legend={<Trans>App language</Trans>}
         value={current}

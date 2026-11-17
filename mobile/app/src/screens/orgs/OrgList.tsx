@@ -47,8 +47,8 @@ export function OrgList() {
       )}
       <ul className="flex flex-col gap-2">
         {orgs.map((org) => (
-          <li key={org.id} className="flex min-h-14 items-center gap-3 rounded-lg border border-border px-3 py-2">
-            <div className="flex flex-1 flex-col">
+          <li key={org.id} className="flex min-h-14 items-center gap-3 rounded-xl border border-border bg-card p-4">
+            <div className="flex min-w-0 flex-1 flex-col gap-1 [overflow-wrap:anywhere]">
               <span className="font-medium">{org.name}</span>
               <span className="text-sm text-muted-foreground">{new URL(org.id).hostname}</span>
             </div>
@@ -59,7 +59,7 @@ export function OrgList() {
                   <button
                     type="button"
                     aria-label={i18n._(msg`Actions for ${org.name}`)}
-                    className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="phone-icon-button flex size-12 min-h-12 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                   />
                 }
               >
@@ -80,7 +80,7 @@ export function OrgList() {
           </li>
         ))}
       </ul>
-      <Button className="h-10" variant="outline" onClick={() => navigate({ name: 'welcome' })}>
+      <Button className="min-h-12" variant="outline" onClick={() => navigate({ name: 'welcome' })}>
         <PlusIcon aria-hidden />
         <Trans>Add an org</Trans>
       </Button>

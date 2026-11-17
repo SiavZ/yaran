@@ -132,6 +132,44 @@ describe('MachineList', () => {
     expect(Session.signIn).toHaveBeenCalledWith({ orgId: ORG.id, target: 'control-plane' });
   });
 
+  it('keeps a failed renewal visible and lets the user retry it', async () => {
+    request.mockResolvedValue({ kind: 'session_expired' });
+    vi.mocked(Session.signIn).mockResolvedValueOnce({ kind: 'cancelled' }).mockResolvedValueOnce({ kind: 'offline' });
+    renderShell(<MachineList />);
+    const signIn = await screen.findByRole('button', { name: 'Sign in' });
+    signIn.focus();
+    fireEvent.click(signIn);
+    const failure = await screen.findByText('Sign-in was cancelled.');
+    await waitFor(() => expect(document.activeElement).toBe(failure.parentElement));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    const offline = await screen.findByText(/No connection/);
+    await waitFor(() => expect(document.activeElement).toBe(offline.parentElement));
+  });
+
+  it('prevents another renewal while the browser is opening', async () => {
+    request.mockResolvedValue({ kind: 'session_expired' });
+    let finish!: (outcome: { kind: 'cancelled' }) => void;
+    vi.mocked(Session.signIn).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    renderShell(<MachineList />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    const pending = await screen.findByRole('button', { name: 'Opening browser…' });
+    expect(pending.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(pending);
+    finish({ kind: 'cancelled' });
+    expect(await screen.findByText('Sign-in was cancelled.')).toBeTruthy();
+  });
+
+  it('offers org management after a non-retryable renewal failure without nesting alerts', async () => {
+    request.mockResolvedValue({ kind: 'session_expired' });
+    vi.mocked(Session.signIn).mockResolvedValueOnce({ kind: 'tls_error' });
+    renderShell(<MachineList />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    const manage = await screen.findByRole('button', { name: 'Manage orgs' });
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    fireEvent.click(manage);
+    expect(parseRoute(window.location.hash)).toEqual({ name: 'orgs' });
+  });
+
   it('device_revoked removes the org and shows the phone-removed screen', async () => {
     request.mockResolvedValue({ kind: 'device_revoked' });
     renderShell(<MachineList />);

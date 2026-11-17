@@ -74,7 +74,7 @@ export function SecuritySettings() {
 
   const noBiometry = lock !== null && lock.biometry !== 'available';
   return (
-    <Page title={<Trans>Security</Trans>}>
+    <Page title={<Trans>Security</Trans>} back={{ name: 'settings' }}>
       <SwitchRow
         label={<Trans>App lock</Trans>}
         description={

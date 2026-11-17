@@ -8,6 +8,7 @@
  *
  * - Names in prose are always a `Chip`, never a quotation.
  * - Fields wire label, hint and error through `for`/`id` and `aria-describedby`.
+ * - Tables become labelled cards at phone width; states are a `Status` word plus dot.
  *
  * <module-headers:begin>
  * Uses:
@@ -28,7 +29,7 @@
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
-import { S } from "./strings.ts";
+import { S, type StatusTone } from "./strings.ts";
 
 /** A name in prose (branch, host, email, machine): the console's `InlineCode`. */
 export function Chip(props: { children: Child }) {
@@ -137,21 +138,64 @@ export function Checkbox(p: { id: string; label: string; checked?: boolean; hint
   );
 }
 
+/**
+ * A captioned table. At phone width console.css turns each row into a card that labels every
+ * cell from its `data-label`, so build rows with `Row`; wider, the wrapper is a labelled,
+ * focusable scroll region (enhance.js drops the tab stop when nothing overflows).
+ */
 export function Table(props: { caption: string; headers: readonly string[]; children: Child }) {
+  const id = `t-${props.caption.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   return (
-    <div class="table-wrap">
-      <table>
-        <caption>{props.caption}</caption>
-        <thead>
-          <tr>
+    <div class="table-wrap" role="region" aria-labelledby={id} tabindex={0} data-scroll-region="">
+      <table role="table">
+        <caption id={id}>{props.caption}</caption>
+        <thead role="rowgroup">
+          <tr role="row">
             {props.headers.map((h) => (
-              <th scope="col">{h}</th>
+              <th role="columnheader" scope="col">{h}</th>
             ))}
           </tr>
         </thead>
-        <tbody>{props.children}</tbody>
+        <tbody role="rowgroup">{props.children}</tbody>
       </table>
     </div>
+  );
+}
+
+/** One table row; each cell carries its column's header as `data-label` for the phone card. */
+export function Row(props: { headers: readonly string[]; cells: readonly Child[] }) {
+  return (
+    <tr role="row">
+      {props.cells.map((c, i) => {
+        const label = props.headers[i] ?? "";
+        return (
+          <td role="cell" data-label={label} class={label === S.actions ? "cell-actions" : undefined}>
+            <div class="cell-value">{label === S.actions ? <div class="row">{c}</div> : c}</div>
+          </td>
+        );
+      })}
+    </tr>
+  );
+}
+
+/** A state as a word with a tone dot beside it: the word always carries the meaning. */
+export function Status(props: { tone: StatusTone; children: Child }) {
+  return <span class={`status status-${props.tone}`}>{props.children}</span>;
+}
+
+/** A machine's status word and dot; an unrecognised value (an open enum) reads as unknown. */
+export function MachineState(props: { status: string }) {
+  const key = (Object.hasOwn(S.machineStatus, props.status) ? props.status : "unknown") as keyof typeof S.machineStatus;
+  const [word, tone] = S.machineStatus[key];
+  return <Status tone={tone}>{word}</Status>;
+}
+
+/** A refusal's protocol code, kept out of the sentence so the prose reads as words. */
+export function ErrorCode(props: { code: string }) {
+  return (
+    <p class="hint">
+      {S.errorCode} <Chip>{props.code}</Chip>
+    </p>
   );
 }
 
@@ -172,8 +216,14 @@ export function Notice(props: { tone: NoticeTone; children: Child }) {
   );
 }
 
-export function EmptyState(props: { children: Child }) {
-  return <p class="empty">{props.children}</p>;
+/** What an empty list means, with the one next step as a button when there is one. */
+export function EmptyState(props: { children: Child; action?: Child }) {
+  return (
+    <div class="empty">
+      <p>{props.children}</p>
+      {props.action}
+    </div>
+  );
 }
 
 /** An absolute, server-rendered time; enhance.js adds the relative wording. */
@@ -187,16 +237,23 @@ export function RelativeTime(props: { iso: string | null | undefined }) {
 }
 
 /** A read-only value with a copy button (the button works only with JS; the text is selectable without). */
-export function CopyField(props: { id: string; label: string; value: string }) {
+export function CopyField(props: { id: string; label: string; value: string; hint?: string }) {
+  const hintId = props.hint ? `${props.id}-hint` : undefined;
   return (
     <div class="field">
       <label for={props.id}>{props.label}</label>
       <div class="copy-row">
-        <input id={props.id} class="input mono" readonly value={props.value} />
+        <input id={props.id} class="input mono" readonly value={props.value} aria-describedby={hintId} />
         <button type="button" class="btn btn-outline" data-copy={props.id} hidden>
           {S.copy}
         </button>
       </div>
+      {props.hint && (
+        <p id={hintId} class="hint">
+          {props.hint}
+        </p>
+      )}
+      <p class="hint" role="status" data-copy-status={props.id} />
     </div>
   );
 }

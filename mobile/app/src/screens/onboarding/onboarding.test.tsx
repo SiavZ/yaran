@@ -77,12 +77,19 @@ beforeEach(() => {
 describe('Welcome', () => {
   it('offers scan and typed paths', () => {
     renderShell(<Welcome />);
+    expect(screen.getByText('yaran cloud pair-phone')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /type the org address/i }));
     expect(route()).toEqual({ name: 'enter-url' });
   });
 });
 
 describe('EnterUrl', () => {
+  it('focuses the address field and has an explicit return to Welcome', () => {
+    renderShell(<EnterUrl />);
+    expect(document.activeElement).toBe(screen.getByLabelText('Org address'));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(route()).toEqual({ name: 'welcome' });
+  });
   it('refuses http with a sentence and accepts a bare host', () => {
     renderShell(<EnterUrl />);
     const field = screen.getByLabelText('Org address');
@@ -101,6 +108,20 @@ describe('EnterUrl', () => {
 });
 
 describe('ScanQr', () => {
+  it('lets a denied camera scan again after its permission changes', async () => {
+    const stop = vi.fn();
+    vi.mocked(startScan)
+      .mockReturnValueOnce({ result: Promise.reject(new ScanError('permission_denied')), stop })
+      .mockReturnValueOnce({ result: new Promise(() => {}), stop: vi.fn() });
+    const calls = vi.mocked(startScan).mock.calls.length;
+    renderShell(<ScanQr />);
+    await screen.findByRole('alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Scan again' }));
+    await waitFor(() => expect(startScan).toHaveBeenCalledTimes(calls + 2));
+    expect(stop).toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByLabelText('Camera preview')).toBeTruthy();
+  });
   it('sends a scanned add-org code to Confirm org', async () => {
     vi.mocked(startScan).mockReturnValue({ result: Promise.resolve('yaranapp://add-org?u=https%3A%2F%2Fcp.example.com'), stop: vi.fn() });
     renderShell(<ScanQr />);
@@ -114,6 +135,9 @@ describe('ScanQr', () => {
     vi.mocked(startScan).mockReturnValue({ result: Promise.reject(new ScanError('permission_denied')), stop: vi.fn() });
     renderShell(<ScanQr />);
     expect((await screen.findByRole('alert')).textContent).toMatch(/camera permission is off/);
+    expect(screen.queryByLabelText('Camera preview')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Type the org address instead' }));
+    expect(route()).toEqual({ name: 'enter-url' });
   });
 });
 

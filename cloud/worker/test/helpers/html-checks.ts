@@ -33,7 +33,7 @@ export function a11yViolations(html: string): string[] {
     if (!id || !labels.has(id)) out.push(`unlabelled ${m[1]} ${id ?? ""}`);
   }
   const tables = (html.match(/<table\b/g) ?? []).length;
-  if ((html.match(/<caption>/g) ?? []).length !== tables) out.push("table without caption");
+  if ((html.match(/<caption\b/g) ?? []).length !== tables) out.push("table without caption");
   for (const m of html.matchAll(/<button\b([^>]*)>/g)) if (!/class="btn /.test(m[1]!)) out.push("button without btn class");
   if (!/<html lang="en"/.test(html)) out.push("no lang");
   if (!/<main id="main"/.test(html) || !/class="skip-link"/.test(html)) out.push("no main landmark or skip link");

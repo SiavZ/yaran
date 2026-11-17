@@ -12,6 +12,7 @@
  * src/setup/pages.tsx
  * ├── src/console/ui/components.tsx
  * ├── src/console/ui/shell.tsx
+ * ├── src/console/ui/strings.ts
  * ├── src/security/rate-limit.ts
  * ├── src/setup/capability-probe.ts
  * ├── src/setup/setup-gate.ts
@@ -28,7 +29,8 @@
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
-import { Button, Chip, Field, LinkButton, Notice, PostForm } from "../console/ui/components.tsx";
+import { Button, Chip, ErrorCode, Field, LinkButton, Notice, PostForm, Status } from "../console/ui/components.tsx";
+import type { StatusTone } from "../console/ui/strings.ts";
 import { Shell } from "../console/ui/shell.tsx";
 import type { ProbeRow } from "./capability-probe.ts";
 import type { SetupLockReason } from "../security/rate-limit.ts";
@@ -49,14 +51,21 @@ export const STEP_LABEL: Record<SetupStep, string> = {
   closed: "Done",
 };
 
+/** The progress list: done steps carry a check, the current one is filled, later ones are outlined. */
 export function SetupFrame(props: { step: SetupStep; children: Child }) {
+  const at = SETUP_STEPS.indexOf(props.step);
   return (
     <Shell title="Set up yaran cloud">
       <nav aria-label="Setup progress">
-        <ol class="row">
-          {SETUP_STEPS.map((s) => (
-            <li aria-current={s === props.step ? "step" : undefined} class={s === props.step ? "" : "muted"}>
-              {STEP_LABEL[s]}
+        <ol class="steps">
+          {SETUP_STEPS.map((s, i) => (
+            <li
+              aria-current={i === at ? "step" : undefined}
+              class={i < at ? "step-done" : i === at ? "step-current" : "step-todo"}
+              data-total={i === at ? String(SETUP_STEPS.length) : undefined}
+            >
+              {i < at ? <span class="sr-only">Done: </span> : null}
+              <span class="step-label">{STEP_LABEL[s]}</span>
             </li>
           ))}
         </ol>
@@ -97,9 +106,9 @@ export function LockedPage(props: { reason: SetupLockReason }) {
   return (
     <SetupFrame step="locked">
       <Notice tone="error">
-        Setup is locked for your address (<Chip>setup_locked</Chip>) {why}. An address that has not entered a wrong code can still start setup
-        with the right one. To unlock this address, change the SETUP_CODE secret in the dashboard (Workers &amp; Pages, this Worker, Settings, Variables
-        and Secrets), then reload this page.
+        Setup is locked for your address {why}. An address that has not entered a wrong code can still start setup with the right one. To unlock this
+        address, change the SETUP_CODE secret in the dashboard (Workers &amp; Pages, this Worker, Settings, Variables and Secrets), then reload this page.
+        <ErrorCode code="setup_locked" />
       </Notice>
     </SetupFrame>
   );
@@ -119,8 +128,8 @@ export function CodePage(props: { error?: "setup_code_invalid" | "rate_limited";
     <SetupFrame step="locked">
       {props.error === "setup_code_invalid" && (
         <Notice tone="error">
-          That setup code is wrong (<Chip>setup_code_invalid</Chip>). Type the SETUP_CODE you set when you deployed; after 20 wrong codes setup locks for your
-          address.
+          That setup code is wrong. Type the SETUP_CODE you set when you deployed; after 20 wrong codes setup locks for your address.
+          <ErrorCode code="setup_code_invalid" />
         </Notice>
       )}
       {props.error === "rate_limited" && <Notice tone="warn">{limitText(props.limit ?? "window", props.retryAfter ?? 60)}</Notice>}
@@ -135,15 +144,21 @@ export function CodePage(props: { error?: "setup_code_invalid" | "rate_limited";
   );
 }
 
-const OUTCOME_TEXT = { ok: "passed", missing: "missing", unchecked: "could not be checked" } as const;
+const OUTCOME: Record<ProbeRow["outcome"], readonly [string, StatusTone]> = { ok: ["passed", "ok"], missing: ["missing", "error"], unchecked: ["could not be checked", "warn"] };
 
 export function ProbeChecklist(props: { rows: readonly ProbeRow[] }) {
   return (
     <ul class="checklist">
       {props.rows.map((r) => (
         <li data-permission={r.permission.name} data-outcome={r.outcome}>
-          <strong>{OUTCOME_TEXT[r.outcome]}</strong>: <Chip>{r.permission.name}</Chip> ({r.permission.scope}). {r.permission.purpose}
-          {r.reason && <span class="muted"> Cloudflare answered {r.reason}; try again in a minute.</span>}
+          <Status tone={OUTCOME[r.outcome][1]}>{OUTCOME[r.outcome][0]}</Status>
+          <strong>
+            {r.permission.name} <span class="muted">({r.permission.scope})</span>
+          </strong>
+          <span class="muted">
+            {r.permission.purpose}
+            {r.reason && ` Cloudflare answered ${r.reason}; try again in a minute.`}
+          </span>
         </li>
       ))}
     </ul>
@@ -177,8 +192,8 @@ export function TokenPage(p: TokenPageProps) {
       {missing && <span hidden data-setup-problem="missing_permissions" />}
       {missing && (
         <Notice tone="error">
-          The token is missing permissions (<Chip>cloudflare_permission_denied</Chip>). Create a token from the template below, or add the missing rows to
-          yours, then try again.
+          The token is missing permissions. Create a token from the template below, or add the missing rows to yours, then try again.
+          <ErrorCode code="cloudflare_permission_denied" />
         </Notice>
       )}
       {p.probe && <ProbeChecklist rows={p.probe} />}

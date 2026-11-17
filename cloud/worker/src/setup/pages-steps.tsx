@@ -24,7 +24,7 @@
  * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
-import { Button, Chip, CopyField, Field, LinkButton, Notice, PostForm } from "../console/ui/components.tsx";
+import { Button, Chip, CopyField, ErrorCode, Field, LinkButton, Notice, PostForm } from "../console/ui/components.tsx";
 import { Shell } from "../console/ui/shell.tsx";
 import type { CfIdp, CfZone } from "../cloudflare/setup-endpoints.ts";
 import { SetupFrame } from "./pages.tsx";
@@ -53,7 +53,7 @@ const PROBLEM_TEXT: Record<StepProblem, string> = {
   invalid_team_name: "A team name is lowercase letters, digits and hyphens, up to 63 characters.",
   invalid_label: "The label must be one DNS label of 1 to 63 lowercase letters or digits, with no hyphen.",
   unknown_zone: "That zone is not visible to the token. Pick one from the list.",
-  hostname_conflict: "That hostname is already used by a DNS record or a Worker custom domain (hostname_conflict). Choose another label.",
+  hostname_conflict: "That hostname is already used by a DNS record or a Worker custom domain. Choose another label.",
   dashboard_required:
     "Cloudflare refused to attach the domain by API. In the dashboard open Workers & Pages, this Worker, Settings, Domains & Routes, Add, Custom Domain, enter the hostname below, then press Check again.",
   not_found_yet: "The hostname is not attached to this Worker yet. Attach it in the dashboard, wait a minute, then press Check again.",
@@ -69,7 +69,10 @@ export function ProblemNotice(props: { problem?: StepProblem | undefined }) {
   return (
     <>
       <span hidden data-setup-problem={props.problem} />
-      <Notice tone={props.problem === "no_org" ? "info" : "error"}>{PROBLEM_TEXT[props.problem]}</Notice>
+      <Notice tone={props.problem === "no_org" ? "info" : "error"}>
+        {PROBLEM_TEXT[props.problem]}
+        {props.problem === "hostname_conflict" ? <ErrorCode code="hostname_conflict" /> : null}
+      </Notice>
     </>
   );
 }
@@ -176,20 +179,23 @@ export function IdpPage(props: { idps: readonly CfIdp[]; teamDomain: string; pro
         </div>
       </PostForm>
       {(["github", "google"] as const).map((kind) => (
-        <PostForm action="/setup/idp">
-          <h3>{kind === "github" ? "GitHub" : "Google"}</h3>
-          <p class="hint">
-            Create an OAuth app at <a href={IDP_SETUP_LINKS[kind]}>{IDP_SETUP_LINKS[kind]}</a> with this callback URL:
-          </p>
-          <CopyField id={`${kind}-callback`} label="Callback URL" value={callbackUrl(props.teamDomain)} />
-          <Field id={`${kind}_client_id`} label="Client ID" />
-          <Field id={`${kind}_client_secret`} label="Client secret" type="password" autocomplete="off" />
-          <div class="row">
-            <Button variant="outline" name="action" value={kind}>
-              Add {kind === "github" ? "GitHub" : "Google"}
-            </Button>
-          </div>
-        </PostForm>
+        // Optional OAuth details stay folded so the simpler choices above and Continue lead; no script needed.
+        <details class="disclosure" open={props.problem === "client_fields_required" || undefined}>
+          <summary>Add {kind === "github" ? "GitHub" : "Google"} sign-in</summary>
+          <PostForm action="/setup/idp">
+            <p class="hint">
+              Create an OAuth app at <a href={IDP_SETUP_LINKS[kind]}>{IDP_SETUP_LINKS[kind]}</a> with this callback URL:
+            </p>
+            <CopyField id={`${kind}-callback`} label="Callback URL" value={callbackUrl(props.teamDomain)} />
+            <Field id={`${kind}_client_id`} label="Client ID" />
+            <Field id={`${kind}_client_secret`} label="Client secret" type="password" autocomplete="off" />
+            <div class="row">
+              <Button variant="outline" name="action" value={kind}>
+                Add {kind === "github" ? "GitHub" : "Google"}
+              </Button>
+            </div>
+          </PostForm>
+        </details>
       ))}
       <PostForm action="/setup/idp">
         <div class="row">
@@ -243,8 +249,9 @@ export function ClaimInvalidPage() {
   return (
     <Shell title="Claim link refused">
       <Notice tone="error">
-        This claim link was refused (<Chip>setup_claim_invalid</Chip>): it is unknown, used, expired, or you signed in with a different email than the one typed
-        during setup. Go back to the setup page on the workers.dev address and make a new link.
+        This claim link was refused: it is unknown, used, expired, or you signed in with a different email than the one typed during setup. Go back to the setup
+        page on the workers.dev address and make a new link.
+        <ErrorCode code="setup_claim_invalid" />
       </Notice>
     </Shell>
   );
@@ -254,13 +261,13 @@ export function SelfTest() {
   return (
     <ul class="checklist">
       <li>
-        <Chip>/v1/meta</Chip> is public: <span data-selftest="meta">not run (needs JavaScript)</span>
+        <Chip>/v1/meta</Chip> is public: <span class="status status-off" data-selftest="meta">not run (needs JavaScript)</span>
       </li>
       <li>
-        <Chip>/v1/machine/*</Chip> reaches the Worker: <span data-selftest="machine">not run (needs JavaScript)</span>
+        <Chip>/v1/machine/*</Chip> reaches the Worker: <span class="status status-off" data-selftest="machine">not run (needs JavaScript)</span>
       </li>
       <li>
-        <Chip>/v1/me</Chip> needs a sign-in: <span data-selftest="protected">not run (needs JavaScript)</span>
+        <Chip>/v1/me</Chip> needs a sign-in: <span class="status status-off" data-selftest="protected">not run (needs JavaScript)</span>
       </li>
     </ul>
   );

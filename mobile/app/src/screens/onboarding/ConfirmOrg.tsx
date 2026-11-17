@@ -29,7 +29,7 @@
  * ├── src/screens/machines/states/ProtocolMismatch.tsx
  * ├── src/screens/machines/states/SetupIncomplete.tsx
  * └── src/screens/onboarding/SignInResult.tsx
- * External: @lingui/react, react
+ * External: @lingui/react, lucide-react, react
  *
  * Used by:
  * src/screens/onboarding/ConfirmOrg.tsx
@@ -41,6 +41,7 @@ import { Trans } from '@lingui/react/macro';
 import type { Meta } from '@yaran/protocol';
 import { Button } from '@yaran/ui-kit/button';
 import { InlineCode } from '@yaran/ui-kit/inline-code';
+import { LoaderCircleIcon, ShieldCheckIcon } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { log } from '../../lib/diagnostics.ts';
@@ -84,9 +85,9 @@ function MetaError({ code, host, onRetry }: { code: MetaFailure; host: string; o
       break;
   }
   return (
-    <div role="alert" className="flex flex-col items-start gap-3 rounded-lg border border-border p-4">
+    <div role="alert" className="state-card">
       <p>{text}</p>
-      <Button className="h-10" variant="outline" onClick={onRetry}>
+      <Button className="min-h-12" variant="outline" onClick={onRetry}>
         <Trans>Try again</Trans>
       </Button>
     </div>
@@ -119,11 +120,11 @@ export function ConfirmOrg({ url }: { url: string }) {
 
   if (org === null) {
     return (
-      <Page title={<Trans>Add org</Trans>}>
+      <Page title={<Trans>Add org</Trans>} back={{ name: 'enter-url' }}>
         <p role="alert">
           <Trans>That org address isn't valid, so it can't be added.</Trans>
         </p>
-        <Button className="h-10" onClick={() => navigate({ name: 'enter-url' })}>
+        <Button className="min-h-12" onClick={() => navigate({ name: 'enter-url' })}>
           <Trans>Type the org address</Trans>
         </Button>
       </Page>
@@ -151,7 +152,7 @@ export function ConfirmOrg({ url }: { url: string }) {
 
   const verdict = meta.kind === 'ready' ? protocolVerdict(meta.meta) : null;
   return (
-    <Page title={<Trans>Add this org?</Trans>}>
+    <Page title={<Trans>Add this org?</Trans>} back={{ name: 'enter-url' }} backDisabled={signIn.kind === 'running'}>
       <p>
         <Trans>
           Address: <InlineCode>{org}</InlineCode>
@@ -170,20 +171,16 @@ export function ConfirmOrg({ url }: { url: string }) {
       {meta.kind === 'ready' && meta.meta.setup === 'closed' && verdict && !verdict.ok && <ProtocolMismatch update={verdict.update} />}
       {meta.kind === 'ready' && meta.meta.setup === 'closed' && verdict?.ok && (
         <>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-            <dt className="text-muted-foreground">
-              <Trans>Org</Trans>
-            </dt>
-            <dd>{meta.meta.org?.name ?? host}</dd>
-            {meta.meta.access && (
-              <>
-                <dt className="text-muted-foreground">
-                  <Trans>Sign-in team</Trans>
-                </dt>
-                <dd>{meta.meta.access.team_domain}</dd>
-              </>
-            )}
-          </dl>
+          <section className="rounded-xl border border-border bg-card p-5 [overflow-wrap:anywhere]">
+            <ShieldCheckIcon aria-hidden className="mb-4 size-6 text-muted-foreground" />
+            <h2 className="mb-3 text-2xl font-semibold tracking-tight">{meta.meta.org?.name ?? host}</h2>
+              {meta.meta.access && (
+                <dl className="flex flex-col gap-1 text-sm">
+                  <dt className="text-muted-foreground"><Trans>Sign-in team</Trans></dt>
+                  <dd>{meta.meta.access.team_domain}</dd>
+                </dl>
+              )}
+          </section>
           {verdict.deprecatedAfter && (
             <p className="text-sm text-muted-foreground">
               <Trans>This control plane will stop supporting this app after {verdict.deprecatedAfter}. Update the app before then.</Trans>
@@ -200,8 +197,8 @@ export function ConfirmOrg({ url }: { url: string }) {
           {signIn.kind === 'failed' ? (
             <SignInResult outcome={signIn.outcome} host={host} onRetry={() => void startSignIn(meta.meta)} />
           ) : (
-            <Button className="h-10" disabled={signIn.kind === 'running'} onClick={() => void startSignIn(meta.meta)}>
-              <Trans>Sign in</Trans>
+            <Button className="min-h-12" disabled={signIn.kind === 'running'} onClick={() => void startSignIn(meta.meta)}>
+              {signIn.kind === 'running' ? <><LoaderCircleIcon aria-hidden className="motion-safe:animate-spin" /><Trans>Opening browser…</Trans></> : <Trans>Sign in</Trans>}
             </Button>
           )}
         </>

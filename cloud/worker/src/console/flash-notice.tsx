@@ -16,7 +16,7 @@
  * └── src/console/user-pages.tsx
  * <module-headers:end>
  */
-import { Chip, Notice, type NoticeTone } from "./ui/components.tsx";
+import { Chip, ErrorCode, Notice, type NoticeTone } from "./ui/components.tsx";
 import type { Flash, FlashKind } from "./flash.ts";
 
 const TEXT: Record<FlashKind, [NoticeTone, string, string]> = {
@@ -25,8 +25,8 @@ const TEXT: Record<FlashKind, [NoticeTone, string, string]> = {
   user_disabled: ["success", "Disabled", "They can no longer sign in."],
   user_enabled: ["success", "Enabled", "They can sign in again."],
   role_changed: ["success", "Changed the role of", ""],
-  last_admin: ["error", "Refused for", "It would leave the org with no active admin (last_admin). Promote someone else first."],
-  user_gone: ["info", "The user", "was already removed, so nothing changed."],
+  last_admin: ["error", "Refused for", "It would leave the org with no active admin. Promote someone else first."],
+  user_gone: ["info", "Nothing changed for", "That user was already removed."],
   machine_revoked: ["success", "Revoking the machine", "Its Cloudflare objects are being removed in the background; it disappears from the list when that finishes."],
   machine_rotated: ["success", "Rotated the tunnel token of", "The machine picks up the new token on its next signed call."],
   device_removed: ["success", "Removed the phone", "It no longer receives notifications from this org."],
@@ -60,6 +60,7 @@ export function FlashNotice(props: { flash: Flash | null }) {
           {x}
         </>
       ))}
+      {known === "last_admin" ? <ErrorCode code="last_admin" /> : null}
     </Notice>
   );
 }

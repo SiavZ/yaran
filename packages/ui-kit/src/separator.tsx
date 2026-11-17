@@ -13,7 +13,6 @@
  *
  * Used by:
  * src/separator.tsx
- * ├── @yaran/mobile-shell:src/screens/settings/Settings.tsx
  * ├── web:src/components/ChangedFiles.tsx
  * ├── web:src/components/ui/button-group.tsx
  * └── web:src/components/ui/sidebar.tsx

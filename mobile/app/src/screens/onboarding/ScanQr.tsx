@@ -15,7 +15,7 @@
  * ├── src/lib/orgUrl.ts
  * ├── src/lib/route.ts
  * └── src/screens/Page.tsx
- * External: @lingui/core, @lingui/react, react
+ * External: @lingui/core, @lingui/react, lucide-react, react
  *
  * Used by:
  * src/screens/onboarding/ScanQr.tsx
@@ -27,6 +27,7 @@ import { msg } from '@lingui/core/macro';
 import type { MessageDescriptor } from '@lingui/core';
 import { useLingui } from '@lingui/react';
 import { Trans } from '@lingui/react/macro';
+import { CameraOffIcon } from 'lucide-react';
 import { ScanError, parseAddOrgPayload, startScan, type ScanFailure } from '@yaran/qr';
 import { Button } from '@yaran/ui-kit/button';
 import { useEffect, useRef, useState } from 'react';
@@ -48,7 +49,7 @@ function problemMessage(p: Problem): MessageDescriptor | null {
     case 'camera_failed':
       return msg`The camera couldn't start. Type the org address instead.`;
     case 'not_yaran':
-      return msg`That QR code isn't a yaran org code. Scan the code your admin or yaran cloud login shows.`;
+      return msg`That QR code isn't a yaran org code. Scan the code your admin or yaran cloud pair-phone shows.`;
     case 'not_add_org':
     case 'invalid':
       return msg`That yaran code doesn't contain a valid org address.`;
@@ -79,16 +80,16 @@ export function ScanQr() {
 
   const message = problem === null ? null : problemMessage(problem);
   return (
-    <Page title={<Trans>Scan the org QR code</Trans>}>
-      <video ref={video} className="aspect-square w-full rounded-lg bg-muted object-cover" muted playsInline aria-label={i18n._(msg`Camera preview`)} />
-      {message && (
-        <p role="alert" className="text-sm text-destructive">
-          {i18n._(message)}
-        </p>
-      )}
-      {problem !== null && problem !== 'permission_denied' && problem !== 'no_camera' && (
+    <Page title={<Trans>Scan the org QR code</Trans>} back={{ name: 'welcome' }}>
+      {message ? (
+        <div role="alert" className="state-card">
+          <CameraOffIcon aria-hidden className="size-6 text-muted-foreground" />
+          <p>{i18n._(message)}</p>
+        </div>
+      ) : <video ref={video} className="aspect-square w-full rounded-lg bg-muted object-cover" muted playsInline aria-label={i18n._(msg`Camera preview`)} />}
+      {problem !== null && problem !== 'no_camera' && (
         <Button
-          className="h-10"
+          className="min-h-12"
           variant="outline"
           onClick={() => {
             setProblem(null);
@@ -98,7 +99,7 @@ export function ScanQr() {
           <Trans>Scan again</Trans>
         </Button>
       )}
-      <Button className="h-10" variant="ghost" onClick={() => navigate({ name: 'enter-url' })}>
+      <Button className="min-h-12" variant={message ? 'default' : 'ghost'} onClick={() => navigate({ name: 'enter-url' })}>
         <Trans>Type the org address instead</Trans>
       </Button>
     </Page>

@@ -64,7 +64,7 @@ export function RadioGroup<T extends string>({
     <fieldset className="flex flex-col gap-1" disabled={disabled}>
       <legend className="mb-1 font-medium">{legend}</legend>
       {options.map((o) => (
-        <label key={o.value} className="flex min-h-10 items-center gap-3">
+        <label key={o.value} className="flex min-h-12 items-center gap-3">
           <input type="radio" className="size-5 accent-primary" name={name} checked={value === o.value} onChange={() => onChange(o.value)} />
           {o.label}
         </label>

@@ -33,7 +33,7 @@ export function PhoneRemoved({ org }: { org: string }) {
           Add the org again to keep using it.
         </Trans>
       </p>
-      <Button className="h-10" onClick={() => navigate({ name: 'welcome' })}>
+      <Button className="min-h-12" onClick={() => navigate({ name: 'welcome' })}>
         <Trans>Add an org</Trans>
       </Button>
     </Page>

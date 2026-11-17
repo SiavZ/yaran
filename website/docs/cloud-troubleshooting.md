@@ -267,7 +267,7 @@ persists, check the machine's network.
   organization" are each fixed right there. "This organization has turned notifications
   off" means your admin switched **Push notifications** off for everyone.
 - **Check the machine**: `push_notifications` under `[cloud]` is `true`.
-- **"push stopped" in the console**: open the app once and it registers again. Every
+- **"Push stopped" in the console**: open the app once and it registers again. Every
   phone shows this after an admin rotates the org's push keys.
 - **UnifiedPush builds** (F-Droid, GitHub `foss`): a distributor must be installed and
   picked in the app, and the distributor itself must be allowed to run in the

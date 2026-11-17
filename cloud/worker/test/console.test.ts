@@ -115,7 +115,7 @@ describe("destructive actions", () => {
 describe("pages", () => {
   const pages: [string, typeof ADA | typeof BOB][] = [
     ["/console", ADA], ["/console/phones", ADA], ["/console/connect", ADA], ["/console/machines/00000000-0000-4000-8000-000000000101/unpair", ADA], ["/console/phones/00000000-0000-4000-8000-000000000201/remove", ADA],
-    ["/admin/users", ADA], ["/admin/users/00000000-0000-4000-8000-0000000000b2/disable", ADA], ["/admin/machines", ADA], ["/admin/machines/00000000-0000-4000-8000-000000000101/revoke", ADA],
+    ["/admin/users", ADA], ["/admin/users/00000000-0000-4000-8000-0000000000b2/disable", ADA], ["/admin/users/00000000-0000-4000-8000-0000000000a1/role", ADA], ["/admin/machines", ADA], ["/admin/machines/00000000-0000-4000-8000-000000000101/revoke", ADA],
     ["/admin/machines/00000000-0000-4000-8000-000000000101/rotate", ADA], ["/admin/devices", ADA], ["/admin/devices/00000000-0000-4000-8000-000000000201/remove", ADA], ["/admin/audit", ADA],
     ["/admin/settings", ADA], ["/admin/health", ADA], ["/admin/push-keys/rotate", ADA], ["/admin/updates", ADA],
   ];
@@ -131,15 +131,43 @@ describe("pages", () => {
   });
   test("phones lists word push_state", async () => {
     const w = await ready();
-    expect(await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console/phones`, { identity: ADA })).text()).toContain("push stopped: the subscription expired");
-    expect(await (await dispatch(ADMIN_ROUTES, w, "GET", `${CP}/admin/devices`, { identity: ADA })).text()).toContain("push stopped: the subscription expired");
+    expect(await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console/phones`, { identity: ADA })).text()).toContain("Push stopped: the subscription expired");
+    expect(await (await dispatch(ADMIN_ROUTES, w, "GET", `${CP}/admin/devices`, { identity: ADA })).text()).toContain("Push stopped: the subscription expired");
   });
   test("machines say how to rename and the admin list shows the key fingerprint and origin port", async () => {
     const w = await ready();
     expect(await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console`, { identity: ADA })).text()).toContain("unpair it and pair it again");
     const admin = await (await dispatch(ADMIN_ROUTES, w, "GET", `${CP}/admin/machines`, { identity: ADA })).text();
     expect(admin).toContain(await machineKeyFingerprint(machineKey));
-    expect(admin).toContain("<td>8080</td>");
+    expect(admin).toContain('<td role="cell" data-label="Origin port"><div class="cell-value">8080</div></td>');
+  });
+});
+
+describe("taking admin rights away", () => {
+  const html = [...USER_ROUTES, ...ADMIN_ROUTES];
+  test("an admin row offers Remove admin rights as a confirm link, never a one-click form", async () => {
+    const w = await ready();
+    const users = await (await dispatch(html, w, "GET", `${CP}/admin/users`, { identity: ADA })).text();
+    expect(users).toContain('href="/admin/users/00000000-0000-4000-8000-0000000000a1/role" data-confirm="">Remove admin rights…</a>');
+    // Friendly role words, never the raw enum.
+    expect(users).toContain('<td role="cell" data-label="Role"><div class="cell-value">Administrator</div></td>');
+    expect(users).toContain('<td role="cell" data-label="Role"><div class="cell-value">Member</div></td>');
+    expect(users).not.toContain('name="role" value="user"');
+    expect(users).toContain('<input type="hidden" name="role" value="admin"/>');
+  });
+  test("the confirm page posts the same role form, and says when it is your own account", async () => {
+    const w = await ready();
+    const self = await (await dispatch(html, w, "GET", `${CP}/admin/users/00000000-0000-4000-8000-0000000000a1/role`, { identity: ADA })).text();
+    expect(self).toContain('<form method="post" action="/admin/users/00000000-0000-4000-8000-0000000000a1/role"');
+    expect(self).toContain('<input type="hidden" name="role" value="user"/>');
+    expect(self).toContain("This is your own account");
+    expect(self).toContain('<button type="submit" class="btn btn-destructive">Remove admin rights</button>');
+    // The chip and its question mark cannot be split across lines.
+    expect(self).toContain('<span class="chip-tail"><code class="chip">ada@example.org</code>?</span>');
+    expect(a11yViolations(self)).toEqual([]);
+    const bob = await (await dispatch(html, w, "GET", `${CP}/admin/users/00000000-0000-4000-8000-0000000000b2/role`, { identity: ADA })).text();
+    expect(bob).toContain("is already a member, so there is nothing to change");
+    expect(bob).not.toContain("btn-destructive");
   });
 });
 

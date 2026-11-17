@@ -40,10 +40,14 @@ export interface Html {
 const raw = (html: string): Html => ({ html });
 const join = (parts: readonly (Html | string)[]): string => parts.map((p) => (typeof p === "string" ? esc(p) : p.html)).join("");
 
-/** A name in prose renders as a chip, never a quotation (house style). */
+/**
+ * A name in prose renders as a chip, never a quotation (house style). `label` is spoken
+ * before the value as hidden text, never an `aria-label` on `<code>`, which a screen reader
+ * may read in place of the value the person has to check.
+ */
 export function chip(text: string, o: { mono?: boolean; label?: string } = {}): Html {
-  const aria = o.label ? ` aria-label="${esc(o.label)}"` : "";
-  return raw(`<code class="chip${o.mono ? " chip-mono" : ""}"${aria}>${esc(text)}</code>`);
+  const label = o.label ? `<span class="sr-only">${esc(o.label)}: </span>` : "";
+  return raw(`${label}<code class="chip${o.mono ? " chip-mono" : ""}">${esc(text)}</code>`);
 }
 
 /** A sentence built from prose segments and chips. */
@@ -51,6 +55,7 @@ export function prose(...parts: (Html | string)[]): Html {
   return raw(`<p>${join(parts)}</p>`);
 }
 
+/** The page's one `h1`: the shell prints none on these pages (`bodyHeading`). */
 export function heading(...parts: (Html | string)[]): Html {
   return raw(`<h1>${join(parts)}</h1>`);
 }
@@ -96,7 +101,7 @@ export function page(body: Html[], o: PageOptions): Response {
     `form-action 'self'${o.formAction ? ` ${o.formAction}` : ""}`,
     "frame-ancestors 'none'",
   ].join("; ");
-  const doc = Shell({ title: o.title, script: false, children: rawHtml(body.map((b) => b.html).join("")) }).toString();
+  const doc = Shell({ title: o.title, script: false, bodyHeading: true, children: rawHtml(body.map((b) => b.html).join("")) }).toString();
   if (typeof doc !== "string") throw new Error("the page shell rendered asynchronously");
   const html = `<!doctype html>${doc}`;
   return new Response(html, {

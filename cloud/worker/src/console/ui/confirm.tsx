@@ -42,7 +42,10 @@ export function ConfirmBody(p: ConfirmProps) {
   return (
     <div class="confirm">
       <p>
-        {p.lead} <Chip>{p.target}</Chip>?
+        {p.lead}{" "}
+        <span class="chip-tail">
+          <Chip>{p.target}</Chip>?
+        </span>
       </p>
       <p>{p.consequence}</p>
       <PostForm action={p.action} class="stack">

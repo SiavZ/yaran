@@ -22,6 +22,7 @@
  * ├── src/lib/route.test.ts
  * ├── src/push/pushWiring.ts
  * ├── src/screens/Nav.tsx
+ * ├── src/screens/Page.tsx
  * ├── src/screens/machines/MachineList.tsx
  * ├── src/screens/machines/machines.test.tsx
  * ├── src/screens/machines/states/Empty.tsx

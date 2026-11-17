@@ -105,7 +105,9 @@ describe("the confirm page", () => {
     // Pin the rendered string to the shared fixture's key.
     const res = await getAuthorize(pw, authorizeQuery(m, { machine_pubkey: fx.public_key }));
     const html = await res.text();
-    expect(html).toContain(`<code class="chip chip-mono" aria-label="Machine key fingerprint">${fx.fingerprint}</code>`);
+    // The value itself is the accessible text; the context is a hidden prefix, never an aria-label.
+    expect(html).toContain(`<span class="sr-only">Machine key fingerprint: </span><code class="chip chip-mono">${fx.fingerprint}</code>`);
+    expect(html).not.toMatch(/<code[^>]*aria-label/);
     expect(html).toContain(`<code class="chip">${pw.user.email}</code>`);
     expect(html).toContain(`<code class="chip">laptop</code>`);
     expect(html).toMatch(/<html lang="en" class="dark">/);
@@ -123,11 +125,14 @@ describe("the confirm page", () => {
     expect(csp).not.toMatch(/script-src/);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
-  it("offers Replace (focused) and Pair-as when the name is already active", async () => {
+  it("offers Replace and Pair-as when the name is already active, with focus on Deny", async () => {
     const pw = await pairWorld();
     const old = await seedMachine(pw.w.ctx.db, pw.user, { name: "laptop" });
     const html = await (await getAuthorize(pw, authorizeQuery(await fixtureMachine()))).text();
-    expect(html).toContain(`name="replace_machine_id" value="${old}" autofocus>Replace laptop</button>`);
+    expect(html).toContain(`name="replace_machine_id" value="${old}">Replace laptop</button>`);
+    expect(html).toContain('name="decision" value="deny" autofocus>Deny</button>');
+    expect(html.match(/ autofocus/g)).toHaveLength(1);
+    expect(html.match(/<h1>/g)).toHaveLength(1);
     expect(html).toContain(">Pair as laptop-2</button>");
   });
 });

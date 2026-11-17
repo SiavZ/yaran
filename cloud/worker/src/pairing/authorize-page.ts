@@ -57,12 +57,13 @@ export function confirmPage(i: ConfirmPageInput): Response {
         PAIR_FORM_ACTION,
         { ...hidden, decision: "approve" },
         [
-          button({ name: "replace_machine_id", value: i.sameName.id, text: `Replace ${i.machineName}`, primary: true, focus: true }),
+          button({ name: "replace_machine_id", value: i.sameName.id, text: `Replace ${i.machineName}`, primary: true }),
           button({ text: `Pair as ${i.sameName.nextName}` }),
         ],
         "Approve pairing",
       ),
-      form(PAIR_FORM_ACTION, hidden, [button({ name: "decision", value: "deny", text: "Deny" })], "Deny pairing"),
+      // Replacing removes a machine, so focus starts on the refusal rather than preselecting it.
+      form(PAIR_FORM_ACTION, hidden, [button({ name: "decision", value: "deny", text: "Deny", focus: true })], "Deny pairing"),
     );
   } else {
     body.push(

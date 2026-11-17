@@ -14,7 +14,8 @@
  * ├── src/console/ui/components.tsx
  * ├── src/console/ui/confirm.tsx
  * ├── src/console/ui/shell.tsx
- * └── src/console/ui/strings.ts
+ * ├── src/console/ui/strings.ts
+ * └── src/console/user-pages.tsx
  * External: hono
  *
  * Used by:
@@ -25,15 +26,17 @@
  */
 import type { AdminDevice, AdminMachine, AdminUser, UpdateStatus } from "@yaran/protocol";
 import type { Child } from "hono/jsx";
-import { Button, Checkbox, Chip, EmptyState, LinkButton, Notice, PostForm, RelativeTime, Table } from "./ui/components.tsx";
+import { Button, Checkbox, Chip, EmptyState, ErrorCode, LinkButton, MachineState, Notice, PostForm, RelativeTime, Row, Status, Table } from "./ui/components.tsx";
 import { AlreadyRemoved, ConfirmBody } from "./ui/confirm.tsx";
 import { ADMIN_NAV, Shell } from "./ui/shell.tsx";
-import { S } from "./ui/strings.ts";
+import { S, type StatusTone } from "./ui/strings.ts";
 import { FlashNotice } from "./flash-notice.tsx";
 import type { Flash } from "./flash.ts";
+import { platformWords, PushCell } from "./user-pages.tsx";
 
 export interface AdminBase {
   orgName: string;
+  signedInAs?: string;
   flash: Flash | null;
   update: UpdateStatus | null;
 }
@@ -53,7 +56,7 @@ export function UpdateBanner(props: { update: UpdateStatus | null }) {
 
 export function AdminShell(p: AdminBase & { title: string; current: string; children: Child }) {
   return (
-    <Shell title={p.title} orgName={p.orgName} nav={ADMIN_NAV} current={p.current} banner={<UpdateBanner update={p.update} />}>
+    <Shell title={p.title} orgName={p.orgName} signedInAs={p.signedInAs} context={S.nav.adminContext} nav={ADMIN_NAV} current={p.current} banner={<UpdateBanner update={p.update} />}>
       <FlashNotice flash={p.flash} />
       {p.children}
     </Shell>
@@ -62,40 +65,56 @@ export function AdminShell(p: AdminBase & { title: string; current: string; chil
 
 const enc = encodeURIComponent;
 
+type ProvisioningState = AdminMachine["provisioning"]["state"];
+const PROVISIONING_WORD: Record<ProvisioningState, string> = { complete: "Set up", in_progress: "In progress", failed: "Failed", compensating: "Rolling back" };
+const PROVISIONING_TONE: Record<ProvisioningState, StatusTone> = { complete: "ok", in_progress: "info", failed: "error", compensating: "warn" };
+
+const USER_COLS = ["Email", "Role", "Status", "Machines", "Phones", "Last seen", S.actions] as const;
+
 export function UsersPage(p: AdminBase & { users: readonly AdminUser[]; nextCursor: string | null }) {
   return (
     <AdminShell {...p} title={S.nav.users} current="/admin/users">
-      <Table caption="Everyone who has signed in" headers={["Email", "Role", "Status", "Machines", "Phones", "Last seen", "Actions"]}>
-        {p.users.map((u) => (
-          <tr>
-            <td>
-              <Chip>{u.email}</Chip>
-            </td>
-            <td>{u.role}</td>
-            <td>{u.disabled ? "disabled" : "active"}</td>
-            <td>{u.machines}</td>
-            <td>{u.devices}</td>
-            <td>
-              <RelativeTime iso={u.last_seen_at} />
-            </td>
-            <td class="row">
-              <PostForm action={`/admin/users/${enc(u.id)}/role`} class="row">
-                <input type="hidden" name="role" value={u.role === "admin" ? "user" : "admin"} />
-                <Button variant="outline">{u.role === "admin" ? "Make user" : "Make admin"}</Button>
-              </PostForm>
-              {u.disabled ? (
-                <PostForm action={`/admin/users/${enc(u.id)}/enable`} class="row">
-                  <Button variant="outline">Enable</Button>
-                </PostForm>
-              ) : (
-                <LinkButton href={`/admin/users/${enc(u.id)}/disable`} confirm>
-                  Disable…
-                </LinkButton>
-              )}
-            </td>
-          </tr>
-        ))}
-      </Table>
+      {p.users.length === 0 ? (
+        <EmptyState>Nobody has signed in yet. People appear here after their first sign-in to this console.</EmptyState>
+      ) : (
+        <Table caption="Everyone who has signed in" headers={USER_COLS}>
+          {p.users.map((u) => (
+            <Row
+              headers={USER_COLS}
+              cells={[
+                <span class="name">{u.email}</span>,
+                S.role[u.role] ?? u.role,
+                u.disabled ? <Status tone="error">{S.users.disabled}</Status> : <Status tone="ok">{S.users.active}</Status>,
+                u.machines,
+                u.devices,
+                <RelativeTime iso={u.last_seen_at} />,
+                <>
+                  {/* Promoting adds rights and stays one click; demoting removes them, so it confirms first. */}
+                  {u.role === "admin" ? (
+                    <LinkButton href={`/admin/users/${enc(u.id)}/role`} confirm>
+                      {S.users.demote}
+                    </LinkButton>
+                  ) : (
+                    <PostForm action={`/admin/users/${enc(u.id)}/role`} class="row">
+                      <input type="hidden" name="role" value="admin" />
+                      <Button variant="outline">Make admin</Button>
+                    </PostForm>
+                  )}
+                  {u.disabled ? (
+                    <PostForm action={`/admin/users/${enc(u.id)}/enable`} class="row">
+                      <Button variant="outline">Enable</Button>
+                    </PostForm>
+                  ) : (
+                    <LinkButton href={`/admin/users/${enc(u.id)}/disable`} confirm>
+                      Disable…
+                    </LinkButton>
+                  )}
+                </>,
+              ]}
+            />
+          ))}
+        </Table>
+      )}
       {p.nextCursor ? <LinkButton href={`/admin/users?cursor=${enc(p.nextCursor)}`}>Next page</LinkButton> : null}
     </AdminShell>
   );
@@ -127,45 +146,78 @@ export function DisableUserConfirm(p: AdminBase & { user: AdminUser | null; id: 
   );
 }
 
+/** The confirm page for taking admin rights away; the POST it sends is the same role form. */
+export function DemoteUserConfirm(p: AdminBase & { user: AdminUser | null; id: string; self: boolean }) {
+  return (
+    <AdminShell {...p} title={S.users.demoteTitle} current="/admin/users">
+      {!p.user ? (
+        <AlreadyRemoved what="The user" target={p.id} backHref="/admin/users" />
+      ) : p.user.role !== "admin" ? (
+        <div class="confirm">
+          <Notice tone="info">
+            <Chip>{p.user.email}</Chip> is already a member, so there is nothing to change.
+          </Notice>
+          <LinkButton href="/admin/users" variant="outline" autofocus>
+            {S.back}
+          </LinkButton>
+        </div>
+      ) : (
+        <ConfirmBody
+          lead={S.users.demoteLead}
+          target={p.user.email}
+          consequence={
+            p.self
+              ? "This is your own account: you lose the admin console as soon as you confirm, and only another admin can give it back. Your machines and phones keep working."
+              : "They lose the admin console but keep their machines and phones. Any admin can make them an admin again."
+          }
+          action={`/admin/users/${enc(p.id)}/role`}
+          cancelHref="/admin/users"
+          confirmLabel={S.users.demoteTitle}
+          extra={<input type="hidden" name="role" value="user" />}
+        />
+      )}
+    </AdminShell>
+  );
+}
+
+const ADMIN_MACHINE_COLS = ["Machine", "Owner", "Status", "Key fingerprint", "Origin port", "Provisioning", "Token", "Paired", "Protocol", S.actions] as const;
+
 export function AdminMachinesPage(p: AdminBase & { machines: readonly AdminMachine[]; staleIds: ReadonlySet<string>; nextCursor: string | null }) {
   return (
     <AdminShell {...p} title="Machines" current="/admin/machines">
       {p.machines.length === 0 ? (
-        <EmptyState>No machines are paired in this org yet.</EmptyState>
+        <EmptyState action={<LinkButton href="/console/connect#connect-machine">How to pair a machine</LinkButton>}>No machines are paired in this org yet.</EmptyState>
       ) : (
-        <Table caption="Every paired machine" headers={["Machine", "Owner", "Status", "Key fingerprint", "Origin port", "Provisioning", "Token", "Paired", "Protocol", "Actions"]}>
+        <Table caption="Every paired machine" headers={ADMIN_MACHINE_COLS}>
           {p.machines.map((m) => (
-            <tr>
-              <td>
-                <Chip>{m.name}</Chip>
-                {p.staleIds.has(m.id) ? <span class="muted"> ({S.machines.stale})</span> : null}
-              </td>
-              <td>
-                <Chip>{m.owner_email}</Chip>
-              </td>
-              <td>{m.status}</td>
-              <td>
-                <Chip>{m.key_fingerprint}</Chip>
-              </td>
-              <td>{m.origin_port}</td>
-              <td>
-                {m.provisioning.state}
-                {m.provisioning.last_error_code ? <Chip>{m.provisioning.last_error_code}</Chip> : null}
-              </td>
-              <td>v{m.token_version}</td>
-              <td>
-                <RelativeTime iso={m.paired_at} />
-              </td>
-              <td>{m.reported_protocol ?? "unknown"}</td>
-              <td class="row">
-                <LinkButton href={`/admin/machines/${enc(m.id)}/revoke`} confirm>
-                  Revoke…
-                </LinkButton>
-                <LinkButton href={`/admin/machines/${enc(m.id)}/rotate`} confirm>
-                  Rotate tunnel token…
-                </LinkButton>
-              </td>
-            </tr>
+            <Row
+              headers={ADMIN_MACHINE_COLS}
+              cells={[
+                <>
+                  <strong class="name">{m.name}</strong>
+                  {p.staleIds.has(m.id) ? <span class="muted"> ({S.machines.stale})</span> : null}
+                </>,
+                <span class="name">{m.owner_email}</span>,
+                <MachineState status={m.status} />,
+                <span class="mono name">{m.key_fingerprint}</span>,
+                m.origin_port,
+                <>
+                  <Status tone={PROVISIONING_TONE[m.provisioning.state] ?? "off"}>{PROVISIONING_WORD[m.provisioning.state] ?? m.provisioning.state}</Status>
+                  {m.provisioning.last_error_code ? <ErrorCode code={m.provisioning.last_error_code} /> : null}
+                </>,
+                `v${m.token_version}`,
+                <RelativeTime iso={m.paired_at} />,
+                m.reported_protocol ?? "unknown",
+                <>
+                  <LinkButton href={`/admin/machines/${enc(m.id)}/revoke`} confirm>
+                    Revoke…
+                  </LinkButton>
+                  <LinkButton href={`/admin/machines/${enc(m.id)}/rotate`} confirm>
+                    Rotate tunnel token…
+                  </LinkButton>
+                </>,
+              ]}
+            />
           ))}
         </Table>
       )}
@@ -199,37 +251,30 @@ export function MachineConfirm(p: AdminBase & { machine: AdminMachine | null; id
   );
 }
 
+const ADMIN_PHONE_COLS = ["Phone", "Owner", "Platform", "Push", "App", "Last seen", S.actions] as const;
+
 export function AdminDevicesPage(p: AdminBase & { devices: readonly AdminDevice[]; nextCursor: string | null }) {
   return (
     <AdminShell {...p} title="Phones" current="/admin/devices">
       {p.devices.length === 0 ? (
-        <EmptyState>No phones are registered in this org yet.</EmptyState>
+        <EmptyState action={<LinkButton href="/console/connect">How to connect a phone</LinkButton>}>No phones are registered in this org yet.</EmptyState>
       ) : (
-        <Table caption="Every registered phone" headers={["Phone", "Owner", "Platform", "Push", "App", "Last seen", "Actions"]}>
+        <Table caption="Every registered phone" headers={ADMIN_PHONE_COLS}>
           {p.devices.map((d) => (
-            <tr>
-              <td>
-                <Chip>{d.label}</Chip>
-              </td>
-              <td>
-                <Chip>{d.owner_email}</Chip>
-              </td>
-              <td>
-                {d.platform} ({d.flavor})
-              </td>
-              <td>
-                {d.push.channel ?? "none"}: {S.pushState[d.push_state]}
-              </td>
-              <td>{d.app_version}</td>
-              <td>
-                <RelativeTime iso={d.last_seen_at} />
-              </td>
-              <td>
+            <Row
+              headers={ADMIN_PHONE_COLS}
+              cells={[
+                <strong class="name">{d.label}</strong>,
+                <span class="name">{d.owner_email}</span>,
+                platformWords(d),
+                <PushCell device={d} />,
+                d.app_version,
+                <RelativeTime iso={d.last_seen_at} />,
                 <LinkButton href={`/admin/devices/${enc(d.id)}/remove`} confirm>
                   Remove…
-                </LinkButton>
-              </td>
-            </tr>
+                </LinkButton>,
+              ]}
+            />
           ))}
         </Table>
       )}
