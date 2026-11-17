@@ -25,7 +25,7 @@ import type { MessageDescriptor } from '@lingui/core';
 import { msg } from '@lingui/core/macro';
 import { useLingui } from '@lingui/react';
 import type { MachineStatus, MachineSummary } from '@yaran/protocol';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@yaran/ui-kit/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@yaran/ui-kit/dropdown-menu';
 import { EllipsisIcon, ExternalLinkIcon, Trash2Icon } from 'lucide-react';
 import { useRef } from 'react';
 
@@ -64,7 +64,8 @@ export function MachineRow({ machine, onOpen, onRemove }: { machine: MachineSumm
   // Remove… opens a dialog whose Cancel takes focus; the closing menu must not pull it back.
   const dialogNext = useRef(false);
   return (
-    <li className="flex min-h-14 items-center gap-3 rounded-xl border border-border bg-card p-4">
+    // Padding and gap are capped by the screen width, so enlarged text keeps the room for the name.
+    <li className="flex min-h-14 items-center gap-[min(0.75rem,3vw)] rounded-xl border border-border bg-card py-3 ps-[min(1rem,4vw)] pe-1">
       <button type="button" className="flex min-h-12 min-w-0 flex-1 flex-col items-start gap-1 [overflow-wrap:anywhere] text-left disabled:opacity-60" disabled={!canOpen} onClick={onOpen}>
         <span className="font-medium">{machine.name}</span>
         <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground">
@@ -87,19 +88,23 @@ export function MachineRow({ machine, onOpen, onRemove }: { machine: MachineSumm
           <EllipsisIcon className="size-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" finalFocus={() => !dialogNext.current}>
-          <DropdownMenuItem disabled={!canOpen} onClick={onOpen}>
-            <ExternalLinkIcon />
-            {i18n._(msg`Open`)}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => {
-              dialogNext.current = true;
-              onRemove();
-            }}
-          >
-            <Trash2Icon />
-            {i18n._(msg`Remove…`)}
-          </DropdownMenuItem>
+          {/* The sheet covers the list, so it names the machine its actions act on. */}
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="px-3 pt-3 pb-2 text-sm text-foreground [overflow-wrap:anywhere]">{machine.name}</DropdownMenuLabel>
+            <DropdownMenuItem disabled={!canOpen} onClick={onOpen}>
+              <ExternalLinkIcon />
+              {i18n._(msg`Open`)}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                dialogNext.current = true;
+                onRemove();
+              }}
+            >
+              <Trash2Icon />
+              {i18n._(msg`Remove…`)}
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
     </li>

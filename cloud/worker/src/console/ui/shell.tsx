@@ -10,6 +10,7 @@
  * <module-headers:begin>
  * Uses:
  * src/console/ui/shell.tsx
+ * ├── src/console/ui/components.tsx
  * └── src/console/ui/strings.ts
  * External: hono
  *
@@ -26,6 +27,7 @@
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
+import { breakable } from "./components.tsx";
 import { S } from "./strings.ts";
 
 export interface NavLink {
@@ -117,7 +119,7 @@ export function Shell(props: ShellProps) {
           )}
           {props.signedInAs ? (
             <span class="signed-in">
-              {S.signedInAs} <span class="name">{props.signedInAs}</span>
+              {S.signedInAs} <span class="name">{breakable(props.signedInAs)}</span>
             </span>
           ) : null}
         </header>

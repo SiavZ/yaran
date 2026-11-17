@@ -17,17 +17,19 @@
  * ├── src/setup/pages.tsx
  * ├── src/setup/token-template.ts
  * └── test/helpers/html-checks.ts
- * External: node:fs, node:os, node:path, vitest
+ * External: node:fs, node:module, node:os, node:path, node:vm, vitest
  *
  * Used by: entry point (vitest, via npm test in cloud/worker)
  * <module-headers:end>
  */
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { runInNewContext } from "node:vm";
+import { describe, expect, test, vi } from "vitest";
 import { copyUiKitAssets, defaultSources } from "../../scripts/copy-ui-kit-assets.ts";
-import { Chip, Field, Notice, Row, Table } from "../../src/console/ui/components.tsx";
+import { Chip, Field, nameParts, Notice, Row, Table } from "../../src/console/ui/components.tsx";
 import { SETTINGS_GROUPS, SettingsPage } from "../../src/console/admin-pages-2.tsx";
 import { SETTINGS_FIELDS } from "../../src/admin/settings-schema.ts";
 import { muteWords, platformWords } from "../../src/console/user-pages.tsx";
@@ -41,10 +43,50 @@ import { a11yViolations, cspViolations } from "../helpers/html-checks.ts";
 
 const page = (node: Parameters<typeof renderPage>[0]) => renderPage(node);
 
+test("the console reveals the whole focused textarea only in a form with a pinned action row", () => {
+  const handlers = new Map<string, (event: { target: unknown }) => void>();
+  class Textarea {
+    scrollIntoView = vi.fn();
+    closest = vi.fn().mockReturnValue(null);
+    constructor(readonly form: { querySelector: (selector: string) => object | null } | null) {}
+  }
+  const document = {
+    querySelectorAll: () => [], querySelector: () => null,
+    addEventListener: (type: string, handler: (event: { target: unknown }) => void) => handlers.set(type, handler),
+  };
+  const script = readFileSync(new URL("../../assets/console/enhance.ts", import.meta.url), "utf8");
+  runInNewContext(stripTypeScriptTypes(script), { document, HTMLTextAreaElement: Textarea, addEventListener: () => {} });
+  const focus = handlers.get("focusin");
+  expect(focus).toBeTypeOf("function");
+  const settings = new Textarea({ querySelector: (s) => s === ".row.sticky-actions" ? {} : null });
+  focus!({ target: settings });
+  expect(settings.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
+  const field = { scrollIntoView: vi.fn() };
+  settings.closest.mockReturnValue(field);
+  focus!({ target: settings });
+  expect(settings.closest).toHaveBeenLastCalledWith(".field");
+  expect(field.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
+  expect(settings.scrollIntoView).toHaveBeenCalledTimes(1);
+  for (const field of [new Textarea(null), new Textarea({ querySelector: () => null }), { scrollIntoView: vi.fn() }]) {
+    focus!({ target: field });
+    expect(field.scrollIntoView).not.toHaveBeenCalled();
+  }
+});
+
 test("names render as escaped chips, never quoted", async () => {
   const html = await page(<Shell title="t"><p>Remove <Chip>{'<img src=x onerror=alert(1)>'}</Chip></p></Shell>);
   expect(html).toContain('<code class="chip">&lt;img src=x onerror=alert(1)&gt;</code>');
   expect(cspViolations(html)).toEqual([]);
+});
+
+test("a long name prefers to break between its parts: before a dot, after @ and -", async () => {
+  expect(nameParts("ada@example.com")).toEqual(["ada@", "example", ".com"]);
+  expect(nameParts("K7QF-3MZD-W2PA")).toEqual(["K7QF-", "3MZD-", "W2PA"]);
+  expect(nameParts("provisioning_in_progress")).toEqual(["provisioning_in_progress"]);
+  expect(nameParts(".hidden")).toEqual([".hidden"]);
+  expect(nameParts("trailing-")).toEqual(["trailing-"]);
+  const html = await page(<Shell title="t"><p>Remove <Chip>{"cp.example.com"}</Chip></p></Shell>);
+  expect(html).toContain('<code class="chip">cp<wbr/>.example<wbr/>.com</code>');
 });
 
 test("the shell loads only same-origin assets and is dark", async () => {
@@ -96,7 +138,7 @@ test("the shell prints one h1, shows the mark, and an admin page says so and lin
 
 test("the shell names the signed-in account quietly, escaped, and only when it is given", async () => {
   const html = await page(<Shell title="t" signedInAs={'<b>x</b>"@example.org'} />);
-  expect(html).toContain('<span class="signed-in">Signed in as <span class="name">&lt;b&gt;x&lt;/b&gt;&quot;@example.org</span></span>');
+  expect(html).toContain('<span class="signed-in">Signed in as <span class="name">&lt;b&gt;x&lt;/b&gt;&quot;@<wbr/>example<wbr/>.org</span></span>');
   expect(html).not.toContain("<b>x</b>");
   expect(a11yViolations(html)).toEqual([]);
   expect(await page(<Shell title="t" />)).not.toContain("signed-in");
@@ -120,6 +162,10 @@ describe("the settings form", () => {
     expect(html).toContain('id="machine_cap_per_user-error"');
     expect(html).toContain('Error code: <code class="chip">validation_failed</code>');
     expect(html.match(/<fieldset class="group">/g)).toHaveLength(SETTINGS_GROUPS.length);
+    // One Save for the whole long form, pinned to the screen's bottom while it scrolls.
+    expect(html.match(/Save settings/g)).toHaveLength(1);
+    expect(html.match(/<form /g)).toHaveLength(1);
+    expect(html).toMatch(/<div class="row sticky-actions"><button type="submit" class="btn btn-primary">Save settings<\/button><\/div><\/form>/);
     expect(a11yViolations(html)).toEqual([]);
     expect(cspViolations(html)).toEqual([]);
   });
@@ -158,6 +204,10 @@ describe("setup pages", () => {
   test("the final page says when turning workers.dev off failed", async () => {
     expect(await page(SETUP_PAGES.done)).toContain("Turning off the workers.dev address failed");
   });
+  test("long addresses in setup copy are chips that wrap between their parts, the text unchanged", async () => {
+    expect(await page(SETUP_PAGES.org)).toContain('Becomes <code class="chip">&lt;team&gt;<wbr/>.cloudflareaccess<wbr/>.com</code>, the sign-in address your users see.');
+    expect(await page(DonePage({ record: { ...record, workers_dev_disabled: true } }))).toContain('only <code class="chip">https://cp<wbr/>.example<wbr/>.org</code> answers from now on.');
+  });
 });
 
 describe("console.css", () => {
@@ -190,14 +240,31 @@ describe("console.css choices the council asked for", () => {
     expect(css).toMatch(/\.chip \{ display: inline;[^}]*box-decoration-break: clone;/);
     expect(css).not.toMatch(/\.chip \{[^}]*inline-block/);
     expect(css).not.toMatch(/aria-label\]/);
-    expect(css).toMatch(/\.sr-only \+ \.chip-mono \{ display: inline-block;/);
+    expect(css).toMatch(/\.facts \.chip-mono \{ display: inline-block;[^}]*text-wrap: balance;/);
   });
   test("a confirm chip keeps its question mark on the same line", () => {
     expect(css).toMatch(/\.chip-tail \{ white-space: nowrap; \}/);
     expect(css).toMatch(/\.chip-tail \.chip \{ white-space: normal;/);
   });
+  test("one sticky action area: it reserves its height for keyboard focus, and its own buttons scroll nothing", () => {
+    expect(css).toMatch(/\.sticky-actions \{ position: sticky; bottom: 0;[^}]*background: var\(--background\);/);
+    expect(css).toMatch(/html:has\(\.sticky-actions\) \{ scroll-padding-bottom: 4\.5rem; \}/);
+    expect(css).toMatch(/\.sticky-actions \.btn \{ scroll-margin-bottom: -4\.5rem; \}/);
+  });
+  test("a wrapped chip's cloned end padding stays inside its block", () => {
+    expect(css).toMatch(/:is\(p, h1, dd, li, \.notice-body\):has\(\.chip\) \{ padding-inline-end: 0\.35em; \}/);
+  });
+  test("filter fields line up by label, and a table row's text sits on its buttons' line", () => {
+    expect(css).toMatch(/\.filters > \.row:first-child \{ align-items: flex-start; \}/);
+    expect(css).toMatch(/th, td \{[^}]*vertical-align: baseline; \}/);
+  });
   test("phone-width tables become cards labelled from data-label", () => {
     expect(css).toMatch(/@media \(max-width: 40rem\)[\s\S]*\.table-wrap td::before \{ content: attr\(data-label\);/);
+  });
+  test("a phone card puts short facts in a metadata grid and gives long names and actions the full width", () => {
+    expect(css).toMatch(/\.table-wrap tr \{ display: grid; grid-template-columns: repeat\(auto-fill, minmax\(min\(100%, 8rem\), 1fr\)\);/);
+    expect(css).toMatch(/\.table-wrap td:first-child, \.table-wrap td:has\(\.name, \.mono\) \{ grid-column: 1 \/ -1; \}/);
+    expect(css).toMatch(/\.table-wrap td\.cell-actions \{ grid-column: 1 \/ -1;/);
   });
 });
 

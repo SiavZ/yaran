@@ -30,7 +30,7 @@
  * <module-headers:end>
  */
 import type { AuditEntry, Settings, UpdateStatus } from "@yaran/protocol";
-import { Button, Checkbox, Chip, EmptyState, ErrorCode, Field, LinkButton, Notice, PostForm, RelativeTime, Row, Status, Table } from "./ui/components.tsx";
+import { breakable, Button, Checkbox, Chip, EmptyState, ErrorCode, Field, LinkButton, Notice, PostForm, RelativeTime, Row, Status, Table } from "./ui/components.tsx";
 import { SelfTest } from "../setup/pages-steps.tsx";
 import { ProbeChecklist } from "../setup/pages.tsx";
 import type { ProbeRow } from "../setup/capability-probe.ts";
@@ -49,12 +49,12 @@ export function AuditPage(p: AdminBase & { filter: AuditFilter; items: readonly 
   const qs = new URLSearchParams(Object.entries(p.filter).filter(([, v]) => v) as [string, string][]).toString();
   return (
     <AdminShell {...p} title="Audit log" current="/admin/audit">
-      <form method="get" action="/admin/audit" class="stack">
+      <form method="get" action="/admin/audit" class="stack filters">
         <div class="row">
           <Field id="actor" label="Actor (email or id)" value={p.filter.actor ?? ""} />
           <Field id="action" label="Action" value={p.filter.action ?? ""} hint="For example machine.revoked." />
           <Field id="target" label="Target" value={p.filter.target ?? ""} hint="kind or kind:id, for example user:1234." />
-          <Field id="since" label="From (UTC)" value={p.filter.since ?? ""} hint="2026-11-01T00:00:00Z" />
+          <Field id="since" label="From (UTC)" value={p.filter.since ?? ""} hint="For example 2026-11-01T00:00:00Z." />
           <Field id="until" label="To (UTC)" value={p.filter.until ?? ""} />
         </div>
         <div class="row">
@@ -73,7 +73,7 @@ export function AuditPage(p: AdminBase & { filter: AuditFilter; items: readonly 
               headers={AUDIT_COLS}
               cells={[
                 <RelativeTime iso={e.ts} />,
-                e.actor.email ? <span class="name">{e.actor.email}</span> : e.actor.kind,
+                e.actor.email ? <span class="name">{breakable(e.actor.email)}</span> : e.actor.kind,
                 <span class="mono">{e.action}</span>,
                 <>
                   {e.target.kind}
@@ -144,7 +144,8 @@ export function SettingsPage(p: AdminBase & { settings: unknown; zoneName: strin
             {g.paths.map((path) => SETTINGS_FIELDS.find((f) => f.path === path)).map((f) => f && settingControl(f, p.settings, errorFor(f.path)))}
           </fieldset>
         ))}
-        <div class="row">
+        {/* Pinned to the screen's bottom while the form scrolls: one Save for a long page. */}
+        <div class="row sticky-actions">
           <Button>Save settings</Button>
         </div>
       </PostForm>

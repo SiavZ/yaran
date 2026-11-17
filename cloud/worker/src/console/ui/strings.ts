@@ -76,6 +76,8 @@ export const S = {
     failing: "Push is failing",
     none: "Push off",
   } satisfies Record<PushState, string>,
+  /** What brings a stopped push back (website/docs/cloud-troubleshooting.md: the app registers again when opened). */
+  pushRecovery: "Opening the yaran app on the phone once registers it again.",
   pushTone: { active: "ok", gone: "warn", auth_failed: "warn", failing: "error", none: "off" } satisfies Record<PushState, StatusTone>,
   role: { admin: "Administrator", user: "Member" } satisfies Record<AdminUser["role"], string>,
   users: {
@@ -89,6 +91,7 @@ export const S = {
     empty: "You have no paired machines yet. Pairing takes one command in the machine's terminal.",
     emptyAction: "Pair a machine",
     renameHint: "To rename a machine, unpair it and pair it again: the name is part of its hostname, Access application and DNS record.",
+    open: "Open",
     unpair: "Unpair…",
     unpairLead: "Unpair the machine",
     unpairConsequence: "Its tunnel, DNS record and Access application are deleted. The machine stops being reachable from your phones until you pair it again.",

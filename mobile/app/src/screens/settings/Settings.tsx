@@ -40,7 +40,7 @@ function Link({ page, children, icon }: { page: SettingsPage; children: ReactNod
       className="flex min-h-12 w-full items-center justify-between rounded-md text-left font-medium hover:bg-muted"
       onClick={() => navigate({ name: 'settings-page', page })}
     >
-      <span className="flex min-w-0 items-center gap-3"><span className="text-muted-foreground">{icon}</span>{children}</span>
+      <span className="flex min-w-0 flex-wrap items-center gap-3 [overflow-wrap:break-word]"><span className="text-muted-foreground">{icon}</span>{children}</span>
       <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
     </button>
   );
@@ -61,7 +61,7 @@ export function Settings() {
         <h2 className="settings-heading"><Trans>Preferences</Trans></h2>
         <div className="settings-group">
           <Link page="security" icon={<ShieldCheckIcon aria-hidden className="size-5" />}><Trans>Security</Trans></Link>
-          <div className="pl-8"><SwitchRow label={<Trans>Reopen last machine on launch</Trans>} checked={reopenLastMachine} onChange={(on) => void updateSettings({ reopenLastMachine: on })} /></div>
+          <div className="pl-8 max-[24rem]:pl-0"><SwitchRow label={<Trans>Reopen last machine on launch</Trans>} checked={reopenLastMachine} onChange={(on) => void updateSettings({ reopenLastMachine: on })} /></div>
           <Link page="language" icon={<LanguagesIcon aria-hidden className="size-5" />}><Trans>Language</Trans></Link>
         </div>
       </section>

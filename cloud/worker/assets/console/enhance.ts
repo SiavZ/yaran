@@ -83,6 +83,13 @@ function scrollRegions(): void {
   }
 }
 
+// Native textarea focus can reveal only its caret, leaving the rest behind Settings' Save.
+document.addEventListener("focusin", ({ target }) => {
+  if (target instanceof HTMLTextAreaElement && target.form?.querySelector(".row.sticky-actions")) {
+    (target.closest(".field") ?? target).scrollIntoView({ block: "nearest" });
+  }
+});
+
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
   ["day", 86_400],
   ["hour", 3_600],

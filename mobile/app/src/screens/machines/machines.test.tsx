@@ -19,11 +19,13 @@
  * ├── src/screens/machines/MachineList.tsx
  * ├── src/screens/machines/MachineRow.tsx
  * └── src/test/render.tsx
- * External: @testing-library/react, sonner, vitest
+ * External: @testing-library/react, node:fs, sonner, vitest
  *
  * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
+import { readFileSync } from 'node:fs';
+
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { MachineSummary } from '@yaran/protocol';
 import { toast } from 'sonner';
@@ -56,6 +58,7 @@ const machine = (over: Partial<MachineSummary> = {}): MachineSummary => ({
 });
 const page = (items: MachineSummary[]): ApiResult => ({ kind: 'ok', status: 200, body: { items, next_cursor: null } });
 const request = vi.mocked(Session.request);
+const indexCss = readFileSync('src/index.css', 'utf8'); // vitest runs from mobile/app
 
 beforeEach(() => {
   resetMachines();
@@ -102,6 +105,19 @@ describe('MachineList', () => {
     const dialog = await openRemove();
     await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' })));
     expect(dialog.querySelector('[data-slot="inline-code"]')?.textContent).toBe('laptop');
+  });
+
+  it('the action sheet names the machine its actions act on', async () => {
+    request.mockResolvedValue(page([machine()]));
+    renderShell(<MachineList />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Actions for laptop' }));
+    const group = await screen.findByRole('group', { name: 'laptop' });
+    expect(within(group).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Open', 'Remove…']);
+  });
+
+  it('pins a scrolling dialog footer, so the focused Cancel is never clipped at enlarged text', () => {
+    // Layout is not measurable in jsdom; the browser check is in the round's evidence. This holds the rule.
+    expect(indexCss).toMatch(/\[data-slot="dialog-content"\] > \[data-slot="dialog-footer"\] \{ position: sticky; bottom: -1rem;/);
   });
 
   it('a remove success raises a toast', async () => {

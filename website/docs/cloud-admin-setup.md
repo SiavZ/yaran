@@ -213,9 +213,9 @@ The last page also asks you to set an Actions variable, `YARAN_CONTROL_PLANE_URL
 ## The admin console
 
 `<org-control-plane>` is the console, behind Access. Everyone who signs in gets **My
-machines** (with **Unpair…**), **My phones** (with **Remove…**) and **Connect**, which
-shows the QR code for the phone app and the command that pairs a machine. Admins also
-get:
+machines** (with **Open** and **Unpair…**), **My phones** (with **Remove…**) and
+**Connect**, which shows the QR code for the phone app and the command that pairs a
+machine. Admins also get:
 
 - **Users**: who has signed in and whether they are an Administrator or a Member, with
   **Make admin** or **Remove admin rights…** (which asks first), and **Disable…** or **Enable**.

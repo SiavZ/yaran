@@ -3,7 +3,8 @@
  * minimal error page a browser navigation gets when nothing may be redirected.
  *
  * The interstitial is what stops a silent SSO auto-approve from signing a device in:
- * it names the device, its platform, the host and the signed-in email, and only an
+ * it names the device, its platform, the host and the signed-in email in a facts panel (the
+ * machine's own consent page uses the same terms), and only an
  * explicit Continue completes the handoff.
  *
  * - No script. `form-action` is widened to exactly the validated redirect's origin
@@ -24,7 +25,7 @@
  * <module-headers:end>
  */
 import { parseYaranAppUa, type ErrorCode } from "@yaran/protocol";
-import { button, chip, form, heading, notice, page, prose, type Html } from "../ui/kit.ts";
+import { button, chip, facts, form, heading, notice, page, prose, type Html } from "../ui/kit.ts";
 import type { HandoffGet } from "./handoff-params.ts";
 
 /** Android, iOS or iPadOS from a User-Agent, or null when unrecognised. */
@@ -53,12 +54,13 @@ export interface ConsentPageInput {
 
 export function consentPage(i: ConsentPageInput): Response {
   const { q } = i;
-  const who: (Html | string)[] = [chip(q.device)];
-  if (i.platform) who.push(" on ", chip(i.platform));
-  who.push(" wants to sign in to ", chip(i.host), " as ", chip(i.email), ".");
+  const who: [string, Html][] = [["Device", chip(q.device)]];
+  if (i.platform) who.push(["Platform", chip(i.platform)]);
+  who.push(["Org address", chip(i.host)], ["Signed in as", chip(i.email)]);
   const body: Html[] = [
-    heading("Sign this device in to ", chip(i.host), "?"),
-    prose(...who),
+    // The heading keeps the host: the app tells the person to expect exactly this question.
+    heading("Sign this device in to ", chip(i.host, { whole: true }), "?"),
+    facts(who),
     prose("Continue only if you just started signing in on this phone. If you did not, choose Cancel and nothing is shared."),
   ];
   if (q.build === "dev") {

@@ -26,7 +26,7 @@
  */
 import type { AdminDevice, AdminMachine, AdminUser, UpdateStatus } from "@yaran/protocol";
 import type { Child } from "hono/jsx";
-import { Button, Checkbox, Chip, EmptyState, ErrorCode, LinkButton, MachineState, Notice, PostForm, RelativeTime, Row, Status, Table } from "./ui/components.tsx";
+import { breakable, Button, Checkbox, Chip, EmptyState, ErrorCode, LinkButton, MachineState, Notice, PostForm, RelativeTime, Row, Status, Table } from "./ui/components.tsx";
 import { AlreadyRemoved, ConfirmBody } from "./ui/confirm.tsx";
 import { ADMIN_NAV, Shell } from "./ui/shell.tsx";
 import { S, type StatusTone } from "./ui/strings.ts";
@@ -82,7 +82,7 @@ export function UsersPage(p: AdminBase & { users: readonly AdminUser[]; nextCurs
             <Row
               headers={USER_COLS}
               cells={[
-                <span class="name">{u.email}</span>,
+                <span class="name">{breakable(u.email)}</span>,
                 S.role[u.role] ?? u.role,
                 u.disabled ? <Status tone="error">{S.users.disabled}</Status> : <Status tone="ok">{S.users.active}</Status>,
                 u.machines,
@@ -197,9 +197,9 @@ export function AdminMachinesPage(p: AdminBase & { machines: readonly AdminMachi
                   <strong class="name">{m.name}</strong>
                   {p.staleIds.has(m.id) ? <span class="muted"> ({S.machines.stale})</span> : null}
                 </>,
-                <span class="name">{m.owner_email}</span>,
+                <span class="name">{breakable(m.owner_email)}</span>,
                 <MachineState status={m.status} />,
-                <span class="mono name">{m.key_fingerprint}</span>,
+                <span class="mono name">{breakable(m.key_fingerprint)}</span>,
                 m.origin_port,
                 <>
                   <Status tone={PROVISIONING_TONE[m.provisioning.state] ?? "off"}>{PROVISIONING_WORD[m.provisioning.state] ?? m.provisioning.state}</Status>
@@ -265,7 +265,7 @@ export function AdminDevicesPage(p: AdminBase & { devices: readonly AdminDevice[
               headers={ADMIN_PHONE_COLS}
               cells={[
                 <strong class="name">{d.label}</strong>,
-                <span class="name">{d.owner_email}</span>,
+                <span class="name">{breakable(d.owner_email)}</span>,
                 platformWords(d),
                 <PushCell device={d} />,
                 d.app_version,

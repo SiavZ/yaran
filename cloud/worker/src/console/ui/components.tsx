@@ -22,18 +22,39 @@
  * ├── src/console/admin-pages.tsx
  * ├── src/console/flash-notice.tsx
  * ├── src/console/ui/confirm.tsx
+ * ├── src/console/ui/shell.tsx
  * ├── src/console/user-pages.tsx
  * ├── src/setup/pages-steps.tsx
  * ├── src/setup/pages.tsx
- * └── test/node/ui-kit.test.tsx
+ * ├── src/ui/kit.ts
+ * ├── test/node/ui-kit.test.tsx
+ * ├── test/pairing/authorize-route.test.ts
+ * └── test/sessions/handoff-route.test.ts
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
 import { S, type StatusTone } from "./strings.ts";
 
+/**
+ * A long name's preferred line breaks: before a dot and after `@` or `-`, so a host, an email
+ * or a fingerprint that has to wrap breaks between its parts rather than mid-label (the chip's
+ * `overflow-wrap:anywhere` stays the fallback for a part longer than the line). Error codes
+ * keep their underscores whole, as one searchable token.
+ */
+export function nameParts(text: string): string[] {
+  return text.split(/(?<=.)(?=\.)|(?<=[@-])(?=.)/);
+}
+
+/** A host, email or fingerprint with `<wbr>` between its parts, for any element that shows one. */
+export function breakable(text: string): Child[] {
+  return nameParts(text).flatMap((part, i) => (i ? [<wbr />, part] : [part]));
+}
+
 /** A name in prose (branch, host, email, machine): the console's `InlineCode`. */
 export function Chip(props: { children: Child }) {
-  return <code class="chip">{props.children}</code>;
+  const kids = [props.children].flat();
+  if (!kids.every((k) => typeof k === "string")) return <code class="chip">{props.children}</code>;
+  return <code class="chip">{breakable(kids.join(""))}</code>;
 }
 
 export type ButtonVariant = "primary" | "outline" | "destructive";
@@ -66,7 +87,7 @@ export function PostForm(props: { action: string; class?: string; children: Chil
 export interface FieldProps {
   id: string;
   label: string;
-  hint?: string;
+  hint?: Child;
   error?: string;
   type?: "text" | "email" | "number" | "password" | "url";
   value?: string | number;

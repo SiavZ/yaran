@@ -35,7 +35,15 @@
 /* Phone controls grow with translated text and the system's font size. */
 [data-slot="button"] { height: auto; min-height: 48px; white-space: normal; padding-block: 12px; }
 .phone-icon-button { width: 48px; height: 48px; min-height: 48px; }
-.phone-nav { flex-wrap: wrap; padding-inline: 12px; gap: 4px; }
+[data-slot="dropdown-menu-item"] { min-height: 48px; }
+.phone-nav { flex-wrap: wrap; padding-inline: 12px; gap: 8px; }
 .phone-nav button { flex: 1 0 auto; min-width: max-content; min-height: 64px; padding: 12px 4px; white-space: nowrap; }
 .phone-nav svg { width: 20px; height: 20px; }
 .phone-page [data-slot="switch"]::after { inset-block: -14px; }
+/* A confirm dialog keeps its decision in view: when enlarged text makes it scroll, the prose
+   scrolls under a footer pinned to the dialog's bottom (opaque, keeping its muted tint), so the
+   autofocused Cancel is never clipped and the title still opens at the top. */
+[data-slot="dialog-content"] > [data-slot="dialog-footer"] { position: sticky; bottom: -1rem; background: linear-gradient(color-mix(in oklab, var(--muted) 50%, transparent), color-mix(in oklab, var(--muted) 50%, transparent)), var(--popover); }
+/* Side padding capped by the screen width, so enlarged text keeps the room for the prose and buttons. */
+[data-slot="dialog-content"] { padding-inline: min(1rem, 4vw); }
+[data-slot="dialog-content"] > [data-slot="dialog-footer"] { margin-inline: calc(-1 * min(1rem, 4vw)); padding-inline: min(1rem, 4vw); }

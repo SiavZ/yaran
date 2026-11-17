@@ -7,6 +7,7 @@
  * Uses:
  * test/sessions/handoff-route.test.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/console/ui/components.tsx
  * ├── test/helpers/worker.ts
  * ├── test/phase06/fakes.ts
  * └── test/sessions/handoff-helpers.ts
@@ -16,6 +17,7 @@
  * <module-headers:end>
  */
 import { openHandoff, validate } from "@yaran/protocol";
+import { nameParts } from "../../src/console/ui/components.tsx";
 import { errorCode } from "../helpers/worker.ts";
 import { describe, expect, it } from "vitest";
 import { APP_CALLBACK, CP_HOST } from "../phase06/fakes.ts";
@@ -97,7 +99,13 @@ describe("consent page", () => {
     const s = await setup();
     const res = await get(s, await handoffQuery(s), { "User-Agent": CHROME_ANDROID });
     const html = await res.text();
-    for (const name of ["Ada&#39;s Pixel", "Android", CP_HOST, s.user.email]) expect(html).toContain(`<code class="chip">${name}</code>`);
+    // Each value sits under its own term in the facts panel, with break hints between its parts.
+    for (const [term, name] of [["Device", "Ada&#39;s Pixel"], ["Platform", "Android"], ["Org address", CP_HOST], ["Signed in as", s.user.email]] as const) {
+      expect(html).toContain(`<dt>${term}</dt><dd><code class="chip">${nameParts(name).join("<wbr>")}</code></dd>`);
+    }
+    // The heading's host has no break hints: it moves to a fresh line whole rather than splitting at
+    // its first dot ("cp" / ".example.com?" at 390px); only a host longer than the line wraps.
+    expect(html).toContain(`<h1>Sign this device in to <code class="chip">${CP_HOST}</code>?</h1>`);
     // The visible value is what a screen reader speaks: no aria-label may replace it.
     expect(html).not.toMatch(/<code[^>]*aria-label/);
     expect(html).toMatch(/<button[^>]*value="continue"[^>]* autofocus>Continue<\/button>/);

@@ -62,9 +62,14 @@ h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
    sees the trailing "." or "?" as part of the word; a name longer than the line
    wraps inside itself, each line piece keeping its own padding and corners. */
 .chip { display: inline; background: var(--muted); color: var(--foreground); padding: 0 0.35em; border-radius: 0.25rem; overflow-wrap: anywhere; font-size: 0.9em; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
-/* The fingerprint a person compares by eye (the one labelled mono chip): larger, spaced and
-   boxed whole, since it sits alone in its paragraph with nothing after it. */
-.sr-only + .chip-mono { display: inline-block; max-width: 100%; font-size: 1.125rem; letter-spacing: 0.06em; padding: 0.35em 0.6em; border: 1px solid var(--border); }
+/* The trust facts a person checks before a decision: one panel, a quiet term over each value.
+   The side padding is capped by the viewport so enlarged text keeps the width for the values. */
+.facts { display: grid; gap: 0.875rem; max-width: 46rem; margin: 0 0 1.25rem; padding: 0.875rem min(1.25rem, 4vw); border: 1px solid var(--border); border-radius: var(--radius, 0.5rem); background: var(--card); }
+.facts dt { color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.3; }
+.facts dd { margin: 0.25rem 0 0; min-width: 0; }
+/* The fingerprint compared by eye: larger, spaced and boxed whole. It breaks only between its
+   groups (wbr after each hyphen) and balances them, so a wrap reads 3 + 3, never 5 + 1. */
+.facts .chip-mono { display: inline-block; max-width: 100%; font-size: 1.125rem; letter-spacing: 0.06em; padding: 0.35em 0.6em; border: 1px solid var(--border); text-wrap: balance; }
 .name { overflow-wrap: anywhere; }
 /* A chip and the punctuation after it stay on one line even when a long name has to break
    anywhere; the name still wraps inside the chip. */
@@ -74,6 +79,9 @@ h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
 
 .stack { display: flex; flex-direction: column; gap: var(--gap); }
 .row { display: flex; flex-wrap: wrap; gap: var(--gap); align-items: center; }
+/* Filter fields line up by their labels whether or not each carries a hint; the table keeps its distance. */
+.filters { margin-bottom: 1.5rem; }
+.filters > .row:first-child { align-items: flex-start; }
 
 /* A label grows the button rather than overflowing it: a long unbroken name (a 32-character
    machine name at 320px and 200% text) wraps inside, never past the page edge. */
@@ -83,8 +91,27 @@ h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
 /* Dark text on the destructive fill: about 6.8:1, where light text was about 2.8:1. */
 .btn-destructive { background: var(--destructive); color: var(--background); font-weight: 600; }
 .btn:hover { filter: brightness(1.1); }
+/* A machine's address as the control that opens it: the verb, then the whole host, wrapping at its dots. */
+.open-link { justify-content: flex-start; flex-wrap: wrap; gap: 0 0.4em; text-align: start; }
+
+/* One action area pinned to the screen's bottom while its form scrolls (Settings' Save, the
+   same-name pairing Deny). The page reserves its height, so keyboard focus scrolls a control
+   clear of it rather than under it. */
+.sticky-actions { position: sticky; bottom: 0; z-index: 1; margin: 1rem calc(-1 * min(1rem, 5vw)) 0; padding: 0.5rem min(1rem, 5vw); border-top: 1px solid var(--border); background: var(--background); }
+.sticky-actions .actions { margin-top: 0; }
+html:has(.sticky-actions) { scroll-padding-bottom: 4.5rem; }
+/* The bar's own buttons sit inside that reserve by design, so focusing them (Deny's autofocus) scrolls nothing. */
+.sticky-actions .btn { scroll-margin-bottom: -4.5rem; }
+/* Short viewports need the full height for editing; Settings keeps its single Save in flow. */
+@media (max-height: 32rem) {
+  .row.sticky-actions { position: static; }
+  html:has(.row.sticky-actions) { scroll-padding-bottom: 0; }
+  .row.sticky-actions .btn { scroll-margin-bottom: 0; }
+}
 
 .field { display: flex; flex-direction: column; gap: 0.25rem; max-width: 40rem; }
+/* Intrinsic input widths must not force wrapped filter fields past the available row. */
+.row > .field { min-width: 0; max-width: min(40rem, 100%); }
 .field label { font-weight: 500; }
 .field.checkbox { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0 0.5rem; }
 .field.checkbox input { width: 1.25rem; height: 1.25rem; margin: 0; }
@@ -108,7 +135,8 @@ h3 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
 .table-wrap:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 table { width: 100%; border-collapse: collapse; }
 caption { text-align: left; font-weight: 600; padding: 0.5rem 0; }
-th, td { text-align: left; padding: 0.625rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+/* Baseline, not top: a row's text sits on the same line as the labels of its 40px buttons. */
+th, td { text-align: left; padding: 0.625rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: baseline; }
 th { color: var(--muted-foreground); font-weight: 500; font-size: 0.875rem; white-space: nowrap; }
 td .row { flex-wrap: nowrap; }
 
@@ -120,7 +148,7 @@ td .row { flex-wrap: nowrap; }
 .status-error::before, .status[data-result="fail"]::before { background: var(--destructive); }
 .status-info::before { background: var(--yaran-info); }
 
-.notice { display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: var(--radius, 0.5rem); background: var(--card); color: var(--card-foreground); margin: 0 0 1rem; }
+.notice { display: flex; gap: min(0.75rem, 3vw); align-items: flex-start; padding: 0.75rem min(1rem, 4vw); border: 1px solid var(--border); border-radius: var(--radius, 0.5rem); background: var(--card); color: var(--card-foreground); margin: 0 0 1rem; }
 .notice-icon { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; font-weight: 700; flex: none; border: 2px solid currentColor; }
 .notice-body { min-width: 0; }
 .notice-body > p { margin: 0; }
@@ -143,6 +171,12 @@ td .row { flex-wrap: nowrap; }
 .confirm-gap { display: inline-block; width: 2rem; }
 /* The pairing and handoff decisions: misclick-safe spacing between choices and between forms. */
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 2rem; margin-top: 1.5rem; }
+/* A decision with its consequence under it: the button keeps a short verb, the hint names what it acts on. */
+.actions:has(.choice) { flex-direction: column; align-items: stretch; gap: 1.25rem; }
+.choice { display: flex; flex-direction: column; align-items: flex-start; gap: 0.375rem; max-width: 40rem; }
+/* Leave room for the cloned padding on a chip that wraps at the end of a line: the line breaker
+   fits the text, not the padding drawn after it. */
+:is(p, h1, dd, li, .notice-body):has(.chip) { padding-inline-end: 0.35em; }
 .checklist { list-style: none; padding: 0; margin: 0 0 1rem; border: 1px solid var(--border); border-radius: var(--radius, 0.5rem); background: var(--card); }
 .checklist li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.625rem 1rem; }
 .checklist li + li { border-top: 1px solid var(--border); }
@@ -173,7 +207,8 @@ dialog::backdrop { background: var(--background); opacity: 0.7; }
 
 /* Phone width. */
 @media (max-width: 40rem) {
-  main { padding: 1.25rem 1rem 3rem; }
+  /* Side padding capped by the viewport: at 320px with enlarged text the content keeps its width. */
+  main { padding: 1.25rem min(1rem, 5vw) 3rem; }
   h1 { font-size: 1.5rem; }
   .topbar { flex-direction: column; align-items: stretch; gap: 0; padding: 0.25rem 0 0; }
   .brand { padding: 0 1rem; }
@@ -195,13 +230,15 @@ dialog::backdrop { background: var(--background); opacity: 0.7; }
   .table-wrap { overflow: visible; background: none; }
   .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap caption { display: block; }
   .table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .table-wrap tr { margin: 0 0 var(--gap); padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius, 0.5rem); background: var(--card); }
-  /* Fractional columns keep both labels and values readable at enlarged text sizes. */
-  .table-wrap td { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr); gap: 0.75rem; padding: 0.375rem 0; border: 0; overflow-wrap: anywhere; }
-  .table-wrap td::before { content: attr(data-label); color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.3; }
+  /* The card: its name across the top, short facts in a metadata grid (a quiet label over each
+     value, as many columns as fit, one at enlarged text), long names and the actions full width. */
+  .table-wrap tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 8rem), 1fr)); gap: 0.625rem 1rem; margin: 0 0 var(--gap); padding: 0.75rem min(0.75rem, 4vw); border: 1px solid var(--border); border-radius: var(--radius, 0.5rem); background: var(--card); }
+  .table-wrap td { display: block; min-width: 0; padding: 0; border: 0; overflow-wrap: anywhere; }
+  .table-wrap td::before { content: attr(data-label); display: block; margin-bottom: 0.125rem; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.3; }
+  .table-wrap td:first-child, .table-wrap td:has(.name, .mono) { grid-column: 1 / -1; }
   .cell-value { min-width: 0; }
   .table-wrap td:first-child { font-size: 1.0625rem; }
-  .table-wrap td.cell-actions { display: block; margin-top: 0.375rem; padding: 0.75rem 0 0.375rem; border-top: 1px solid var(--border); }
+  .table-wrap td.cell-actions { grid-column: 1 / -1; padding-top: 0.75rem; border-top: 1px solid var(--border); }
   .table-wrap td.cell-actions::before { content: none; }
   .table-wrap td .row { flex-wrap: wrap; }
 
@@ -212,14 +249,8 @@ dialog::backdrop { background: var(--background); opacity: 0.7; }
   /* The heading below already names the step, so the pill shows only the count; screen readers keep the name. */
   .steps .step-current .step-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-  fieldset.group { padding: 1rem; }
+  fieldset.group { padding: 1rem min(1rem, 4vw); }
   .copy-row { flex-wrap: wrap; }
   .copy-row .input { flex-basis: 100%; }
   .qr svg { width: min(16rem, 100%); height: auto; }
-}
-
-/* Narrow phones and enlarged text: give every label and value the full card width. */
-@media (max-width: 26rem) {
-  .table-wrap td { display: block; }
-  .table-wrap td::before { display: block; margin-bottom: 0.25rem; }
 }
