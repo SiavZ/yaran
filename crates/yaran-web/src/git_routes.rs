@@ -1693,11 +1693,11 @@ mod tests {
     }
 
     /// Sends `body` to `route` for a session whose path runs through a
-    /// symlink and whose `.git` names a relative gitdir that does not exist.
-    /// git resolves a relative gitdir from the directory it changed into, so
-    /// its failure names the worktree's RESOLVED path, which the session does
-    /// not record. Answers the status, the body, and both forms of the path.
-    async fn through_a_symlink_with_a_broken_gitdir(
+    /// symlink and whose `.git` has invalid syntax. Unlike a missing gitdir,
+    /// this makes Git include a path in its error on Git 2.55 too. Git names
+    /// the worktree's RESOLVED path, which the session does not record.
+    /// Answers the status, the body, and both forms of the path.
+    async fn through_a_symlink_with_an_invalid_gitfile(
         route: &str,
         body: &str,
     ) -> (StatusCode, String, PathBuf, PathBuf) {
@@ -1706,7 +1706,7 @@ mod tests {
         let resolved = std::fs::canonicalize(&worktree).unwrap();
         assert_ne!(worktree, resolved);
         std::fs::remove_dir_all(worktree.join(".git")).unwrap();
-        std::fs::write(worktree.join(".git"), "gitdir: no-such-gitdir\n").unwrap();
+        std::fs::write(worktree.join(".git"), "invalid gitfile\n").unwrap();
 
         let resp = app.oneshot(json_req("POST", route, body)).await.unwrap();
         let status = resp.status();
@@ -1722,8 +1722,8 @@ mod tests {
 
     fn assert_names_neither_form(body: &str, worktree: &Path, resolved: &Path) {
         assert!(
-            // git names either the gitdir it could not find or the `.git` file
-            // pointing at it, depending on its version; both sit in the worktree.
+            // Invalid syntax keeps the `.git` path in Git 2.55's error,
+            // where a missing gitdir produces only (null).
             body.contains("git status failed") && body.contains(" ./"),
             "the reason must survive the redaction: {body}"
         );
@@ -1736,7 +1736,7 @@ mod tests {
 
     #[tokio::test]
     async fn discard_strips_the_resolved_server_path_from_a_classify_refusal() {
-        let (status, body, worktree, resolved) = through_a_symlink_with_a_broken_gitdir(
+        let (status, body, worktree, resolved) = through_a_symlink_with_an_invalid_gitfile(
             "/api/v1/sessions/s1/git/discard",
             r#"{"path":"f.txt"}"#,
         )
@@ -1747,7 +1747,7 @@ mod tests {
 
     #[tokio::test]
     async fn stage_files_strips_the_resolved_server_path_from_a_failed_read() {
-        let (status, body, worktree, resolved) = through_a_symlink_with_a_broken_gitdir(
+        let (status, body, worktree, resolved) = through_a_symlink_with_an_invalid_gitfile(
             "/api/v1/sessions/s1/git/stage-files",
             r#"{"paths":["f.txt"]}"#,
         )

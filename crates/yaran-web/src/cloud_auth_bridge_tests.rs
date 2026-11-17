@@ -335,13 +335,14 @@ async fn plain_loopback_is_unchanged() {
 #[tokio::test]
 async fn an_owners_socket_outlives_auth_changes_and_closes_at_access_expiry() {
     let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
-    before_expiry(&h, 3);
-    let mut socket = ws(&h.app, "/ws/events", HOST, &token("valid")).await;
-    let auth = h.engine.live_limits().auth();
+    // Password hashing must finish before the socket's short expiry window starts.
     let other = hash_password(&Password::new(
         "harbor cinnamon glacier tundra mosaic".into(),
     ))
     .expect("hash");
+    before_expiry(&h, 3);
+    let mut socket = ws(&h.app, "/ws/events", HOST, &token("valid")).await;
+    let auth = h.engine.live_limits().auth();
     assert!(auth.store(
         &ServerAuthConfig {
             password_hash: other.clone(),
