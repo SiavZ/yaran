@@ -496,67 +496,49 @@ fn review9_a_removal_resumed_after_a_reboot_ends_nothing_of_this_boot() {
     );
 }
 
-/// review9: reaping PTYs runs on the engine thread (the terminal UI's own
-/// loop). Dropping a reaped client whose terminal a disowned background job
-/// still holds open waits up to 250 ms for its reader thread, once per PTY, so
-/// an agent delete (or terminal closes) over several such PTYs freezes the
-/// engine thread for a quarter second per PTY.
+/// Reaping must finish while readers remain held, on every platform. A fake
+/// reader avoids relying on a kernel preserving a PTY after its leader exits.
+/// Thirty-two inline joins would wait eight seconds; offloaded joins return
+/// before the five-second guard, even on a loaded runner.
 #[test]
 fn review9_reaping_ptys_held_open_by_jobs_does_not_stall_the_engine_thread() {
-    const N: usize = 8;
+    const N: u32 = 32;
+    const WAIT: Duration = Duration::from_secs(5);
+    assert!(crate::pty::READER_JOIN_BOUND * N > WAIT);
     let (mut engine, tmp) = test_engine();
-    let pidfile = tmp.path().join("jobs.pid");
+    let mut releases = Vec::new();
     for i in 0..N {
         let mut client = PtyClient::spawn_with_env(
-            "bash",
-            &[
-                "--norc".to_string(),
-                "--noprofile".to_string(),
-                "-i".to_string(),
-            ],
+            "/bin/sh",
+            &["-c".to_string(), "exit 0".to_string()],
             tmp.path(),
             24,
             80,
             100,
             &[],
         )
-        .expect("spawn bash");
-        client
-            .write_bytes(
-                format!(
-                    "sleep 30 & echo $! >> '{}'; disown; exit\n",
-                    pidfile.display()
-                )
-                .as_bytes(),
-            )
-            .unwrap();
+        .expect("spawn sh");
         let deadline = Instant::now() + Duration::from_secs(10);
         while client.try_wait().is_none() {
-            assert!(Instant::now() < deadline, "bash never exited");
+            assert!(Instant::now() < deadline, "sh never exited");
             std::thread::sleep(Duration::from_millis(10));
         }
+        let (release, held) = std::sync::mpsc::channel();
+        client.hold_reader_for_test(held);
+        releases.push(release);
         let tab = TabId::new(format!("t{i}"));
         engine.providers.insert(tab.clone(), client);
         let _ = engine.move_provider_to_terminating(tab.as_ref_id(), format!("t{i}"), None);
     }
-    let started = Instant::now();
-    let _ = engine.reap_terminating_ptys();
-    let blocked = started.elapsed();
-    for pid in std::fs::read_to_string(&pidfile)
-        .unwrap_or_default()
-        .lines()
-    {
-        if let Some(pid) = pid
-            .trim()
-            .parse()
-            .ok()
-            .and_then(rustix::process::Pid::from_raw)
-        {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
-        }
+    let (reaped, done) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = engine.reap_terminating_ptys();
+        let _ = reaped.send(engine.terminating_ptys.is_empty());
+    });
+    let completed = done.recv_timeout(WAIT);
+    for release in releases {
+        let _ = release.send(());
     }
-    assert!(
-        blocked < Duration::from_millis(250),
-        "reaping {N} PTYs held the engine thread for {blocked:?}"
-    );
+    worker.join().expect("reaping thread panicked");
+    assert_eq!(completed, Ok(true), "reaping must not wait on held readers");
 }

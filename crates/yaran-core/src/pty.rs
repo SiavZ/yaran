@@ -32,6 +32,9 @@ use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, P
 use crate::logger;
 use crate::scroll_margins::{ScrollRegion, ScrollRegionTracker};
 
+#[cfg(test)]
+mod drop_probe;
+
 /// Mirrors the variant set of `ratatui::style::Color` so the PTY snapshot can
 /// describe any cell color without depending on a UI toolkit. The TUI converts
 /// 1:1 to `ratatui::Color`.
@@ -1029,6 +1032,17 @@ impl PtyClient {
         self.stop_reader.store(true, Ordering::Release);
         self.reader_thread = None;
         self.master = Box::new(FdlessMaster);
+    }
+
+    /// Replace the reader with one the test holds until it releases the channel.
+    pub(crate) fn hold_reader_for_test(&mut self, release: std::sync::mpsc::Receiver<()>) {
+        self.request_reader_stop();
+        if let Some(reader) = self.reader_thread.take() {
+            reader.join().expect("the real reader stopped");
+        }
+        self.reader_thread = Some(thread::spawn(move || {
+            let _ = release.recv();
+        }));
     }
 }
 
@@ -7391,35 +7405,14 @@ mod tests {
         );
     }
 
-    /// Wait, bounded, for a dropped client's reader thread to return. The
-    /// reader ends only at end of input, which arrives once every holder of
-    /// the PTY is gone, so this is how a test proves the drop's kill landed.
-    /// `Drop` hands the join to the shared reaper rather than waiting, so the
-    /// flag can still be false the instant `drop` returns.
-    fn reader_exits_after_drop(exited: &AtomicBool) -> bool {
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
-        while !exited.load(Ordering::Acquire) {
-            if Instant::now() >= deadline {
-                return false;
-            }
-            thread::sleep(std::time::Duration::from_millis(5));
-        }
-        true
-    }
-
     #[test]
     fn drop_returns_promptly_and_kills_child_so_its_reader_exits() {
-        // The child sleeps far longer than the test. Drop must kill and reap it
-        // and return promptly: it must NOT block until the child would have
-        // exited on its own. The reader join happens on the shared reaper, so
-        // the reader's exit is awaited afterwards rather than asserted at once.
+        // Drop must kill the long-lived child promptly; the reaper joins its reader.
         let args = vec!["-c".to_string(), "sleep 120".to_string()];
-        let client =
+        let mut client =
             PtyClient::spawn("/bin/sh", &args, Path::new("."), 5, 40, 100).expect("spawn pty");
 
-        // `exited` is set only by the reader thread, immediately before it
-        // returns, so it outlives the client and reports the reader's end.
-        let reader_exited = Arc::clone(&client.exited);
+        let reader = drop_probe::reader_for_drop(&mut client);
 
         let start = Instant::now();
         drop(client);
@@ -7435,7 +7428,7 @@ mod tests {
         );
         // A child left alive keeps the PTY open, so its reader never ends.
         assert!(
-            reader_exits_after_drop(&reader_exited),
+            drop_probe::eof_after_drop(reader),
             "the reader thread never exited after drop, so the child was not killed"
         );
     }
@@ -8919,24 +8912,15 @@ mod tests {
 
     #[test]
     fn drop_kills_whole_process_group_so_a_surviving_grandchild_cannot_stall_it() {
-        // The direct child backgrounds a grandchild that IGNORES SIGHUP and then
-        // blocks reading the controlling terminal (`</dev/tty`, i.e. the PTY
-        // slave), holding the slave open. `</dev/tty` is required: a shell
-        // redirects a background job's stdin to /dev/null, so reading plain
-        // stdin would hit immediate EOF and the grandchild would exit on its
-        // own. Killing only the direct child (even combined with the kernel's
-        // SIGHUP to the foreground process group when the session leader dies)
-        // leaves that grandchild alive with the slave open, so the master read
-        // never sees EOF and the reader thread never ends (the reaper gives up
-        // on it and leaves it running). The fix SIGKILLs the whole process
-        // group, which the grandchild cannot ignore, so the slave is released
-        // and the reader exits. (POSIX `kill(-pgid)` + `setsid` behave the same
-        // on Linux and macOS, so this holds on both.)
+        // The grandchild ignores HUP and holds the slave by reading /dev/tty;
+        // a background job's ordinary stdin is /dev/null and would EOF at once.
+        // Killing only the leader leaves the grandchild alive, whereas killing
+        // its whole group releases the slave and gives the reader kernel EOF.
         let args = vec![
             "-c".to_string(),
             "sh -c 'trap \"\" HUP; echo GRANDKID_READY; read _x </dev/tty' & sleep 300".to_string(),
         ];
-        let client =
+        let mut client =
             PtyClient::spawn("/bin/sh", &args, Path::new("."), 5, 40, 100).expect("spawn pty");
 
         // Wait until the grandchild has actually started and printed its marker
@@ -8960,7 +8944,7 @@ mod tests {
             "grandchild did not start and hold the PTY slave within 3s"
         );
 
-        let reader_exited = Arc::clone(&client.exited);
+        let reader = drop_probe::reader_for_drop(&mut client);
         // Run the drop on a worker thread so that, if a regression reintroduces
         // a hang, the test fails the assertion cleanly instead of blocking the
         // whole suite forever.
@@ -8976,7 +8960,7 @@ mod tests {
         );
         dropper.join().expect("dropper thread panicked");
         assert!(
-            reader_exits_after_drop(&reader_exited),
+            drop_probe::eof_after_drop(reader),
             "the reader thread never exited after drop: the drop must SIGKILL the \
              whole process group so a SIGHUP-ignoring grandchild cannot hold the \
              PTY slave open"
