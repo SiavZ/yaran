@@ -173,7 +173,7 @@ impl YaranOptions {
     #[must_use]
     pub fn with_config(self, path: &str, value: &str) -> Self {
         let script = format!(
-            "set -e\ndux config set {} {}\n",
+            "set -e\nyaran config set {} {}\n",
             shell_quote(path),
             shell_quote(value)
         );

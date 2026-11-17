@@ -88,7 +88,7 @@ async fn tab_state(yaran: &Yaran, agent: &str, tab: &str) -> Option<String> {
 /// from a browser unless they say so in so many words, and a change must not
 /// answer before it has really finished.
 ///
-/// Action: point new agents at the fake provider with `yaran config set`; add the
+/// Action: choose worktree mode and the fake provider with `yaran config set`; add the
 /// demo repository as a project, list and show it; create an agent and list
 /// and show it; add a tab, start, stop and close it; stop and start the agent;
 /// open an agent, a project and a standalone terminal, list them and close
@@ -120,7 +120,7 @@ async fn cli_projects_agents_tabs_and_terminals_over_the_socket() {
             "config set says the running yaran reloaded: {}",
             set.output()
         );
-
+        cli_ok(&yaran, "config set workspace.default_mode worktree").await;
         a_project_added_listed_and_shown(&yaran).await;
         let (agent, worktree, first_tab) = an_agent_created_listed_and_shown(&yaran).await;
         a_second_tab_runs_stops_and_closes(&yaran, &agent, &first_tab).await;
