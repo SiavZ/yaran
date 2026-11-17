@@ -768,7 +768,7 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/bootstrap.rs (550 lines after rebrand 0956be7ac) with the fork's 363-line copy at c626621cd into 617 lines at 7e4a9c0f1; +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Headless `Engine` bootstrap for the web server: the TUI's field-by-field assembly with a read-only `load_config` (defaults on a missing..."
   },
   "crates/yaran-web/src/browse_routes.rs": {
-    "lines": 623,
+    "lines": 620,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/browse_routes.rs (610 lines after rebrand 0956be7ac) with the fork's 580-line copy at c626621cd into 623 lines at 7e4a9c0f1; module: Two stateless reads the add-project and new-agent dialogs need"
   },
   "crates/yaran-web/src/changes.rs": {

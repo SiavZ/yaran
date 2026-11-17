@@ -119,14 +119,16 @@ impl ChildSpec {
 
 #[cfg(target_os = "linux")]
 fn set_parent_death_signal(cmd: &mut Command) {
-    // SAFETY: prctl is async-signal-safe and touches only the forked child.
+    let prepare_child = || {
+        // SAFETY: prctl is async-signal-safe and touches only the forked child.
+        if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // SAFETY: the callback uses only async-signal-safe operations after fork.
     unsafe {
-        cmd.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+        cmd.pre_exec(prepare_child);
     }
 }
 

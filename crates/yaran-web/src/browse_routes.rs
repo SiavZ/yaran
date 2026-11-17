@@ -464,8 +464,7 @@ mod tests {
     /// Create a real directory whose absolute path is exactly `target_len`
     /// characters, nesting components that each stay well inside the 255-byte
     /// name limit.
-    #[cfg(target_os = "linux")]
-    fn deep_dir(base: &std::path::Path, target_len: usize) -> std::path::PathBuf {
+    fn deep_dir(base: &std::path::Path, target_len: usize) -> Option<std::path::PathBuf> {
         let mut remaining = target_len - base.to_string_lossy().chars().count();
         // Every component costs one separator plus its own length, so pick a
         // final component that leaves a whole number of 100-char ones.
@@ -519,16 +518,14 @@ mod tests {
         );
     }
 
-    // Linux only: the fixture is a real folder just under the 4096-character
-    // cap, and macOS refuses any path longer than its PATH_MAX of 1024, so the
-    // folder cannot be made there. The cap's refusal runs on macOS in
-    // `mkdir_rejects_a_join_that_overruns_the_path_cap`, and an ordinary
-    // create in `mkdir_creates_a_folder_and_returns_its_path`.
-    #[cfg(target_os = "linux")]
+    // Exercise the real folder wherever the filesystem permits a path this long.
+    // The string-only cap refusal above runs even where that fixture cannot exist.
     #[tokio::test]
     async fn mkdir_under_a_parent_near_the_path_cap_creates_a_name_the_join_can_carry() {
         let dir = tempfile::tempdir().unwrap();
-        let deep = deep_dir(dir.path(), MAX_PATH_LEN - 6);
+        let Some(deep) = deep_dir(dir.path(), MAX_PATH_LEN - 6) else {
+            return;
+        };
         let parent = deep.to_string_lossy().to_string();
 
         let (_tmp, app) = router_no_auth();
