@@ -36,7 +36,6 @@
 //! ├── numeric
 //! ├── raw_input
 //! ├── theme
-//! ├── yaran-core
 //! ├── yaran-core::add_project_plan
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::attachments
@@ -60,6 +59,7 @@
 //! ├── yaran-core::project_prose
 //! ├── yaran-core::prose
 //! ├── yaran-core::pty
+//! ├── yaran-core::pty_query_reply
 //! ├── yaran-core::reload_policy
 //! ├── yaran-core::reload_signal
 //! ├── yaran-core::status_text

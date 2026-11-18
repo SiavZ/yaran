@@ -90,7 +90,9 @@
 //! ├── provider
 //! ├── pty
 //! ├── pty_adopt_child
+//! ├── pty_handover
 //! ├── pty_owners
+//! ├── pty_query_reply
 //! ├── pty_reattach
 //! ├── purge
 //! ├── purge_amq
@@ -148,13 +150,9 @@
 //! lib.rs
 //! ├── brand_env
 //! ├── config
-//! ├── pty
-//! ├── pty_owners
 //! ├── viewmodel
 //! ├── yaran-tui::app
 //! ├── yaran-tui::app::first_load
-//! ├── yaran-tui::app::input
-//! ├── yaran-tui::app::pty_ownership
 //! ├── yaran-web
 //! ├── yaran-web::background
 //! ├── yaran-web::build_routes
