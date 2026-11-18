@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 use yaran_core::activity::ActivityRing;
 use yaran_core::logger::ServerLog;
 use yaran_core::serve_log::{Banner, ListenerRow, LogLine, LogTone};
+use yaran_core::timefmt::Rfc3339;
 
 // ── Detection ──────────────────────────────────────────────────────────────
 
@@ -819,13 +820,13 @@ fn writer_loop(mut writer: Box<dyn Write + Send>, rx: &std::sync::mpsc::Receiver
 
 /// The full timestamp `yaran.log` leads its lines with.
 fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339()
+    jiff::Timestamp::now().to_rfc3339()
 }
 
 /// Current wall-clock time as `HH:MM:SS`. Wall-clock, not a tick counter, per the
 /// project's animation/refresh tenet.
 fn now_hms() -> String {
-    chrono::Local::now().format("%H:%M:%S").to_string()
+    jiff::Zoned::now().strftime("%H:%M:%S").to_string()
 }
 
 #[cfg(test)]

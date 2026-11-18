@@ -25,7 +25,7 @@ use std::io::Write;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use jiff::Timestamp;
 use yaran_core::config::YaranPaths;
 use yaran_core::model::{
     AgentSession, AgentWorkspace, BranchProvenance, ManagedWorkspace, ProviderKind, SessionStatus,
@@ -160,7 +160,7 @@ impl PurgeHarness {
 
         // Open the sqlite store and insert the target session.
         let storage = SessionStore::open(&paths.sessions_db_path).expect("store");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = AgentSession {
             id: "sid-target".to_string(),
             agent_handle: "sid-target".to_string(),

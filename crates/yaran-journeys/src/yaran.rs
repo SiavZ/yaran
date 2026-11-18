@@ -24,14 +24,11 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use base64::Engine as _;
-use testcontainers::core::{AccessMode, ExecCommand, IntoContainerPort, Mount, WaitFor};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 
 use crate::client::{Client, Response, parse_raw_response};
-use crate::container::{identity, labelled, loopback_publish};
-use crate::image::{JourneyNetwork, Reaper, journey_image, yaran_binary};
-use crate::util::{LogBuffer, eventually, shell_quote, suffix};
+use crate::container::{Container, ContainerRequest, Ready};
+use crate::image::{JourneyNetwork, journey_image, yaran_binary};
+use crate::util::{eventually, shell_quote, suffix};
 use crate::{TAILNET_IP, TAILNET_PEER_IP, YARAN_PORT};
 
 /// yaran's config directory inside the journey image (the entrypoint's
@@ -246,14 +243,10 @@ impl Exec {
 /// One running yaran. Dropping it removes the container.
 #[derive(Debug)]
 pub struct Yaran {
-    container: ContainerAsync<GenericImage>,
-    // After the container, so it drops second: it removes a container a
-    // cancelled start never handed over, and is a no-op otherwise.
-    _reaper: Reaper,
-    // Last, so it drops after the container that was on it: the network this
-    // yaran made for itself when the journey named none.
+    container: Container,
+    // After the container, so it drops after the container that was on it:
+    // the network this yaran made for itself when the journey named none.
     _own_network: Option<JourneyNetwork>,
-    logs: LogBuffer,
     bind: Bind,
     name: String,
 }
@@ -266,11 +259,11 @@ impl Yaran {
     /// When the container does not start, or, for `yaran server`, its container stops before yaran
     /// answers `/healthz` or yaran does not answer within 60 seconds.
     pub async fn start(options: YaranOptions) -> Yaran {
-        let (image_name, tag) = journey_image().await;
+        let image = journey_image().await;
         // A network of its own unless the journey shares one, so no journey
         // container ever sits on Docker's default bridge beside unrelated
-        // containers. Made before the reaper, so a cancelled start drops the
-        // reaper (removing the container) first and the network after it.
+        // containers. Made before the request (and its reaper), so a cancelled
+        // start removes the container first and the network after it.
         let own_network = match options.network {
             Some(_) => None,
             None => Some(JourneyNetwork::create()),
@@ -280,42 +273,31 @@ impl Yaran {
             .clone()
             .or_else(|| own_network.as_ref().map(|n| n.name().to_string()))
             .expect("a network");
-        let (name, reaper, logs) = identity("yaran");
-
         let mut ports = vec![YARAN_PORT];
         ports.extend(options.relays.iter().map(|(port, _)| *port));
         ports.extend(options.published.iter().copied());
-        let mut image = GenericImage::new(image_name, tag)
-            .with_wait_for(WaitFor::message_on_stdout("entrypoint: "));
-        for port in &ports {
-            image = image.with_exposed_port(port.tcp());
-        }
 
         let binary = yaran_binary();
-        let mut request = labelled(image.into(), &name, &logs)
-            .with_host_config_modifier(loopback_publish(ports))
-            .with_mount(
-                Mount::bind_mount(binary.to_string_lossy(), "/usr/local/bin/yaran")
-                    .with_access_mode(AccessMode::ReadOnly),
-            )
-            .with_env_var("YARAN_PORT", YARAN_PORT.to_string())
-            .with_env_var("YARAN_TAIL_LOG", "1")
-            .with_startup_timeout(Duration::from_secs(120));
+        let mut request = ContainerRequest::new("yaran", image)
+            .publish_loopback(&ports)
+            .mount_read_only(&binary.to_string_lossy(), "/usr/local/bin/yaran")
+            .env("YARAN_PORT", YARAN_PORT)
+            .env("YARAN_TAIL_LOG", 1);
 
         request = match options.bind {
             Bind::Everywhere => request,
-            Bind::Local => request.with_env_var("YARAN_BIND", "local"),
+            Bind::Local => request.env("YARAN_BIND", "local"),
         };
         if options.launch == Launch::Tui {
-            request = request.with_env_var("YARAN_LAUNCH", "tui");
+            request = request.env("YARAN_LAUNCH", "tui");
         }
         if options.fake_tailscale {
             request = request
-                .with_env_var("YARAN_FAKE_TAILSCALE", "1")
-                .with_cap_add("NET_ADMIN");
+                .env("YARAN_FAKE_TAILSCALE", 1)
+                .arg("--cap-add", "NET_ADMIN");
         }
         if options.restart_loop {
-            request = request.with_env_var("YARAN_RESTART_LOOP", "1");
+            request = request.env("YARAN_RESTART_LOOP", 1);
         }
         if !options.relays.is_empty() {
             let relays: Vec<String> = options
@@ -323,28 +305,27 @@ impl Yaran {
                 .iter()
                 .map(|(port, target)| format!("{port}={target}"))
                 .collect();
-            request = request.with_env_var("YARAN_RELAYS", relays.join(" "));
+            request = request.env("YARAN_RELAYS", relays.join(" "));
         }
         for (key, value) in &options.env {
-            request = request.with_env_var(key, value);
+            request = request.env(key, value);
         }
         for (hook, script) in &options.hooks {
-            request = request.with_copy_to(
+            request = request.copy_to(
                 format!("/journey/seed.d/{hook}"),
                 script.clone().into_bytes(),
             );
         }
-        request = request.with_network(&network);
+        request = request.arg("--network", network);
+        let name = request.name().to_string();
 
         let container = request
-            .start()
+            .start(Ready::Log("entrypoint: "), Duration::from_secs(120))
             .await
             .unwrap_or_else(|err| panic!("start the yaran container {name}: {err}"));
         let yaran = Yaran {
             container,
-            _reaper: reaper,
             _own_network: own_network,
-            logs,
             bind: options.bind,
             name,
         };
@@ -372,7 +353,7 @@ impl Yaran {
     /// When `container_port` is not published.
     pub async fn host_port(&self, container_port: u16) -> u16 {
         self.container
-            .get_host_port_ipv4(container_port.tcp())
+            .host_port(container_port)
             .await
             .unwrap_or_else(|err| panic!("port {container_port} is not published: {err}"))
     }
@@ -424,49 +405,35 @@ impl Yaran {
     ///
     /// # Panics
     ///
-    /// When the exec cannot run (the container stopped), its output cannot be read, or it
-    /// reports no exit code within 10 seconds of its output closing. The script itself runs
-    /// unbounded: its output is read until it closes.
+    /// When `docker exec` cannot run, or fails because the container stopped. The script
+    /// itself runs unbounded: its output is read until it exits.
     pub async fn exec(&self, script: &str) -> Exec {
-        let mut result = self
+        let output = self
             .container
-            .exec(ExecCommand::new([
+            .exec(&[
                 "sh",
                 "-c",
                 // The entrypoint exports YARAN_HOME for yaran and its seed hooks, but
                 // an exec is a fresh shell: without it `yaran config set` would
                 // find a different config than the running yaran reads.
                 &format!("export YARAN_HOME={YARAN_HOME}; {script}"),
-            ]))
+            ])
             .await
-            .unwrap_or_else(|err| {
-                panic!(
-                    "exec in {} failed; if the container stopped, a seed hook or yaran itself \
-                     failed and its output is printed below: {err}",
-                    self.name
-                )
-            });
-        let stdout = result
-            .stdout_to_vec()
-            .await
-            .unwrap_or_else(|err| panic!("read the exec's stdout in {}: {err}", self.name));
-        let stderr = result
-            .stderr_to_vec()
-            .await
-            .unwrap_or_else(|err| panic!("read the exec's stderr in {}: {err}", self.name));
-        let code = eventually(
-            "the exec to report its exit code",
-            Duration::from_secs(10),
-            || {
-                let result = &result;
-                async move { result.exit_code().await.ok().flatten() }
-            },
-        )
-        .await;
+            .unwrap_or_else(|err| panic!("exec in {} failed: {err}", self.name));
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        // `docker exec` answers a stopped container with a failure of its own,
+        // which must not read as the script's exit code.
+        assert!(
+            output.status.success() || self.container.is_running().await,
+            "exec in {} failed: the container stopped, so a seed hook or yaran itself \
+             failed and its output is printed below: {stderr}",
+            self.name
+        );
         Exec {
-            code,
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            // A signal-killed `docker exec` has no code; -1 is never a script's.
+            code: output.status.code().map_or(-1, i64::from),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr,
         }
     }
 
@@ -523,7 +490,7 @@ impl Yaran {
 
     /// Everything the container has printed so far (yaran's output and yaran.log).
     pub fn logs(&self) -> String {
-        self.logs.text()
+        self.container.logs()
     }
 
     /// Wait until the container has printed `needle`.
@@ -557,7 +524,7 @@ impl Yaran {
                 // A seed hook that failed (a `yaran config set` refusing, say)
                 // ends the container; say that rather than timing out on it.
                 assert!(
-                    self.container.is_running().await.unwrap_or(false),
+                    self.container.is_running().await,
                     "the container {} stopped before yaran answered; a seed hook or yaran \
                      itself failed (its output is printed below)",
                     self.name

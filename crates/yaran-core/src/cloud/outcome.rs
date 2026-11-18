@@ -14,8 +14,9 @@
 //! ├── cloud::machine_api_error
 //! ├── engine
 //! ├── status_text
-//! └── statusline
-//! External: chrono
+//! ├── statusline
+//! └── timefmt
+//! External: jiff
 //!
 //! Used by:
 //! cloud/outcome.rs
@@ -382,12 +383,12 @@ impl CloudActionOutcome {
             Self::ClockSkew { server_time } => {
                 let detail = server_time
                     .as_deref()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .and_then(|t| crate::timefmt::parse_rfc3339(t).ok())
                     .map_or_default(|t| {
-                        let offset = chrono::Utc::now().signed_duration_since(t).num_seconds();
+                        let offset = jiff::Timestamp::now().duration_since(t).as_secs();
                         format!(
                             " (the server time is {}, this clock is {offset:+} s off)",
-                            t.format("%Y-%m-%dT%H:%M:%SZ")
+                            t.strftime("%Y-%m-%dT%H:%M:%SZ")
                         )
                     });
                 status_text!(format!(

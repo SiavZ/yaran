@@ -66,7 +66,7 @@
 //! ├── yaran-core::working_copy
 //! ├── yaran-core::working_cue
 //! └── yaran-core::worktree_manager
-//! External: chrono, crokey, crossterm, home, ratatui, std, tempfile, unicode_segmentation
+//! External: crokey, crossterm, home, jiff, ratatui, std, tempfile, unicode_segmentation
 //!
 //! Used by:
 //! app/render.rs
@@ -6683,8 +6683,8 @@ impl App {
         let right = self.human_board.last_sync.as_ref().map(|outcome| {
             let at = outcome
                 .at
-                .with_timezone(&chrono::Local)
-                .format("%H:%M")
+                .to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%H:%M")
                 .to_string();
             match &outcome.result {
                 Ok(_) => Line::from(Span::styled(format!(" synced {at} "), quiet)),
@@ -6826,7 +6826,7 @@ impl App {
         let end = start.saturating_add(viewport).min(rows.len());
         // One column of right margin, as the file lists keep.
         let width = usize::from(area.width).saturating_sub(1);
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         // The agent list's selection: a faint tint of the theme's accent behind
         // the row, with the row's own text colours kept on top. The full
         // selection bar is loud for a list read as often as this one.
@@ -13503,9 +13503,9 @@ impl App {
             .iter()
             .filter_map(|index| prompt.entries.get(*index))
             .map(|entry| {
-                let modified = entry.modified_at.map_or_else(
+                let modified = entry.modified_at.as_ref().map_or_else(
                     || "unknown time".to_string(),
-                    |ts| ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    |ts| ts.strftime("%Y-%m-%d %H:%M:%S").to_string(),
                 );
                 let lines = vec![
                     Line::from(Span::styled(
@@ -16650,10 +16650,7 @@ fn render_board_prose(lines: &[Line<'static>], area: Rect, buf: &mut ratatui::bu
 
 /// A board row's age: how long since it was resolved for a done card, since
 /// it last changed for an open one.
-fn compact_age_for(
-    card: &yaran_core::human_board::Card,
-    now: chrono::DateTime<chrono::Utc>,
-) -> String {
+fn compact_age_for(card: &yaran_core::human_board::Card, now: jiff::Timestamp) -> String {
     yaran_core::human_board::compact_age(card.resolved_at.unwrap_or(card.updated_at), now)
 }
 
@@ -20109,7 +20106,7 @@ mod tests {
                     foreground_cmd: None,
                     client,
                     sort_order: u64::try_from(i).expect("a test index fits in a u64"),
-                    created_at: chrono::Utc::now(),
+                    created_at: jiff::Timestamp::now(),
                     list_after: None,
                 },
             );
@@ -20164,7 +20161,7 @@ mod tests {
                 foreground_cmd: None,
                 client,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -20246,7 +20243,7 @@ mod tests {
                     foreground_cmd: None,
                     client,
                     sort_order: 1,
-                    created_at: chrono::Utc::now(),
+                    created_at: jiff::Timestamp::now(),
                     list_after: None,
                 },
             );
@@ -21861,7 +21858,7 @@ mod tests {
                 session_id: session_id.to_string(),
                 provider: yaran_core::model::ProviderKind::new(provider),
                 sort_order: order,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
     }
@@ -24124,7 +24121,7 @@ mod tests {
                 foreground_cmd: None,
                 client,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -31628,7 +31625,7 @@ mod tests {
             ..PrInfo::default()
         };
         let id = app.selected_session().expect("a selected agent").id.clone();
-        let row = crate::model::AgentPr::found(&pr, chrono::Utc::now());
+        let row = crate::model::AgentPr::found(&pr, jiff::Timestamp::now());
         app.engine.agent_prs.insert(id, vec![row.clone()]);
         row
     }

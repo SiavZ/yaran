@@ -21,10 +21,11 @@
 //! ├── engine
 //! ├── status_text
 //! ├── statusline
+//! ├── timefmt
 //! ├── watch::rule
 //! ├── wire
 //! └── worker
-//! External: chrono, rand, std, tracing
+//! External: jiff, rand, std, tracing
 //!
 //! Used by:
 //! cloud/push_runner.rs
@@ -443,8 +444,8 @@ impl Runner {
 
     fn warn_skew(&mut self, server_time: Option<String>) {
         let offset = server_time
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
-            .map(|t| (t.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds());
+            .and_then(|t| crate::timefmt::parse_rfc3339(&t).ok())
+            .map(|t| t.duration_since(jiff::Timestamp::now()).as_secs());
         let measured = match offset {
             Some(s) => format!(
                 "this machine's clock is {} seconds {} the control plane's",

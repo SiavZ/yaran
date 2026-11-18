@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::Utc;
+use jiff::Timestamp;
 use rustix::fs::{FlockOperation, flock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -434,7 +434,7 @@ fn read_or_create_amq_config(path: &Path) -> Result<Value> {
     }
     Ok(json!({
         "version": 1,
-        "created_utc": Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        "created_utc": Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
         "agents": [],
     }))
 }

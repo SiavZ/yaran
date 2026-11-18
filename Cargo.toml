@@ -21,7 +21,9 @@ rust-version = "1.98"
 # 1.0.103 is a floor: earlier releases carry RUSTSEC-2026-0190 (unsound
 # `Error::downcast_mut`), which the Security job denies.
 anyhow = "1.0.103"
-chrono = { version = "0.4.41", features = ["serde"] }
+# Time. No `serde` feature on purpose: every persisted timestamp goes through
+# yaran-core's `timefmt` so its text stays exactly what yaran wrote before.
+jiff = "0.2.37"
 rustix = { version = "1.1", features = ["termios", "process", "event", "stdio", "fs", "time"] }
 yaran-core = { path = "crates/yaran-core" }
 serde = { version = "1.0.219", features = ["derive"] }

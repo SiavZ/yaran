@@ -11,8 +11,8 @@ use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use chrono::Local;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use jiff::Zoned;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -174,7 +174,7 @@ pub(super) fn debug_row_prefix(
 ) -> Vec<Span<'static>> {
     let time = match start {
         RowStart::Now => Span::styled(
-            Local::now().format(DEBUG_TIME_FORMAT).to_string(),
+            Zoned::now().strftime(DEBUG_TIME_FORMAT).to_string(),
             Style::default().add_modifier(Modifier::DIM),
         ),
         RowStart::Gutter => Span::raw(BYTES_ROW_GUTTER),
@@ -803,7 +803,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
 
-    use chrono::Local;
+    use jiff::Zoned;
     use ratatui::text::{Line, Span};
 
     use super::{
@@ -897,7 +897,7 @@ mod tests {
     #[test]
     fn an_entry_s_two_rows_keep_their_dividers_in_line() {
         assert_eq!(
-            display_width(&Local::now().format(DEBUG_TIME_FORMAT).to_string()),
+            display_width(&Zoned::now().strftime(DEBUG_TIME_FORMAT).to_string()),
             BYTES_ROW_GUTTER.len()
         );
         let mut app = test_app(default_bindings());

@@ -103,7 +103,7 @@ pub(crate) fn with_legacy_env_aliases(mut env: Vec<(String, String)>) -> Vec<(St
 mod tests {
     use super::*;
     use crate::model::{AgentWorkspace, FolderWorkspace, ProviderKind, SessionStatus};
-    use chrono::Utc;
+    use jiff::Timestamp;
 
     #[test]
     fn new_env_spelling_wins_conflicts_and_legacy_only_still_exports_both() {
@@ -175,8 +175,8 @@ mod tests {
             desired_running: true,
             auto_reopen_enabled: true,
             status: SessionStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
         }
     }

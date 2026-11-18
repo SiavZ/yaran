@@ -33,7 +33,7 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use yaran_core::config::BoardConfig;
 use yaran_core::human_board::sync::{BoardSyncer, SyncMode, SyncOutcome};
 use yaran_core::human_board::{
@@ -213,7 +213,7 @@ pub(crate) enum BoardJob {
     },
     /// Close the news cards posted before `cutoff` (`[board] news_close_hours`).
     CloseStaleNews {
-        cutoff: DateTime<Utc>,
+        cutoff: Timestamp,
         hours: u64,
     },
     /// Record that messages another side wrote were passed to an agent here
@@ -221,7 +221,7 @@ pub(crate) enum BoardJob {
     MarkRelayed {
         id: CardId,
         label: String,
-        keys: Vec<(DateTime<Utc>, String, String)>,
+        keys: Vec<(Timestamp, String, String)>,
         to: String,
     },
 }
@@ -377,7 +377,7 @@ pub(crate) enum AfterSubmit {
     Record { done: bool },
     /// It passed on what another side wrote: record those messages as relayed.
     Relayed {
-        keys: Vec<(DateTime<Utc>, String, String)>,
+        keys: Vec<(Timestamp, String, String)>,
     },
 }
 
@@ -609,7 +609,7 @@ pub(crate) fn announcement(fresh: &[Card]) -> Option<String> {
 
 /// The worker half: apply the job to the board file.
 pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, String> {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     store
         .update(|board| match job {
             BoardJob::Resolve { id, note, .. } => {
@@ -753,10 +753,13 @@ impl App {
         else {
             return;
         };
-        let Ok(age) = chrono::Duration::from_std(after) else {
+        let Ok(age) = jiff::SignedDuration::try_from(after) else {
             return;
         };
-        let cutoff = chrono::Utc::now() - age;
+        // A span too long to subtract means nothing is old enough to close.
+        let Ok(cutoff) = jiff::Timestamp::now().checked_sub(age) else {
+            return;
+        };
         let any = self
             .human_board
             .readable()
@@ -825,7 +828,7 @@ impl App {
                 let reason = format!("could not start the board's sync: {err}");
                 logger::warn(&reason);
                 self.human_board.last_sync = Some(SyncOutcome {
-                    at: chrono::Utc::now(),
+                    at: jiff::Timestamp::now(),
                     result: Err(reason.clone()),
                 });
                 self.set_warning(format!(

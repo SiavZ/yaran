@@ -31,7 +31,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use super::store::BoardStore;
 use super::{Card, markdown};
@@ -127,7 +127,7 @@ impl SyncReport {
 #[derive(Clone, Debug)]
 pub struct SyncOutcome {
     /// When it finished.
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     /// What it did, or why it failed.
     pub result: Result<SyncReport, String>,
 }
@@ -523,13 +523,9 @@ impl Repo {
 fn newer_note(name: &str, ours: Option<&[u8]>, theirs: Option<&[u8]>) -> Option<Vec<u8>> {
     let stem = name.trim_end_matches(".md");
     let card = |bytes: &[u8]| -> Option<Card> {
-        markdown::parse(
-            &String::from_utf8_lossy(bytes),
-            stem,
-            DateTime::<Utc>::MIN_UTC,
-        )
-        .ok()
-        .flatten()
+        markdown::parse(&String::from_utf8_lossy(bytes), stem, Timestamp::MIN)
+            .ok()
+            .flatten()
     };
     match (ours, theirs) {
         (None, None) => None,
@@ -709,7 +705,7 @@ impl BoardSyncer {
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sync(&store)))
                                 .unwrap_or_else(|_| Err(anyhow!("the board sync panicked")));
                         let outcome = SyncOutcome {
-                            at: Utc::now(),
+                            at: Timestamp::now(),
                             result: result.map_err(|err| format!("{err:#}")),
                         };
                         if tx.send(outcome).is_err() {

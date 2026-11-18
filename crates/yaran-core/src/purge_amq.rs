@@ -68,7 +68,7 @@ mod tests {
     use std::fs;
 
     fn session(id: &str, handle: &str) -> AgentSession {
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         AgentSession {
             id: id.to_string(),
             agent_handle: handle.to_string(),

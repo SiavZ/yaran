@@ -17,7 +17,7 @@
 //! ├── cloud::cloudflared::pins
 //! ├── cloud::cloudflared::test_support
 //! └── sanitize
-//! External: chrono, std, tempfile
+//! External: jiff, std, tempfile
 //!
 //! Used by:
 //! cloud/cloudflared/version.rs
@@ -179,15 +179,20 @@ pub fn judge(output: &str) -> Result<ProbedVersion, VersionRefusal> {
 
 /// How many days `version` (taken as the first of its month) predates the pinned release.
 fn days_older_than_pin(version: CfVersion) -> Option<i64> {
-    let released = chrono::NaiveDate::parse_from_str(PINNED_RELEASED, "%Y-%m-%d").ok()?;
-    let made = chrono::NaiveDate::from_ymd_opt(i32::from(version.year), version.month.into(), 1)?;
-    Some((released - made).num_days())
+    let released = jiff::civil::Date::strptime("%Y-%m-%d", PINNED_RELEASED).ok()?;
+    let made = jiff::civil::Date::new(
+        i16::try_from(version.year).ok()?,
+        i8::try_from(version.month).ok()?,
+        1,
+    )
+    .ok()?;
+    Some(i64::from((released - made).get_days()))
 }
 
 /// Whether the managed pin is nearing the end of Cloudflare's support window on `today`.
-pub fn pin_nearing_end_of_support(today: chrono::NaiveDate) -> bool {
-    chrono::NaiveDate::parse_from_str(PINNED_RELEASED, "%Y-%m-%d")
-        .is_ok_and(|released| (today - released).num_days() > PIN_WARN_DAYS)
+pub fn pin_nearing_end_of_support(today: jiff::civil::Date) -> bool {
+    jiff::civil::Date::strptime("%Y-%m-%d", PINNED_RELEASED)
+        .is_ok_and(|released| i64::from((today - released).get_days()) > PIN_WARN_DAYS)
 }
 
 /// The pinned version, parsed.
@@ -233,10 +238,10 @@ mod tests {
         // At the floor nothing is outside the window relative to the current pin.
         let fresh = judge("cloudflared version 2026.11.0").expect("accepted");
         assert!(!fresh.outside_support_window);
-        let pin = chrono::NaiveDate::parse_from_str(PINNED_RELEASED, "%Y-%m-%d").unwrap();
+        let pin = jiff::civil::Date::strptime("%Y-%m-%d", PINNED_RELEASED).unwrap();
         assert!(!pin_nearing_end_of_support(pin));
         assert!(pin_nearing_end_of_support(
-            pin + chrono::Duration::days(PIN_WARN_DAYS + 1)
+            pin + jiff::Span::new().days(PIN_WARN_DAYS + 1)
         ));
     }
 

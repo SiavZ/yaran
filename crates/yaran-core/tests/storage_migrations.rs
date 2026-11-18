@@ -326,7 +326,7 @@ fn migration_0005_preserves_session_pr_foreign_key() {
 /// itself refuses.
 #[test]
 fn migration_0005_rebuild_enforces_handle_constraints_and_preserves_index() {
-    use chrono::Utc;
+    use jiff::Timestamp;
     use yaran_core::model::{
         AgentSession, AgentWorkspace, BranchProvenance, ManagedWorkspace, ProviderKind,
         SessionStatus,
@@ -336,7 +336,7 @@ fn migration_0005_rebuild_enforces_handle_constraints_and_preserves_index() {
     fork_database_at(&path, 4, "");
     let store = SessionStore::open(&path).expect("open a fork schema-4 database");
     let session = |id: &str, handle: &str| {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: id.to_string(),
             agent_handle: handle.to_string(),

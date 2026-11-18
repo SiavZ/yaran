@@ -374,7 +374,7 @@ async fn upload_dropped_file(
                     refused.sentence("save the dropped file").to_string(),
                 )
             })?;
-        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
         let saved =
             yaran_core::file_drop::save_drop(&dir, &filename, destination.naming(), &bytes, &stamp)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -434,7 +434,7 @@ mod tests {
     use yaran_core::storage::SessionStore;
 
     fn sample_session(id: &str, worktree: &str) -> yaran_core::model::AgentSession {
-        let n = chrono::Utc::now();
+        let n = jiff::Timestamp::now();
         yaran_core::model::AgentSession {
             id: id.to_string(),
             agent_handle: yaran_core::model::normalize_agent_handle(id),

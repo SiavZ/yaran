@@ -130,6 +130,7 @@
 //! ├── text
 //! ├── text_encoding
 //! ├── theme
+//! ├── timefmt
 //! ├── urls
 //! ├── version
 //! ├── viewmodel
@@ -292,6 +293,7 @@ pub mod test_scratch;
 pub mod text;
 pub mod text_encoding;
 pub mod theme;
+pub mod timefmt;
 pub mod urls;
 pub mod version;
 pub mod viewmodel;

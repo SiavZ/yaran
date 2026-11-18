@@ -72,7 +72,7 @@
 //! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! └── yaran-core::worktree_manager
-//! External: anyhow, chrono, crokey, crossterm, home, libc, ratatui, rusqlite, rustix, std, tempfile, toml, unicode_segmentation
+//! External: anyhow, crokey, crossterm, home, jiff, libc, ratatui, rusqlite, rustix, std, tempfile, toml, unicode_segmentation
 //!
 //! Used by:
 //! app/input.rs
@@ -14279,9 +14279,9 @@ mod tests {
     };
     use crate::pty::PtyClient;
     use crate::theme::Theme;
-    use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use jiff::Timestamp;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
@@ -14434,7 +14434,7 @@ mod tests {
     /// identity mouse map installed, row `y = left_list.y + i` is item `i`.
     fn drag_test_app() -> App {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["s1", "s2", "s3"] {
             app.engine
@@ -14819,7 +14819,7 @@ mod tests {
     #[test]
     fn a_drop_under_a_live_filter_still_sends_every_agent() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["alpha", "zulu", "alto"] {
             app.engine
@@ -17844,7 +17844,7 @@ not_a_real_action = ["x"]
                     head_branch: branch,
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         app.engine.pr_own_repos.insert(
@@ -17996,7 +17996,7 @@ not_a_real_action = ["x"]
                 client: PtyClient::spawn("/bin/sh", &args, worktree, 24, 80, 1_000)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -18050,7 +18050,7 @@ not_a_real_action = ["x"]
                 client: PtyClient::spawn("/bin/sh", &args, worktree, 24, 80, 1_000)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -18317,7 +18317,7 @@ not_a_real_action = ["x"]
         let worktree = std::path::Path::new(&worktree_path);
         std::fs::create_dir_all(app.engine.paths.worktrees_root.join("other"))
             .expect("other worktree");
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.push(AgentSession {
             id: "session-2".to_string(),
             agent_handle: "session-2".to_string(),
@@ -18394,7 +18394,7 @@ not_a_real_action = ["x"]
         // config.ui.agent_sort = "name" and rebuilding orders left_items()
         // alphabetically while engine.sessions stays in its incoming order.
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         let project_path = app.engine.projects[0].path.clone();
 
@@ -18474,7 +18474,7 @@ not_a_real_action = ["x"]
         id: &str,
         branch: &str,
         project_id: &str,
-        now: chrono::DateTime<Utc>,
+        now: jiff::Timestamp,
     ) -> AgentSession {
         AgentSession {
             id: id.to_string(),
@@ -18523,7 +18523,7 @@ not_a_real_action = ["x"]
     #[test]
     fn slash_opens_filter_mode_and_typing_narrows_the_agent_list() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web", "auth"] {
@@ -18563,7 +18563,7 @@ not_a_real_action = ["x"]
     #[test]
     fn filter_matches_project_name_across_projects() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let demo_id = app.engine.projects[0].id.clone();
         // A second project whose name (not branch) is the discriminating field.
         let mut website = app.engine.projects[0].clone();
@@ -18610,7 +18610,7 @@ not_a_real_action = ["x"]
         // the core vector `provider_names_do_not_match` and the web's
         // "does NOT match on provider names".
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         app.engine.sessions.push(filter_test_session(
@@ -18653,7 +18653,7 @@ not_a_real_action = ["x"]
     #[test]
     fn agent_filter_zero_matches_navigation_and_enter_do_not_panic() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web"] {
@@ -18697,7 +18697,7 @@ not_a_real_action = ["x"]
     #[test]
     fn esc_exits_filter_mode_and_restores_full_list() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web"] {
@@ -18728,7 +18728,7 @@ not_a_real_action = ["x"]
     #[test]
     fn enter_activates_filtered_row_and_exits_filter_mode() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web"] {
@@ -18803,7 +18803,7 @@ not_a_real_action = ["x"]
         // A web-set "manual" renders engine.sessions in verbatim order; the TUI
         // displays but never offers manual.
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         let project_path = app.engine.projects[0].path.clone();
 
@@ -18886,7 +18886,7 @@ not_a_real_action = ["x"]
                 client: PtyClient::spawn("/bin/sh", &args, worktree, 24, 80, 1_000)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -20201,8 +20201,8 @@ not_a_real_action = ["x"]
             desired_running: true,
             auto_reopen_enabled: true,
             status: SessionStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
             workspace: yaran_core::model::AgentWorkspace::Managed(
                 yaran_core::model::ManagedWorkspace {
@@ -21778,7 +21778,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         app.focus = FocusPane::Left;
@@ -22822,7 +22822,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn pty"),
                 sort_order: 0,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -23110,7 +23110,7 @@ not_a_real_action = ["x"]
                     url: url.clone(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         app.mouse_layout.pr_banner = Some(Rect::new(20, 19, 57, 1));
@@ -23790,7 +23790,7 @@ not_a_real_action = ["x"]
     #[test]
     fn mouse_wheel_left_pane_scrolls_overflowing_agent_list() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for i in 0..40 {
             let id = format!("s{i:02}");
@@ -24623,7 +24623,7 @@ not_a_real_action = ["x"]
                 session_id: session_id.to_string(),
                 provider: ProviderKind::from_str(provider),
                 sort_order: order,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             },
         );
     }
@@ -25167,7 +25167,7 @@ not_a_real_action = ["x"]
     #[test]
     fn left_move_down_closes_open_diff_when_moving_between_agents() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.push(AgentSession {
             id: "session-2".to_string(),
             agent_handle: "session-2".to_string(),
@@ -26018,7 +26018,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -26213,7 +26213,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         assert_eq!(
@@ -26319,7 +26319,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -26339,7 +26339,7 @@ not_a_real_action = ["x"]
         app.engine.sessions.clear();
         app.engine
             .sessions
-            .push(filter_test_session("s1", "b1", "p1", Utc::now()));
+            .push(filter_test_session("s1", "b1", "p1", Timestamp::now()));
         // Idle: nothing is animating, so the loop can stay on the lazy cadence.
         assert!(!app.any_row_animating());
         // Fresh PTY activity on the session-slot tab marks it streaming (working),
@@ -26375,7 +26375,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -26421,7 +26421,7 @@ not_a_real_action = ["x"]
             url: stored.url.clone(),
             ..Default::default()
         };
-        let mut row = yaran_core::model::AgentPr::found(&info, chrono::Utc::now());
+        let mut row = yaran_core::model::AgentPr::found(&info, jiff::Timestamp::now());
         row.found = false;
         row.attached = true;
         app.engine
@@ -26603,7 +26603,7 @@ not_a_real_action = ["x"]
     #[test]
     fn move_agent_up_reorders_switches_to_manual_and_follows_the_selection() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         app.engine
             .sessions
@@ -26633,7 +26633,7 @@ not_a_real_action = ["x"]
     #[test]
     fn apply_list_order_reorders_flips_to_manual_and_follows_the_agent() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["s1", "s2", "s3"] {
             app.engine
@@ -26663,7 +26663,7 @@ not_a_real_action = ["x"]
     #[test]
     fn apply_list_order_is_a_no_op_when_the_order_matches_its_baseline() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["s1", "s2"] {
             app.engine
@@ -26688,7 +26688,7 @@ not_a_real_action = ["x"]
     #[test]
     fn execute_command_routes_move_agent_top_to_the_handler() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         app.engine
             .sessions
@@ -26712,7 +26712,7 @@ not_a_real_action = ["x"]
     /// Seed `ids` as stored + in-memory agents of one project, manual sort,
     /// Left focus, for the Shift-J/K tests below.
     fn seed_reorder_agents(app: &mut App, ids: &[&str]) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ids {
             let session = filter_test_session(id, id, "p1", now);
@@ -26777,7 +26777,7 @@ not_a_real_action = ["x"]
     #[test]
     fn move_agent_up_at_the_top_is_a_no_op() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         app.engine
             .sessions
@@ -26870,7 +26870,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -26892,7 +26892,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -28718,7 +28718,7 @@ cyan = "#00ffff"
                 foreground_cmd: None,
                 client: term_client,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -29184,7 +29184,7 @@ cyan = "#00ffff"
                 session_id: session.id.clone(),
                 provider: yaran_core::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             })
             .expect("store the second tab");
         assert_eq!(
@@ -30043,7 +30043,7 @@ cyan = "#00ffff"
                 foreground_cmd: None,
                 client,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -35787,7 +35787,7 @@ cyan = "#00ffff"
                 client: PtyClient::spawn("sh", &args, std::path::Path::new("."), 24, 80, 100)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -40917,7 +40917,7 @@ cyan = "#00ffff"
                 session_id: session_id.to_string(),
                 provider: yaran_core::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
     }

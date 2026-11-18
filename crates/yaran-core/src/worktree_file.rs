@@ -176,12 +176,17 @@ impl std::error::Error for WriteConflict {}
 
 /// The ONE mtime formatter. Every surface that puts an mtime in a payload goes
 /// through it: the read route, the info panel, a save's success body, and a
-/// conflict's body. chrono prints a variable number of fractional digits, so
-/// two independent `to_rfc3339()` call sites can render the same instant as two
+/// conflict's body. RFC 3339 prints a variable number of fractional digits, so two
+/// independent formatting call sites can render the same instant as two
 /// different strings and a token comparison would then never match. There is a
 /// test asserting read, info and write all speak this one string.
 pub(crate) fn format_mtime(t: std::time::SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()
+    // shortcut: an mtime outside the years -9999..=9999 renders empty; nothing
+    // real has one.
+    jiff::Timestamp::try_from(t).map_or_else(
+        |_| String::new(),
+        |at| crate::timefmt::Rfc3339::to_rfc3339(&at),
+    )
 }
 
 /// The freshness stamp of an already-stat'd entry.
@@ -1456,7 +1461,7 @@ pub fn entry_info(worktree: &Path, rel_path: &str) -> anyhow::Result<WorktreeEnt
         _ => Some(meta.len()),
     };
     // The shared formatter, not a second `to_rfc3339()` call site: the editor
-    // compares this string against the one the read route sent, and chrono's
+    // compares this string against the one the read route sent, and RFC 3339's
     // variable fractional digits would make two formatters silently disagree.
     let modified = meta.modified().ok().map(format_mtime);
     let bits = meta.permissions().mode() & 0o7777;
@@ -2894,7 +2899,7 @@ mod tests {
             assert_eq!(modified, format_mtime(on_disk.modified().unwrap()));
         }
 
-        /// One formatter, or the token silently never matches. chrono prints a
+        /// One formatter, or the token silently never matches. RFC 3339 prints a
         /// variable number of fractional digits, so two independently written
         /// `to_rfc3339()` call sites can disagree on the SAME instant.
         #[test]

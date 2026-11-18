@@ -1,14 +1,14 @@
 //! Fork `tests/storage_integration.rs` identity tests, ported under their
 //! fork names where upstream's storage has the same behaviour.
 
-use chrono::Utc;
+use jiff::Timestamp;
 use yaran_core::model::{
     AgentSession, AgentWorkspace, BranchProvenance, ManagedWorkspace, ProviderKind, SessionStatus,
 };
 use yaran_core::storage::SessionStore;
 
 fn fixture_session(id: &str) -> AgentSession {
-    let now = Utc::now();
+    let now = Timestamp::now();
     AgentSession {
         id: id.to_string(),
         agent_handle: id.to_string(),
@@ -226,7 +226,7 @@ fn soft_delete_hides_active_session_and_retains_tombstone() {
             |row| row.get(0),
         )
         .expect("read tombstone timestamp");
-    chrono::DateTime::parse_from_rfc3339(&raw_deleted_at).expect("deleted_at is RFC 3339");
+    yaran_core::timefmt::parse_rfc3339(&raw_deleted_at).expect("deleted_at is RFC 3339");
     assert!(store.load_sessions().expect("load active").is_empty());
     let tombstones = store
         .load_sessions_including_deleted()

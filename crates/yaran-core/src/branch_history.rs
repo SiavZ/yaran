@@ -23,7 +23,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::model::BranchProvenance;
@@ -163,8 +163,8 @@ fn local_branches(repo: &Path) -> Result<std::collections::HashSet<String>> {
 
 /// The whole-second floor of an agent's creation, which is what reflog times
 /// are compared with.
-fn created_second(created_at: DateTime<Utc>) -> i64 {
-    created_at.timestamp()
+fn created_second(created_at: Timestamp) -> i64 {
+    created_at.as_second()
 }
 
 /// The branches a worktree's HEAD reflog shows it on since the agent was
@@ -179,7 +179,7 @@ fn created_second(created_at: DateTime<Utc>) -> i64 {
 /// Fails when git cannot read the reflog or the repository's branches.
 pub(crate) fn scan_head_reflog(
     worktree: &Path,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
     cursor: Option<&ReflogCursor>,
 ) -> Result<(Vec<String>, Option<ReflogCursor>)> {
     let mut entries = read_reflog(worktree, "HEAD", Some(REFLOG_SCAN_STEP))?;
@@ -272,7 +272,7 @@ pub(crate) enum BranchBirth {
 }
 
 /// When `name` was made, relative to an agent created at `created_at`.
-pub(crate) fn branch_birth(repo: &Path, name: &str, created_at: DateTime<Utc>) -> BranchBirth {
+pub(crate) fn branch_birth(repo: &Path, name: &str, created_at: Timestamp) -> BranchBirth {
     let since = created_second(created_at);
     match branch_creation_entry(repo, name) {
         Ok(Some(entry)) if entry.unix > since => BranchBirth::After,
@@ -297,7 +297,7 @@ pub struct BranchHistoryEntry {
     pub tip: Option<String>,
     /// When yaran first recorded the branch, `None` for one not recorded yet.
     /// A branch recorded when the list was created carries that moment.
-    pub first_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub first_seen_at: Option<jiff::Timestamp>,
     /// The names a yaran rename moved this branch away from, oldest first.
     pub former_names: Vec<String>,
 }
@@ -375,7 +375,7 @@ pub(crate) const LEGACY_BIRTH_WINDOW_SECS: i64 = 600;
 /// Whether a creation entry written at `unix` is from the moment an agent
 /// created at `created_at` was being made: at or before it, and no more than
 /// [`LEGACY_BIRTH_WINDOW_SECS`] before.
-pub(crate) fn within_legacy_window(unix: i64, created_at: DateTime<Utc>) -> bool {
+pub(crate) fn within_legacy_window(unix: i64, created_at: Timestamp) -> bool {
     let created = created_second(created_at);
     unix <= created && created - unix <= LEGACY_BIRTH_WINDOW_SECS
 }
@@ -468,7 +468,7 @@ fn birth_is_yarans(
     repo: &Path,
     entry: &BranchHistoryEntry,
     checked_out_here: Option<&str>,
-    created_at: Option<DateTime<Utc>>,
+    created_at: Option<Timestamp>,
 ) -> bool {
     let here = checked_out_here == Some(entry.name.as_str());
     match &entry.identity {
@@ -493,7 +493,7 @@ fn birth_is_yarans(
 pub(crate) fn legacy_birth_identity(
     repo: &Path,
     name: &str,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 ) -> Option<BranchIdentity> {
     branch_creation_entry(repo, name)
         .ok()
@@ -503,7 +503,7 @@ pub(crate) fn legacy_birth_identity(
 
 /// When a recorded branch was made, from its recorded identity, relative to an
 /// agent created at `created_at`.
-fn recorded_birth(identity: &BranchIdentity, created_at: DateTime<Utc>) -> BranchBirth {
+fn recorded_birth(identity: &BranchIdentity, created_at: Timestamp) -> BranchBirth {
     let since = created_second(created_at);
     match identity.unix.cmp(&since) {
         std::cmp::Ordering::Greater => BranchBirth::After,
@@ -517,7 +517,7 @@ pub(crate) fn branch_origin(
     repo: &Path,
     entry: &BranchHistoryEntry,
     provenance: BranchProvenance,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
     checked_out_here: Option<&str>,
 ) -> BranchOrigin {
     if entry.born_here {
@@ -762,8 +762,8 @@ pub enum ResolveRule {
         identity: Option<BranchIdentity>,
         /// When the agent was created, which a legacy row's own creation
         /// entry is compared with.
-        #[serde(default)]
-        agent_created_at: Option<DateTime<Utc>>,
+        #[serde(default, with = "crate::timefmt::serde_rfc3339::option")]
+        agent_created_at: Option<Timestamp>,
         /// Where the branch pointed when yaran last saw the agent on it.
         #[serde(default)]
         tip: Option<String>,
@@ -827,7 +827,7 @@ impl BranchPlan {
 /// The state [`plan_branch_removal`] builds the plan in.
 struct Planner<'a> {
     provenance: BranchProvenance,
-    created_at: Option<DateTime<Utc>>,
+    created_at: Option<Timestamp>,
     protected: &'a [String],
     /// Every branch either box pinned: a pin is matched by its name, whichever
     /// box it came from, so a branch that changed role mid-dialog is still the
@@ -952,7 +952,7 @@ pub fn source_branch_is_protected(managed: &crate::model::ManagedWorkspace) -> b
 /// from is kept unless it is one of its own.
 pub fn unasked_plan(
     managed: &crate::model::ManagedWorkspace,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
     history: &[BranchHistoryEntry],
 ) -> BranchPlan {
     let mut history = history.to_vec();
@@ -996,7 +996,7 @@ pub fn plan_branch_removal(
     current: &str,
     history: &[BranchHistoryEntry],
     provenance: BranchProvenance,
-    created_at: Option<DateTime<Utc>>,
+    created_at: Option<Timestamp>,
     request: &BranchDeleteRequest,
     protected: &[String],
 ) -> BranchPlan {
@@ -1467,7 +1467,7 @@ impl BranchPlan {
     /// that caller's single answer.
     pub(crate) fn legacy(
         managed: &crate::model::ManagedWorkspace,
-        created_at: Option<DateTime<Utc>>,
+        created_at: Option<Timestamp>,
         delete_branch: Option<bool>,
     ) -> Self {
         let mut history = Vec::new();
@@ -2020,8 +2020,8 @@ mod tests {
         (repo, worktree)
     }
 
-    fn long_ago() -> DateTime<Utc> {
-        Utc::now() - chrono::Duration::hours(1)
+    fn long_ago() -> Timestamp {
+        Timestamp::now() - jiff::SignedDuration::from_hours(1)
     }
 
     fn oid(repo: &Path, name: &str) -> String {
@@ -2124,7 +2124,7 @@ mod tests {
         let (_repo, wt) = repo_and_worktree(tmp.path());
         git(&wt, &["switch", "-c", "older"]);
         git(&wt, &["switch", "agent"]);
-        let born = Utc::now() + chrono::Duration::hours(1);
+        let born = Timestamp::now() + jiff::SignedDuration::from_hours(1);
         let (seen, _) = scan_head_reflog(&wt, born, None).unwrap();
         assert!(seen.is_empty(), "{seen:?}");
     }
@@ -2137,11 +2137,11 @@ mod tests {
         let (repo, _wt) = repo_and_worktree(tmp.path());
         git(&repo, &["branch", "fresh"]);
         assert_eq!(branch_birth(&repo, "fresh", long_ago()), BranchBirth::After);
-        let later = Utc::now() + chrono::Duration::hours(1);
+        let later = Timestamp::now() + jiff::SignedDuration::from_hours(1);
         assert_eq!(branch_birth(&repo, "fresh", later), BranchBirth::Before);
         // The very same second proves nothing either way.
         let created = branch_creation_entry(&repo, "fresh").unwrap().unwrap();
-        let same = DateTime::from_timestamp(created.unix, 500_000_000).unwrap();
+        let same = Timestamp::new(created.unix, 500_000_000).unwrap();
         assert_eq!(branch_birth(&repo, "fresh", same), BranchBirth::Unknown);
     }
 
@@ -2882,14 +2882,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (repo, _wt) = repo_and_worktree(tmp.path());
         let made = branch_creation_entry(&repo, "agent").unwrap().unwrap();
-        let born_with = DateTime::from_timestamp(made.unix + 1, 0).unwrap();
+        let born_with = Timestamp::new(made.unix + 1, 0).unwrap();
         assert!(birth_is_yarans(
             &repo,
             &birth("agent"),
             None,
             Some(born_with)
         ));
-        let long_after = DateTime::from_timestamp(made.unix + 3600, 0).unwrap();
+        let long_after = Timestamp::new(made.unix + 3600, 0).unwrap();
         assert!(!birth_is_yarans(
             &repo,
             &birth("agent"),
@@ -3098,28 +3098,28 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (repo, _wt) = repo_and_worktree(tmp.path());
         let made = branch_creation_entry(&repo, "agent").unwrap().unwrap();
-        let minutes_later = DateTime::from_timestamp(made.unix + 300, 0).unwrap();
+        let minutes_later = Timestamp::new(made.unix + 300, 0).unwrap();
         assert!(birth_is_yarans(
             &repo,
             &birth("agent"),
             None,
             Some(minutes_later)
         ));
-        let at_the_edge = DateTime::from_timestamp(made.unix + 600, 0).unwrap();
+        let at_the_edge = Timestamp::new(made.unix + 600, 0).unwrap();
         assert!(birth_is_yarans(
             &repo,
             &birth("agent"),
             None,
             Some(at_the_edge)
         ));
-        let past_the_edge = DateTime::from_timestamp(made.unix + 601, 0).unwrap();
+        let past_the_edge = Timestamp::new(made.unix + 601, 0).unwrap();
         assert!(!birth_is_yarans(
             &repo,
             &birth("agent"),
             None,
             Some(past_the_edge)
         ));
-        let before_it = DateTime::from_timestamp(made.unix - 60, 0).unwrap();
+        let before_it = Timestamp::new(made.unix - 60, 0).unwrap();
         assert!(!birth_is_yarans(
             &repo,
             &birth("agent"),

@@ -49,7 +49,7 @@ fn managed_session(
     initial_branch: &str,
     provenance: yaran_core::model::BranchProvenance,
 ) -> yaran_core::model::AgentSession {
-    let n = chrono::Utc::now();
+    let n = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -81,7 +81,7 @@ fn managed_session(
 
 /// A standalone agent: a folder the user already had, with no branch at all.
 fn standalone_session(id: &str, folder: &str) -> yaran_core::model::AgentSession {
-    let n = chrono::Utc::now();
+    let n = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),

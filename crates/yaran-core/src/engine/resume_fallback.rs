@@ -1048,7 +1048,7 @@ mod tests {
             // fails to spawn if this is what actually gets used.
             provider: ProviderKind::new("yaran-test-nonexistent-provider-zzz"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
         // The tab is pinned to "cat" (e.g. from a live run before this exit).
@@ -1114,7 +1114,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
         engine

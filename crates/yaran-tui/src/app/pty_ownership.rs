@@ -1009,7 +1009,7 @@ mod tests {
                 foreground_cmd: None,
                 client: spawn_sleeper(),
                 sort_order: 0,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -1031,7 +1031,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider: yaran_core::model::ProviderKind::new("claude"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         app.engine

@@ -828,13 +828,14 @@ impl App {
 /// "first seen Nov 3, 14:02" in local time, from the RFC 3339 the branch list
 /// carries.
 fn first_seen_words(at: Option<&str>) -> String {
-    at.and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+    at.and_then(|at| yaran_core::timefmt::parse_rfc3339(at).ok())
         .map_or_else(
             || "not recorded yet".to_string(),
             |at| {
                 format!(
                     "first seen {}",
-                    at.with_timezone(&chrono::Local).format("%b %-d, %H:%M")
+                    at.to_zoned(jiff::tz::TimeZone::system())
+                        .strftime("%b %-d, %H:%M")
                 )
             },
         )
@@ -853,11 +854,7 @@ mod tests {
     /// Three pull requests on the fixture agent in a known automatic order:
     /// #418 open and newest, acme/infra#77 open and attached, #415 merged.
     fn three_prs(app: &mut App) {
-        let at = |day: u32| {
-            chrono::NaiveDate::from_ymd_opt(2026, 11, day)
-                .and_then(|d| d.and_hms_opt(12, 0, 0))
-                .map(|t| t.and_utc())
-        };
+        let at = |day: i8| Some(yaran_core::timefmt::utc(2026, 11, day, 12, 0, 0));
         let mut newest = found_pr(
             "o/r",
             418,

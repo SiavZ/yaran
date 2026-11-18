@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::ids::TabIdRef;
 use crate::pty::PtyClient;
@@ -145,13 +145,13 @@ pub struct PrInfo {
     /// the answer said.
     pub head_branch: Option<String>,
     /// When it was opened on GitHub, when the answer said.
-    pub gh_created_at: Option<DateTime<Utc>>,
+    pub gh_created_at: Option<Timestamp>,
     /// When GitHub last changed it, when the answer said.
-    pub gh_updated_at: Option<DateTime<Utc>>,
+    pub gh_updated_at: Option<Timestamp>,
     /// When it was closed, when the answer said.
-    pub gh_closed_at: Option<DateTime<Utc>>,
+    pub gh_closed_at: Option<Timestamp>,
     /// When it was merged, when the answer said.
-    pub gh_merged_at: Option<DateTime<Utc>>,
+    pub gh_merged_at: Option<Timestamp>,
 }
 
 /// Which pull request a row is: its host, repository and number. Two keys are
@@ -203,7 +203,7 @@ pub struct PrPrefs {
     pub sort_mode: crate::pr_list::PrSortMode,
     /// Set when the agent had pull-request detection switched off: a pull
     /// request opened on GitHub before this moment is kept out of sight.
-    pub hide_created_before: Option<DateTime<Utc>>,
+    pub hide_created_before: Option<Timestamp>,
 }
 
 /// One pull request an agent has: found by the sync on one of its branches,
@@ -234,23 +234,23 @@ pub struct AgentPr {
     /// the list with it present.
     pub manual_slot: Option<u32>,
     /// When it was opened on GitHub.
-    pub gh_created_at: Option<DateTime<Utc>>,
+    pub gh_created_at: Option<Timestamp>,
     /// When GitHub last changed it.
-    pub gh_updated_at: Option<DateTime<Utc>>,
+    pub gh_updated_at: Option<Timestamp>,
     /// When it was closed.
-    pub gh_closed_at: Option<DateTime<Utc>>,
+    pub gh_closed_at: Option<Timestamp>,
     /// When it was merged.
-    pub gh_merged_at: Option<DateTime<Utc>>,
+    pub gh_merged_at: Option<Timestamp>,
     /// When yaran first stored it.
-    pub first_recorded_at: DateTime<Utc>,
+    pub first_recorded_at: Timestamp,
     /// When GitHub last answered for it.
-    pub last_refreshed_at: Option<DateTime<Utc>>,
+    pub last_refreshed_at: Option<Timestamp>,
 }
 
 impl AgentPr {
     /// A row for a pull request the sync found, first recorded at `recorded_at`.
     #[must_use]
-    pub fn found(info: &PrInfo, recorded_at: DateTime<Utc>) -> Self {
+    pub fn found(info: &PrInfo, recorded_at: Timestamp) -> Self {
         let mut row = Self {
             host: String::new(),
             owner_repo: String::new(),
@@ -411,7 +411,7 @@ pub struct Project {
     /// table. This is derived/runtime state (not portable config), surfaced so
     /// clients can show an "added" date. `None` for projects constructed
     /// in-memory before a store row exists (e.g. during creation/migration).
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: Option<Timestamp>,
 }
 
 /// Whether a project's source checkout is on its default branch.
@@ -1019,7 +1019,7 @@ pub struct AgentSession {
     /// the agent: the row is hidden from [`crate::storage::SessionStore::load_sessions`]
     /// but retained so its handle stays reserved and a later hard purge can
     /// still find what to erase.
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<Timestamp>,
     /// The id of this agent's **session-slot tab**: a pointer into `agent_tabs`,
     /// stored in the session row. Read it through
     /// [`AgentSession::slot_tab_id`], never directly, so slot-ness stays one
@@ -1042,9 +1042,9 @@ pub struct AgentSession {
     /// The session's lifecycle state.
     pub status: SessionStatus,
     /// When the agent was created.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// When the session row last changed.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// The tab id the user last focused on this agent, remembered so switching
     /// away and back (either surface, and across restarts) restores it. `None`
     /// means "no memory recorded" and resolves to the session-slot tab (see
@@ -1152,7 +1152,7 @@ impl AgentSession {
     /// `None` for a branch that existed before the agent (whatever its history
     /// before then is, it is not yaran's to bound), for a branch the agent has
     /// since drifted onto, and for a standalone agent, which has no branch.
-    pub(crate) fn branch_minted_at(&self, renamed_to: Option<&str>) -> Option<DateTime<Utc>> {
+    pub(crate) fn branch_minted_at(&self, renamed_to: Option<&str>) -> Option<Timestamp> {
         let managed = self.workspace.as_managed()?;
         let minted_here = match managed.branch_provenance {
             BranchProvenance::CreatedByYaran => true,
@@ -1270,7 +1270,7 @@ pub struct AgentTab {
     /// next one after the highest, so the slot tab can hold any of them.
     pub sort_order: i64,
     /// When the tab was created.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 /// The one comparator that decides which tab comes before which, on every
@@ -1855,7 +1855,7 @@ pub struct CompanionTerminal {
     /// and representation as [`AgentSession::created_at`], so both surfaces can
     /// compute the same "recently created" order over terminals and agents.
     /// RUNTIME ONLY (memory-only, like the terminal itself).
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// A project or standalone terminal's manual place in the agents list:
     /// right after this agent in the stored agent order, first when `None`.
     /// RUNTIME ONLY, so the stored agent order never names a terminal and a
@@ -2060,7 +2060,7 @@ mod tests {
             url: "https://github.com/ada/widget/pull/5".to_string(),
             ..PrInfo::default()
         };
-        let recorded = Utc::now();
+        let recorded = Timestamp::now();
         let row = AgentPr::found(&info, recorded);
         assert_eq!(row.state, PrState::Draft);
         assert!(row.found && !row.attached && !row.hidden);
@@ -2086,7 +2086,7 @@ mod tests {
     }
 
     fn session_with_focus(last_focused_tab: Option<&str>) -> AgentSession {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: "s1".to_string(),
             agent_handle: "s1".to_string(),
@@ -2177,7 +2177,7 @@ mod tests {
     }
 
     fn folder_session(title: Option<&str>, folder_path: &str) -> AgentSession {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: "sa1".to_string(),
             agent_handle: "sa1".to_string(),

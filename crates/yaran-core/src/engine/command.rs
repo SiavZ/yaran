@@ -889,7 +889,7 @@ impl Engine {
             // untouched and the UI keeps showing the still-true value.
             let mut candidate = current.clone();
             candidate.auto_reopen_enabled = enabled;
-            candidate.updated_at = chrono::Utc::now();
+            candidate.updated_at = jiff::Timestamp::now();
             self.session_store.upsert_session(&candidate)?;
             *current = candidate;
         } else {
@@ -3967,7 +3967,7 @@ mod tests {
                 foreground_cmd: None,
                 client: spawn_cat_v_pty(),
                 sort_order,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );

@@ -52,7 +52,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde_json::{Map, Value};
 
 use crate::config::{Config, YaranPaths};
@@ -61,6 +61,7 @@ use crate::model::AgentSession;
 use crate::purge_encoding;
 use crate::sanitize;
 use crate::storage::{SessionStore, load_store_id};
+use crate::timefmt::Rfc3339;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -262,7 +263,7 @@ pub enum PurgeItem {
     LogScopedRedact {
         /// Informational: the agent's creation time, recorded so the audit
         /// trail shows the cut-over point. Every record is visited regardless.
-        since: DateTime<Utc>,
+        since: Timestamp,
         /// The log file to rewrite.
         path: PathBuf,
     },
@@ -1114,7 +1115,7 @@ fn maybe_redact_line(line: &str, target: &str) -> Option<String> {
     let mut parts = line.splitn(3, ' ');
     match (parts.next(), parts.next()) {
         (Some(ts), Some(level))
-            if DateTime::parse_from_rfc3339(ts).is_ok()
+            if crate::timefmt::parse_rfc3339(ts).is_ok()
                 && matches!(level, "ERROR" | "WARN" | "INFO" | "DEBUG") =>
         {
             Some(format!("{ts} {level:<5} [redacted: purged session]"))
@@ -1224,7 +1225,7 @@ mod tests {
     }
 
     fn fixture_session(id: &str, branch: &str, worktree: &Path) -> AgentSession {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: id.to_string(),
             agent_handle: crate::model::normalize_agent_handle(id),

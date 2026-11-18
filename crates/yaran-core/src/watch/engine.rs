@@ -530,7 +530,7 @@ impl RuleRuntime {
                     .last()
                     .and_then(|c| c.name(capture).map(|m| m.as_str().to_string()));
                 let parsed = captured.as_deref().and_then(|s| {
-                    crate::watch::reset_time::parse(*format, s, now, chrono::Utc::now())
+                    crate::watch::reset_time::parse(*format, s, now, jiff::Timestamp::now())
                 });
                 if let Some(target) = parsed {
                     let jitter_ms = if self.rule.backoff.jitter_ms > 0 {

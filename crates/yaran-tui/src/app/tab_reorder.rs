@@ -217,7 +217,7 @@ mod tests {
                 session_id: session.id.clone(),
                 provider: yaran_core::model::ProviderKind::new(provider),
                 sort_order: order,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             };
             app.engine.session_store.insert_agent_tab(&tab).unwrap();
             app.engine.agent_tabs.insert(TabId::new(id), tab);

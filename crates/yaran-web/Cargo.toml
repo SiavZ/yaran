@@ -18,7 +18,7 @@ futures-util.workspace = true
 # Server-assigned random per-connection ids for status-toast scoping on /ws.
 uuid.workspace = true
 # Wall-clock `HH:MM:SS` timestamps for the vite-style server console (console.rs).
-chrono.workspace = true
+jiff.workspace = true
 # The terminal's width, so the `yaran server` console lays its QR codes out side
 # by side only when they fit (console.rs). Already in the tree through yaran-core.
 rustix.workspace = true

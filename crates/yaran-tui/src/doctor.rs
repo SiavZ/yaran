@@ -418,7 +418,7 @@ mod tests {
 
     fn session_at(id: &str, dir: &Path, status: SessionStatus) -> yaran_core::model::AgentSession {
         let dir = dir.to_string_lossy().to_string();
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         yaran_core::model::AgentSession {
             id: id.to_string(),
             agent_handle: id.to_string(),

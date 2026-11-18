@@ -7,11 +7,12 @@
 //! cascade also covers hard deletion when foreign keys are enabled.
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use jiff::Timestamp;
 use rusqlite::params;
 
 use super::SessionStore;
 use crate::diff_comments::{DiffAnchor, DiffComment, DiffSide};
+use crate::timefmt::Rfc3339;
 
 impl SessionStore {
     /// The diff-comments workstream's block of `migrate()`: create the table
@@ -50,7 +51,7 @@ impl SessionStore {
     ///
     /// Fails when the write is refused.
     pub fn upsert_diff_comment(&self, comment: &DiffComment) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
+        let now = Timestamp::now().to_rfc3339();
         let anchor = &comment.anchor;
         self.conn.execute(
             "insert into session_diff_comments \
@@ -157,7 +158,7 @@ mod tests {
     #[test]
     fn a_comment_round_trips_and_an_edit_replaces_it() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.create_session(&test_session("s1", now, now)).unwrap();
         store
             .upsert_diff_comment(&comment("s1", 45, "Use an h4"))
@@ -183,7 +184,7 @@ mod tests {
     #[test]
     fn every_way_an_agent_leaves_takes_its_comments() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         for id in ["hard", "soft", "kept"] {
             store.create_session(&test_session(id, now, now)).unwrap();
             store.upsert_diff_comment(&comment(id, 1, "note")).unwrap();
@@ -202,7 +203,7 @@ mod tests {
     #[test]
     fn the_migration_sweeps_orphans_and_is_idempotent() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.create_session(&test_session("s1", now, now)).unwrap();
         store
             .upsert_diff_comment(&comment("s1", 1, "kept"))

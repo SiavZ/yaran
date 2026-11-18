@@ -21,7 +21,7 @@ use yaran_web::engine_actor::spawn_engine_thread;
 use yaran_web::server::router;
 
 fn sample_session(id: &str, project_id: &str, worktree: &str) -> yaran_core::model::AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),

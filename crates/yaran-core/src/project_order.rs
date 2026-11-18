@@ -10,7 +10,7 @@
 //! newest agent was created; a standalone agent belongs to no project and counts
 //! for none.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::model::{AgentSession, Project};
 
@@ -20,7 +20,7 @@ use crate::model::{AgentSession, Project};
 /// nothing to rank on, so it goes last in incoming order. The sort is stable, so
 /// ties keep the stored order.
 pub fn order_projects_by_recency(projects: &[Project], sessions: &[AgentSession]) -> Vec<usize> {
-    let instants: Vec<Option<DateTime<Utc>>> = projects
+    let instants: Vec<Option<Timestamp>> = projects
         .iter()
         .map(|project| last_touched(project, sessions))
         .collect();
@@ -33,7 +33,7 @@ pub fn order_projects_by_recency(projects: &[Project], sessions: &[AgentSession]
 
 /// The later of when the project was added and when its newest agent was
 /// created, or `None` when neither exists.
-fn last_touched(project: &Project, sessions: &[AgentSession]) -> Option<DateTime<Utc>> {
+fn last_touched(project: &Project, sessions: &[AgentSession]) -> Option<Timestamp> {
     let newest_agent = sessions
         .iter()
         .filter(|session| session.project_id() == Some(project.id.as_str()))
@@ -51,19 +51,18 @@ fn last_touched(project: &Project, sessions: &[AgentSession]) -> Option<DateTime
 mod tests {
     use super::*;
     use crate::engine::test_support::{sample_project, sample_session, sample_standalone_session};
-    use chrono::TimeZone;
 
-    fn at(day: u32, hour: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, day, hour, 0, 0).unwrap()
+    fn at(day: i8, hour: i8) -> Timestamp {
+        crate::timefmt::utc(2026, 7, day, hour, 0, 0)
     }
 
-    fn project(id: &str, created_at: Option<DateTime<Utc>>) -> Project {
+    fn project(id: &str, created_at: Option<Timestamp>) -> Project {
         let mut p = sample_project(id, &format!("/tmp/{id}"));
         p.created_at = created_at;
         p
     }
 
-    fn agent(id: &str, project_id: &str, created_at: DateTime<Utc>) -> AgentSession {
+    fn agent(id: &str, project_id: &str, created_at: Timestamp) -> AgentSession {
         let mut s = sample_session(id, project_id, "feature");
         s.created_at = created_at;
         s

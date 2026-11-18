@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use chrono::{Duration as ChronoDuration, Utc};
+use jiff::Timestamp;
 use yaran_core::first_load::{self, FirstLoad, NotesOutcome};
 use yaran_core::release_notes::{self, CacheLookup, ReleaseNotes};
 use yaran_core::storage::SessionStore;
@@ -414,7 +414,7 @@ fn a_refused_connection_is_an_error_with_no_hang() {
 fn a_fresh_cache_hit_for_the_running_version_makes_no_request_at_all() {
     let tmp = tempfile::tempdir().unwrap();
     let cache = cache_file(tmp.path());
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     // Seed the cache as a previous launch would have.
     let seeded = ReleaseNotes {
@@ -444,7 +444,7 @@ fn a_fresh_cache_hit_for_the_running_version_makes_no_request_at_all() {
 fn a_cache_entry_older_than_the_ttl_is_refetched_so_a_fixed_typo_reaches_the_user() {
     let tmp = tempfile::tempdir().unwrap();
     let cache = cache_file(tmp.path());
-    let then = Utc::now() - ChronoDuration::hours(48);
+    let then = Timestamp::now() - jiff::SignedDuration::from_hours(48);
 
     release_notes::write_cache(
         &cache,
@@ -463,7 +463,7 @@ fn a_cache_entry_older_than_the_ttl_is_refetched_so_a_fixed_typo_reaches_the_use
         &cache,
         "v0.6.0",
         release_notes::CACHE_TTL,
-        Utc::now(),
+        Timestamp::now(),
     )
     .expect("stale entry refetched");
 
@@ -471,7 +471,7 @@ fn a_cache_entry_older_than_the_ttl_is_refetched_so_a_fixed_typo_reaches_the_use
     assert!(server.request().is_some(), "a request was actually made");
 
     // The refreshed copy replaced the stale one on disk.
-    let now = Utc::now();
+    let now = Timestamp::now();
     match release_notes::cached_notes(&cache, "v0.6.0", release_notes::CACHE_TTL, now) {
         CacheLookup::Fresh(n) => assert_eq!(n.headline, "Quieter plumbing, louder failures"),
         other => panic!("expected a fresh entry after a refetch, got {other:?}"),
@@ -489,7 +489,7 @@ fn a_failed_refresh_falls_back_to_the_stale_cache_rather_than_showing_nothing() 
             headline: "Stale but true".to_string(),
             ..Default::default()
         },
-        Utc::now() - ChronoDuration::hours(48),
+        Timestamp::now() - jiff::SignedDuration::from_hours(48),
     )
     .unwrap();
 
@@ -498,7 +498,7 @@ fn a_failed_refresh_falls_back_to_the_stale_cache_rather_than_showing_nothing() 
         &cache,
         "v0.6.0",
         release_notes::CACHE_TTL,
-        Utc::now(),
+        Timestamp::now(),
     )
     .expect("a stale hit beats nothing when the network is down");
     assert_eq!(got.headline, "Stale but true");
@@ -508,7 +508,7 @@ fn a_failed_refresh_falls_back_to_the_stale_cache_rather_than_showing_nothing() 
 fn a_cache_entry_for_a_different_version_is_never_used() {
     let tmp = tempfile::tempdir().unwrap();
     let cache = cache_file(tmp.path());
-    let now = Utc::now();
+    let now = Timestamp::now();
     release_notes::write_cache(
         &cache,
         &ReleaseNotes {
@@ -549,7 +549,7 @@ fn what_is_cached_is_what_the_next_lookup_asks_for_so_the_ttl_actually_takes_eff
     // write and the lookup agree on the key.
     let tmp = tempfile::tempdir().unwrap();
     let cache = cache_file(tmp.path());
-    let now = Utc::now();
+    let now = Timestamp::now();
     let server = TestServer::serving_sample_release("v0.7.0", "https://example.invalid/v0.7.0");
 
     let first = release_notes::load_or_fetch_tag(
@@ -571,7 +571,7 @@ fn what_is_cached_is_what_the_next_lookup_asks_for_so_the_ttl_actually_takes_eff
         &cache,
         "v0.7.0",
         release_notes::CACHE_TTL,
-        now + ChronoDuration::minutes(5),
+        now + jiff::SignedDuration::from_mins(5),
     )
     .expect("the second launch is served from cache, making no request");
     assert_eq!(second, first);
@@ -591,7 +591,7 @@ fn a_definitive_404_does_not_fall_back_to_a_stale_entry() {
             headline: "Was published once".to_string(),
             ..Default::default()
         },
-        Utc::now() - ChronoDuration::hours(48),
+        Timestamp::now() - jiff::SignedDuration::from_hours(48),
     )
     .unwrap();
 
@@ -605,7 +605,7 @@ fn a_definitive_404_does_not_fall_back_to_a_stale_entry() {
         &cache,
         "v0.6.0",
         release_notes::CACHE_TTL,
-        Utc::now(),
+        Timestamp::now(),
     )
     .expect_err("a 404 must not be papered over with a stale entry");
     assert!(err.is_definitive());
@@ -615,7 +615,7 @@ fn a_definitive_404_does_not_fall_back_to_a_stale_entry() {
 fn a_missing_or_corrupt_cache_file_is_not_an_error_it_is_just_a_miss() {
     let tmp = tempfile::tempdir().unwrap();
     let cache = cache_file(tmp.path());
-    let now = Utc::now();
+    let now = Timestamp::now();
     assert!(matches!(
         release_notes::cached_notes(&cache, "v0.6.0", release_notes::CACHE_TTL, now),
         CacheLookup::Missing
@@ -666,7 +666,7 @@ fn an_offline_launch_shows_nothing_and_leaves_the_stored_version_untouched() {
         &cache_file(tmp.path()),
         "v0.7.0",
         release_notes::CACHE_TTL,
-        Utc::now(),
+        Timestamp::now(),
     );
     assert!(fetched.is_err());
     assert_eq!(
@@ -711,7 +711,7 @@ fn an_online_launch_shows_the_notes_and_then_stores_the_version() {
         &cache_file(tmp.path()),
         "v0.7.0",
         release_notes::CACHE_TTL,
-        Utc::now(),
+        Timestamp::now(),
     );
     let plan = first_load::after_fetch(plan, release_notes::outcome_of(&notes));
     assert_eq!(plan.screen, FirstLoad::WhatsNew);

@@ -38,9 +38,10 @@
 //! ├── yaran-core::operations
 //! ├── yaran-core::serve_log
 //! ├── yaran-core::statusline
+//! ├── yaran-core::timefmt
 //! ├── yaran-core::wire
 //! └── yaran-core::worker
-//! External: anyhow, chrono, std, tempfile
+//! External: anyhow, std, tempfile
 //!
 //! Used by:
 //! background.rs
@@ -1058,7 +1059,7 @@ mod tests {
             .lines()
             .filter(|line| {
                 let (stamp, rest) = line.split_once(' ').expect("a dated line");
-                chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 date");
+                yaran_core::timefmt::parse_rfc3339(stamp).expect("an RFC 3339 date");
                 rest.len() > 9 && rest[9..].starts_with("GET /api/v1/build 200 ")
             })
             .collect();

@@ -495,7 +495,7 @@ fn every_surface(bindings: fn() -> RuntimeBindings, width: u16, height: u16) -> 
             session_id,
             provider: crate::model::ProviderKind::from_str("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         },
     );
     app.engine.config.ui.tab_reaches_agent = true;
