@@ -9,7 +9,6 @@ const {
   expectPanePainted,
   expectVisibleText,
   goto,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -22,7 +21,6 @@ module.exports = {
     // picture depends on whether this one ran before it.
     ctx.after(() => armAttention())
     await goto(page, `#/agent/${by["review-billing"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     await clickLabel(page, "Run a macro")
     // The picker, two of the macros it lists, and the way out to the editor the

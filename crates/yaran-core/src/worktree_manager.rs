@@ -672,7 +672,7 @@ pub fn removal_report(worktree_path: &str, branch: Option<&BranchOutcome>) -> Re
 mod tests {
     use super::*;
     use crate::model::{ProjectBranchStatus, ProviderKind, SessionStatus};
-    use chrono::Utc;
+    use jiff::Timestamp;
     use std::fs;
 
     fn project(root: &Path, repo: &Path) -> (Project, YaranPaths) {
@@ -715,8 +715,8 @@ mod tests {
             desired_running: false,
             auto_reopen_enabled: true,
             status: SessionStatus::Detached,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
             workspace: crate::model::AgentWorkspace::Managed(crate::model::ManagedWorkspace {
                 project_id: "project-1".to_string(),

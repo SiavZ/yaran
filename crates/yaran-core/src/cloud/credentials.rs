@@ -30,7 +30,7 @@
 //! ├── cloud::protocol::rules
 //! ├── file_modes
 //! └── private_file
-//! External: chrono, ring, serde, serde_json, std, tracing
+//! External: jiff, ring, serde, serde_json, std, tracing
 //!
 //! Used by:
 //! cloud/credentials.rs
@@ -445,7 +445,11 @@ pub fn stamp_revoked(
         Ok(current.map(|mut c| {
             matched = c.same_pairing(signed_for);
             if matched && c.revoked_at.is_none() {
-                c.revoked_at = Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                c.revoked_at = Some(
+                    jiff::Timestamp::now()
+                        .strftime("%Y-%m-%dT%H:%M:%SZ")
+                        .to_string(),
+                );
             }
             c
         }))

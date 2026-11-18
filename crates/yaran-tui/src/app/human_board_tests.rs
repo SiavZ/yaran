@@ -2,7 +2,6 @@
 //! the pane in the real right column (keys, clicks, the card dialog, and the
 //! file it writes).
 
-use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -15,8 +14,8 @@ use crate::app::{
     TerminalSelection,
 };
 
-fn at(minute: i64) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 11, 12, 0, 0).unwrap() + ChronoDuration::minutes(minute)
+fn at(minute: i64) -> jiff::Timestamp {
+    yaran_core::timefmt::utc(2026, 10, 11, 12, 0, 0) + jiff::SignedDuration::from_mins(minute)
 }
 
 fn new_card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
@@ -1359,13 +1358,13 @@ fn the_card_view_names_whose_card_it_is() {
 fn a_shared_board_shows_how_its_last_sync_went() {
     let mut app = board_app(Some(sample_board()));
     app.human_board.last_sync = Some(yaran_core::human_board::sync::SyncOutcome {
-        at: Utc::now(),
+        at: Timestamp::now(),
         result: Ok(yaran_core::human_board::sync::SyncReport::default()),
     });
     let text = screen(&mut app);
     assert!(text.contains("synced "), "{text}");
     app.human_board.last_sync = Some(yaran_core::human_board::sync::SyncOutcome {
-        at: Utc::now(),
+        at: Timestamp::now(),
         result: Err("offline".to_string()),
     });
     let text = screen(&mut app);
@@ -1466,7 +1465,7 @@ fn other_side_says(app: &mut App, from: &str, text: &str, done: ReplyDone) {
                     text: text.to_string(),
                     done: done == ReplyDone::MarkDone,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
         })
         .unwrap();
@@ -1644,7 +1643,7 @@ fn news_and_confirmations_cannot_be_assigned() {
     assert!(!app.board_card_assignable(&card), "news");
     card.kind = CardKind::Task;
     assert!(app.board_card_assignable(&card), "a task");
-    card.resolved_at = Some(Utc::now());
+    card.resolved_at = Some(Timestamp::now());
     assert!(!app.board_card_assignable(&card), "a done task");
 }
 
@@ -1678,7 +1677,7 @@ fn the_dots_say_what_waits_and_what_is_unread() {
                     text: "The audit_2019 table.".to_string(),
                     done: false,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
         })
         .unwrap();
@@ -2019,19 +2018,19 @@ fn news_closes_by_itself_after_the_configured_hours() {
         board
             .post(
                 &new_card(CardKind::Info, None, "Deployed"),
-                Utc::now() - chrono::Duration::hours(5),
+                Timestamp::now() - jiff::SignedDuration::from_hours(5),
             )
             .unwrap();
         board
             .post(
                 &new_card(CardKind::Info, None, "Rolled"),
-                Utc::now() - chrono::Duration::hours(1),
+                Timestamp::now() - jiff::SignedDuration::from_hours(1),
             )
             .unwrap();
         board
             .post(
                 &new_card(CardKind::Task, None, "Decide"),
-                Utc::now() - chrono::Duration::hours(9),
+                Timestamp::now() - jiff::SignedDuration::from_hours(9),
             )
             .unwrap();
         board
@@ -2138,4 +2137,18 @@ fn a_long_reply_scrolls_with_the_wheel_and_the_line_keys() {
     let (_, _, row_after, _) =
         super::super::human_board_dialog::reply_window(&reply.input, width, reply.scroll);
     assert_eq!(row_after + 1, row_before, "Up moved the caret one row up");
+}
+
+#[test]
+fn a_huge_news_close_hours_closes_nothing_and_does_not_panic() {
+    let mut app = board_app(Some(sample_board()));
+    app.engine.config.board.news_close_hours = u32::MAX;
+    app.human_board.settings = Some(yaran_core::human_board::BoardSettings::from_config(
+        &app.engine.config.board,
+        &app.engine.paths.root,
+    ));
+    app.human_board.news_checked = None;
+    app.human_board.job = None;
+    app.close_stale_news();
+    assert!(app.human_board.job.is_none(), "nothing is old enough");
 }

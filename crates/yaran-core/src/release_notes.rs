@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// The trimmed shape of a GitHub release body: everything the what's-new screen
@@ -705,14 +705,15 @@ pub enum CacheLookup {
 /// could never be the one we want.
 #[derive(Serialize, Deserialize)]
 struct CacheFile {
-    fetched_at: DateTime<Utc>,
+    #[serde(with = "crate::timefmt::serde_rfc3339")]
+    fetched_at: Timestamp,
     notes: ReleaseNotes,
 }
 
 /// Looks up `version` in the cache. Never fails: an unreadable or corrupt file
 /// is a [`CacheLookup::Missing`], because the fallback (one HTTP request) is
 /// cheaper than surfacing an error nobody can act on.
-pub fn cached_notes(path: &Path, version: &str, ttl: Duration, now: DateTime<Utc>) -> CacheLookup {
+pub fn cached_notes(path: &Path, version: &str, ttl: Duration, now: Timestamp) -> CacheLookup {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return CacheLookup::Missing;
     };
@@ -722,9 +723,9 @@ pub fn cached_notes(path: &Path, version: &str, ttl: Duration, now: DateTime<Utc
     if file.notes.version != version {
         return CacheLookup::Missing;
     }
-    // `to_std` errors on a negative span, which is a clock that moved backwards;
+    // The conversion errors on a negative span, which is a clock that moved backwards;
     // treat that as "age unknown" and refetch rather than trusting the entry.
-    let fresh = (now - file.fetched_at).to_std().is_ok_and(|age| age < ttl);
+    let fresh = Duration::try_from(now.duration_since(file.fetched_at)).is_ok_and(|age| age < ttl);
     if fresh {
         CacheLookup::Fresh(file.notes)
     } else {
@@ -737,7 +738,7 @@ pub fn cached_notes(path: &Path, version: &str, ttl: Duration, now: DateTime<Utc
 /// # Errors
 ///
 /// Fails when the notes cannot be encoded, or the cache's folder or file cannot be written.
-pub fn write_cache(path: &Path, notes: &ReleaseNotes, now: DateTime<Utc>) -> Result<()> {
+pub fn write_cache(path: &Path, notes: &ReleaseNotes, now: Timestamp) -> Result<()> {
     let file = CacheFile {
         fetched_at: now,
         notes: notes.clone(),
@@ -770,7 +771,7 @@ pub fn load_or_fetch_tag(
     cache: &Path,
     tag: &str,
     ttl: Duration,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<ReleaseNotes, FetchError> {
     let cached = cached_notes(cache, tag, ttl, now);
     if let CacheLookup::Fresh(notes) = cached {
@@ -866,7 +867,7 @@ pub fn load_release_notes_from(
         &cache_path(root),
         running_version,
         CACHE_TTL,
-        Utc::now(),
+        Timestamp::now(),
     )
 }
 
@@ -1796,12 +1797,12 @@ Its description.
         // A clock that moved backwards must not make an entry immortal.
         let tmp = tempfile::tempdir().unwrap();
         let path = cache_path(tmp.path());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let notes = ReleaseNotes {
             version: "v1".to_string(),
             ..Default::default()
         };
-        write_cache(&path, &notes, now + chrono::Duration::hours(5)).unwrap();
+        write_cache(&path, &notes, now + jiff::SignedDuration::from_hours(5)).unwrap();
         assert!(matches!(
             cached_notes(&path, "v1", CACHE_TTL, now),
             CacheLookup::Stale(_)

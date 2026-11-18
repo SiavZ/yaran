@@ -23,7 +23,7 @@ fn sample_session(
     branch: &str,
     worktree: &str,
 ) -> yaran_core::model::AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -714,7 +714,7 @@ fn server_log_holds_the_plain_lines(server_log_path: &std::path::Path, addr: std
         .lines()
         .map(|line| {
             let (stamp, rest) = line.split_once(' ').expect("a dated line");
-            chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 date");
+            yaran_core::timefmt::parse_rfc3339(stamp).expect("an RFC 3339 date");
             rest
         })
         .collect();

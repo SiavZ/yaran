@@ -80,13 +80,6 @@ impl App {
         {
             return 0;
         }
-        // An armed take-over is spent by the next render of the pane it is
-        // about. The sizing chokepoint drops an arm for any other pty, so a
-        // presize now would cancel the user's take-over.
-        if self.pending_pty_takeover.is_some() {
-            return 0;
-        }
-
         let selected = self.selected_session().map(|s| s.id.clone());
         let selected_tab = selected.as_deref().map(|id| self.focused_tab_id(id));
         let is_input = matches!(
@@ -142,7 +135,7 @@ impl App {
                 continue;
             }
             // Drawing is not a claim, and neither is presizing: a pty another
-            // device drives, or nobody does yet, keeps its grid.
+            // device holds, or nobody does yet, keeps its grid.
             if serving && !matches!(self.pty_driver(tab_id), PtyDriver::Mine) {
                 continue;
             }
@@ -283,7 +276,7 @@ mod tests {
                         session_id: "session-1".to_string(),
                         provider: yaran_core::model::ProviderKind::new("claude"),
                         sort_order: 1,
-                        created_at: chrono::Utc::now(),
+                        created_at: jiff::Timestamp::now(),
                     },
                 );
             }

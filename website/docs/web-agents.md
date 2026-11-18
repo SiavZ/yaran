@@ -89,8 +89,8 @@ Everything else, including what each failure leaves on disk, is in
 
 Two doors, differing in what you start from.
 
-**The launcher** is the split button at the bottom of the sidebar (and along the bottom
-of the mobile hub). Its big half, **New agent…**, opens the project picker described
+**The launcher** is the split button at the bottom of the sidebar (and floating in the
+bottom-right corner of the mobile hub). Its big half, **New agent…**, opens the project picker described
 below. The small **▾** beside it opens a menu of every other way to start, each entry
 with a sentence saying what it does:
 

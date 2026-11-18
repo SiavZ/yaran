@@ -44,7 +44,7 @@ fn row_of(pty: &PtyClient, needle: &str) -> Option<u16> {
 }
 
 fn session(id: &str, title: &str, provider: &str, folder: &Path) -> AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     AgentSession {
         id: id.into(),
         agent_handle: id.into(),

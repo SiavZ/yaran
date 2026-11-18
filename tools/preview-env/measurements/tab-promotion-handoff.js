@@ -17,7 +17,6 @@ const {
   open,
   setFixture,
   sleep,
-  takeOver,
 } = require("../screens/lib.js")
 
 const PROJECT_PATH = "/repos/demo-api"
@@ -128,7 +127,6 @@ async function main() {
     await sleep(2000)
     // The agent was created over REST, so this page is a watcher until it
     // presses the card's button; typing is what the exit needs.
-    await takeOver(page)
     await sleep(2000)
     const before = await sample(page)
     say(`before: ${JSON.stringify(before)}`)

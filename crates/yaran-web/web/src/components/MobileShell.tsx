@@ -73,29 +73,28 @@ function selectTerminalAndOpen(
   selectTerminal(terminalId, owner)
 }
 
-// The hub: the shared flat agent list at touch size. Search and sort live in
-// the list header; the launcher corner sits in the bottom bar, the same
-// component and size tokens as the desktop sidebar's footer.
+// The hub: the shared flat agent list at touch size, on a rounded sheet under
+// a card-coloured title bar. Search and sort live in the list header; the
+// launcher corner, the same component as the desktop sidebar's footer, floats
+// at the sheet's bottom-right corner, and the list pads its end so the last
+// row scrolls clear of it.
 function HomeScreen() {
   const { bootstrap } = useYaran()
   const [menuOpen, setMenuOpen] = useState(false)
   const instanceTitle = resolveInstanceTitle(bootstrap?.title)
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-3">
-        <span className="relative shrink-0">
-          <img src="/yaran-logo.svg" alt="yaran" className="size-8 rounded-lg" />
-          <ConnDot className="absolute -right-0.5 -bottom-0.5 ring-2 ring-background" />
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-card">
+      <header className="flex shrink-0 items-center gap-2 py-3 pr-2 pl-5">
+        <span className="min-w-0 truncate text-[1.75rem] leading-tight font-normal">
+          {instanceTitle}
         </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5 leading-none">
-          <span className="truncate font-semibold">{instanceTitle}</span>
-          <span className="text-sm text-muted-foreground">agent sessions</span>
-        </div>
+        <ConnDot className="mr-auto" />
+        {/* Ghost, as a quiet title-bar action; size-11 keeps the touch floor. */}
         <Button
-          variant="outline"
+          variant="ghost"
           size="icon"
-          className="size-11 shrink-0"
+          className="size-11 shrink-0 [&_svg:not([class*='size-'])]:size-5"
           aria-label="Menu"
           onClick={() => setMenuOpen(true)}
         >
@@ -104,15 +103,14 @@ function HomeScreen() {
       </header>
       <AppMenuSheet open={menuOpen} onOpenChange={setMenuOpen} />
 
-      <FlatAgentList
-        handlers={{
-          onSelectSession: selectAndOpen,
-          onSelectTerminal: selectTerminalAndOpen,
-        }}
-      />
-
-      <div className="flex shrink-0 items-center border-t p-3">
-        <LauncherCorner className="flex-1" />
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-[1.75rem] bg-background pt-2">
+        <FlatAgentList
+          handlers={{
+            onSelectSession: selectAndOpen,
+            onSelectTerminal: selectTerminalAndOpen,
+          }}
+        />
+        <LauncherCorner floating className="absolute right-4 bottom-4 z-10" />
       </div>
     </div>
   )

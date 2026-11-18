@@ -14,7 +14,7 @@
 //! Uses:
 //! cloud/protocol/rules.rs
 //! └── cloud::protocol::test_fixtures
-//! External: base64, chrono, regex, ring, serde, serde_json, std
+//! External: base64, jiff, regex, ring, serde, serde_json, std
 //!
 //! Used by:
 //! cloud/protocol/rules.rs
@@ -174,11 +174,11 @@ pub fn is_yaran_id(s: &str) -> bool {
 }
 /// RFC 3339 UTC with seconds precision and `Z`, and a real calendar instant.
 pub fn is_timestamp(s: &str) -> bool {
-    TIMESTAMP.is_match(s) && chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%SZ").is_ok()
+    TIMESTAMP.is_match(s) && jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M:%SZ", s).is_ok()
 }
 /// JSON Schema `format: date`.
 pub fn is_date(s: &str) -> bool {
-    DATE.is_match(s) && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+    DATE.is_match(s) && jiff::civil::Date::strptime("%Y-%m-%d", s).is_ok()
 }
 /// Unpadded base64url characters only.
 pub fn is_b64url(s: &str) -> bool {

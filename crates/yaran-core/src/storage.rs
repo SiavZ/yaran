@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result, bail, ensure};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashSet;
 
@@ -15,6 +15,7 @@ use crate::model::{
 };
 use crate::peer::next_unique_agent_handle;
 use crate::text::count_of;
+use crate::timefmt::Rfc3339;
 
 mod diff_comments;
 
@@ -1347,7 +1348,7 @@ impl SessionStore {
                 );
                 ",
             )?;
-            let now = Utc::now().to_rfc3339();
+            let now = Timestamp::now().to_rfc3339();
             // Every pull request yaran ever associated, including ones on a
             // branch whose remote ref is gone, which discovery could no longer
             // find. Its first refresh fills in the branch, the draft flag and
@@ -1429,7 +1430,7 @@ impl SessionStore {
                 );
                 ",
             )?;
-            let now = Utc::now().to_rfc3339();
+            let now = Timestamp::now().to_rfc3339();
             // The birth row, under the name a yaran rename gave it.
             tx.execute(
                 "insert or ignore into session_branch_history \
@@ -1501,7 +1502,7 @@ impl SessionStore {
         session_id: &str,
         seen: &[crate::branch_history::SeenBranch],
     ) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
+        let now = Timestamp::now().to_rfc3339();
         let tx = immediate_tx(&self.conn)?;
         for seen in seen.iter().filter(|seen| !seen.name.is_empty()) {
             let unix = seen.identity.as_ref().map(|identity| identity.unix);
@@ -1560,7 +1561,7 @@ impl SessionStore {
                 identity.map(|identity| identity.unix),
                 identity.map(|identity| identity.oid.as_str()),
                 tip,
-                Utc::now().to_rfc3339(),
+                Timestamp::now().to_rfc3339(),
             ],
         )?;
         Ok(())
@@ -1630,7 +1631,7 @@ impl SessionStore {
             tx.execute(
                 "insert or ignore into session_branch_history \
                  (session_id, branch_name, born_here, first_seen_at) values (?1, ?2, 0, ?3)",
-                params![session_id, new, Utc::now().to_rfc3339()],
+                params![session_id, new, Timestamp::now().to_rfc3339()],
             )?;
         }
         // The branch keeps every name it has had, because GitHub keeps the
@@ -1648,7 +1649,7 @@ impl SessionStore {
         tx.execute(
             "insert or ignore into session_branch_former_names \
              (session_id, branch_name, former_name, renamed_at) values (?1, ?2, ?3, ?4)",
-            params![session_id, new, old, Utc::now().to_rfc3339()],
+            params![session_id, new, old, Timestamp::now().to_rfc3339()],
         )?;
         // Renamed back to a name it once had: that name is current, not former.
         tx.execute(
@@ -1967,7 +1968,7 @@ impl SessionStore {
         for row in rows {
             let (session, at): (String, String) = row?;
             if let Some(at) = parse_time(&at) {
-                created.insert(session, at.timestamp_millis());
+                created.insert(session, at.as_millisecond());
             }
         }
         Ok(created)
@@ -2274,7 +2275,7 @@ impl SessionStore {
                     encode_identities(&row.process_snapshot),
                     serde_json::to_string(&row.process_registry)
                         .context("failed to encode a pending removal's processes")?,
-                    Utc::now().to_rfc3339(),
+                    Timestamp::now().to_rfc3339(),
                     row.branches.encode()?,
                 ],
             )
@@ -2542,7 +2543,7 @@ impl SessionStore {
                     stored_u64(identity.dev),
                     stored_u64(identity.ino),
                     identity.birth_ns,
-                    Utc::now().to_rfc3339(),
+                    Timestamp::now().to_rfc3339(),
                 ],
             )
             .context("failed to record a left-over worktree folder")?;
@@ -2822,7 +2823,7 @@ impl SessionStore {
         &self,
         session_id: &str,
         provider: &str,
-        updated_at: DateTime<Utc>,
+        updated_at: Timestamp,
     ) -> Result<()> {
         let tx =
             immediate_tx(&self.conn).context("failed to start retargeting the agent's provider")?;
@@ -2866,7 +2867,7 @@ impl SessionStore {
         new_slot_tab_id: &str,
         old_slot_tab_id: &str,
         provider: &str,
-        updated_at: DateTime<Utc>,
+        updated_at: Timestamp,
     ) -> Result<()> {
         if new_slot_tab_id == old_slot_tab_id {
             anyhow::bail!(
@@ -3008,7 +3009,7 @@ impl SessionStore {
     ///
     /// Fails when the database write fails.
     pub fn upsert_project_at(&self, project: &ProjectConfig, sort_order: i64) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
+        let now = Timestamp::now().to_rfc3339();
         let updated = self.conn.execute(
             r"
             update projects
@@ -3124,9 +3125,7 @@ impl SessionStore {
     /// # Errors
     ///
     /// Fails when the database read fails; a timestamp that does not parse is left out.
-    pub fn load_project_created_ats(
-        &self,
-    ) -> Result<std::collections::HashMap<String, DateTime<Utc>>> {
+    pub fn load_project_created_ats(&self) -> Result<std::collections::HashMap<String, Timestamp>> {
         let mut stmt = self.conn.prepare("select id, created_at from projects")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
@@ -3161,7 +3160,7 @@ impl SessionStore {
                 updated_at = ?3
             where id = ?1
             ",
-            params![project_id, default_provider, Utc::now().to_rfc3339()],
+            params![project_id, default_provider, Timestamp::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -3181,7 +3180,7 @@ impl SessionStore {
                 updated_at = ?3
             where id = ?1
             ",
-            params![project_id, branch, Utc::now().to_rfc3339()],
+            params![project_id, branch, Timestamp::now().to_rfc3339()],
         )?;
         // A write that matched no row saved nothing, and must not read as saved.
         if updated == 0 {
@@ -3202,7 +3201,11 @@ impl SessionStore {
                 updated_at = ?3
             where id = ?1
             ",
-            params![project_id, auto_reopen_agents, Utc::now().to_rfc3339()],
+            params![
+                project_id,
+                auto_reopen_agents,
+                Timestamp::now().to_rfc3339()
+            ],
         )?;
         Ok(())
     }
@@ -3219,7 +3222,7 @@ impl SessionStore {
                 updated_at = ?3
             where id = ?1
             ",
-            params![project_id, startup_command, Utc::now().to_rfc3339()],
+            params![project_id, startup_command, Timestamp::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -3239,7 +3242,7 @@ impl SessionStore {
             params![
                 project_id,
                 serialize_project_env(env),
-                Utc::now().to_rfc3339()
+                Timestamp::now().to_rfc3339()
             ],
         )?;
         Ok(())
@@ -3362,7 +3365,7 @@ impl SessionStore {
             let number = row.get::<_, i64>(3)?.cast_unsigned();
             let state: String = row.get(4)?;
             let is_draft: bool = row.get(5)?;
-            let time = |index: usize| -> rusqlite::Result<Option<DateTime<Utc>>> {
+            let time = |index: usize| -> rusqlite::Result<Option<Timestamp>> {
                 Ok(row
                     .get::<_, Option<String>>(index)?
                     .as_deref()
@@ -3433,7 +3436,7 @@ impl SessionStore {
         pr: &crate::model::AgentPr,
         write: PrRowWrite,
     ) -> Result<()> {
-        let time = |at: Option<DateTime<Utc>>| at.map(|at| at.to_rfc3339());
+        let time = |at: Option<Timestamp>| at.map(|at| at.to_rfc3339());
         let user_flags = match write {
             PrRowWrite::Exact => {
                 "found = excluded.found, attached = excluded.attached, \
@@ -3774,7 +3777,7 @@ impl SessionStore {
         tx.execute("delete from agent_tabs where session_id = ?1", params![id])?;
         tx.execute(
             "update agent_sessions set deleted_at = ?2 where id = ?1 and deleted_at is null",
-            params![id, Utc::now().to_rfc3339()],
+            params![id, Timestamp::now().to_rfc3339()],
         )?;
         tx.commit()?;
         Ok(())
@@ -4215,7 +4218,7 @@ impl SessionStore {
                 // epoch keeps `is_deleted()` true for it.
                 deleted_at: row
                     .get::<_, Option<String>>(22)?
-                    .map(|raw| parse_time(&raw).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)),
+                    .map(|raw| parse_time(&raw).unwrap_or(Timestamp::UNIX_EPOCH)),
                 // `migrate()` has already run by the time anything reads, so a
                 // usable pointer is guaranteed. The fallback is defence for a
                 // row written by a build that is not this one; it restores the
@@ -4231,8 +4234,8 @@ impl SessionStore {
                 desired_running: row.get(9)?,
                 auto_reopen_enabled: row.get(10)?,
                 status: SessionStatus::from_str(row.get::<_, String>(11)?.as_str()),
-                created_at: parse_time(&created_at).unwrap_or_else(Utc::now),
-                updated_at: parse_time(&updated_at).unwrap_or_else(Utc::now),
+                created_at: parse_time(&created_at).unwrap_or_else(Timestamp::now),
+                updated_at: parse_time(&updated_at).unwrap_or_else(Timestamp::now),
                 last_focused_tab: row.get(15)?,
             }))
         })?;
@@ -4354,7 +4357,7 @@ impl SessionStore {
     ) -> Result<()> {
         self.conn.execute(
             "update agent_sessions set desired_running = ?2, updated_at = ?3 where id = ?1",
-            params![id, desired.is_running(), Utc::now().to_rfc3339()],
+            params![id, desired.is_running(), Timestamp::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -4565,7 +4568,7 @@ impl SessionStore {
         let enabled = auto_reopen == crate::model::AutoReopen::Enabled;
         self.conn.execute(
             "update agent_sessions set auto_reopen_enabled = ?2, updated_at = ?3 where id = ?1",
-            params![id, enabled, Utc::now().to_rfc3339()],
+            params![id, enabled, Timestamp::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -4598,7 +4601,7 @@ impl SessionStore {
             .into_iter()
             .find(|row| row.is(&key))
             .unwrap_or_else(|| {
-                let mut row = crate::model::AgentPr::found(&info, Utc::now());
+                let mut row = crate::model::AgentPr::found(&info, Timestamp::now());
                 row.found = false;
                 row
             });
@@ -4680,7 +4683,7 @@ impl SessionStore {
             .expect("read the preferences")
             .remove(session_id)
             .unwrap_or_default();
-        prefs.hide_created_before = Some(Utc::now());
+        prefs.hide_created_before = Some(Timestamp::now());
         self.replace_agent_prs(session_id, &rows, &prefs)
             .expect("store the detach");
     }
@@ -4725,10 +4728,8 @@ impl SessionStore {
     }
 }
 
-fn parse_time(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
+fn parse_time(value: &str) -> Option<Timestamp> {
+    crate::timefmt::parse_rfc3339(value).ok()
 }
 
 fn serialize_project_env(env: &BTreeMap<String, String>) -> String {
@@ -4786,8 +4787,8 @@ fn test_store() -> SessionStore {
 #[cfg(test)]
 fn test_session(
     id: &str,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    created_at: Timestamp,
+    updated_at: Timestamp,
 ) -> crate::model::AgentSession {
     crate::model::AgentSession {
         id: id.to_string(),
@@ -4822,8 +4823,8 @@ fn test_session(
 fn test_session_in(
     id: &str,
     project_id: &str,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    created_at: Timestamp,
+    updated_at: Timestamp,
 ) -> crate::model::AgentSession {
     let mut session = test_session(id, created_at, updated_at);
     session
@@ -4842,7 +4843,7 @@ fn test_tab(id: &str, session_id: &str, sort_order: i64) -> crate::model::AgentT
         session_id: session_id.to_string(),
         provider: crate::model::ProviderKind::new("codex"),
         sort_order,
-        created_at: Utc::now(),
+        created_at: Timestamp::now(),
     }
 }
 
@@ -4880,7 +4881,7 @@ mod tests {
         );
     }
     use crate::model::{AgentWorkspace, FolderWorkspace};
-    use chrono::Duration;
+    use jiff::SignedDuration;
 
     fn history_names(store: &SessionStore, id: &str) -> Vec<(String, bool)> {
         store
@@ -4900,7 +4901,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("sessions.sqlite3");
         let store = SessionStore::open(&path).unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut drifted = test_session("s1", now, now);
         drifted.workspace.as_managed_mut().unwrap().branch_name = "moved".to_string();
         store.upsert_session(&drifted).unwrap();
@@ -4948,7 +4949,7 @@ mod tests {
     #[test]
     fn a_yaran_rename_renames_the_branch_list_entry_in_place() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = test_session("s1", now, now);
         let identity = crate::branch_history::BranchIdentity {
             unix: 42,
@@ -5025,7 +5026,7 @@ mod tests {
     #[test]
     fn a_recreated_name_does_not_move_an_identity_less_rows_tip() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .create_session_with_birth(&test_session("s1", now, now), None)
             .unwrap();
@@ -5171,7 +5172,7 @@ mod tests {
     }
 
     fn standalone_session(id: &str, folder: &str) -> AgentSession {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: id.to_string(),
             agent_handle: crate::model::normalize_agent_handle(id),
@@ -5332,7 +5333,7 @@ mod tests {
     #[test]
     fn a_managed_row_with_no_worktree_is_refused_rather_than_loaded_empty() {
         let (_dir, store) = temp_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in("m1", "p1", now, now))
             .unwrap();
@@ -5368,7 +5369,7 @@ mod tests {
     #[test]
     fn a_new_standalone_agent_lands_above_every_other_agent() {
         let (_dir, store) = temp_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in("a", "p1", now, now))
             .unwrap();
@@ -5400,7 +5401,7 @@ mod tests {
     #[test]
     fn a_new_managed_agent_lands_above_every_other_agent() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in("a", "p1", now, now))
             .unwrap();
@@ -5919,7 +5920,7 @@ mod tests {
     #[test]
     fn agent_tab_crud_round_trips() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
         store.insert_agent_tab(&test_tab("t1", "s1", 1)).unwrap();
         store.insert_agent_tab(&test_tab("t2", "s1", 2)).unwrap();
@@ -5945,7 +5946,7 @@ mod tests {
     #[test]
     fn delete_session_removes_its_agent_tabs_rows() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
         store.upsert_session(&test_session("s2", now, now)).unwrap();
         store.insert_agent_tab(&test_tab("t1", "s1", 1)).unwrap();
@@ -5960,7 +5961,7 @@ mod tests {
     #[test]
     fn remove_project_records_removes_all_its_sessions_tabs() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in("s1", "projA", now, now))
             .unwrap();
@@ -5978,7 +5979,7 @@ mod tests {
     #[test]
     fn migrate_sweeps_orphan_tabs_with_no_session() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6031,7 +6032,7 @@ mod tests {
     #[test]
     fn reopening_after_a_downgrade_sweeps_minted_renames_with_no_session() {
         let (dir, store) = temp_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
         store.upsert_session(&test_session("s2", now, now)).unwrap();
         store.set_minted_branch_rename("s1", "gone").unwrap();
@@ -6073,7 +6074,7 @@ mod tests {
     /// session with no `slot_tab_id` pointer and no first-tab row, because the
     /// slot tab was synthesized from the session record rather than stored.
     fn pre_pivot_session(store: &SessionStore, id: &str, provider: &str) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session(id, now, now);
         session.provider = crate::model::ProviderKind::new(provider);
         store.upsert_session(&session).unwrap();
@@ -6100,7 +6101,7 @@ mod tests {
     #[test]
     fn create_session_writes_the_session_its_slot_tab_row_and_the_pointer_at_once() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         session.provider = crate::model::ProviderKind::new("codex");
@@ -6119,7 +6120,7 @@ mod tests {
     #[test]
     fn create_session_writes_nothing_at_all_when_the_slot_tab_row_cannot_be_written() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         // Somebody else already holds this tab id, so the slot row's INSERT
         // fails. The session row must not survive on its own: a session with no
         // slot tab is exactly the half-created state the transaction exists to
@@ -6143,7 +6144,7 @@ mod tests {
     #[test]
     fn create_session_places_the_slot_row_before_every_tab_added_later() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6216,7 +6217,7 @@ mod tests {
     #[test]
     fn position_migration_renumbers_each_strip_in_the_order_it_showed_before() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         // A strip whose slot row kept a high stamp after a past promotion, and
         // whose extras carry gaps: the slot tab still showed first.
         let mut session = test_session("s1", now, now);
@@ -6262,7 +6263,7 @@ mod tests {
     #[test]
     fn position_migration_runs_once_so_a_hand_placed_slot_tab_stays_put() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6282,7 +6283,7 @@ mod tests {
     #[test]
     fn set_tab_positions_writes_every_position_or_none() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6371,7 +6372,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.sqlite3");
         let store = SessionStore::open(&path).unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6391,7 +6392,7 @@ mod tests {
     #[test]
     fn migrate_heals_a_pointer_that_names_no_row_by_adopting_the_oldest_tab() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         session.provider = crate::model::ProviderKind::new("claude");
@@ -6420,7 +6421,7 @@ mod tests {
     #[test]
     fn migrate_treats_a_blank_pointer_the_same_as_a_missing_one_and_mints() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6449,7 +6450,7 @@ mod tests {
     #[test]
     fn migrate_treats_a_pointer_at_another_sessions_tab_as_dangling() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut first = test_session("s1", now, now);
         first.slot_tab_id = "slot-1".to_string();
         store.create_session(&first).unwrap();
@@ -6511,7 +6512,7 @@ mod tests {
     #[test]
     fn migrate_heals_a_dangling_pointer_with_no_tabs_left_by_minting_one() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         session.provider = crate::model::ProviderKind::new("codex");
@@ -6575,7 +6576,7 @@ mod tests {
     #[test]
     fn deleting_a_session_removes_its_slot_tab_row_with_the_rest() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6590,13 +6591,15 @@ mod tests {
     #[test]
     fn set_slot_provider_moves_the_row_and_the_session_mirror_together() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         session.provider = crate::model::ProviderKind::new("claude");
         store.create_session(&session).unwrap();
 
-        store.set_slot_provider("s1", "codex", Utc::now()).unwrap();
+        store
+            .set_slot_provider("s1", "codex", Timestamp::now())
+            .unwrap();
 
         assert_eq!(store.load_sessions().unwrap()[0].provider.as_str(), "codex");
         assert_eq!(
@@ -6608,7 +6611,7 @@ mod tests {
     /// The shape every promotion test starts from: an agent whose slot tab is
     /// `slot-1` and which has one extra tab, `t2`.
     fn session_with_one_extra_tab(store: &SessionStore) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         session.provider = crate::model::ProviderKind::new("claude");
@@ -6624,7 +6627,7 @@ mod tests {
         session_with_one_extra_tab(&store);
 
         store
-            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Timestamp::now())
             .unwrap();
 
         let session = store.load_sessions().unwrap().remove(0);
@@ -6652,7 +6655,7 @@ mod tests {
         store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
 
         store
-            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Timestamp::now())
             .unwrap();
 
         assert_eq!(store.load_sessions().unwrap()[0].slot_tab_id, "t2");
@@ -6682,7 +6685,7 @@ mod tests {
             store.set_last_focused_tab("s1", Some(remembered)).unwrap();
 
             store
-                .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+                .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Timestamp::now())
                 .unwrap();
 
             assert_eq!(
@@ -6698,7 +6701,7 @@ mod tests {
         store.insert_agent_tab(&test_tab("t3", "s1", 2)).unwrap();
         store.set_last_focused_tab("s1", Some("t3")).unwrap();
         store
-            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+            .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Timestamp::now())
             .unwrap();
         assert_eq!(
             store.load_sessions().unwrap()[0].last_focused_tab,
@@ -6710,7 +6713,7 @@ mod tests {
     fn promote_tab_to_slot_refuses_a_tab_belonging_to_another_agent() {
         let store = test_store();
         session_with_one_extra_tab(&store);
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut other = test_session("s2", now, now);
         other.slot_tab_id = "s2-slot".to_string();
         store.create_session(&other).unwrap();
@@ -6720,7 +6723,7 @@ mod tests {
 
         assert!(
             store
-                .promote_tab_to_slot("s1", "foreign", "slot-1", "codex", Utc::now())
+                .promote_tab_to_slot("s1", "foreign", "slot-1", "codex", Timestamp::now())
                 .is_err()
         );
 
@@ -6742,7 +6745,7 @@ mod tests {
 
         assert!(
             store
-                .promote_tab_to_slot("s1", "ghost", "slot-1", "codex", Utc::now())
+                .promote_tab_to_slot("s1", "ghost", "slot-1", "codex", Timestamp::now())
                 .is_err()
         );
         assert_eq!(store.load_sessions().unwrap()[0].slot_tab_id, "slot-1");
@@ -6768,7 +6771,7 @@ mod tests {
 
         assert!(
             store
-                .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Utc::now())
+                .promote_tab_to_slot("s1", "t2", "slot-1", "codex", Timestamp::now())
                 .is_err()
         );
 
@@ -6781,7 +6784,7 @@ mod tests {
     #[test]
     fn count_agent_tabs_counts_the_slot_row_too_and_extras_omit_it() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.slot_tab_id = "slot-1".to_string();
         store.create_session(&session).unwrap();
@@ -6882,7 +6885,7 @@ mod tests {
                 url: format!("https://github.com/{owner_repo}/pull/{number}"),
                 ..crate::model::PrInfo::default()
             },
-            Utc::now(),
+            Timestamp::now(),
         )
     }
 
@@ -6963,7 +6966,7 @@ mod tests {
     #[test]
     fn delete_session_removes_its_changes_rev_row() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
         assert_eq!(store.next_changes_rev("s1").unwrap(), 1);
         assert_eq!(store.next_changes_rev("s1").unwrap(), 2);
@@ -6978,7 +6981,7 @@ mod tests {
     #[test]
     fn delete_session_also_removes_its_pull_request_rows() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
         store.upsert_session(&test_session("s2", now, now)).unwrap();
         seed_every_pr_table(&store, "s1");
@@ -7003,7 +7006,7 @@ mod tests {
     #[test]
     fn a_minted_branch_rename_is_read_for_its_own_session_only() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
         store.upsert_session(&test_session("s2", now, now)).unwrap();
         store.set_minted_branch_rename("s1", "renamed-1").unwrap();
@@ -7019,7 +7022,7 @@ mod tests {
     #[test]
     fn remove_project_records_clears_project_sessions_and_prs_atomically() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let p1 = ProjectConfig {
             id: "p1".to_string(),
             path: "/tmp/p1".to_string(),
@@ -7106,14 +7109,26 @@ mod tests {
     #[test]
     fn new_sessions_land_at_top_of_their_project() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
 
         // Insert three sessions into the same project. Each new insert takes the
         // top slot (sort_order = current min - 1), so the load order is the
         // reverse of the insertion order regardless of updated_at.
-        let s1 = test_session("a", now - Duration::hours(3), now - Duration::hours(3));
-        let s2 = test_session("b", now - Duration::hours(2), now - Duration::hours(1));
-        let s3 = test_session("c", now - Duration::hours(1), now - Duration::hours(2));
+        let s1 = test_session(
+            "a",
+            now - SignedDuration::from_hours(3),
+            now - SignedDuration::from_hours(3),
+        );
+        let s2 = test_session(
+            "b",
+            now - SignedDuration::from_hours(2),
+            now - SignedDuration::from_hours(1),
+        );
+        let s3 = test_session(
+            "c",
+            now - SignedDuration::from_hours(1),
+            now - SignedDuration::from_hours(2),
+        );
 
         store.upsert_session(&s1).unwrap();
         store.upsert_session(&s2).unwrap();
@@ -7129,10 +7144,18 @@ mod tests {
     #[test]
     fn upsert_existing_session_preserves_sort_order() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
 
-        let s1 = test_session("a", now - Duration::hours(2), now - Duration::hours(2));
-        let s2 = test_session("b", now - Duration::hours(1), now - Duration::hours(1));
+        let s1 = test_session(
+            "a",
+            now - SignedDuration::from_hours(2),
+            now - SignedDuration::from_hours(2),
+        );
+        let s2 = test_session(
+            "b",
+            now - SignedDuration::from_hours(1),
+            now - SignedDuration::from_hours(1),
+        );
 
         store.upsert_session(&s1).unwrap();
         store.upsert_session(&s2).unwrap();
@@ -7155,7 +7178,7 @@ mod tests {
     #[test]
     fn session_state_persists_round_trip_through_store() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         for (id, status) in [
             ("active", SessionStatus::Active),
             ("detached", SessionStatus::Detached),
@@ -7180,7 +7203,7 @@ mod tests {
     #[test]
     fn provider_session_ids_round_trip() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = test_session("provider-ids", now, now);
         store.upsert_session(&session).unwrap();
         let ids = BTreeMap::from([
@@ -7202,7 +7225,7 @@ mod tests {
     #[test]
     fn stale_whole_row_upsert_cannot_erase_captured_provider_uuid() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut stale = test_session("capture-race", now, now);
         store.upsert_session(&stale).unwrap();
         let captured = uuid::Uuid::new_v4().to_string();
@@ -7227,7 +7250,7 @@ mod tests {
     #[test]
     fn update_session_order_persists_manual_order() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("a", now, now)).unwrap();
         let b = test_session_in("b", "other-project", now, now);
         store.upsert_session(&b).unwrap();
@@ -7245,7 +7268,7 @@ mod tests {
     #[test]
     fn started_providers_round_trip() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("started", now, now);
         session.started_providers = vec!["claude".to_string(), "codex".to_string()];
 
@@ -7368,7 +7391,7 @@ mod tests {
     #[test]
     fn auto_reopen_fields_round_trip() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("auto", now, now);
         session.desired_running = true;
         session.auto_reopen_enabled = false;
@@ -7394,7 +7417,7 @@ mod tests {
     #[test]
     fn last_focused_tab_is_null_on_a_fresh_row_and_round_trips_through_the_setter() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
 
         // Fresh row: NULL, i.e. "no memory recorded".
@@ -7418,7 +7441,7 @@ mod tests {
         // must never clobber a previously remembered focused tab, exactly like
         // `sort_order`.
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = test_session("s1", now, now);
         store.upsert_session(&session).unwrap();
         store.set_last_focused_tab("s1", Some("t1")).unwrap();
@@ -7426,7 +7449,7 @@ mod tests {
         // Re-upsert with an unrelated field changed, like a status transition.
         let mut churned = session;
         churned.status = SessionStatus::Detached;
-        churned.updated_at = Utc::now();
+        churned.updated_at = Timestamp::now();
         store.upsert_session(&churned).unwrap();
 
         let loaded = store.load_sessions().unwrap();
@@ -7440,7 +7463,7 @@ mod tests {
         // stays present and nullable.
         store.migrate().unwrap();
         store
-            .upsert_session(&test_session("s1", Utc::now(), Utc::now()))
+            .upsert_session(&test_session("s1", Timestamp::now(), Timestamp::now()))
             .unwrap();
         let loaded = store.load_sessions().unwrap();
         assert_eq!(loaded.len(), 1);
@@ -7488,7 +7511,7 @@ mod tests {
     #[test]
     fn initial_branch_round_trips_through_storage() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut s = test_session("id1", now, now);
         s.workspace
             .as_managed_mut()
@@ -7512,7 +7535,7 @@ mod tests {
     #[test]
     fn branch_provenance_round_trips_through_storage() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let cases = [
             ("created", crate::model::BranchProvenance::CreatedByYaran),
             ("attached", crate::model::BranchProvenance::AttachedExisting),
@@ -7544,7 +7567,7 @@ mod tests {
         // one yaran believes it owns and force-deletes on the next delete, so the
         // column is deliberately absent from `upsert_session`'s SET list.
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut s = test_session("id1", now, now);
         s.workspace
             .as_managed_mut()
@@ -7609,7 +7632,7 @@ mod tests {
         // A future binary may write a variant this one has never heard of.
         // Guessing "yaran made it" would force-delete a branch on that guess.
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session("id1", now, now))
             .unwrap();
@@ -7659,7 +7682,7 @@ mod tests {
         // then migrate() again (simulating a later startup / config reload). The
         // second migration must NOT re-run the backfill and freeze the NULL title.
         let store = legacy_store_with_sessions(&[("feat-x", "p1", "2026-01-01T00:00:00Z")]);
-        let mut fresh = test_session("auto-named", Utc::now(), Utc::now());
+        let mut fresh = test_session("auto-named", Timestamp::now(), Timestamp::now());
         fresh
             .workspace
             .as_managed_mut()
@@ -7768,7 +7791,7 @@ mod tests {
     #[test]
     fn upsert_refuses_to_change_an_agent_handle() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         store.create_session(&session).unwrap();
         session.agent_handle = "renamed".to_string();
@@ -7783,7 +7806,7 @@ mod tests {
     #[test]
     fn upsert_refuses_an_invalid_agent_handle() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.agent_handle = "Bad Handle".to_string();
         assert!(store.create_session(&session).is_err());
@@ -7793,7 +7816,7 @@ mod tests {
     #[test]
     fn a_corrupt_stored_handle_fails_the_load_closed() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.create_session(&test_session("s1", now, now)).unwrap();
         store
             .conn
@@ -7809,7 +7832,7 @@ mod tests {
     #[test]
     fn soft_delete_hides_the_row_keeps_the_tombstone_and_reserves_its_handle() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = test_session("s1", now, now);
         store.create_session(&session).unwrap();
         store
@@ -7842,7 +7865,7 @@ mod tests {
     #[test]
     fn a_stale_upsert_cannot_resurrect_a_tombstone() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = test_session("s1", now, now);
         store.create_session(&session).unwrap();
         store.soft_delete_session("s1").unwrap();
@@ -7853,7 +7876,7 @@ mod tests {
     #[test]
     fn shared_workspace_round_trips() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut session = test_session("s1", now, now);
         session.shared_workspace = true;
         store.create_session(&session).unwrap();
@@ -7914,7 +7937,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.sqlite3");
         let store = SessionStore::open(&db).unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.create_session(&test_session("s1", now, now)).unwrap();
         let bak = dir.path().join("sessions.sqlite3.bak");
         store.backup_to(&bak).unwrap();
@@ -7934,7 +7957,7 @@ mod tests {
         let db = dir.path().join("sessions.sqlite3");
         {
             let store = SessionStore::open(&db).unwrap();
-            let now = Utc::now();
+            let now = Timestamp::now();
             for i in 0..50 {
                 store
                     .create_session(&test_session(&format!("s{i}"), now, now))
@@ -8111,12 +8134,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.sqlite3");
         let store = SessionStore::open(&path).unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
-            .upsert_session(&test_session_in("old", "p1", now, now - Duration::hours(2)))
+            .upsert_session(&test_session_in(
+                "old",
+                "p1",
+                now,
+                now - SignedDuration::from_hours(2),
+            ))
             .unwrap();
         store
-            .upsert_session(&test_session_in("new", "p1", now, now - Duration::hours(1)))
+            .upsert_session(&test_session_in(
+                "new",
+                "p1",
+                now,
+                now - SignedDuration::from_hours(1),
+            ))
             .unwrap();
         store
             .conn
@@ -8160,7 +8193,7 @@ mod tests {
         // valid global order, so the backfill must run to give them distinct
         // positions, then never re-run once globalized.
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in("solo-a", "pA", now, now))
             .unwrap();
@@ -8317,7 +8350,7 @@ mod tests {
     #[test]
     fn set_global_session_order_assigns_zero_to_n_positions() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in("a", "proj", now, now))
             .unwrap();
@@ -8356,7 +8389,7 @@ mod tests {
     #[test]
     fn set_global_session_order_does_not_touch_updated_at() {
         let store = test_store();
-        let original = Utc::now() - chrono::Duration::hours(5);
+        let original = Timestamp::now() - jiff::SignedDuration::from_hours(5);
         store
             .upsert_session(&test_session_in("a", "proj", original, original))
             .unwrap();
@@ -8371,8 +8404,8 @@ mod tests {
         let loaded = store.load_sessions().unwrap();
         for session in loaded {
             assert_eq!(
-                session.updated_at.timestamp(),
-                original.timestamp(),
+                session.updated_at.as_second(),
+                original.as_second(),
                 "reorder must not bump updated_at for {}",
                 session.id
             );
@@ -8413,13 +8446,13 @@ mod tests {
     fn load_sessions_tie_break_falls_back_to_updated_at_desc() {
         // Two sessions sharing the same sort_order tie-break by updated_at DESC.
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in(
                 "older",
                 "proj",
                 now,
-                now - Duration::hours(2),
+                now - SignedDuration::from_hours(2),
             ))
             .unwrap();
         store
@@ -8427,7 +8460,7 @@ mod tests {
                 "newer",
                 "proj",
                 now,
-                now - Duration::hours(1),
+                now - SignedDuration::from_hours(1),
             ))
             .unwrap();
         // Force both to the same sort_order so only the tie-break differs.
@@ -8448,7 +8481,7 @@ mod tests {
     #[test]
     fn min_session_sort_order_overall_reports_top_position() {
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         assert_eq!(store.min_session_sort_order_overall().unwrap(), None);
         store
             .upsert_session(&test_session_in("a", "proj", now, now))
@@ -8468,13 +8501,13 @@ mod tests {
         // updated_at DESC order. New sessions must still land on top at -1,
         // and the first explicit reorder self-heals positions to 0..n.
         let store = test_store();
-        let now = Utc::now();
+        let now = Timestamp::now();
         store
             .upsert_session(&test_session_in(
                 "old",
                 "proj",
-                now - Duration::minutes(10),
-                now - Duration::minutes(10),
+                now - SignedDuration::from_mins(10),
+                now - SignedDuration::from_mins(10),
             ))
             .unwrap();
         store
@@ -8518,7 +8551,7 @@ mod pr_tests {
                 url: format!("https://github.com/{owner_repo}/pull/{number}"),
                 ..PrInfo::default()
             },
-            Utc::now(),
+            Timestamp::now(),
         )
     }
 
@@ -8526,13 +8559,11 @@ mod pr_tests {
     fn an_agents_pull_requests_and_preferences_round_trip_a_reopen() {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("sessions.sqlite3");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut draft = found("ada/widget", 77, PrState::Draft);
         draft.head_branch = Some("feature".to_string());
         draft.manual_slot = Some(2);
-        draft.gh_created_at = DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
-            .ok()
-            .map(|at| at.with_timezone(&Utc));
+        draft.gh_created_at = crate::timefmt::parse_rfc3339("2026-01-02T03:04:05Z").ok();
         let mut other_repo = found("bob/gadget", 77, PrState::Merged);
         other_repo.attached = true;
         other_repo.found = false;
@@ -8611,7 +8642,7 @@ mod pr_tests {
     fn pre_upgrade_database() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("sessions.sqlite3");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = SessionStore::open(&db).unwrap();
         store.upsert_session(&test_session("s1", now, now)).unwrap();
         store.upsert_session(&test_session("s2", now, now)).unwrap();
@@ -8757,7 +8788,7 @@ fn read_agent_tab(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTab> {
         session_id: row.get(1)?,
         provider: ProviderKind::from_str(row.get::<_, String>(2)?.as_str()),
         sort_order: row.get(3)?,
-        created_at: parse_time(&created_at).unwrap_or_else(Utc::now),
+        created_at: parse_time(&created_at).unwrap_or_else(Timestamp::now),
     })
 }
 

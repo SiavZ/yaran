@@ -14,8 +14,9 @@
 //! cloud/push_queue.rs
 //! ├── cloud::protocol
 //! ├── cloud::protocol::machine
-//! └── numeric
-//! External: chrono, std, uuid
+//! ├── numeric
+//! └── timefmt
+//! External: jiff, std, uuid
 //!
 //! Used by:
 //! cloud/push_queue.rs
@@ -32,6 +33,8 @@ use std::time::{Duration, Instant};
 
 use super::protocol::machine::{AttentionEvent, AttentionKind, Event, RowStateToken};
 
+use crate::timefmt::Rfc3339;
+
 /// Compile-time safety bound on pending events: far above any real burst (an agent edge
 /// needs a view or an exit in between), small enough that an offline laptop's backlog is
 /// a few kilobytes.
@@ -47,7 +50,7 @@ pub fn new_event_id() -> String {
 
 /// 02 `Timestamp`: RFC 3339 UTC, seconds.
 pub fn event_ts() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    jiff::Timestamp::now().to_rfc3339_secs_z()
 }
 
 fn id_of(event: &Event) -> &str {

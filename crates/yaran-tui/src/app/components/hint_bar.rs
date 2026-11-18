@@ -211,10 +211,9 @@ fn desc_style(theme: &Theme, tone: HintTone) -> Style {
     })
 }
 
-/// A line cut to a width: its spans, and how many segments made it in.
+/// A line cut to a width: its spans.
 pub(crate) struct FittedHints {
     pub(crate) spans: Vec<Span<'static>>,
-    pub(crate) shown: usize,
 }
 
 /// The segments that fit in `width` display columns, in their order.
@@ -255,7 +254,6 @@ pub(crate) fn fitted_hint_spans(
     }
 
     let mut spans = Vec::new();
-    let mut shown = 0usize;
     let mut items = 0usize;
     let mut marked = false;
     let fits = cost(&kept) <= width;
@@ -269,13 +267,12 @@ pub(crate) fn fitted_hint_spans(
         items += 1;
         if *keep {
             hint.push_spans(theme, tone, &mut spans);
-            shown += 1;
         } else {
             spans.push(Span::styled(ELLIPSIS, desc_style(theme, tone)));
             marked = true;
         }
     }
-    FittedHints { spans, shown }
+    FittedHints { spans }
 }
 
 /// A dialog's hint line in `width` columns: one leading space, then the
@@ -522,7 +519,6 @@ mod tests {
         let full = fitted_hint_spans(&theme, HintTone::Modal, &hints, 80);
         let full_text: String = full.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(full_text, "<a> one  <b> \u{5e45}\u{5e45}  <c> three");
-        assert_eq!(full.shown, 3);
 
         // `<a> one` is 7 columns, `  <b> 幅幅` another 10 and the mark of the
         // cut another 3: 20 fit exactly, 19 do not, even though the wide
@@ -530,15 +526,12 @@ mod tests {
         let cut = fitted_hint_spans(&theme, HintTone::Modal, &hints, 20);
         let cut_text: String = cut.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(cut_text, "<a> one  <b> \u{5e45}\u{5e45}  \u{2026}");
-        assert_eq!(cut.shown, 2);
         let cut = fitted_hint_spans(&theme, HintTone::Modal, &hints, 19);
         let cut_text: String = cut.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(cut_text, "<a> one  \u{2026}");
-        assert_eq!(cut.shown, 1);
 
         let nothing = fitted_hint_spans(&theme, HintTone::Modal, &hints, 0);
         assert_eq!(nothing.spans, Vec::<Span<'_>>::new());
-        assert_eq!(nothing.shown, 0);
     }
 
     /// A pinned segment outlives the segments before it: the unpinned ones go

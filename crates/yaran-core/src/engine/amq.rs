@@ -198,7 +198,7 @@ impl Engine {
         if title_changed {
             let mut candidate = self.sessions[index].clone();
             candidate.title = new_title.clone().flatten();
-            candidate.updated_at = chrono::Utc::now();
+            candidate.updated_at = jiff::Timestamp::now();
             self.session_store.upsert_session(&candidate)?;
         }
         self.session_store
@@ -208,7 +208,7 @@ impl Engine {
         if title_changed {
             let session = &mut self.sessions[index];
             session.title = new_title.flatten();
-            session.updated_at = chrono::Utc::now();
+            session.updated_at = jiff::Timestamp::now();
         }
         if settings.is_default() {
             self.amq.session_settings.remove(session_id);

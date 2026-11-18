@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   VIEWER_FONT_STEP,
   VIEWER_MIN_FONT_SIZE,
+  naturalGridFor,
   viewerFontFit,
 } from "./viewerFit"
 
@@ -126,5 +127,61 @@ describe("viewerFontFit", () => {
       grid: { rows: 0, cols: 0 },
     })
     expect(noGrid.fontSize).toBe(14)
+  })
+})
+
+// The natural grid: what FitAddon would give this window at the user's font,
+// computed while a page that does not hold the size renders at a shrunk one.
+describe("naturalGridFor", () => {
+  it("is FitAddon's floor division when the cell was measured at the target size", () => {
+    expect(
+      naturalGridFor({
+        available: { width: 805, height: 409 },
+        cell: { width: 8, height: 17 },
+        referenceFontSize: 13,
+        fontSize: 13,
+      }),
+    ).toEqual({ rows: 24, cols: 100 })
+  })
+
+  it("scales a cell measured at a shrunk font up to the user's own", () => {
+    expect(
+      naturalGridFor({
+        available: { width: 800, height: 400 },
+        cell: { width: 4, height: 8 },
+        referenceFontSize: 6.5,
+        fontSize: 13,
+      }),
+    ).toEqual({ rows: 25, cols: 100 })
+  })
+
+  it("keeps FitAddon's floors for a tiny window", () => {
+    expect(
+      naturalGridFor({
+        available: { width: 3, height: 3 },
+        cell: { width: 8, height: 17 },
+        referenceFontSize: 13,
+        fontSize: 13,
+      }),
+    ).toEqual({ rows: 1, cols: 2 })
+  })
+
+  it("answers null when nothing could be measured", () => {
+    expect(
+      naturalGridFor({
+        available: { width: 0, height: 400 },
+        cell: { width: 8, height: 17 },
+        referenceFontSize: 13,
+        fontSize: 13,
+      }),
+    ).toBeNull()
+    expect(
+      naturalGridFor({
+        available: { width: 800, height: 400 },
+        cell: { width: 0, height: 0 },
+        referenceFontSize: 13,
+        fontSize: 13,
+      }),
+    ).toBeNull()
   })
 })

@@ -5,17 +5,15 @@ import type { Terminal } from "@xterm/xterm"
 import type { Heartbeat } from "@/lib/heartbeat"
 import type { PtySocket } from "@/lib/ptySocket"
 
-import type { ConnectionIdentity, TakeoverIntent } from "./channels"
+import type { ConnectionIdentity } from "./channels"
 import type { LinkPress } from "./linkPress"
 import type { ResizeCoordinator } from "./resizeCoordinator"
-import { retireConnectionIdentity } from "./socketCallbacks"
 import { disposeTerminalSetup, type TerminalSetup } from "./terminalSetup"
 
 type Disposable = { dispose: () => void }
 
 type TerminalLifecycleCleanupOptions = {
   resize: ResizeCoordinator
-  takeoverIntent: TakeoverIntent
   viewerRegridRef: RefObject<(() => void) | null>
   ownerRefitRef: RefObject<(() => void) | null>
   beat: Heartbeat
@@ -40,7 +38,6 @@ export function disposeTerminalLifecycle(
 ): void {
   const {
     resize,
-    takeoverIntent,
     viewerRegridRef,
     ownerRefitRef,
     beat,
@@ -61,7 +58,6 @@ export function disposeTerminalLifecycle(
   } = options
 
   resize.dispose()
-  takeoverIntent.clear()
   if (viewerRegridRef.current !== null) viewerRegridRef.current = null
   if (ownerRefitRef.current !== null) ownerRefitRef.current = null
   beat.stop()
@@ -73,7 +69,7 @@ export function disposeTerminalLifecycle(
   touchWiring.dispose()
   document.removeEventListener("visibilitychange", noteVisibility)
   localGridSubscription.dispose()
-  retireConnectionIdentity(connId, pty)
+  connId.write(null)
   pty.dispose()
   if (ptyRef.current === pty) ptyRef.current = null
   termRef.current = null

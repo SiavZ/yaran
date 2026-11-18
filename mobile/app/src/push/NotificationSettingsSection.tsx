@@ -60,7 +60,7 @@ function OrgRow({ row, props }: { row: NotificationOrgRow; props: NotificationSe
   const view = rowView(row.state);
   const until = row.state.kind === "muted" && row.state.until ? row.state.until : "";
   return (
-    <li className="flex flex-col gap-2 rounded-lg bg-card p-4" data-state={row.state.kind}>
+    <li className="flex flex-col gap-2" data-state={row.state.kind}>
       <div className="text-sm font-medium text-foreground">{row.orgName}</div>
       <div className="text-sm text-muted-foreground">{props.t(view.title, { until })}</div>
       {view.detail ? <div className="text-xs text-muted-foreground">{view.detail}</div> : null}
@@ -135,7 +135,7 @@ export function NotificationSettingsSection(props: NotificationSettingsProps) {
           </select>
         </label>
       ) : null}
-      <ul className="flex flex-col gap-3">
+      <ul className="flex flex-col gap-5">
         {props.rows.map((row) => (
           <OrgRow key={row.orgId} row={row} props={props} />
         ))}

@@ -10,7 +10,6 @@ const {
   goto,
   sleep,
   steadyBox,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -19,7 +18,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     // The pane header carries a Session actions button too, so the row's is
     // picked by position (inside the sidebar) as well as by the row's own text.
@@ -36,7 +34,7 @@ module.exports = {
     await sleep(900)
     // A click that lands wrong opens nothing, or opens the menu and lets it
     // close again; either way the crop below still finds something to frame.
-    // This picture went out once with the menu shut and the take-over card up.
+    // This picture went out once with the menu shut and a cover up.
     await expectNoCover(page)
     await expectPanePainted(page)
     await expectMenuOpen(page, "Attach a file")

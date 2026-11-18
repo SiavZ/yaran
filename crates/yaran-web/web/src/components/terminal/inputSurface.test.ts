@@ -8,7 +8,6 @@ import type { Terminal } from "@xterm/xterm"
 import type { PtySocket } from "@/lib/ptySocket"
 import { ESC } from "@/lib/termkeys"
 
-import type { OwnershipVerdict } from "./channels"
 import type { LiveSettings, TerminalLiveSettings } from "./liveValues"
 import {
   focusTypingSurfaceIn,
@@ -92,7 +91,7 @@ function decode(b: Uint8Array): string {
 }
 
 function setup(
-  opts: { composeActive?: boolean; owner?: boolean; open?: boolean } = {},
+  opts: { composeActive?: boolean; open?: boolean } = {},
 ) {
   const term = new TermFake()
   document.body.appendChild(term.textarea)
@@ -108,13 +107,6 @@ function setup(
       composeActive: opts.composeActive ?? false,
     } as TerminalLiveSettings,
   } as LiveSettings
-  let owner = opts.owner ?? true
-  const ownership: OwnershipVerdict = {
-    read: () => owner,
-    write: (v) => {
-      owner = v
-    },
-  }
   const composeInputRef = { current: compose as HTMLTextAreaElement | null }
   const view = renderHook(() =>
     useInputSurface({
@@ -122,11 +114,10 @@ function setup(
       composeInputRef,
       termRef: { current: term as unknown as Terminal },
       ptyRef: { current: pty as unknown as PtySocket },
-      ownership,
       targetId: "pane-1",
     }),
   )
-  return { view, term, compose, sent, live, composeInputRef, pty, ownership }
+  return { view, term, compose, sent, live, composeInputRef, pty }
 }
 
 beforeEach(() => {
@@ -222,30 +213,7 @@ describe("the sticky modifier latches", () => {
   })
 })
 
-describe("owner gating", () => {
-  it("drops an accessory sequence from a viewer", () => {
-    const { view, sent } = setup({ owner: false })
-    act(() => view.result.current.sendSeq(ESC))
-    expect(sent).toEqual([])
-  })
-
-  it("drops an accessory newline from a viewer", () => {
-    const { view, sent } = setup({ owner: false })
-    act(() => view.result.current.sendNewline())
-    expect(sent).toEqual([])
-  })
-
-  it("refuses a Send from a viewer, keeps the buffer, and says why", () => {
-    const { view } = setup({ owner: false })
-    let ok = true
-    act(() => {
-      ok = view.result.current.sendCompose("hello")
-    })
-    expect(ok).toBe(false)
-    expect(notified).toHaveLength(1)
-    expect(notified[0]).toMatch(/Take over/)
-  })
-
+describe("send refusals", () => {
   it("refuses a Send over a closed socket and says why", () => {
     const { view } = setup({ open: false })
     let ok = true
@@ -350,23 +318,12 @@ describe("the draft", () => {
 // something, and it never interrupts an IME composition.
 describe("typingFocusAllowed", () => {
   const ready = {
-    isOwner: true,
-    ownershipConfirmed: true,
     replayApplied: true,
     composing: false,
   }
 
-  it("allows the move once ownership is confirmed and the screen is on", () => {
+  it("allows the move once the screen is on", () => {
     expect(typingFocusAllowed(ready)).toBe(true)
-  })
-
-  it("refuses while this device is only GUESSING it owns the pty", () => {
-    // Before the handshake, `isOwner` is the foreground guess and nothing more.
-    expect(typingFocusAllowed({ ...ready, ownershipConfirmed: false })).toBe(false)
-  })
-
-  it("refuses for a watcher", () => {
-    expect(typingFocusAllowed({ ...ready, isOwner: false })).toBe(false)
   })
 
   it("refuses until the replay for this attach epoch is on screen", () => {
@@ -384,7 +341,7 @@ describe("typingFocusAllowed", () => {
 // on the permission each time it turned true stole focus on every background
 // reconnect (desktop) and raised the soft keyboard unbidden (phone).
 describe("nextTypingFocus", () => {
-  const base = { allowed: true, isOwner: true, attach: "agent:a1:false" }
+  const base = { allowed: true, attach: "agent:a1:false" }
 
   it("moves the keyboard the first time an attach is allowed", () => {
     expect(nextTypingFocus({ ...base, focusedFor: null })).toEqual({
@@ -410,18 +367,6 @@ describe("nextTypingFocus", () => {
     expect(
       nextTypingFocus({ ...base, attach: "agent:a1:true", focusedFor: "agent:a1:false" }),
     ).toEqual({ focus: true, focusedFor: "agent:a1:true" })
-  })
-
-  // Losing ownership forgets, so a take-over after a demotion still focuses.
-  it("forgets the attach when this pane stops owning the pty", () => {
-    expect(
-      nextTypingFocus({
-        ...base,
-        allowed: false,
-        isOwner: false,
-        focusedFor: "agent:a1:false",
-      }),
-    ).toEqual({ focus: false, focusedFor: null })
   })
 
   // A refusal is not a consumption. A move an IME composition blocked is still
@@ -476,22 +421,8 @@ describe("the right-click paste", () => {
     expect(drafts["pane-1"]).toBeUndefined()
   })
 
-  // The box only exists for the owner, but the gate is the ownership verdict
-  // rather than the surface: a demotion mid-gesture must reach neither.
-  it("writes nowhere for a watcher", async () => {
-    withClipboard("from the clipboard")
-    const { view, term } = setup({ composeActive: true, owner: false })
-
-    await act(async () => {
-      view.result.current.onRightClickPaste()
-    })
-
-    expect(drafts["pane-1"]).toBeUndefined()
-    expect(term.pastes).toEqual([])
-  })
-
   // The box can be up in the settings while its element is not mounted yet (the
-  // commit ownership flips in). The terminal is the truthful destination then,
+  // commit the surface flips in). The terminal is the truthful destination then,
   // and it is what the focus rule falls back to as well.
   it("falls back to the terminal when the box is not mounted", async () => {
     withClipboard("from the clipboard")
@@ -608,18 +539,6 @@ describe("the accessory page-scroll", () => {
 
     expect(wheels).toEqual(Array(term.rows - 1).fill(-1))
     expect(sent).toEqual([])
-  })
-
-  it("falls back to the local scroll on the alt-screen when it is not the owner", () => {
-    const { view, term, sent } = setup({ owner: false })
-    term.buffer.active.type = "alternate"
-
-    act(() => {
-      view.result.current.onScroll("pageUp")
-    })
-
-    expect(sent).toEqual([])
-    expect(term.pagesScrolled).toEqual([-1])
   })
 
   it("drops focus on a touch device so the soft keyboard can go", () => {

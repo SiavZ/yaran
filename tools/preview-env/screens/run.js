@@ -128,8 +128,8 @@ async function shootOne(scene) {
   lib.setSceneName(scene.name)
   const { browser, page, reassert } = await lib.open({ mobile })
   // A scene that opens a second browser must not close it before the capture: a
-  // second device leaving is a thing the page reacts to, and the take-over card
-  // re-titles the moment its driver disconnects. So teardown is registered here
+  // second device leaving is a thing the page reacts to, and the pane may
+  // re-title the moment the other device disconnects. So teardown is registered here
   // and run after the shot rather than in the scene's own `finally`. It runs
   // after this browser closes too, because a hook that puts back state a scene
   // disturbed (an attention flag the pane cleared by being looked at) would be

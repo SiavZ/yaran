@@ -166,13 +166,10 @@ pub(crate) enum ButtonPressedTarget {
     /// are one-row accent-filled pills), but they ride the same press machinery.
     FirstLoadPrimary,
     FirstLoadSecondary,
-    /// The take-over card's single button. The card is not a modal (it must not
-    /// block pane or tab navigation), so its press is tracked in a field of its
-    /// own rather than in `App::pressed_button`, which the modal machinery wipes
-    /// on every non-prompt mouse event.
-    TakeOverCard,
-    /// The dormant-tab card's single button. Not a modal either, for the same
-    /// reason as the take-over card above, and tracked in its own field.
+    /// The dormant-tab card's single button. The card is not a modal (it must
+    /// not block pane or tab navigation), so its press is tracked in a field of
+    /// its own rather than in `App::pressed_button`, which the modal machinery
+    /// wipes on every non-prompt mouse event.
     DormantTabCard,
 }
 

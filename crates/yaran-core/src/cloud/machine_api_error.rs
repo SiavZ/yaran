@@ -17,7 +17,7 @@
 //! ├── cloud::protocol::errors
 //! ├── cloud::protocol::test_fixtures
 //! └── sanitize
-//! External: chrono, serde_json, std
+//! External: jiff, serde_json, std
 //!
 //! Used by:
 //! cloud/machine_api_error.rs
@@ -123,13 +123,9 @@ fn parse_retry_after(v: Option<&str>) -> Option<u64> {
 
 /// RFC 3339 from an HTTP `Date` header.
 fn date_to_rfc3339(v: Option<&str>) -> Option<String> {
-    chrono::DateTime::parse_from_rfc2822(v?.trim())
+    jiff::fmt::rfc2822::parse(v?.trim())
         .ok()
-        .map(|d| {
-            d.with_timezone(&chrono::Utc)
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string()
-        })
+        .map(|d| d.timestamp().strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 /// Map a non-2xx answer. Returns the error and the request id, if the body named one.

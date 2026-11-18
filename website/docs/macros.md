@@ -87,16 +87,11 @@ Once the bar is open:
 
 yaran confirms with `Sent macro "<name>".` in the status line.
 
-> [!IMPORTANT]
-> A macro is a write like any other, so it goes through input ownership. While yaran is
+> [!NOTE]
+> A macro is typing like any other. While yaran is
 > [serving in the background](/docs/server-mode#serve-in-the-background-and-keep-the-tui),
-> a terminal with a take-over card over it is not yours to type into: either another device
-> is driving it, or nothing is driving it yet.
->
-> - The bar still opens there, but Enter sends nothing.
-> - The status line names the device that is driving, or says that nothing is driving yet,
->   and tells you to press **Take over** on the card first.
-> - Nothing half-sends, and the macro never takes the terminal over for you.
+> sending one into a terminal a browser sized also sizes it for the terminal UI, exactly as
+> typing there would.
 
 ## Sending a macro in the web UI
 
@@ -119,12 +114,8 @@ If a pane has no macros for its surface, the popover says so and points you at t
 editor. With no macros at all, it links straight to **Edit macros**.
 
 > [!IMPORTANT]
-> The ownership rule applies here too: a macro never takes a terminal over for you. The
-> **Macros** button tells you why it cannot send:
+> The **Macros** button tells you why it cannot send:
 >
-> - **A take-over card covers the terminal** (another device is driving it, or nothing is
->   driving it yet): the button is greyed out and its hint reads "Take over to send macros".
->   Press **Take over** on the card and it works again straight away.
 > - **The tab is not running:** the button is greyed out, with the hint "Start the tab to
 >   send macros".
 > - **The terminal is reconnecting:** if you pick a macro anyway, nothing is sent and a

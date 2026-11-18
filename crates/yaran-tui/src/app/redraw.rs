@@ -13,8 +13,6 @@
 //! Uses:
 //! app/redraw.rs
 //! ├── app
-//! ├── app::background_server
-//! ├── app::pty_ownership
 //! ├── app::test_support
 //! ├── app::text_input
 //! ├── crate
@@ -32,7 +30,6 @@
 //! <module-headers:end>
 
 use super::{App, CenterMode, CenterPart, FullscreenOverlay, PromptState, attention_blink_phase};
-use crate::app::pty_ownership::PtyTakeoverCard;
 use crate::numeric::u128_to_usize_wrapping;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -75,11 +72,8 @@ pub(crate) struct RedrawGate {
     last_frame: Option<Instant>,
     phase: Option<AnimationPhase>,
     status_line: Option<(yaran_core::statusline::StatusTone, String)>,
-    /// The card over the shown pane. Ownership moves on the socket thread while
-    /// nothing on this surface happens, so there is no mutation point to mark.
-    takeover_card: Option<PtyTakeoverCard>,
     /// The header's cloud crumb: the leg moves on the serve's threads, so it is
-    /// compared rather than marked, like the takeover card.
+    /// compared rather than marked.
     cloud_crumb: Option<(String, bool)>,
     /// Every agent's pull-request revision summed. A revision only ever
     /// counts up, so the sum moves whenever any of them does, including when
@@ -133,15 +127,6 @@ impl App {
             self.part_client(part)
                 .is_some_and(|client| client.has_output() && client.has_pending_output())
         })
-    }
-
-    /// The card over the drawn stack, if any. Every part of the center belongs
-    /// to one row and a row has one driver, so the first drawn part answers for
-    /// all of them.
-    fn drawn_takeover_card(&self) -> Option<PtyTakeoverCard> {
-        self.drawn_parts()
-            .into_iter()
-            .find_map(|part| self.part_takeover_card(part))
     }
 
     /// Poll every PTY for activity (the consuming read the row indicators need)
@@ -290,9 +275,6 @@ impl App {
         // Compared rather than marked: statuses are set from hundreds of call
         // sites, and this one value is the whole of what the line renders.
         let status_line = self.status.most_recent_tui();
-        // Compared rather than marked: a browser claims or releases a pty on the
-        // socket thread, so no path on this surface runs at all.
-        let takeover_card = self.drawn_takeover_card();
         let cloud_crumb = self.cloud_crumb();
         let pr_revisions = self
             .engine
@@ -305,7 +287,6 @@ impl App {
             || self.redraw.last_frame.is_none()
             || phase != self.redraw.phase
             || status_line != self.redraw.status_line
-            || takeover_card != self.redraw.takeover_card
             || self
                 .redraw
                 .last_frame
@@ -314,7 +295,6 @@ impl App {
             self.redraw.dirty = false;
             self.redraw.phase = phase;
             self.redraw.status_line = status_line;
-            self.redraw.takeover_card = takeover_card;
             self.redraw.cloud_crumb = cloud_crumb;
             self.redraw.pr_revisions = pr_revisions;
             self.redraw.last_frame = Some(now);
@@ -785,75 +765,6 @@ mod tests {
         assert!(
             !app.engine.pty_activity.contains_key(&terminal_id),
             "and it is not the activity stamp that said so"
-        );
-    }
-
-    /// A browser claiming or releasing the shown pty happens on the socket
-    /// thread: no path on this surface runs, and the card that appears is the
-    /// only thing telling the user why their keystrokes stopped landing.
-    #[test]
-    fn a_browser_claiming_the_shown_pty_draws_the_next_frame() {
-        let (mut app, mut terminal, start) = app_at_rest();
-        let (companion, _recorded, seat) =
-            crate::app::background_server::tests::FakeCompanion::serving_with_ownership();
-        app.companion = Some(companion);
-        app.engine.config.terminal.command = "cat".to_string();
-        app.engine.config.terminal.args = Vec::new();
-        let (terminal_id, _) = app
-            .engine
-            .create_companion_terminal("session-1", 24, 80)
-            .expect("companion terminal");
-        app.session_surface = SessionSurface::Terminal;
-        app.active_terminal_id = Some(terminal_id.clone());
-        app.claim_launched_pty(&terminal_id);
-
-        // Get the pane past its "starting…" spinner, so the only thing left that
-        // can draw is the card.
-        app.engine
-            .companion_terminals
-            .get(&terminal_id)
-            .expect("terminal is live")
-            .client
-            .write_bytes(b"hello\n")
-            .expect("write to terminal");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !app
-            .selected_terminal_surface_client()
-            .expect("terminal is live")
-            .has_output()
-        {
-            assert!(Instant::now() < deadline, "the child never echoed");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(
-            app.animation_phase_at(start),
-            None,
-            "nothing on this screen animates"
-        );
-
-        // Settle the gate with this surface driving and no card over the pane.
-        tick(&mut app, &mut terminal, start + Duration::from_millis(33));
-        let settled = app.redraw.renders;
-        tick(&mut app, &mut terminal, start + Duration::from_millis(66));
-        assert_eq!(app.redraw.renders, settled, "the gate is settled");
-
-        let browser = seat.owners.next_conn_id();
-        seat.owners.claim(&terminal_id, browser);
-        assert!(seat.owners.is_owner(&terminal_id, browser));
-        tick(&mut app, &mut terminal, start + Duration::from_millis(99));
-        assert_eq!(
-            app.redraw.renders,
-            settled + 1,
-            "the card appearing must draw on the next tick, not wait for the backstop"
-        );
-
-        // And releasing it changes the card's sentence to the unowned one.
-        seat.owners.release_all(browser);
-        tick(&mut app, &mut terminal, start + Duration::from_millis(132));
-        assert_eq!(
-            app.redraw.renders,
-            settled + 2,
-            "the card becoming the unowned one must draw too"
         );
     }
 

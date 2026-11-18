@@ -496,8 +496,8 @@ mod tests {
     #[test]
     fn scrollback_auto_detach_picks_oldest_session() {
         let (mut engine, _tmp) = engine_with(&["old", "new"]);
-        let now = chrono::Utc::now();
-        engine.sessions[0].updated_at = now - chrono::Duration::hours(2);
+        let now = jiff::Timestamp::now();
+        engine.sessions[0].updated_at = now - jiff::SignedDuration::from_hours(2);
         engine.sessions[1].updated_at = now;
         // 40 cols * 4 bytes * 10_000 lines = 1.6 MB each.
         go_live(&mut engine, "old", 10_000);

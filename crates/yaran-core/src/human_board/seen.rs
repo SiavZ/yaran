@@ -14,10 +14,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, SecondsFormat, Utc};
+
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use super::{Board, Card, Message};
+
+use crate::timefmt::Rfc3339;
 
 /// The file, in the yaran home.
 pub const SEEN_FILE: &str = "human_board_seen.json";
@@ -44,11 +47,7 @@ pub struct SeenState {
 /// One message's name in the file: when and by whom. [`Board::reply`] never
 /// gives one writer two messages at the same instant.
 pub fn message_key(message: &Message) -> String {
-    format!(
-        "{}|{}",
-        message.at.to_rfc3339_opts(SecondsFormat::AutoSi, true),
-        message.from
-    )
+    format!("{}|{}", message.at.to_rfc3339_z(), message.from)
 }
 
 impl SeenState {
@@ -134,7 +133,7 @@ impl SeenState {
 }
 
 /// When the newest thing on `card` happened, for ordering what is unread.
-pub fn latest_activity(card: &Card) -> DateTime<Utc> {
+pub fn latest_activity(card: &Card) -> Timestamp {
     card.thread
         .last()
         .map_or(card.updated_at, |message| message.at.max(card.updated_at))
@@ -142,13 +141,12 @@ pub fn latest_activity(card: &Card) -> DateTime<Utc> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use super::*;
     use crate::human_board::{CardKind, NewCard, NewMessage};
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 15, 9, minute, 0).unwrap()
+    fn at(minute: i8) -> Timestamp {
+        crate::timefmt::utc(2026, 10, 15, 9, minute, 0)
     }
 
     fn board_with(origin: &str) -> (Board, crate::human_board::CardId) {
@@ -168,7 +166,7 @@ mod tests {
         (board, id)
     }
 
-    fn reply(board: &mut Board, id: &crate::human_board::CardId, from: &str, minute: u32) {
+    fn reply(board: &mut Board, id: &crate::human_board::CardId, from: &str, minute: i8) {
         board
             .reply(
                 id,

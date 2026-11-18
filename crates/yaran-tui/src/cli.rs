@@ -30,7 +30,7 @@
 //! ├── yaran-core::test_git
 //! ├── yaran-core::text
 //! └── yaran-core::worktree_ops
-//! External: anyhow, chrono, rusqlite, rustix, serde_json, similar, std, tempfile, toml
+//! External: anyhow, jiff, rusqlite, rustix, serde_json, similar, std, tempfile, toml
 //!
 //! Used by:
 //! cli.rs
@@ -1323,7 +1323,7 @@ fn print_restore_report(
 /// safety copy. Created 0600 like the config itself, since it holds the same
 /// potential secrets.
 fn backup_config(config_path: &Path, raw: &str) -> Result<PathBuf> {
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let stamp = jiff::Timestamp::now().strftime("%Y%m%dT%H%M%SZ");
     let base = config_path.file_name().map_or_else(
         || "config.toml".to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -2358,7 +2358,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
-    use chrono::Utc;
+    use jiff::Timestamp;
     use tempfile::TempDir;
 
     use super::*;
@@ -2521,7 +2521,7 @@ mod tests {
         }
         let mut job = command.spawn().expect("spawn the job");
         let session = yaran_core::process_sessions::ProcessSession::started_now(job.id());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = SessionStore::open(&paths.sessions_db_path).expect("store");
         store
             .upsert_session(&AgentSession {
@@ -2766,7 +2766,7 @@ mod tests {
         }
         let mut job = command.spawn().expect("spawn the job");
         let session = yaran_core::process_sessions::ProcessSession::started_now(job.id());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = SessionStore::open(&paths.sessions_db_path).expect("store");
         store
             .upsert_session(&AgentSession {
@@ -3007,7 +3007,7 @@ mod tests {
         fs::create_dir_all(&occupied).expect("occupied dir");
         fs::write(occupied.join("notes.txt"), "mine\n").expect("seed a file");
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = SessionStore::open(&paths.sessions_db_path).expect("store");
         store
             .upsert_session(&AgentSession {
@@ -3075,7 +3075,7 @@ mod tests {
         fs::create_dir_all(&occupied).expect("occupied dir");
         fs::write(occupied.join("notes.txt"), "mine\n").expect("seed a file");
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = SessionStore::open(&paths.sessions_db_path).expect("store");
         // The MANAGED row first, so the loader's order is the hostile one even
         // without relying on how it sorts.
@@ -3161,7 +3161,7 @@ mod tests {
         let project_repo = managed_worktree.join("vendor");
         fs::create_dir_all(&project_repo).expect("project dir");
         fs::write(project_repo.join("keep.txt"), "mine\n").expect("seed a file");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = SessionStore::open(&paths.sessions_db_path).expect("store");
         store
             .upsert_session(&AgentSession {
@@ -4827,7 +4827,7 @@ mod tests {
             fs::create_dir_all(&worktree).expect("worktree");
 
             let store = SessionStore::open(&self.paths.sessions_db_path).expect("store");
-            let now = Utc::now();
+            let now = Timestamp::now();
             store
                 .upsert_session(&AgentSession {
                     id: id.to_string(),
@@ -4903,7 +4903,7 @@ mod tests {
             socket_path: tempdir.path().join("yaran.sock"),
             root: tempdir.path().to_path_buf(),
         };
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = AgentSession {
             id: "wt".to_string(),
             agent_handle: "wt".to_string(),
@@ -5016,7 +5016,7 @@ mod tests {
             socket_path: tempdir.path().join("yaran.sock"),
             root: tempdir.path().to_path_buf(),
         };
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = AgentSession {
             id: "wt".to_string(),
             slot_tab_id: "wt-slot".to_string(),
@@ -5154,7 +5154,7 @@ mod tests {
             socket_path: tempdir.path().join("yaran.sock"),
             root: tempdir.path().to_path_buf(),
         };
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = AgentSession {
             id: "wt".to_string(),
             slot_tab_id: "wt-slot".to_string(),
@@ -5367,7 +5367,7 @@ mod tests {
         remove_session_worktree(
             &paths,
             &managed,
-            &yaran_core::branch_history::unasked_plan(&managed, chrono::Utc::now(), &[]),
+            &yaran_core::branch_history::unasked_plan(&managed, jiff::Timestamp::now(), &[]),
             &[],
             &[],
             &mut ResetReport::discarding(),
@@ -5432,7 +5432,7 @@ mod tests {
             socket_path: tempdir.path().join("yaran.sock"),
             root: tempdir.path().to_path_buf(),
         };
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = AgentSession {
             id: "wt".to_string(),
             agent_handle: "wt".to_string(),

@@ -7,7 +7,7 @@ import {
   loadTerminalFontsThenRefit,
   terminalFontFamily,
 } from "@/lib/terminalFont"
-import { viewerFontFit } from "@/lib/viewerFit"
+import { naturalGridFor, viewerFontFit } from "@/lib/viewerFit"
 
 import { xtermScrollbarWidth } from "./constants"
 
@@ -18,6 +18,10 @@ type TerminalRelayoutOptions = {
   fitAddonRef: RefObject<FitAddon | null>
   viewerRegridRef: RefObject<(() => void) | null>
   ownerRefitRef: RefObject<(() => void) | null>
+  /// Installed here: this page's natural grid at the user's own font (see
+  /// `naturalGridFor`), read by the coordinator while somebody else holds the
+  /// pty's size.
+  naturalGridRef: RefObject<(() => Grid | null) | null>
   setViewerOverflow: (overflow: boolean) => void
   fontFamilySetting: string
   fontSizeSetting: number
@@ -26,8 +30,19 @@ type TerminalRelayoutOptions = {
   remoteCols: number
 }
 
+type Grid = { rows: number; cols: number }
+
+/// A cell measured while the terminal rendered at the user's own font, kept so
+/// the natural grid stays exact while the font is shrunk for somebody else's.
+type PreferredCell = {
+  family: string
+  size: number
+  cell: { width: number; height: number }
+}
+
 type RelayoutOptions = TerminalRelayoutOptions & {
   viewerRelayoutRef: RefObject<(() => void) | null>
+  preferredCellRef: { current: PreferredCell | null }
 }
 
 type MountedTerminal = Pick<
@@ -71,6 +86,34 @@ function hostContentSize(
     width: host.clientWidth - padX - gutter,
     height: host.clientHeight - padY,
   }
+}
+
+// Record the cell while the terminal renders at the user's own font, then answer
+// the natural grid from the best cell known for that font.
+function naturalGrid(options: RelayoutOptions): Grid | null {
+  const context = mountedTerminal(options)
+  if (!context) return null
+  const family = terminalFontFamily(options.fontFamilySetting)
+  const size = clampTerminalFontSize(options.fontSizeSetting)
+  const { term } = context
+  let cell = measuredCell(term)
+  let reference =
+    typeof term.options.fontSize === "number" ? term.options.fontSize : size
+  if (term.options.fontFamily === family && reference === size) {
+    if (cell.width > 0) options.preferredCellRef.current = { family, size, cell }
+  } else {
+    const known = options.preferredCellRef.current
+    if (known !== null && known.family === family && known.size === size) {
+      cell = known.cell
+      reference = size
+    }
+  }
+  return naturalGridFor({
+    available: hostContentSize(context.host, xtermScrollbarWidth()),
+    cell,
+    referenceFontSize: reference,
+    fontSize: size,
+  })
 }
 
 function faithfulFontSize(
@@ -148,6 +191,8 @@ function relayoutTerminal(
 ): boolean {
   const context = mountedTerminal(options)
   if (!context) return wasFaithful
+  // Taken before any shrink below, so the cell at the user's font is known.
+  naturalGrid(options)
 
   const faithful =
     options.faithfulWatcher && options.remoteRows > 0 && options.remoteCols > 0
@@ -176,6 +221,7 @@ export function useTerminalRelayout(
 ): RefObject<(() => void) | null> {
   const lastFaithfulRef = useRef(false)
   const viewerRelayoutRef = useRef<(() => void) | null>(null)
+  const preferredCellRef = useRef<PreferredCell | null>(null)
   const {
     hostRef,
     containerRef,
@@ -183,6 +229,7 @@ export function useTerminalRelayout(
     fitAddonRef,
     viewerRegridRef,
     ownerRefitRef,
+    naturalGridRef,
     setViewerOverflow,
     fontFamilySetting,
     fontSizeSetting,
@@ -199,7 +246,9 @@ export function useTerminalRelayout(
       fitAddonRef,
       viewerRegridRef,
       ownerRefitRef,
+      naturalGridRef,
       viewerRelayoutRef,
+      preferredCellRef,
       setViewerOverflow,
       fontFamilySetting,
       fontSizeSetting,
@@ -213,12 +262,15 @@ export function useTerminalRelayout(
         lastFaithfulRef.current,
       )
     }
+    const natural = () => naturalGrid(relayoutOptions)
     viewerRelayoutRef.current = relayout
+    naturalGridRef.current = natural
     relayout()
     return () => {
       if (viewerRelayoutRef.current === relayout) {
         viewerRelayoutRef.current = null
       }
+      if (naturalGridRef.current === natural) naturalGridRef.current = null
     }
   }, [
     containerRef,
@@ -227,6 +279,7 @@ export function useTerminalRelayout(
     fontFamilySetting,
     fontSizeSetting,
     hostRef,
+    naturalGridRef,
     ownerRefitRef,
     remoteCols,
     remoteRows,

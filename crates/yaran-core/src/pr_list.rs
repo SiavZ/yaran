@@ -320,15 +320,15 @@ pub fn arrange(rows: &mut [AgentPr], mode: PrSortMode, change: Arrange) -> Arran
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, TimeZone, Utc};
+    use jiff::Timestamp;
 
     use super::*;
 
-    fn at(day: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 1, day, 0, 0, 0).unwrap()
+    fn at(day: i8) -> Timestamp {
+        crate::timefmt::utc(2026, 1, day, 0, 0, 0)
     }
 
-    fn row(number: u64, state: PrState, created_day: Option<u32>) -> AgentPr {
+    fn row(number: u64, state: PrState, created_day: Option<i8>) -> AgentPr {
         AgentPr {
             host: "github.com".to_string(),
             owner_repo: "ada/widget".to_string(),

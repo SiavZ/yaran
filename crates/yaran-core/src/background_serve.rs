@@ -62,12 +62,11 @@ use std::sync::Arc;
 use crate::engine::{Engine, EventReaction, PrunedPty};
 use crate::pty_owners::PtySizeOwners;
 
-/// What the terminal UI calls itself when it holds a PTY's input.
+/// What the terminal UI calls itself when it holds a PTY's size.
 ///
-/// Every other participant in the ownership registry is a browser connection
-/// recording its raw `User-Agent`; this one has none, so it presents a fixed
-/// label, written as the copy it becomes on a watching browser's take-over card
-/// rather than as an identifier.
+/// Every other participant in the registry is a browser connection recording
+/// its raw `User-Agent`; this one has none, so it presents a fixed label,
+/// written as the copy a browser shows rather than as an identifier.
 ///
 /// One label for the whole terminal UI, not one per agent: a pty is driven by a
 /// device, and this process is one device.
@@ -192,23 +191,24 @@ fn bulk_claim_log_line(
 /// them into the same broadcasts a browser's own claim would have produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PtyOwnershipEvent {
-    /// The terminal UI took (or was handed) input ownership of a pty: the
-    /// `pty.owner` handover a browser's claim emits, with the same epoch.
+    /// A pty's size changed hands on the terminal UI's side: it took the size
+    /// (a launch, typing, switching serving on) or, letting go, handed it to a
+    /// browser. The `pty.owner` handover a browser's claim emits, with the
+    /// same epoch.
     Claimed {
         /// The pty claimed.
         pty_id: String,
-        /// The terminal UI's connection id.
+        /// The new holder's connection id.
         conn_id: u64,
         /// The ownership epoch the claim was given.
         epoch: u64,
-        /// The claimer's device label, which for this participant is always
-        /// [`TUI_DEVICE_LABEL`]. Carried rather than assumed so the translation
-        /// on the other side of the seam stays a dumb relay.
+        /// The new holder's device label: [`TUI_DEVICE_LABEL`] for the
+        /// terminal UI, a browser's `User-Agent` when one is promoted, empty
+        /// when that browser presented none.
         device: String,
     },
-    /// The terminal UI let a pty go, and nobody has taken it: the owner-cleared
-    /// `pty.owner`. Without it a watcher's card is a permanent lie about a
-    /// terminal that stopped serving.
+    /// The terminal UI let a pty go, and nobody else was attached to take it:
+    /// the owner-cleared `pty.owner`.
     Released {
         /// The pty let go.
         pty_id: String,

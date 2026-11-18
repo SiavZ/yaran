@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::operations::RecordWatch;
 use crate::pty_owners::PtySizeOwners;
+use crate::timefmt::Rfc3339;
 
 /// How long a peer may send nothing, not even a pong, before its connection
 /// stops counting: two missed 30-second pings and some slack.
@@ -375,7 +376,7 @@ struct Connection {
     facts: ConnectionFacts,
     heard: Option<Heard>,
     /// When it connected, by the wall clock, for the listing.
-    since: chrono::DateTime<chrono::Utc>,
+    since: jiff::Timestamp,
 }
 
 struct Attachment {
@@ -460,7 +461,7 @@ impl Attachments {
                 Connection {
                     facts,
                     heard,
-                    since: chrono::Utc::now(),
+                    since: jiff::Timestamp::now(),
                 },
             );
         });
@@ -536,7 +537,7 @@ impl Attachments {
                     Connection {
                         facts: own_facts,
                         heard: Some(heard.clone()),
-                        since: chrono::Utc::now(),
+                        since: jiff::Timestamp::now(),
                     },
                 );
                 (own_id.to_string(), Some(own_id.to_string()))
@@ -921,7 +922,7 @@ impl State {
     }
 
     fn connections(&self, now: Instant) -> Vec<ConnectionView> {
-        let mut listed: Vec<(chrono::DateTime<chrono::Utc>, ConnectionView)> = self
+        let mut listed: Vec<(jiff::Timestamp, ConnectionView)> = self
             .connections
             .iter()
             .filter(|(_, connection)| connection_live(connection, now))
@@ -954,9 +955,7 @@ impl State {
                     device: connection.facts.device.clone(),
                     address: connection.facts.address.map(|a| a.to_string()),
                     verified: connection.facts.verified,
-                    since: connection
-                        .since
-                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    since: connection.since.to_rfc3339_secs_z(),
                     driving: attachments.iter().any(|a| a.driving),
                     attachments,
                 };
@@ -1137,7 +1136,7 @@ mod tests {
         let owners = Arc::new(PtySizeOwners::default());
         attachments.use_owners(Arc::clone(&owners));
         let now = Instant::now();
-        let before = chrono::Utc::now().timestamp();
+        let before = jiff::Timestamp::now().as_second();
         attachments.register("e1", browser("10.0.0.2", "Chrome"), None);
         attachments.register(
             "e2",
@@ -1167,8 +1166,10 @@ mod tests {
         assert_eq!(first.attachments.len(), 1);
         assert_eq!(first.attachments[0].target, tab("s1-slot", "s1"));
         assert!(first.attachments[0].driving);
-        let since = chrono::DateTime::parse_from_rfc3339(&first.since).unwrap();
-        assert!(since.timestamp() >= before && since.timestamp() <= chrono::Utc::now().timestamp());
+        let since = crate::timefmt::parse_rfc3339(&first.since).unwrap();
+        assert!(
+            since.as_second() >= before && since.as_second() <= jiff::Timestamp::now().as_second()
+        );
         let second = listed.iter().find(|c| c.id == "e2").unwrap();
         assert!(second.verified);
         assert!(!second.driving);

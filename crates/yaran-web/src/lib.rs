@@ -101,9 +101,10 @@
 //! ├── yaran-core::statusline
 //! ├── yaran-core::tailscale
 //! ├── yaran-core::test_scratch
+//! ├── yaran-core::timefmt
 //! ├── yaran-core::wire
 //! └── yaran-core::worker
-//! External: anyhow, axum, chrono, std, tempfile, tokio, tower
+//! External: anyhow, axum, std, tempfile, tokio, tower
 //!
 //! Used by:
 //! lib.rs
@@ -5038,7 +5039,7 @@ mod tests {
         let written = std::fs::read_to_string(dir.path().join("logs/web.log")).unwrap();
         let line = written.lines().next().expect("one line");
         let (stamp, rest) = line.split_once(' ').expect("a dated line");
-        chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 date");
+        yaran_core::timefmt::parse_rfc3339(stamp).expect("an RFC 3339 date");
         assert_eq!(&rest[9..], "error listener lost", "{written}");
     }
 

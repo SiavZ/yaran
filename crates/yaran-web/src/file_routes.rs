@@ -1568,8 +1568,8 @@ mod tests {
         use yaran_core::config::{ProjectConfig, YaranPaths};
         use yaran_core::storage::SessionStore;
 
-        fn now() -> chrono::DateTime<chrono::Utc> {
-            chrono::Utc::now()
+        fn now() -> jiff::Timestamp {
+            jiff::Timestamp::now()
         }
 
         fn sample_session(id: &str, worktree: &str) -> yaran_core::model::AgentSession {

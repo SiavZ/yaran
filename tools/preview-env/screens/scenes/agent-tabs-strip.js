@@ -8,7 +8,6 @@ const {
   expectVisible,
   expectVisibleText,
   goto,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -17,7 +16,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["refactor-cache"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     // The three pills the caption counts, the plus button beside them, and a
     // terminal underneath with something on it.

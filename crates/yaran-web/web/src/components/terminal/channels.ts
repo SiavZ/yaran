@@ -31,10 +31,13 @@ export function channel<T>(initial: T): Channel<T> {
 /// armed one keystroke ago, before any re-render could have delivered it.
 export type ModifierLatch = Channel<{ ctrl: boolean; alt: boolean }>
 
-/// THE OWNERSHIP VERDICT. Whether THIS client currently drives the PTY.
+/// THE OWNERSHIP VERDICT. Whether THIS page holds the PTY's size: the page
+/// that typed last, whose grid the PTY has. It gates no input; every attached
+/// page types.
 /// OWNER: the ownership machine, writing synchronously at each transition, ahead
-/// of the re-render, because an in-flight keystroke is gated on the new answer.
-/// READERS: every write path, and the resize coordinator's owner gate.
+/// of the re-render, because the coordinator's next fit is gated on the answer.
+/// READERS: the resize coordinator (fit this viewport or render the holder's
+/// grid) and the heartbeat.
 export type OwnershipVerdict = Channel<boolean>
 
 /// THE CONNECTION IDENTITY. This pane's PTY-socket connection id, or null, which
@@ -43,14 +46,3 @@ export type OwnershipVerdict = Channel<boolean>
 /// READERS: the ownership machine's handover comparison, and the upload route,
 /// which needs the TERMINAL socket's id rather than the events socket's.
 export type ConnectionIdentity = Channel<string | null>
-
-/// THE TAKE-OVER INTENT: whether the next resize frame reaching the wire carries
-/// the ownership-transfer flag. Armed by ownership, consumed only after a confirmed
-/// resize write, and cleared by a close, a definitive owner frame, or teardown.
-/// `expectedOwner` makes self-succession conditional on the named prior owner.
-export type TakeoverIntent = {
-  read: () => boolean
-  expectedOwner: () => string | undefined
-  arm: (expectedOwner?: string) => void
-  clear: () => void
-}

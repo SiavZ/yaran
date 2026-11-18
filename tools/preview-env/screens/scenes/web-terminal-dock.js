@@ -9,7 +9,6 @@ const {
   expectVisible,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -20,7 +19,6 @@ module.exports = {
     const id = by["fix-login-redirect"].id
     after(await dockTerminals(id, 2))
     await goto(page, `#/agent/${id}`)
-    await takeOver(page)
     await sleep(2500)
     await clearToasts(page)
     await expectNoCover(page)

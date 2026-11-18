@@ -112,7 +112,6 @@
 //! ├── yaran-core::project_browser
 //! ├── yaran-core::prose
 //! ├── yaran-core::pty
-//! ├── yaran-core::pty_owners
 //! ├── yaran-core::quiet_tail
 //! ├── yaran-core::release_notes
 //! ├── yaran-core::reload_handoff
@@ -132,7 +131,7 @@
 //! ├── yaran-core::worker
 //! ├── yaran-core::working_copy
 //! └── yaran-core::worktree_manager
-//! External: anyhow, chrono, crossterm, libc, ratatui, signal_hook, std, tempfile
+//! External: anyhow, crossterm, jiff, libc, ratatui, signal_hook, std, tempfile
 //!
 //! Used by:
 //! app/mod.rs
@@ -242,7 +241,7 @@ use components::FocusStep;
 #[cfg(test)]
 use crate::model::SessionStatus;
 #[cfg(test)]
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::pty::PtyClient;
 use crate::pty::TerminalSnapshot;
@@ -370,14 +369,6 @@ enum RawSeqAction {
     ForwardKey(crossterm::event::KeyEvent, Vec<u8>),
 }
 
-#[derive(Default)]
-struct DemotedInputPatterns {
-    /// Whether the take-over card covers the pane, which is when these apply.
-    card_covers: bool,
-    palette: Vec<Vec<u8>>,
-    takeover: Vec<Vec<u8>>,
-}
-
 /// Whether a batch of raw input forwarded a bracketed paste whose line endings
 /// were normalized on the way, which counts as typing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -396,7 +387,6 @@ struct RawInputPlan {
 struct RawInputDispatch {
     forward_batch: Vec<u8>,
     is_scrolled_back: bool,
-    may_write_pty: bool,
     needs_selection_clear: bool,
     forwarded: input::ForwardedInput,
 }
@@ -877,28 +867,6 @@ pub(crate) struct App {
     /// PTYs) and cannot be defeated by a new switch site forgetting to reset
     /// anything.
     pub(crate) part_targets: PartTargets,
-    /// A row this surface has been told to TAKE OVER, armed by the take-over
-    /// action and consumed by the next resize of any pty in that row.
-    ///
-    /// Armed rather than acted on directly, so there is exactly one place that
-    /// claims for sizing: the render site that measures a pane. That also gives
-    /// the take-over the surface's real geometry rather than a remembered one.
-    /// The action forgets the row's sent geometry alongside setting this, so a
-    /// take-over at a geometry that happens to match the last one still sends a
-    /// resize, which is what carries the claim.
-    ///
-    /// Only meaningful while a background server is serving; a row left here
-    /// when serving stops is cleared with the rest of the participation state.
-    pub(crate) pending_pty_takeover: Option<yaran_core::pty_owners::RowKey>,
-    /// The last resize this surface was REFUSED, as (pty id, rows, cols), so the
-    /// refusal is logged when it is news rather than on every frame.
-    ///
-    /// A refused resize deliberately does not record the sent geometry: it
-    /// never reached the child, and recording it made a stale geometry permanent.
-    /// The cost is that the render pass asks again every tick for as long as the
-    /// demoted pane is on screen, which without this would be tens of identical
-    /// debug lines a second in the log.
-    pub(crate) last_refused_pty_resize: Option<(String, u16, u16)>,
     /// PTYs this surface launched and has not yet claimed, keyed by pty id.
     ///
     /// Drawing a pane is not a claim, so the launch is what claims the child:
@@ -1022,15 +990,10 @@ pub(crate) struct App {
     /// cleared on `Up` (firing the button's action only when the cursor
     /// is still inside) and on any keystroke or modal-close event.
     pub(crate) pressed_button: Option<components::PressedButton>,
-    /// The take-over card's own in-flight press, separate from
-    /// `pressed_button` because the card is not a modal: the modal press is
-    /// wiped on every non-prompt mouse event (a watchdog for a dialog closed by
-    /// some other path), and the card's button lives on exactly such events.
-    pub(crate) takeover_press: Option<components::PressedButton>,
     /// The dormant-tab card's own in-flight press, kept apart from
-    /// `pressed_button` for the same reason as `takeover_press`: the card is a
-    /// state of the pane rather than a modal, so its button lives on exactly the
-    /// mouse events the modal press machinery wipes.
+    /// `pressed_button` because the card is a state of the pane rather than a
+    /// modal: the modal press is wiped on every non-prompt mouse event, and the
+    /// card's button lives on exactly such events.
     pub(crate) dormant_tab_press: Option<components::PressedButton>,
     pub(crate) interactive_patterns: InteractiveBytePatterns,
     pub(crate) raw_input_parser: crate::raw_input::RawInputParser,
@@ -2422,7 +2385,7 @@ pub(crate) fn agent_info_lines(
     lines.push((
         format!(
             "Created:      {}",
-            session.created_at.format("%Y-%m-%d %H:%M")
+            session.created_at.strftime("%Y-%m-%d %H:%M")
         ),
         AgentInfoTone::Neutral,
     ));
@@ -4862,21 +4825,13 @@ pub(crate) struct MouseLayoutState {
     /// The center pane between the header and the footer, as the dock divider
     /// measures its share against.
     pub(crate) center_stack: Option<Rect>,
-    /// What the take-over card over an agent's stack covers, while it is up.
-    pub(crate) card_cover: Option<Rect>,
     /// The `agent | split | term` control's three words, where it is drawn.
     pub(crate) layout_control: Vec<(DockLayout, Rect)>,
     /// The dock strip's pills, where they are drawn: (terminal id, cell rect).
     pub(crate) dock_pills: Vec<(String, Rect)>,
-    /// The take-over card's button, when the card is on screen. Published by the
-    /// render pass and cleared with the rest of this state every frame, so a
-    /// click can only land on a button that is drawn right now: the card comes
-    /// and goes with the live ownership verdict, without anything on this
-    /// surface happening at all.
-    pub(crate) takeover_button: Option<Rect>,
     /// The dormant-tab card's "Start session" button, when that card is on
-    /// screen. Published and cleared per frame exactly as the take-over
-    /// button's rect is, so a click can only land on a button being drawn.
+    /// screen. Published by the render pass and cleared with the rest of this
+    /// state every frame, so a click can only land on a button being drawn.
     pub(crate) dormant_tab_button: Option<Rect>,
     /// The pull-request banner's painted band, when one is on screen. The
     /// banner fills its whole lane cap to cap, so the published rect IS what
@@ -4914,10 +4869,8 @@ impl MouseLayoutState {
         self.other_term = None;
         self.dock_divider = None;
         self.center_stack = None;
-        self.card_cover = None;
         self.layout_control.clear();
         self.dock_pills.clear();
-        self.takeover_button = None;
         self.dormant_tab_button = None;
         self.pr_banner = None;
         self.unstaged_list = None;
@@ -6357,8 +6310,6 @@ impl App {
             macro_editor_version: None,
             pending_new_agent_settings: None,
             armed_new_agent_settings: None,
-            pending_pty_takeover: None,
-            last_refused_pty_resize: None,
             presize: crate::app::presize::PresizeState::default(),
             scroll_mode: std::collections::HashSet::new(),
             last_diff_height: 0,
@@ -6385,7 +6336,6 @@ impl App {
             center_mouse_forward: None,
             last_mouse_click: None,
             pressed_button: None,
-            takeover_press: None,
             dormant_tab_press: None,
             interactive_patterns,
             raw_input_parser: crate::raw_input::RawInputParser::default(),
@@ -8901,8 +8851,8 @@ impl App {
                         .get(id)
                         .map_or(terminal.created_at, |last| {
                             let ago =
-                                chrono::Duration::from_std(last.elapsed()).unwrap_or_default();
-                            chrono::Utc::now() - ago
+                                jiff::SignedDuration::try_from(last.elapsed()).unwrap_or_default();
+                            jiff::Timestamp::now() - ago
                         });
                 Some(yaran_core::flat_list::TerminalRowFacts {
                     name: &terminal.label,
@@ -11401,7 +11351,7 @@ mod tests {
     }
 
     fn test_session(id: &str, project_id: &str, created_offset: i64) -> AgentSession {
-        let now = Utc::now() + chrono::Duration::seconds(created_offset);
+        let now = Timestamp::now() + jiff::SignedDuration::from_secs(created_offset);
         AgentSession {
             id: id.to_string(),
             agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -11613,7 +11563,7 @@ mod tests {
                 url: "https://github.com/o/r/pull/42".to_string(),
                 ..Default::default()
             },
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         );
         let mut attached = crate::model::AgentPr::found(
             &crate::model::PrInfo {
@@ -11625,7 +11575,7 @@ mod tests {
                 url: "https://github.com/acme/infra/pull/77".to_string(),
                 ..Default::default()
             },
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         );
         attached.found = false;
         attached.attached = true;
@@ -12128,11 +12078,11 @@ mod tests {
         // Three active agents (indices 0,1,2) and two inactive (3,4). Only index 2
         // is hot. Active mode floats it above the non-hot actives while keeping
         // their incoming order; the inactive tail sorts most-recently-updated.
-        let t0 = Utc::now();
+        let t0 = Timestamp::now();
         let mk = |id: &str, status: SessionStatus, updated_offset: i64| {
             let mut s = test_session(id, "p", 0);
             s.status = status;
-            s.updated_at = t0 + chrono::Duration::seconds(updated_offset);
+            s.updated_at = t0 + jiff::SignedDuration::from_secs(updated_offset);
             s
         };
         let sessions = vec![
@@ -12299,11 +12249,11 @@ mod tests {
     fn build_left_items_active_mode_orders_inactive_tail_by_recency() {
         // Under Active mode (the ONLY mode that sorts the tail) the inactive
         // bucket orders most-recently-updated first, regardless of incoming order.
-        let t0 = Utc::now();
+        let t0 = Timestamp::now();
         let mk = |id: &str, status: SessionStatus, off: i64| {
             let mut s = test_session(id, "p", 0);
             s.status = status;
-            s.updated_at = t0 + chrono::Duration::seconds(off);
+            s.updated_at = t0 + jiff::SignedDuration::from_secs(off);
             s
         };
         let sessions = vec![
@@ -12380,7 +12330,7 @@ mod tests {
         // Two active agents with identical updated_at/created_at AND identical
         // names must keep incoming order under every comparator mode (the sorts
         // are stable), so a tie never reshuffles the list.
-        let t = Utc::now();
+        let t = Timestamp::now();
         let mk = |id: &str| {
             let mut s = test_session(id, "p", 0);
             s.status = SessionStatus::Active;

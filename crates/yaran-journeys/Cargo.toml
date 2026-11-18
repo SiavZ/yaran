@@ -32,7 +32,6 @@ description = "Container-based user journeys for yaran's web server: the yaran b
 # also lints this crate on its own.
 [features]
 journeys = [
-    "dep:testcontainers",
     "dep:tokio",
     "dep:reqwest",
     "dep:tokio-tungstenite",
@@ -51,7 +50,6 @@ auth = ["journeys"]
 # bind-mounted into a Linux container), so the dependencies are too. On macOS
 # the crate compiles to nothing whatever the features say.
 [target.'cfg(target_os = "linux")'.dependencies]
-testcontainers = { version = "0.28", default-features = false, optional = true }
 # Ctrl-C cleanup (see src/run.rs): the run removes its own labelled containers
 # and networks, tolerating any already gone, then dies of the signal.
 signal-hook = { version = "0.3", optional = true }

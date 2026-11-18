@@ -969,8 +969,9 @@ environment (`YARAN_AMQ_HANDLE`/`AM_ME`) or `--from`, not an authenticated
 identity, and resolving a card is not authenticated either: both are
 same-UID actions under the single-user trust model accepted in T2. The board
 carries no executable content; nothing on it is ever run. A reply sent from a
-card's dialog is typed into an agent's terminal through the same ownership gate
-as any keystroke, and the default reply template quotes the card's title
+card's dialog is typed into an agent's terminal through the same connection gate
+as any keystroke (any authenticated attached client may type into a PTY, within the
+single-tenant trusted-access model), and the default reply template quotes the card's title
 (sanitized, cut to 80 characters): agent-written text therefore reaches an
 agent's prompt only when the person sends a reply, by default only the agent
 that posted the card, and the dialog names that agent first. An empty
@@ -2414,11 +2415,11 @@ Comment text and the configured prompt template can carry the same bytes.
 **Mitigation in code.** The sender escapes the complete rendered prompt with
 `sanitize::for_terminal` before `macro_payload_bytes` encodes newlines as
 Alt-Enter. Untrusted controls become visible text; the encoder alone introduces
-the escape bytes used for line breaks. The send uses the existing tab ownership
+the escape bytes used for line breaks. The send uses the existing tab connection
 gate and never presses Enter. A refused input-queue enqueue keeps the comments
 in memory and SQLite and reports the failure. Regression tests cover control
 bytes in the filename, line and comment, and a saturated queue with and without
-a serving ownership seat. Implemented.
+a serving PTY seat. Implemented.
 
 **Residual risk.** Printable repository text is still untrusted prompt content;
 the person reviews the typed feedback before submitting it. Queue acceptance

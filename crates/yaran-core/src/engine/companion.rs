@@ -295,7 +295,7 @@ impl Engine {
                 // equals creation order; reorders rewrite this later.
                 sort_order: u64::try_from(self.terminal_counter)
                     .expect("the terminal counter fits in u64"),
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after,
             },
         );
@@ -523,7 +523,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: crate::model::ProviderKind::new("claude"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
 
@@ -582,7 +582,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: crate::model::ProviderKind::new("claude"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         engine.config.terminal.command = "cat".to_string();
@@ -878,7 +878,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: crate::model::ProviderKind::new("claude"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         engine.config.terminal.command = "cat".to_string();
@@ -1001,14 +1001,14 @@ mod tests {
         engine.config.terminal.command = "cat".to_string();
         engine.config.terminal.args = vec![];
 
-        let before = chrono::Utc::now();
+        let before = jiff::Timestamp::now();
         let (first, _) = engine
             .create_companion_terminal("s1", 24, 80)
             .expect("first terminal");
         let (second, _) = engine
             .create_companion_terminal("s1", 24, 80)
             .expect("second terminal");
-        let after = chrono::Utc::now();
+        let after = jiff::Timestamp::now();
 
         let t1 = &engine.companion_terminals[&first];
         let t2 = &engine.companion_terminals[&second];

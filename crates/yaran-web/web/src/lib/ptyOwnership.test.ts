@@ -8,7 +8,6 @@ import {
   notifyPtyOwner,
   onPtyOwner,
   resetPtyOwnerEpochs,
-  seedDeviceFromConnected,
   seedVerdictFromConnected,
 } from "./ptyOwnership"
 
@@ -81,9 +80,9 @@ describe("isOwnerAfterHandover", () => {
 // render typing surfaces over a pty whose keystrokes are all dropped, with no
 // card. This is the correction, and the ORDER of its rules is its whole content.
 describe("seedVerdictFromConnected", () => {
-  const base = { myConnId: "mine", foreground: true, takeoverArmed: false }
+  const base = { myConnId: "mine", foreground: true }
 
-  it("makes a foregrounded arrival a WATCHER of a pty somebody else drives", () => {
+  it("makes a foregrounded arrival render the grid of a pty somebody else sizes", () => {
     expect(seedVerdictFromConnected({ ...base, owner: "theirs" })).toBe(false)
   })
 
@@ -102,22 +101,6 @@ describe("seedVerdictFromConnected", () => {
     expect(
       seedVerdictFromConnected({ ...base, owner: undefined, foreground: false }),
     ).toBe(false)
-  })
-
-  // The take-over bounce's own handshake still reports the OLD owner: the claim
-  // rides the first resize of the new connection, so ownership lags by one
-  // replay parse. Demoting here would flash the card back over a pane the user
-  // has just taken, and the flagged frame would then be refused by the client's
-  // own owner gate before it ever reached the wire.
-  it("an ARMED take-over outranks every other rule", () => {
-    expect(
-      seedVerdictFromConnected({
-        ...base,
-        owner: "theirs",
-        takeoverArmed: true,
-        foreground: false,
-      }),
-    ).toBe(true)
   })
 
   it("recognises its own id as ownership", () => {
@@ -218,97 +201,6 @@ describe("seedVerdictFromConnected", () => {
       ).toBe(false)
     })
 
-    it("an armed take-over still outranks the defer rule", () => {
-      expect(
-        seedVerdictFromConnected({
-          ...base,
-          owner: "theirs",
-          takeoverArmed: true,
-          foreground: false,
-          handshakeEpoch: 0,
-          appliedEpoch: 9,
-          priorVerdict: false,
-        }),
-      ).toBe(true)
-    })
-  })
-})
-
-// The NAME half of the handshake seed. A watcher that merely attaches hears no
-// `pty.owner` broadcast at all (attaching never steals, and a refused claim
-// emits nothing), so the handshake's `owner_device` is its only source of a
-// specific take-over title; these rules mirror the verdict seed's one for one.
-describe("seedDeviceFromConnected", () => {
-  it("names the foreign owner's device from the handshake", () => {
-    expect(
-      seedDeviceFromConnected({
-        mine: false,
-        superseded: false,
-        owner: "conn-other",
-        ownerDevice: "Driver UA",
-        priorDevice: null,
-      }),
-    ).toBe("Driver UA")
-  })
-
-  it("clears any name when this pane owns the pty", () => {
-    expect(
-      seedDeviceFromConnected({
-        mine: true,
-        superseded: false,
-        owner: "conn-self",
-        ownerDevice: "Driver UA",
-        priorDevice: "Stale UA",
-      }),
-    ).toBeNull()
-  })
-
-  it("keeps the newer applied pty.owner's name against a superseded handshake", () => {
-    expect(
-      seedDeviceFromConnected({
-        mine: false,
-        superseded: true,
-        owner: null,
-        ownerDevice: undefined,
-        priorDevice: "Newer Claimer UA",
-      }),
-    ).toBe("Newer Claimer UA")
-  })
-
-  it("falls back to the generic title against an old server that omits the owner", () => {
-    expect(
-      seedDeviceFromConnected({
-        mine: false,
-        superseded: false,
-        owner: undefined,
-        ownerDevice: undefined,
-        priorDevice: "Stale UA",
-      }),
-    ).toBeNull()
-  })
-
-  it("names nobody on an unowned pty, whatever stood before", () => {
-    expect(
-      seedDeviceFromConnected({
-        mine: false,
-        superseded: false,
-        owner: null,
-        ownerDevice: undefined,
-        priorDevice: "Stale UA",
-      }),
-    ).toBeNull()
-  })
-
-  it("reads an owner with no captured User-Agent as unnamed, not as an error", () => {
-    expect(
-      seedDeviceFromConnected({
-        mine: false,
-        superseded: false,
-        owner: "conn-other",
-        ownerDevice: undefined,
-        priorDevice: "Stale UA",
-      }),
-    ).toBeNull()
   })
 })
 
@@ -330,18 +222,6 @@ describe("pty.owner fan-out", () => {
       ["session-1", "conn-1"],
       ["term-9", "conn-2"],
     ])
-  })
-
-  it("passes the device (4th) argument through to listeners", () => {
-    // The take-over modal names the other device from this `device` arg (the raw
-    // User-Agent the server stamps on the handover), so it must survive the fan-out.
-    const seen: Array<string | undefined> = []
-    track(onPtyOwner((_id, _owner, device) => seen.push(device)))
-
-    notifyPtyOwner("session-1", "conn-other", 1, "Mozilla/5.0 Chrome/120")
-    notifyPtyOwner("session-1", "conn-self", 2) // no device -> undefined
-
-    expect(seen).toEqual(["Mozilla/5.0 Chrome/120", undefined])
   })
 
   it("isolates listeners: a listener only reacts to its own pty id", () => {
@@ -382,7 +262,7 @@ describe("pty.owner fan-out", () => {
     notifyPtyOwner("session-1", "conn-self")
     expect(owner).toBe(true)
 
-    // Another device takes over -> we are demoted to the placeholder.
+    // Another device typed -> it holds the size and we render its grid.
     notifyPtyOwner("session-1", "conn-other")
     expect(owner).toBe(false)
   })

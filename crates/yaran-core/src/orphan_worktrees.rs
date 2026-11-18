@@ -233,7 +233,7 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    use chrono::Utc;
+    use jiff::Timestamp;
     use tempfile::tempdir;
 
     use crate::config::{Config, ProjectConfig};
@@ -299,7 +299,7 @@ mod tests {
     }
 
     fn session_for(path: &Path) -> AgentSession {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: "retained-row".to_string(),
             agent_handle: "retained-row".to_string(),

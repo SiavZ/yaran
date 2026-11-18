@@ -2,9 +2,8 @@
 // journey entered by three gestures, and this is where it lives.
 //
 // A drop saves the file and pastes its path, never its bytes: no agent CLI
-// reads a file from its input stream, and injecting the text server-side would
-// bypass the input-ownership gate on the socket, so the browser pastes the
-// returned path over its own already-gated connection.
+// reads a file from its input stream, so the browser pastes the returned path
+// over its own connection, where the server sees it as this page's typing.
 //
 // Nothing here belongs to the terminal's lifetime, so it sits beside the pane
 // rather than in the lifecycle: the drag handlers are rendered props, the
@@ -32,7 +31,7 @@ import { registerAttachCapability } from "@/lib/attachRegistry"
 import type { PtySocket } from "@/lib/ptySocket"
 
 import type { LiveSettings } from "./liveValues"
-import type { ConnectionIdentity, OwnershipVerdict } from "./channels"
+import type { ConnectionIdentity } from "./channels"
 
 // Where a saved file's path is written, and whether it can be written now. The
 // upload loop is identical for a drop and a paste, so the sink is the only
@@ -44,8 +43,8 @@ export type UploadSink = {
   delivery: "sent" | "draft"
   /// Why the path cannot be delivered right now, in the words the
   /// stranded-file toast shows, or null when it can. Called IMMEDIATELY
-  /// BEFORE each delivery, never once per drop: ownership can move and a
-  /// socket can close between two files.
+  /// BEFORE each delivery, never once per drop: a socket can close or a
+  /// message box go away between two files.
   unavailable: () => string | null
   deliver: (payload: string) => void
 }
@@ -58,7 +57,6 @@ export type UploadPipelineDeps = {
   /// the paste form from different places, so the kind is a real parameter.
   kind: "agent" | "terminal"
   live: LiveSettings
-  ownership: OwnershipVerdict
   connId: ConnectionIdentity
   termRef: { current: Terminal | null }
   ptyRef: { current: PtySocket | null }
@@ -70,10 +68,8 @@ export type UploadPipelineDeps = {
   /// activating click, or the browser's user activation is spent and no dialog
   /// appears.
   openFilePicker: () => Promise<File[]>
-  /// Whether the pane is currently the input owner, and whether it is the
-  /// mobile layout: both are RENDER values, because the drag handlers are
-  /// rendered props rather than long-lived closures.
-  isOwner: boolean
+  /// Whether this is the mobile layout: a RENDER value, because the drag
+  /// handlers are rendered props rather than long-lived closures.
   isMobile: boolean
   fileDropEnabled: boolean
 }
@@ -102,14 +98,12 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
     id,
     kind,
     live,
-    ownership,
     connId,
     termRef,
     ptyRef,
     composeInputRef,
     insertComposeText,
     openFilePicker,
-    isOwner,
     isMobile,
     fileDropEnabled,
   } = deps
@@ -123,7 +117,6 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
     return {
       delivery: "sent",
       unavailable: () => {
-        if (!ownership.read()) return "another device took over input"
         // A write to a closed socket is dropped SILENTLY, so without this the
         // file would be reported as sent with nothing written.
         if (!termRef.current || !(ptyRef.current?.isOpen ?? false)) {
@@ -143,15 +136,12 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
     return {
       delivery: "draft",
       // No socket check: nothing goes on the wire until Send, which gates
-      // itself in `sendCompose`. Ownership is still checked, so a demotion
-      // mid-upload cannot stage input at a session this device no longer
-      // drives, and so is the bar itself, which can go away mid-upload: the
-      // draft survives that but the report would claim a message box that is
-      // no longer on screen. Deliberately not a fallback to the terminal sink,
+      // itself in `sendCompose`. The bar itself is checked, because it can go
+      // away mid-upload: the draft survives that but the report would claim a
+      // message box that is no longer on screen. Deliberately not a fallback to the terminal sink,
       // because the toast's wording was fixed when the sink was chosen and a
       // batch that changed destination halfway would misreport either side.
       unavailable: () => {
-        if (!ownership.read()) return "another device took over input"
         if (!live.current.composeActive || composeInputRef.current === null) {
           return "the message box closed"
         }
@@ -177,7 +167,7 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
   //
   // The form each path takes and the length limit beside it are per-CLI (see
   // `pastePayload`), resolved immediately before each paste out of refs for the
-  // same reason the ownership and socket checks are: a config reload or a
+  // same reason the socket check is: a config reload or a
   // provider retarget can land between two files of one drop. A terminal runs a
   // shell, so its path is always quoted (see `TERMINAL_PASTE_FORM`) and neither
   // the setting nor the owning session's provider is consulted.
@@ -239,7 +229,7 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
       }
 
       // Asked IMMEDIATELY BEFORE this delivery, not once at the start of the
-      // drop: ownership can move and the socket can close between two files.
+      // drop: the socket can close between two files.
       const unavailable = sink.unavailable()
       if (unavailable !== null) {
         outcomes.push({
@@ -341,18 +331,15 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
     })
   }
 
-  // Published to the agent and terminal row menus while this pane is mounted
-  // and owns the input. Ownership is part of the registration rather than
-  // something the menu checks: a viewer's pane mounts completely, and an attach
-  // from one would strand every file as saved-but-not-sent.
+  // Published to the agent and terminal row menus while this pane is mounted.
   useEffect(() => {
-    if (!(isOwner && fileDropEnabled)) return
+    if (!fileDropEnabled) return
     return registerAttachCapability(id, attachFromPicker)
     // `attachFromPicker` is a component-body function reading only refs and
     // props, so a fresh identity every render says nothing new; listing it
     // would re-register on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, isOwner, fileDropEnabled])
+  }, [id, fileDropEnabled])
 
   // An image on the clipboard, pasted: the same journey as a drop.
   //
@@ -393,7 +380,6 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
       e.clipboardData?.getData("text/plain") ?? "",
       {
         uploadsEnabled: live.current.fileDropEnabled,
-        isOwner: ownership.read(),
         forceText,
         // An AGENT gets the long-text threshold; a TERMINAL has none, and the
         // union is what makes that structural rather than a condition.
@@ -416,28 +402,11 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
       void runUpload(action.files, activeUploadSink(), action.pastedTextChars)
       return
     }
-    if (action.kind === "refused") {
-      // Cancel it too: a viewer's image paste must not fall through to xterm
-      // (it would insert nothing, but silently), and the toast is the whole
-      // point of refusing out loud rather than ignoring it.
-      e.preventDefault()
-      e.stopPropagation()
-      notifyError(action.reason, {
-        // One id per subject, not one for the whole listener: a refusal
-        // replaces whatever holds its id, so an image refusal and a text
-        // refusal sharing one would erase each other.
-        id:
-          action.subject === "text"
-            ? "clipboard-text-paste"
-            : "clipboard-image-paste",
-      })
-      return
-    }
     // "xterm" and "ignore": touch nothing. Ordinary text paste is xterm's, and
     // an empty clipboard has nothing to do.
   }
 
-  // A drag from a non-owner, on a phone, or while file drop is off is left
+  // A drag on a phone, or while file drop is off is left
   // entirely alone: no overlay and no preventDefault.
   //
   // The server refuses every upload under `[server] file_drop_max_bytes = 0`
@@ -451,7 +420,6 @@ export function useUploadPipeline(deps: UploadPipelineDeps): UploadPipeline {
   function paneAcceptsFileDrag(e: React.DragEvent): boolean {
     return (
       fileDropEnabled &&
-      isOwner &&
       !isMobile &&
       dragCarriesFiles(e.dataTransfer.types)
     )

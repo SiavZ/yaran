@@ -34,12 +34,6 @@ ignore = [
   # `notify` to migrate; the advisory has no patched version.
   # Reviewed: 2026-07-11. Next review: 2026-08-01.
   { id = "RUSTSEC-2024-0384", reason = "transitive via notify; waiting upstream migration to web-time" },
-  # RUSTSEC-2026-0440 — astral-tokio-tar is unmaintained; no patched
-  # version or testcontainers release removes it. It is used only by the
-  # Linux-only, unpublished container-journey tests, never the shipped app.
-  # Drop when testcontainers/testcontainers-rs#1006 ships (migration to tar).
-  # Reviewed: 2026-11-17. Next review: 2026-12-01.
-  { id = "RUSTSEC-2026-0440", reason = "Linux test-only via testcontainers; no released replacement; review 2026-12-01" },
 ]
 
 # ---------------------------------------------------------------------------

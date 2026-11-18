@@ -52,7 +52,7 @@ CLI sends it through the terminal. What each CLI does depends on the platform:
 Even a copy that does arrive has to be accepted by your browser, which only allows it
 within a few seconds of your last key press or click (about 5 in Chrome). A later copy shows
 a message with the start of the text and a **Copy** button. That message appears only in
-the tab driving the terminal, never in one that is only watching it. See
+the tab you typed or pressed in, never in another tab attached to the same terminal. See
 [the clipboard section](/docs/web-workspace#clipboard-the-classic-terminal-model) for the
 full story, and [what plain HTTP costs](/docs/tailscale#plain-http-costs-you-a-few-browser-features).
 

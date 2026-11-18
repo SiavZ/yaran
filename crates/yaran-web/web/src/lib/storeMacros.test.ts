@@ -250,21 +250,17 @@ describe("store macros commands", () => {
   // different, unobserved module instance.
   async function fakePane(
     ptyId: string,
-    opts: { owner?: boolean; compose?: boolean; reconnecting?: boolean } = {},
+    opts: { compose?: boolean; reconnecting?: boolean } = {},
   ): Promise<{ sent: Uint8Array[]; inserted: string[] }> {
     const sent: Uint8Array[] = []
     const inserted: string[] = []
-    const owner = opts.owner ?? true
     const { registerPaneMacroTarget } = await import("./paneMacroTarget")
     registerPaneMacroTarget(ptyId, {
-      takeoverCard: !owner,
-      send: owner
-        ? (b) => {
-            if (opts.reconnecting) return false
-            sent.push(b)
-            return true
-          }
-        : null,
+      send: (b) => {
+        if (opts.reconnecting) return false
+        sent.push(b)
+        return true
+      },
       compose: opts.compose
         ? { insert: (text) => inserted.push(text), target: () => null }
         : null,
@@ -303,23 +299,6 @@ describe("store macros commands", () => {
     mod.runMacro("Greet", { kind: "terminal", terminalId: "t1" } as SelectedTarget)
     expect(other.sent).toHaveLength(1)
     expect(mine.sent).toHaveLength(1)
-  })
-
-  it("runMacro refuses out loud, sending nothing, when its pane is not the owner", async () => {
-    // Against a pty nobody drives, a write would claim it: a macro must never
-    // be how a terminal changes hands.
-    bootstrapMacros = [{ name: "Greet", text: "hi", surface: "both" }]
-    const mod = await loadStore()
-    const watcher = await fakePane("s1", { owner: false })
-    const owner = await fakePane("t1")
-    const { toast } = await import("sonner")
-    expect(mod.runMacro("Greet", agentTab("s1"))).toBe("none")
-    expect(watcher.sent).toHaveLength(0)
-    expect(owner.sent).toHaveLength(0)
-    expect(toast.warning).toHaveBeenCalledWith(
-      "The macro was not sent: this page is not driving this terminal. Take over to send macros.",
-      expect.anything(),
-    )
   })
 
   it("runMacro refuses out loud when its pane's socket is reconnecting", async () => {

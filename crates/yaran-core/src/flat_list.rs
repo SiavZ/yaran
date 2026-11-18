@@ -13,7 +13,7 @@
 //! collapsible tail. This module owns only the ordering; each surface wraps the
 //! result into its own list-item type.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::model::{AgentSession, SessionStatus};
 
@@ -73,9 +73,9 @@ pub struct TerminalRowFacts<'a> {
     /// renaming its window does not move the row.
     pub name: &'a str,
     /// When it was opened.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Its last output, or when it was opened before any.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// A running terminal counts as busy, the way a working agent is hot.
     pub busy: bool,
     /// Its manual place: right after this agent in the stored agent order,
@@ -314,18 +314,13 @@ fn interleave_terminals(
 mod tests {
     use super::*;
     use crate::engine::test_support::sample_session;
-    use chrono::{TimeZone, Utc};
 
-    fn session(id: &str, status: SessionStatus, updated_hour: u32, name: &str) -> AgentSession {
+    fn session(id: &str, status: SessionStatus, updated_hour: i8, name: &str) -> AgentSession {
         let mut s = sample_session(id, "p1", name);
         s.status = status;
         s.title = Some(name.to_string());
-        s.updated_at = Utc
-            .with_ymd_and_hms(2026, 7, 17, updated_hour, 0, 0)
-            .unwrap();
-        s.created_at = Utc
-            .with_ymd_and_hms(2026, 7, 17, updated_hour, 0, 0)
-            .unwrap();
+        s.updated_at = crate::timefmt::utc(2026, 7, 17, updated_hour, 0, 0);
+        s.created_at = crate::timefmt::utc(2026, 7, 17, updated_hour, 0, 0);
         s
     }
 
@@ -490,7 +485,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&source).expect("valid JSON");
         let cases = parsed["cases"].as_array().expect("a cases array");
         assert!(!cases.is_empty(), "the fixture has lost its cases");
-        let time = |value: &serde_json::Value| -> DateTime<Utc> {
+        let time = |value: &serde_json::Value| -> Timestamp {
             value
                 .as_str()
                 .expect("a time")

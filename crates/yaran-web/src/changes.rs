@@ -988,8 +988,8 @@ mod tests {
     use yaran_core::config::{ProjectConfig, YaranPaths};
     use yaran_core::storage::SessionStore;
 
-    fn now() -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now()
+    fn now() -> jiff::Timestamp {
+        jiff::Timestamp::now()
     }
 
     fn changed(path: &str, status: &str, renamed_from: Option<&str>) -> ChangedFile {

@@ -60,7 +60,7 @@
 //! ├── working_copy
 //! ├── worktree_manager
 //! └── worktree_ops
-//! External: anyhow, chrono, rusqlite, serde_json, std, tempfile, tracing
+//! External: anyhow, jiff, rusqlite, serde_json, std, tempfile, tracing
 //!
 //! Used by:
 //! engine/events.rs
@@ -79,7 +79,7 @@
 
 use std::time::Instant;
 
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::config::Config;
 use crate::engine::{CreateLaunchOutcome, Engine, InFlightKey, ResolvedFinal};
@@ -917,7 +917,7 @@ pub struct BranchDeleteInputs {
     /// The agent's worktree, whose HEAD reflog the offer reads again.
     pub(crate) worktree_path: String,
     /// When the agent was created.
-    pub(crate) created_at: chrono::DateTime<Utc>,
+    pub(crate) created_at: jiff::Timestamp,
     /// Every branch recorded for the agent.
     pub(crate) history: Vec<crate::branch_history::BranchHistoryEntry>,
     /// The project's own branches, never offered.
@@ -4257,7 +4257,7 @@ impl Engine {
                 }
                 let previous_updated_at = session.updated_at;
                 managed.branch_name.clone_from(&actual_branch);
-                session.updated_at = Utc::now();
+                session.updated_at = Timestamp::now();
                 if let Err(err) = self.session_store.upsert_session(session) {
                     // Memory keeps what the database holds, so the next branch
                     // check sees the drift again and saves it once the
@@ -4403,7 +4403,7 @@ impl Engine {
                     if session.title.as_deref() == Some(new_branch) {
                         session.title = None;
                     }
-                    session.updated_at = Utc::now();
+                    session.updated_at = Timestamp::now();
                     if let Err(err) = self.session_store.upsert_session(session) {
                         logger::error(&format!(
                             "failed to persist branch rename for {} (new branch: {}): {err}",
@@ -4538,7 +4538,7 @@ impl Engine {
         if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id) {
             let saved = session.clone();
             session.title = previous_title;
-            session.updated_at = Utc::now();
+            session.updated_at = Timestamp::now();
             if let Err(save_err) = self.session_store.upsert_session(session) {
                 logger::error(&format!(
                     "failed to persist branch-rename revert for {}: {save_err}",
@@ -4826,7 +4826,7 @@ impl Engine {
         session_id: &str,
         answers: Vec<crate::worker::PrSyncAnswer>,
         asked: Vec<(String, crate::worker::BranchAskRecord)>,
-        now: chrono::DateTime<Utc>,
+        now: jiff::Timestamp,
     ) -> PrSyncApplied {
         if !asked.is_empty() {
             let asks = self
@@ -4926,7 +4926,7 @@ impl Engine {
         results: Vec<crate::worker::PrStatusResult>,
     ) -> EventReaction {
         let checked_at = Instant::now();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut changed = false;
         // What the plan carries moved: when a branch or a row was last
         // asked, which decides what the next cycle asks.
@@ -9590,7 +9590,7 @@ mod tests {
             url: "https://example".into(),
             ..Default::default()
         };
-        let mut row = crate::model::AgentPr::found(&pr, chrono::Utc::now());
+        let mut row = crate::model::AgentPr::found(&pr, jiff::Timestamp::now());
         row.attached = true;
         engine.agent_prs.insert(session_id.clone(), vec![row]);
         engine
@@ -9701,12 +9701,12 @@ mod tests {
         assert_eq!(history, vec![("spike", &["spike-0".to_string()][..])]);
         assert_eq!(
             live.history[0].identity_at,
-            chrono::DateTime::from_timestamp(1_790_000_000, 0)
+            jiff::Timestamp::from_second(1_790_000_000).ok()
         );
         assert_eq!(live.history[0].tip, Some("b".repeat(40)));
         assert_eq!(live.history[0].last_ask, None);
         assert_eq!(live.history_per_cycle, 50, "clamped");
-        assert_eq!(live.settled_recheck, chrono::TimeDelta::seconds(600));
+        assert_eq!(live.settled_recheck, jiff::SignedDuration::from_secs(600));
 
         let record = crate::worker::BranchAskRecord {
             at: "2026-11-06T12:00:00Z".parse().unwrap(),
@@ -9962,7 +9962,7 @@ mod tests {
         };
         engine.agent_prs.insert(
             "s1".to_string(),
-            vec![crate::model::AgentPr::found(&pr, chrono::Utc::now())],
+            vec![crate::model::AgentPr::found(&pr, jiff::Timestamp::now())],
         );
 
         let reaction = engine.process_worker_event(pr_status_ready(vec![
@@ -10012,7 +10012,7 @@ mod tests {
         // The plan the next cycle reads holds the row as of an hour ago, so a
         // refresh that only stamps the answer must still reach it, or the
         // row's cadence is judged on a stale stamp.
-        let an_hour_ago = Utc::now() - chrono::TimeDelta::hours(1);
+        let an_hour_ago = Timestamp::now() - jiff::SignedDuration::from_hours(1);
         engine.agent_prs.get_mut("s1").unwrap()[0].last_refreshed_at = Some(an_hour_ago);
         engine.write_pr_sync_plan();
         let reaction = engine.process_worker_event(WorkerEvent::PrStatusReady(vec![
@@ -10156,7 +10156,7 @@ mod tests {
             .expect("seed session");
         engine.sessions.push(session);
         let migrated = crate::model::PrPrefs {
-            hide_created_before: Some(Utc::now()),
+            hide_created_before: Some(Timestamp::now()),
             ..Default::default()
         };
         engine
@@ -10188,7 +10188,7 @@ mod tests {
         let cutoff = engine.pr_prefs["s1"]
             .hide_created_before
             .expect("the imported cutoff");
-        let opened = |number: u64, at: chrono::DateTime<Utc>| PrInfo {
+        let opened = |number: u64, at: jiff::Timestamp| PrInfo {
             number,
             state: PrState::Open,
             title: format!("PR {number}"),
@@ -10205,11 +10205,11 @@ mod tests {
                     answers: vec![
                         crate::worker::PrSyncAnswer::Found(opened(
                             20,
-                            cutoff - chrono::TimeDelta::days(1),
+                            cutoff - jiff::SignedDuration::from_hours(24),
                         )),
                         crate::worker::PrSyncAnswer::Found(opened(
                             21,
-                            cutoff + chrono::TimeDelta::hours(1),
+                            cutoff + jiff::SignedDuration::from_hours(1),
                         )),
                     ],
                     asked: Vec::new(),
@@ -11199,7 +11199,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
 
@@ -11244,7 +11244,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -12361,7 +12361,7 @@ mod tests {
             host: host.to_string(),
             rate: remaining.map(|remaining| crate::gh::RateLimitInfo {
                 remaining,
-                reset_at: Some(Utc::now() + chrono::Duration::seconds(120)),
+                reset_at: Some(Timestamp::now() + jiff::SignedDuration::from_secs(120)),
                 cost: Some(1),
             }),
             hard_failed,

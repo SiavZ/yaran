@@ -32,7 +32,6 @@
 //! ├── app::modal
 //! ├── app::pr_clone
 //! ├── app::project_actions
-//! ├── app::pty_ownership
 //! ├── app::pull_requests
 //! ├── app::render
 //! ├── app::session_settings
@@ -2300,21 +2299,6 @@ impl RuntimeBindings {
         self.extended_keys = extended_keys;
     }
 
-    /// Whether `key` is one of the keys bound to `action`, in any scope, with
-    /// exactly the modifiers it names: the decoded-key twin of
-    /// [`Self::byte_patterns_for`].
-    pub(crate) fn binds_exactly(&self, action: Action, key: &KeyEvent) -> bool {
-        let incoming = normalized_combination(key);
-        self.bindings
-            .iter()
-            .filter(|binding| binding.action == action)
-            .flat_map(|binding| binding.keys.iter())
-            .any(|bound| {
-                let bound = normalize_ctrl_punct(normalize_backtab(bound.normalized()));
-                bound.codes == incoming.codes && bound.modifiers == incoming.modifiers
-            })
-    }
-
     /// Every action's binding, in declaration order.
     pub(crate) fn bindings(&self) -> &[RuntimeBinding] {
         &self.bindings
@@ -3125,16 +3109,6 @@ impl InteractiveBytePatterns {
 }
 
 impl RuntimeBindings {
-    /// The raw byte patterns of every key bound to `action`, whatever its
-    /// scope. Keys with no byte form are skipped.
-    pub(crate) fn byte_patterns_for(&self, action: Action) -> Vec<Vec<u8>> {
-        self.bindings
-            .iter()
-            .filter(|rb| rb.action == action)
-            .flat_map(|rb| rb.keys.iter().filter_map(key_combination_to_bytes))
-            .collect()
-    }
-
     /// Build byte patterns for all `Interactive`-scoped bindings.
     /// Each key combination is converted to its raw terminal byte
     /// representation. Bindings that cannot be byte-encoded are skipped.

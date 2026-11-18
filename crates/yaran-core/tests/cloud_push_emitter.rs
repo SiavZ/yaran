@@ -29,6 +29,7 @@ use yaran_core::cloud::push_queue::{event_ts, new_event_id};
 use yaran_core::cloud::revocation::RevocationSignal;
 use yaran_core::cloud::test_support::{SAMPLE_ORG, sample_credentials};
 use yaran_core::statusline::StatusTone;
+use yaran_core::timefmt::Rfc3339;
 use yaran_core::wire::status_keys::CLOUD_PUSH;
 use yaran_core::worker::WorkerEvent;
 
@@ -293,8 +294,7 @@ fn machine_revoked_stops_the_emitter_and_reports_on_both_seams() {
 #[test]
 fn signature_expired_names_the_clock_offset() {
     let mut rig = rig();
-    let ahead = (chrono::Utc::now() + chrono::Duration::seconds(600))
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let ahead = (jiff::Timestamp::now() + jiff::SignedDuration::from_secs(600)).to_rfc3339_secs_z();
     rig.worker.script([Answer::Error(
         401,
         "signature_expired",

@@ -22,7 +22,7 @@ fn sample_session(
     branch: &str,
     worktree: &str,
 ) -> yaran_core::model::AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -2277,9 +2277,9 @@ async fn nested_agent_pty_socket_streams_bytes() {
         .await
         .expect("connect agent pty socket");
 
-    // Claim sizing+input ownership first: a non-owner's stdin is dropped (the
-    // per-PTY active-owner model), and a fresh socket owns nothing until it sends
-    // a size, exactly as the real client does on a foreground attach.
+    // Claim the size first, exactly as the real client does on a foreground
+    // attach: any seated socket's stdin is accepted, but a size from a fresh
+    // socket on an unheld row is what makes it the size holder.
     ws.send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
         .await
         .unwrap();
@@ -2372,22 +2372,13 @@ async fn accumulate_until(
     acc
 }
 
-/// The three halves of the server contract that the web client's take-over
-/// leans on, pinned over a real socket.
-///
-/// Take-over on the web is now a RECONNECT carrying intent: reopen the socket,
-/// then let the first resize frame of the new connection claim, flagged. That
-/// works because (1) a SECOND connection to a PTY another connection currently
-/// owns is still replayed the scrollback on open, which is the only thing that
-/// repaints a black viewport (the child's SIGWINCH redraw is a no-op when the
-/// size it is handed already matches); (2) a PLAIN resize from that second
-/// connection claims NOTHING, which is what stops an ordinary attach from
-/// stealing the prompt; and (3) a resize carrying `takeover` DOES claim, so its
-/// stdin is forwarded from then on. None of it is obvious from the route code,
-/// and a change to any of it would break take-over on the web while every
-/// client-side test stayed green.
+/// The server contract shared input leans on, pinned over a real socket: (1) a
+/// SECOND connection to a PTY another connection holds is replayed the
+/// scrollback on open; (2) a PLAIN resize from it is recorded and applies
+/// nothing, so no `size` event goes out; (3) its TYPING reaches the child, and
+/// moves the size to it first, so its recorded grid arrives as a `size` event.
 #[tokio::test]
-async fn a_second_pty_connection_is_replayed_scrollback_and_claims_only_by_taking_over() {
+async fn a_second_pty_connection_is_replayed_scrollback_and_typing_moves_the_size() {
     let (addr, _tmp) = boot().await;
     let url = format!("ws://{addr}/ws/sessions/s1/pty");
 
@@ -2405,84 +2396,59 @@ async fn a_second_pty_connection_is_replayed_scrollback_and_claims_only_by_takin
     let echoed = accumulate_until(&mut ws_a, "yaran-owner-a-marker", Duration::from_secs(8)).await;
     assert!(
         String::from_utf8_lossy(&echoed).contains("yaran-owner-a-marker"),
-        "the owning connection's stdin never echoed; got {} bytes",
+        "the holding connection's stdin never echoed; got {} bytes",
         echoed.len()
     );
 
-    // Connection B attaches while A still owns input. It must be replayed the
-    // scrollback unconditionally: this is the frame a reopened socket relies on
-    // to repaint after a take-over.
     let (mut ws_b, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("connect second pty socket");
     let replay = accumulate_until(&mut ws_b, "yaran-owner-a-marker", Duration::from_secs(8)).await;
     assert!(
         String::from_utf8_lossy(&replay).contains("yaran-owner-a-marker"),
-        "a second connection was not replayed the scrollback while another owns the PTY; got {} bytes",
+        "a second connection was not replayed the scrollback while another holds the PTY; got {} bytes",
         replay.len()
     );
 
-    // B sends a PLAIN resize, the way any foregrounded attach or window change
-    // does. It must claim NOTHING: B's stdin is still dropped server-side, so the
-    // ABSENCE of an echo is the proof that attaching did not steal. (A's echo of
-    // the same bytes would not appear on B's socket either, so this asserts on a
-    // marker only B could have produced.)
+    // A PLAIN resize from B is recorded, not applied.
     ws_b.send(Message::Text(r#"{"rows":30,"cols":100}"#.into()))
         .await
         .unwrap();
-    ws_b.send(Message::Binary(
-        b"yaran-attach-steal-marker\n".to_vec().into(),
-    ))
-    .await
-    .unwrap();
-    let stolen = accumulate_until(
-        &mut ws_b,
-        "yaran-attach-steal-marker",
-        Duration::from_secs(2),
-    )
-    .await;
     assert!(
-        !String::from_utf8_lossy(&stolen).contains("yaran-attach-steal-marker"),
-        "a PLAIN resize from a second connection stole input ownership; attaching \
-         must never steal"
+        next_event_frame(&mut ws_b, "size", Duration::from_secs(1))
+            .await
+            .is_none(),
+        "a non-holder's plain resize must not resize the PTY"
     );
 
-    // B now takes over EXPLICITLY. Ownership transfers and its stdin is forwarded
-    // from then on; the echo IS the proof that ownership flipped.
-    ws_b.send(Message::Text(
-        r#"{"rows":30,"cols":100,"takeover":true}"#.into(),
-    ))
-    .await
-    .unwrap();
-    ws_b.send(Message::Binary(b"yaran-taker-b-marker\n".to_vec().into()))
+    // B types: its grid is applied first, then its bytes reach the child.
+    ws_b.send(Message::Binary(b"yaran-typist-b-marker\n".to_vec().into()))
         .await
         .unwrap();
-    let after = accumulate_until(&mut ws_b, "yaran-taker-b-marker", Duration::from_secs(8)).await;
+    let size = next_event_frame(&mut ws_b, "size", Duration::from_secs(8))
+        .await
+        .expect("typing moved the size to B");
+    assert_eq!(
+        (size["rows"].as_u64(), size["cols"].as_u64()),
+        (Some(30), Some(100))
+    );
+    let after = accumulate_until(&mut ws_b, "yaran-typist-b-marker", Duration::from_secs(8)).await;
     assert!(
-        String::from_utf8_lossy(&after).contains("yaran-taker-b-marker"),
-        "the second connection's flagged take-over did not claim input ownership; \
-         got {} bytes",
+        String::from_utf8_lossy(&after).contains("yaran-typist-b-marker"),
+        "every attached connection may type; got {} bytes",
         after.len()
     );
 }
 
-/// THE DELAYED GHOST SUCCESSION, over two real sockets.
-///
-/// The one press-less re-claim the design keeps is a returning owner succeeding
-/// its own dead connection, and it rides an ordinary flagged resize. On a mobile
-/// network that frame can arrive seconds late, by which time another device may
-/// legitimately own the pty. `expected_owner` is what stops it becoming a steal:
-/// the server transfers only when the named predecessor still holds the pty.
-///
-/// Asserted the same way the take-over test above asserts ownership: by whether
-/// the sender's stdin echoes back. A refused claim forwards nothing.
+/// THE DELAYED GHOST SUCCESSION, over real sockets. The flagged resize is kept
+/// for compatibility, and `expected_owner` still stops a delayed one moving the
+/// size away from a holder that legitimately took it in the gap. Asserted by
+/// the `size` events the sender is (or is not) sent.
 #[tokio::test]
 async fn a_flagged_resize_naming_a_stale_expected_owner_does_not_steal_the_pty() {
     let (addr, _tmp) = boot().await;
     let url = format!("ws://{addr}/ws/sessions/s1/pty");
 
-    // A attaches and claims by sizing; its `connected` handshake tells it the
-    // connection id it is about to become the ghost of.
     let (mut ws_a, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("connect the first pty socket");
@@ -2496,18 +2462,11 @@ async fn a_flagged_resize_naming_a_stale_expected_owner_does_not_steal_the_pty()
     ws_a.send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
         .await
         .unwrap();
-    let echoed = accumulate_until(
-        &mut ws_a,
-        "yaran-ghost-owner-marker",
-        Duration::from_secs(1),
-    )
-    .await;
-    assert!(
-        !String::from_utf8_lossy(&echoed).contains("yaran-ghost-owner-marker"),
-        "nothing has typed that marker yet"
-    );
+    next_event_frame(&mut ws_a, "size", Duration::from_secs(8))
+        .await
+        .expect("A sized the free pty");
 
-    // A's socket dies, and B claims the freed pty with a plain resize.
+    // A's socket dies; B, seated with a recorded grid, ends up holding it.
     drop(ws_a);
     let (mut ws_b, _) = tokio_tungstenite::connect_async(&url)
         .await
@@ -2515,36 +2474,22 @@ async fn a_flagged_resize_naming_a_stale_expected_owner_does_not_steal_the_pty()
     let _ = next_event_frame(&mut ws_b, "connected", Duration::from_secs(8))
         .await
         .expect("the second handshake");
-    // Retry the plain claim until the server has reaped A's socket: until then
-    // the pty is still owned by the ghost and B's plain resize is refused, which
-    // is the correct behaviour and merely a matter of timing here.
-    let mut b_owns = false;
-    for attempt in 0..40 {
+    let mut b_holds = false;
+    for _ in 0..40 {
         ws_b.send(Message::Text(r#"{"rows":30,"cols":100}"#.into()))
             .await
             .unwrap();
-        ws_b.send(Message::Binary(
-            format!("yaran-owner-b-marker-{attempt}\n")
-                .into_bytes()
-                .into(),
-        ))
-        .await
-        .unwrap();
-        let needle = format!("yaran-owner-b-marker-{attempt}");
-        let seen = accumulate_until(&mut ws_b, &needle, Duration::from_millis(500)).await;
-        if String::from_utf8_lossy(&seen).contains(&needle) {
-            b_owns = true;
+        if let Some(size) = next_event_frame(&mut ws_b, "size", Duration::from_millis(500)).await
+            && size["cols"].as_u64() == Some(100)
+        {
+            b_holds = true;
             break;
         }
     }
-    assert!(
-        b_owns,
-        "the second connection must claim the pty once the first one is reaped"
-    );
+    assert!(b_holds, "B must hold the size once A is gone");
 
-    // A comes back on a fresh socket and its ghost succession finally lands,
-    // naming the dead connection it believes still owns the pty. B owns it now,
-    // so the claim must be refused whole and A's stdin must still be dropped.
+    // A comes back and its delayed ghost succession lands, naming the dead
+    // connection. B holds it now, so nothing is applied.
     let (mut ws_c, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("connect the returning owner's socket");
@@ -2556,38 +2501,23 @@ async fn a_flagged_resize_naming_a_stale_expected_owner_does_not_steal_the_pty()
     ))
     .await
     .unwrap();
-    ws_c.send(Message::Binary(
-        b"yaran-stale-ghost-marker\n".to_vec().into(),
-    ))
-    .await
-    .unwrap();
-    let stolen = accumulate_until(
-        &mut ws_c,
-        "yaran-stale-ghost-marker",
-        Duration::from_secs(2),
-    )
-    .await;
     assert!(
-        !String::from_utf8_lossy(&stolen).contains("yaran-stale-ghost-marker"),
-        "a flagged resize naming a predecessor that no longer owns the pty stole \
-         input ownership; only a pressed take-over may do that"
+        next_event_frame(&mut ws_c, "size", Duration::from_secs(2))
+            .await
+            .is_none(),
+        "a flagged resize naming a predecessor that no longer holds the pty moved its size"
     );
 
-    // And the PRESSED take-over, which names no expectation, still wins.
+    // A take-over naming no expectation still means "make me holder now".
     ws_c.send(Message::Text(
         r#"{"rows":24,"cols":80,"takeover":true}"#.into(),
     ))
     .await
     .unwrap();
-    ws_c.send(Message::Binary(b"yaran-pressed-marker\n".to_vec().into()))
+    let size = next_event_frame(&mut ws_c, "size", Duration::from_secs(8))
         .await
-        .unwrap();
-    let after = accumulate_until(&mut ws_c, "yaran-pressed-marker", Duration::from_secs(8)).await;
-    assert!(
-        String::from_utf8_lossy(&after).contains("yaran-pressed-marker"),
-        "a pressed take-over carries no expectation and must still claim; got {} bytes",
-        after.len()
-    );
+        .expect("an unconditional take-over applies its grid");
+    assert_eq!(size["cols"].as_u64(), Some(80));
 }
 
 /// The periodic frame the browser sends is ANSWERED, which is what lets it
@@ -3341,8 +3271,8 @@ async fn an_oversized_frame_is_refused_and_never_reaches_the_pty() {
         .await
         .expect("connect agent pty socket");
 
-    // Claim ownership first, so a dropped write could only be the size cap and
-    // not the non-owner rule.
+    // Hold the size first, so the only thing that could drop a write here is the
+    // size cap.
     ws.send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
         .await
         .unwrap();
@@ -3433,8 +3363,8 @@ async fn a_fragmented_message_past_the_message_cap_is_refused() {
         .await
         .expect("connect agent pty socket");
 
-    // Claim ownership first, so a dropped write could only be the size cap and
-    // not the non-owner rule.
+    // Hold the size first, so the only thing that could drop a write here is the
+    // size cap.
     ws.send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
         .await
         .unwrap();
@@ -3558,8 +3488,8 @@ async fn nested_terminal_pty_socket_enforces_session_ownership() {
     ))
     .await
     .expect("connect terminal pty on the owning session");
-    // Claim ownership first so this connection's stdin is forwarded (non-owner
-    // stdin is dropped under the per-PTY active-owner model).
+    // Size the PTY first so this connection holds the size, as a real client does
+    // (any seated connection's stdin would be forwarded either way).
     ws.send(Message::Text(r#"{"rows":24,"cols":80}"#.into()))
         .await
         .unwrap();

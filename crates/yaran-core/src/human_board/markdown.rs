@@ -35,13 +35,17 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Utc};
+use jiff::Timestamp;
+use jiff::civil;
+use jiff::tz::TimeZone;
 
 use super::id::CardId;
 use super::{
     Card, CardKind, MAX_DETAIL_CHARS, MAX_FROM_CHARS, MAX_MESSAGE_CHARS, MAX_NOTE_CHARS,
     MAX_THREAD_MESSAGES, Message, Priority, clean_line, clean_text, normalize_ticket,
 };
+
+use crate::timefmt::Rfc3339;
 
 /// Why a note that looks like a card could not be read as one.
 pub type ParseError = String;
@@ -118,7 +122,7 @@ const MESSAGE_META: &str = "<!-- yaran";
 /// closed the card) with the exact fields in a comment notes apps hide, then
 /// the text, one quoted line each.
 fn render_message(out: &mut String, message: &Message) {
-    let when = message.at.format("%Y-%m-%d %H:%M UTC");
+    let when = message.at.strftime("%Y-%m-%d %H:%M UTC");
     let done = if message.done {
         " \u{b7} marked done"
     } else {
@@ -159,15 +163,15 @@ fn render_message(out: &mut String, message: &Message) {
 
 /// A timestamp with its fractions of a second when it has any: two messages
 /// in one second still keep their order and their names.
-fn precise_timestamp(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+fn precise_timestamp(at: Timestamp) -> String {
+    at.to_rfc3339_z()
 }
 
 const STATUS_OPEN: &str = "open";
 const STATUS_DONE: &str = "done";
 
-fn timestamp(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::Secs, true)
+fn timestamp(at: Timestamp) -> String {
+    at.to_rfc3339_secs_z()
 }
 
 /// A string as a YAML double-quoted scalar. JSON's string escapes are a subset
@@ -189,11 +193,7 @@ fn quote(value: &str) -> String {
     clippy::too_many_lines,
     reason = "every card property is read and checked in the order the note lays them out"
 )]
-pub fn parse(
-    text: &str,
-    file_stem: &str,
-    modified: DateTime<Utc>,
-) -> Result<Option<Card>, ParseError> {
+pub fn parse(text: &str, file_stem: &str, modified: Timestamp) -> Result<Option<Card>, ParseError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = text.replace("\r\n", "\n");
     let mut lines = text.split('\n');
@@ -244,7 +244,7 @@ pub fn parse(
         })?,
         None => true,
     };
-    let time = |key: &str| -> Result<Option<DateTime<Utc>>, ParseError> {
+    let time = |key: &str| -> Result<Option<Timestamp>, ParseError> {
         props
             .get(key)
             .map(|value| {
@@ -322,10 +322,7 @@ fn parse_flag(value: &str) -> Option<bool> {
 /// heading is messages. Anything else there means the heading belongs to the
 /// detail, which is then the whole body. `fallback` dates a message written
 /// by hand without its exact fields.
-fn split_conversation<'a>(
-    body: &[&'a str],
-    fallback: DateTime<Utc>,
-) -> (Vec<&'a str>, Vec<Message>) {
+fn split_conversation<'a>(body: &[&'a str], fallback: Timestamp) -> (Vec<&'a str>, Vec<Message>) {
     let Some(heading) = body
         .iter()
         .rposition(|line| line.trim_end() == CONVERSATION_HEADING)
@@ -339,7 +336,7 @@ fn split_conversation<'a>(
 }
 
 /// The messages in `lines`, or `None` when anything there is not one.
-fn parse_messages(lines: &[&str], fallback: DateTime<Utc>) -> Option<Vec<Message>> {
+fn parse_messages(lines: &[&str], fallback: Timestamp) -> Option<Vec<Message>> {
     struct Draft {
         header: String,
         text: Vec<String>,
@@ -385,7 +382,7 @@ fn parse_messages(lines: &[&str], fallback: DateTime<Utc>) -> Option<Vec<Message
 /// the hidden comment yaran writes; a title written by hand names the writer
 /// before any `·`, and the message is dated `fallback`. `None` when no text
 /// or no writer is left after cleaning.
-fn message_from(header: &str, text: &str, fallback: DateTime<Utc>) -> Option<Message> {
+fn message_from(header: &str, text: &str, fallback: Timestamp) -> Option<Message> {
     let (title, meta) = match header.find(MESSAGE_META) {
         Some(at) => (&header[..at], Some(&header[at + MESSAGE_META.len()..])),
         None => (header, None),
@@ -469,10 +466,10 @@ fn parse_status(value: &str) -> Option<bool> {
 
 /// A timestamp as yaran writes it (RFC 3339), or as a notes app writes a date
 /// or date-and-time property (no zone: read as this machine's local time).
-fn parse_time(value: &str) -> Option<DateTime<Utc>> {
+fn parse_time(value: &str) -> Option<Timestamp> {
     let value = value.trim();
-    if let Ok(at) = DateTime::parse_from_rfc3339(value) {
-        return Some(at.with_timezone(&Utc));
+    if let Ok(at) = crate::timefmt::parse_rfc3339(value) {
+        return Some(at);
     }
     let naive = [
         "%Y-%m-%dT%H:%M:%S",
@@ -481,16 +478,13 @@ fn parse_time(value: &str) -> Option<DateTime<Utc>> {
         "%Y-%m-%d %H:%M",
     ]
     .iter()
-    .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
+    .find_map(|format| civil::DateTime::strptime(format, value).ok())
     .or_else(|| {
-        NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        civil::Date::strptime("%Y-%m-%d", value)
             .ok()
-            .and_then(|date| date.and_hms_opt(0, 0, 0))
+            .map(|date| date.at(0, 0, 0, 0))
     })?;
-    Local
-        .from_local_datetime(&naive)
-        .earliest()
-        .map(|at| at.with_timezone(&Utc))
+    crate::timefmt::earliest(&TimeZone::system(), naive)
 }
 
 /// The top-level `name: value` properties of a property block. Names are
@@ -671,12 +665,11 @@ fn yaml_double_quoted(raw: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use super::*;
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 14, 20, minute, 0).unwrap()
+    fn at(minute: i8) -> Timestamp {
+        crate::timefmt::utc(2026, 10, 14, 20, minute, 0)
     }
 
     fn sample() -> Card {
@@ -820,7 +813,7 @@ mod tests {
         assert_eq!(read.resolution, None);
     }
 
-    fn message(minute: u32, from: &str, side: Option<&str>, text: &str) -> Message {
+    fn message(minute: i8, from: &str, side: Option<&str>, text: &str) -> Message {
         Message {
             at: at(minute),
             from: from.to_string(),
@@ -848,7 +841,7 @@ mod tests {
         closing.done = true;
         // Fractions of a second survive, so two messages in one second keep
         // their names.
-        closing.at += chrono::Duration::milliseconds(250);
+        closing.at += jiff::SignedDuration::from_millis(250);
         card.thread = vec![answer, closing];
 
         let note = render(&card);

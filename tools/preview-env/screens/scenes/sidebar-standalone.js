@@ -11,7 +11,6 @@ const {
   freshen,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 // The transcript provider ticks a counter forever, so the elapsed figure in its
@@ -19,7 +18,7 @@ const {
 // and given exactly this long, which pins the number to the second it is
 // counting in; it is the one value in the committed set that a reshoot can move
 // by one.
-// The rest of this scene (the navigation, the take-over, the typing) adds about
+// The rest of this scene (the navigation, the typing) adds about
 // fifteen seconds of its own, which is why this number is small.
 const TRANSCRIPT_SECONDS = 4
 
@@ -32,7 +31,6 @@ module.exports = {
     const standalone = by["design-notes"]
     await freshen(standalone.id, TRANSCRIPT_SECONDS)
     await goto(page, `#/agent/${standalone.id}`)
-    await takeOver(page)
     // The sidebar is filtered, which is what leaves the standalone star and its
     // folder line as the only row in the pane.
     await page.click('input[placeholder*="Search agents"]')

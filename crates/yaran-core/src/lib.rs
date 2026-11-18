@@ -90,7 +90,9 @@
 //! ├── provider
 //! ├── pty
 //! ├── pty_adopt_child
+//! ├── pty_handover
 //! ├── pty_owners
+//! ├── pty_query_reply
 //! ├── pty_reattach
 //! ├── purge
 //! ├── purge_amq
@@ -128,6 +130,7 @@
 //! ├── text
 //! ├── text_encoding
 //! ├── theme
+//! ├── timefmt
 //! ├── urls
 //! ├── version
 //! ├── viewmodel
@@ -244,7 +247,9 @@ pub mod prose;
 pub mod provider;
 pub mod pty;
 pub mod pty_adopt_child;
+pub mod pty_handover;
 pub mod pty_owners;
+pub mod pty_query_reply;
 pub mod pty_reattach;
 // Hard purge (GDPR erasure) and the opt-in orphan-worktree cleaner, ported
 // from the fork (purge workstream).
@@ -288,6 +293,7 @@ pub mod test_scratch;
 pub mod text;
 pub mod text_encoding;
 pub mod theme;
+pub mod timefmt;
 pub mod urls;
 pub mod version;
 pub mod viewmodel;

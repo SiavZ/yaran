@@ -26,7 +26,7 @@
 //! ├── test_scratch
 //! ├── watch::runtime
 //! └── worker
-//! External: anyhow, chrono, std, tempfile
+//! External: anyhow, jiff, std, tempfile
 //!
 //! Used by:
 //! engine/test_support.rs
@@ -100,7 +100,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::test_scratch::ScratchDir;
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::config::YaranPaths;
 use crate::engine::Engine;
@@ -306,7 +306,7 @@ pub(crate) fn sample_tab(id: &str, session_id: &str, provider: &str, sort_order:
         session_id: session_id.to_string(),
         provider: ProviderKind::new(provider),
         sort_order,
-        created_at: Utc::now(),
+        created_at: Timestamp::now(),
     }
 }
 
@@ -329,7 +329,7 @@ pub(crate) fn sample_project(id: &str, path: &str) -> Project {
 }
 
 pub(crate) fn sample_session(id: &str, project_id: &str, branch: &str) -> AgentSession {
-    let now = Utc::now();
+    let now = Timestamp::now();
     AgentSession {
         id: id.to_string(),
         agent_handle: crate::model::normalize_agent_handle(id),
@@ -363,7 +363,7 @@ pub(crate) fn sample_session(id: &str, project_id: &str, branch: &str) -> AgentS
 /// A STANDALONE agent: a folder the user already had, no project, no branch,
 /// no worktree yaran owns. The title is always set, as creation guarantees.
 pub(crate) fn sample_standalone_session(id: &str, folder: &str) -> AgentSession {
-    let now = Utc::now();
+    let now = Timestamp::now();
     AgentSession {
         id: id.to_string(),
         agent_handle: crate::model::normalize_agent_handle(id),

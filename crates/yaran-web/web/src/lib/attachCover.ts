@@ -5,7 +5,7 @@ import type { ConnState } from "./types"
 
 /// Everything the decision reads. Each is a fact somebody else owns: the socket
 /// state from `ReconnectingSocket`, the applied flag from the attach-replay
-/// machine's current epoch, ownership from the ownership machine, `offline` from
+/// machine's current epoch, `offline` from
 /// the events socket, and the expiry from this pane's replay clock.
 export type AttachCoverInputs = {
   socket: ConnState
@@ -19,7 +19,6 @@ export type AttachCoverInputs = {
   /// `replay_wait_seconds` of visible time has passed since this open with no
   /// replay. Always false when the wait is configured to zero.
   waitExpired: boolean
-  isOwner: boolean
   /// This pane may be on its way out: its socket failed moments ago, and a
   /// provider that exited cleanly hands its slot to a sibling and takes this
   /// pane with it. A terminal's socket also fails when the terminal is closed or
@@ -42,26 +41,17 @@ export type AttachCover =
   /// close code); `no-screen` is an open socket that never sent a screen, and the
   /// openness is part of the claim rather than an implication of it.
   | { kind: "box"; reason: "lost" | "no-screen" }
-  /// The full-pane take-over card: another device drives this pty, or nobody
-  /// does and this pane has not claimed it.
-  | { kind: "card" }
 
 export function attachCover(input: AttachCoverInputs): AttachCover {
   // The picture this pane already has, held for as long as the tab behind it
   // might be handing over. The box would otherwise go up and be gone again with
   // the pane, which reads as a fault rather than as a tab that ended.
   if (input.socket === "failed" && input.handoffGrace) return { kind: "none" }
-  // A socket that has given up for good outranks everything, the card included:
-  // a watcher whose socket died would otherwise see only "Take over" and never
-  // learn the connection is gone. While the app-wide overlay is up it owns this
-  // signal instead.
+  // A socket that has given up for good outranks everything. While the app-wide
+  // overlay is up it owns this signal instead.
   if (input.socket === "failed" && !input.offline) {
     return { kind: "box", reason: "lost" }
   }
-  // A watcher's whole pane is the card, before and after the replay lands. It is
-  // a statement about control rather than about pixels, so it does not wait for
-  // a picture to cover.
-  if (!input.isOwner) return { kind: "card" }
   // A socket that is not open has no screen coming either, even when the last
   // open's replay is still on xterm: the picture is frozen, which is the whole
   // point of the reconnect cue. So the cover is up for both reasons, and the wait
@@ -100,12 +90,11 @@ export function attachCover(input: AttachCoverInputs): AttachCover {
   return { kind: "none" }
 }
 
-/// Whether the cover speaks for the whole pane. A card or a box is full-pane and
+/// Whether the cover speaks for the whole pane. A box is full-pane and
 /// opaque, so the theater pill is withheld and the phone's top chrome comes back;
 /// the transparent spinner keeps both, because it flashes on short reconnects.
 export function coverOwnsThePane(cover: AttachCover): boolean {
   switch (cover.kind) {
-    case "card":
     case "box":
       return true
     case "spinner":

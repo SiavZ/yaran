@@ -16,16 +16,12 @@
 
 use std::time::Duration;
 
-use fantoccini::{Client as WebDriver, ClientBuilder, Locator};
-use hyper_util::client::legacy::connect::HttpConnector;
-use testcontainers::core::{IntoContainerPort, WaitFor};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
-
-use crate::container::{identity, labelled, loopback_publish, share_namespace_of};
-use crate::image::{JourneyNetwork, Reaper, journey_image};
+use crate::container::{Container, ContainerRequest, Ready};
+use crate::image::{JourneyNetwork, journey_image};
 use crate::util::eventually;
 use crate::yaran::Yaran;
+use fantoccini::{Client as WebDriver, ClientBuilder, Locator};
+use hyper_util::client::legacy::connect::HttpConnector;
 
 /// The port chromedriver listens on inside its container.
 pub const WEBDRIVER_PORT: u16 = 4444;
@@ -35,8 +31,27 @@ pub const WEBDRIVER_PORT: u16 = 4444;
 #[derive(Debug)]
 pub struct Browser {
     driver: WebDriver,
-    container: ContainerAsync<GenericImage>,
-    _reaper: Reaper,
+    container: Container,
+}
+
+/// How long chromedriver may take to say it started.
+const STARTUP: Duration = Duration::from_secs(60);
+
+/// The browser container every placement shares: the journey image running
+/// chromedriver, with the shared memory Chromium needs.
+async fn request() -> ContainerRequest {
+    ContainerRequest::new("browser", journey_image().await)
+        .arg("--entrypoint", "/usr/bin/env")
+        .arg("--shm-size", (512 * 1024 * 1024).to_string())
+        .cmd(chromedriver_command())
+}
+
+/// Start `request`, ready once chromedriver says so.
+async fn start(request: ContainerRequest) -> Container {
+    request
+        .start(Ready::Log("ChromeDriver was started successfully"), STARTUP)
+        .await
+        .unwrap_or_else(|err| panic!("start the browser container: {err}"))
 }
 
 /// chromedriver, allowing commands only from the container's default gateway.
@@ -59,32 +74,19 @@ impl Browser {
     /// When the container does not start, its `WebDriver` port is not published, or no
     /// `WebDriver` session opens within 30 seconds.
     pub async fn on_network(network: &JourneyNetwork) -> Browser {
-        let (image, tag) = journey_image().await;
-        let (name, reaper, logs) = identity("browser");
-        let request = GenericImage::new(image, tag)
-            .with_entrypoint("/usr/bin/env")
-            .with_wait_for(WaitFor::message_on_stdout(
-                "ChromeDriver was started successfully",
-            ))
-            .with_exposed_port(WEBDRIVER_PORT.tcp());
-        let container = labelled(request.into(), &name, &logs)
-            .with_host_config_modifier(loopback_publish(vec![WEBDRIVER_PORT]))
-            .with_network(network.name())
-            .with_shm_size(512 * 1024 * 1024)
-            .with_cmd(chromedriver_command())
-            .start()
-            .await
-            .unwrap_or_else(|err| panic!("start the browser container {name}: {err}"));
+        let container = start(
+            request()
+                .await
+                .publish_loopback(&[WEBDRIVER_PORT])
+                .arg("--network", network.name()),
+        )
+        .await;
         let port = container
-            .get_host_port_ipv4(WEBDRIVER_PORT.tcp())
+            .host_port(WEBDRIVER_PORT)
             .await
             .expect("the WebDriver port is published");
         let driver = connect(port).await;
-        Browser {
-            driver,
-            container,
-            _reaper: reaper,
-        }
+        Browser { driver, container }
     }
 
     /// A browser in `yaran`'s own network namespace (this machine). `yaran` must
@@ -95,27 +97,10 @@ impl Browser {
     /// When the container does not start, `yaran` does not publish [`WEBDRIVER_PORT`], or no
     /// `WebDriver` session opens within 30 seconds.
     pub async fn beside(yaran: &Yaran) -> Browser {
-        let (image, tag) = journey_image().await;
-        let (name, reaper, logs) = identity("browser");
-        let request = GenericImage::new(image, tag)
-            .with_entrypoint("/usr/bin/env")
-            .with_wait_for(WaitFor::message_on_stdout(
-                "ChromeDriver was started successfully",
-            ));
-        let container = labelled(request.into(), &name, &logs)
-            .with_host_config_modifier(share_namespace_of(yaran.id()))
-            .with_shm_size(512 * 1024 * 1024)
-            .with_cmd(chromedriver_command())
-            .start()
-            .await
-            .unwrap_or_else(|err| panic!("start the browser container {name}: {err}"));
+        let container = start(request().await.share_namespace_of(yaran.id())).await;
         let port = yaran.host_port(WEBDRIVER_PORT).await;
         let driver = connect(port).await;
-        Browser {
-            driver,
-            container,
-            _reaper: reaper,
-        }
+        Browser { driver, container }
     }
 
     /// The browser container's id, for inspecting what it publishes.

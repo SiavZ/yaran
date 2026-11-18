@@ -8,8 +8,9 @@
 //! Uses:
 //! human_board/tests.rs
 //! ├── human_board
-//! └── human_board::tests::watcher_tests
-//! External: chrono, std, tempfile
+//! ├── human_board::tests::watcher_tests
+//! └── timefmt
+//! External: jiff, std, tempfile
 //!
 //! Used by:
 //! human_board/tests.rs
@@ -22,15 +23,13 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
-use chrono::{Duration as ChronoDuration, TimeZone};
-
 use super::*;
 
 #[path = "watcher_tests.rs"]
 mod watcher_tests;
 
-fn at(minute: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 11, 12, 0, 0).unwrap() + ChronoDuration::minutes(minute)
+fn at(minute: i64) -> Timestamp {
+    crate::timefmt::utc(2026, 10, 11, 12, 0, 0) + jiff::SignedDuration::from_mins(minute)
 }
 
 fn card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
@@ -384,7 +383,7 @@ fn concurrent_writers_never_lose_a_card() {
                         .update(|board| {
                             board.post(
                                 &card(CardKind::Info, None, &format!("w{writer} n{n}")),
-                                Utc::now(),
+                                Timestamp::now(),
                             )
                         })
                         .unwrap();

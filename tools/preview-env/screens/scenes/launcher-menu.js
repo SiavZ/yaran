@@ -9,7 +9,6 @@ const {
   goto,
   openLauncherMenu,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -19,7 +18,6 @@ module.exports = {
     const by = await agents()
     // Opened over an agent so the crop keeps the sidebar it sits in.
     await goto(page, `#/agent/${by["design-notes"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     await openLauncherMenu(page)
     await sleep(600)

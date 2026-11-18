@@ -21,7 +21,7 @@ tracing.workspace = true
 notify.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 compact_str = "0.9"
 content_inspector.workspace = true
 # Decodes and encodes the web editor's non-UTF-8 files (yaran_core::text_encoding):
@@ -32,7 +32,7 @@ home.workspace = true
 indexmap.workspace = true
 petname = { version = "3.0.0", default-features = false, features = ["default-rng", "default-words"] }
 portable-pty = "0.9"
-rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "backup"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 libc.workspace = true
 rustix.workspace = true
 socket2.workspace = true
@@ -76,7 +76,10 @@ qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 argon2 = { version = "0.6", features = ["zeroize"] }
 # Password strength estimation for the login's minimum checks (yaran_core::auth).
 # Default features off: the builder is only for custom dictionaries.
-zxcvbn = { version = "3.1", default-features = false }
+# Pinned to 3.0.1: 3.1 declares chrono as a wasm32-only dependency, which still
+# lands chrono (RUSTSEC-2026-0543, unmaintained) in Cargo.lock. Its native
+# scoring and word lists are the same as 3.1's.
+zxcvbn = { version = "=3.0.1", default-features = false }
 # Wipes a typed password from memory when the buffer holding it is dropped.
 zeroize = "1.9"
 # The SIGUSR1 "reload the config" flag (yaran_core::reload_signal), the same

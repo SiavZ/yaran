@@ -17,7 +17,7 @@
 //! ├── cloud::cloudflared::version
 //! ├── cloud::leg
 //! └── cloud::leg_identity
-//! External: chrono, std, tracing
+//! External: jiff, std, tracing
 //!
 //! Used by:
 //! cloud/leg_start.rs
@@ -161,7 +161,11 @@ pub(crate) fn acquire_binary(
         }
         return Ok((acquired.path, BinarySource::User));
     }
-    if version::pin_nearing_end_of_support(chrono::Utc::now().date_naive()) {
+    if version::pin_nearing_end_of_support(
+        jiff::Timestamp::now()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date(),
+    ) {
         sink(CloudLegEvent::Warning(format!(
             "yaran's cloudflared {} is nearing the end of Cloudflare's one-year support; update \
              yaran to get a newer one.",

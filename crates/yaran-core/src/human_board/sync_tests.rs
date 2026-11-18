@@ -1,14 +1,12 @@
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use chrono::TimeZone;
-
 use super::*;
 use crate::git::test_support::git_command;
 use crate::human_board::{CardId, CardKind, NewCard, Priority};
 
-fn at(minute: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 14, 20, minute, 0).unwrap()
+fn at(minute: i8) -> Timestamp {
+    crate::timefmt::utc(2026, 10, 14, 20, minute, 0)
 }
 
 /// Run a fixture git command and return its standard output.
@@ -86,7 +84,7 @@ fn world() -> World {
     World { _tmp: tmp, a, b }
 }
 
-fn post(machine: &Machine, title: &str, minute: u32) -> CardId {
+fn post(machine: &Machine, title: &str, minute: i8) -> CardId {
     machine
         .store
         .update(|board| {
@@ -329,7 +327,7 @@ fn a_folder_outside_git_or_without_upstream_is_explained() {
 
 #[test]
 fn the_newer_note_wins_and_a_change_beats_a_delete() {
-    let note = |minute: u32, title: &str| {
+    let note = |minute: i8, title: &str| {
         let mut board = crate::human_board::Board {
             prefix: "A".to_string(),
             ..Default::default()

@@ -391,7 +391,7 @@ pub fn reload_project_list(
 /// with `path_missing = true` and receive an empty `current_branch`.
 pub fn load_projects<S: std::hash::BuildHasher>(
     project_configs: &[ProjectConfig],
-    created_ats: &HashMap<String, chrono::DateTime<chrono::Utc>, S>,
+    created_ats: &HashMap<String, jiff::Timestamp, S>,
     config: &Config,
 ) -> Vec<Project> {
     let mut projects = Vec::new();
@@ -788,7 +788,7 @@ mod tests {
     use std::fs;
     use std::sync::mpsc;
 
-    use chrono::Utc;
+    use jiff::Timestamp;
     use tempfile::tempdir;
 
     use super::*;
@@ -1102,8 +1102,8 @@ mod tests {
             desired_running: false,
             auto_reopen_enabled: true,
             status: SessionStatus::Detached,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
             workspace: crate::model::AgentWorkspace::Managed(crate::model::ManagedWorkspace {
                 project_id: project.id.clone(),
@@ -1212,8 +1212,8 @@ mod tests {
             desired_running: false,
             auto_reopen_enabled: true,
             status: SessionStatus::Detached,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
             workspace: crate::model::AgentWorkspace::Folder(crate::model::FolderWorkspace {
                 folder_path: link.to_string_lossy().to_string(),
@@ -1259,7 +1259,7 @@ mod tests {
         };
         let config = Config::default();
         let mut created_ats = HashMap::new();
-        let added = Utc::now();
+        let added = Timestamp::now();
         created_ats.insert("test-project-id".to_string(), added);
         let projects = load_projects(&[cfg], &created_ats, &config);
 

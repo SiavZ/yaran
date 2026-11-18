@@ -31,7 +31,7 @@ fn run_git(cwd: &Path, args: &[&str]) {
 }
 
 fn sample_session(id: &str, worktree: &str, branch: &str) -> yaran_core::model::AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),

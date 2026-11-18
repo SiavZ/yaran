@@ -8,10 +8,11 @@ use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Local, Utc};
+use jiff::{Timestamp, Zoned};
 
 use crate::config::{StartupCommandTerminalConfig, YaranPaths};
 use crate::model::{AgentSession, Project};
+use crate::timefmt::Rfc3339;
 
 pub(crate) const LOG_ROOT: &str = "startup-command-logs";
 
@@ -59,7 +60,7 @@ pub struct StartupCommandLogEntry {
     /// The log file's name, for a picker.
     pub display_name: String,
     /// When the log was last written, when the filesystem could say.
-    pub modified_at: Option<DateTime<Local>>,
+    pub modified_at: Option<Zoned>,
 }
 
 /// Whose startup command logs a listing covers.
@@ -177,7 +178,8 @@ fn list_logs_in_dir(dir: &Path) -> Result<Vec<StartupCommandLogEntry>> {
             .metadata()
             .ok()
             .and_then(|meta| meta.modified().ok())
-            .map(DateTime::<Local>::from);
+            .and_then(|at| Timestamp::try_from(at).ok())
+            .map(|at| at.to_zoned(jiff::tz::TimeZone::system()));
         let display_name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -296,7 +298,7 @@ pub(crate) fn run_startup_command(
 
 fn startup_log_path(paths: &YaranPaths, run: &StartupCommandRun) -> PathBuf {
     let log_dir = agent_log_dir(paths, &run.project.id, &run.session.id);
-    let file_stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+    let file_stamp = Timestamp::now().strftime("%Y%m%dT%H%M%SZ");
     let safe_branch = sanitize_file_component(&run.managed.branch_name);
     log_dir.join(format!("{file_stamp}-{safe_branch}.log"))
 }
@@ -320,7 +322,7 @@ fn execute_startup_command(
     // never the developer's own login shell and its profile.
     #[cfg(any(test, feature = "test-support"))]
     crate::test_provider::refuse_unlisted_launch("startup-command shell", &shell)?;
-    let started = Utc::now();
+    let started = Timestamp::now();
     let started_instant = Instant::now();
     let mut command = startup_command(run, &shell, &shell_args, log_path, home);
     // Announced before the spawn and kept until the session is
@@ -365,7 +367,7 @@ fn execute_startup_command(
     }
     let status =
         status.with_context(|| format!("failed to run startup command through {shell}"))?;
-    let ended = Utc::now();
+    let ended = Timestamp::now();
     // What the command wrote before it exited. A job it left running may
     // still be writing; that is the job's output, not the command's.
     let stdout = stdout.finish();
@@ -479,8 +481,8 @@ pub fn run_claimed_startup_command(
             log_path: log_dir.join("not-run.log"),
         };
     };
-    let timestamp = Utc::now();
-    let file_stamp = timestamp.format("%Y%m%dT%H%M%SZ");
+    let timestamp = Timestamp::now();
+    let file_stamp = timestamp.strftime("%Y%m%dT%H%M%SZ");
     let safe_branch = sanitize_file_component(&run.managed.branch_name);
     let log_path = log_dir.join(format!("{file_stamp}-{safe_branch}.log"));
     let result = execute_startup_command(&paths.root, &run, &guard, created, &log_dir, &log_path);
@@ -534,7 +536,7 @@ pub fn run_claimed_startup_command(
                 shell: startup_shell_command(&run.terminal.command),
                 shell_args: run.terminal.args.clone(),
                 started: timestamp,
-                ended: Utc::now(),
+                ended: Timestamp::now(),
                 duration_ms: 0,
                 code: None,
                 success: false,
@@ -913,8 +915,8 @@ fn startup_shell_command_with(raw: &str, var: &dyn Fn(&str) -> Option<String>) -
 struct CommandOutcome {
     shell: String,
     shell_args: Vec<String>,
-    started: DateTime<Utc>,
-    ended: DateTime<Utc>,
+    started: Timestamp,
+    ended: Timestamp,
     duration_ms: u128,
     code: Option<i32>,
     success: bool,
@@ -990,7 +992,6 @@ fn sanitize_file_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use tempfile::tempdir;
 
     use crate::model::{ProjectBranchStatus, ProviderKind, SessionStatus};
@@ -1025,7 +1026,7 @@ mod tests {
     }
 
     pub(super) fn test_session(worktree: &Path) -> AgentSession {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: "session-1".to_string(),
             agent_handle: "session-1".to_string(),
@@ -1504,8 +1505,8 @@ mod tests {
         let outcome = CommandOutcome {
             shell: "/bin/sh".to_string(),
             shell_args: Vec::new(),
-            started: Utc::now(),
-            ended: Utc::now(),
+            started: Timestamp::now(),
+            ended: Timestamp::now(),
             duration_ms: 0,
             code: Some(0),
             success: true,

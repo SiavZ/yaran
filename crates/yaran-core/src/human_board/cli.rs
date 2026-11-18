@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use jiff::Timestamp;
 
 use super::{
     Audience, Blocking, Board, BoardSettings, BoardStore, Card, CardId, CardKind, NewCard,
@@ -146,7 +146,7 @@ pub fn run_with(
             };
             let kind = card.kind;
             let assignee = card.assignee.clone();
-            let outcome = store.update(|board| board.post(&card, Utc::now()))?;
+            let outcome = store.update(|board| board.post(&card, Timestamp::now()))?;
             let verb = match outcome {
                 PostOutcome::Added(_) => "posted",
                 PostOutcome::Updated(_) => "updated",
@@ -170,7 +170,7 @@ pub fn run_with(
             };
             let (id, changed) = store.update(|board| {
                 let id = board.find(id)?;
-                let changed = board.set_blocking(&id, blocking, Utc::now())?;
+                let changed = board.set_blocking(&id, blocking, Timestamp::now())?;
                 Ok((id, changed))
             })?;
             let state = if blocking == Blocking::HoldsPoster {
@@ -194,7 +194,7 @@ pub fn run_with(
             let priority = parse_priority(level)?;
             let (id, changed) = store.update(|board| {
                 let id = board.find(id)?;
-                let changed = board.set_priority(&id, priority, Utc::now())?;
+                let changed = board.set_priority(&id, priority, Timestamp::now())?;
                 Ok((id, changed))
             })?;
             if changed {
@@ -211,8 +211,12 @@ pub fn run_with(
             let assignee = settings.person(person)?;
             let (id, changed) = store.update(|board| {
                 let id = board.find(id)?;
-                let changed =
-                    board.assign(&id, assignee.as_deref(), settings.me.as_deref(), Utc::now())?;
+                let changed = board.assign(
+                    &id,
+                    assignee.as_deref(),
+                    settings.me.as_deref(),
+                    Timestamp::now(),
+                )?;
                 Ok((id, changed))
             })?;
             let queue = assignee.map_or_else(
@@ -231,7 +235,7 @@ pub fn run_with(
                 bail!("`yaran board reopen` needs a card id");
             }
             let changed = store.update(|board| {
-                let now = Utc::now();
+                let now = Timestamp::now();
                 rest.iter()
                     .map(|query| {
                         let id = board.find(query)?;
@@ -435,7 +439,7 @@ fn run_reply(
     let (id, closed) = settings.store.update(|board| {
         let id = board.find(query)?;
         let was_open = board.card(&id).is_some_and(Card::is_open);
-        board.reply(&id, &message, Utc::now())?;
+        board.reply(&id, &message, Timestamp::now())?;
         let closed = was_open && board.card(&id).is_some_and(|card| !card.is_open());
         Ok((id, closed))
     })?;
@@ -475,7 +479,7 @@ fn run_show(args: &[String], settings: &BoardSettings, out: &mut dyn std::io::Wr
         writeln!(out, "{}", serde_json::to_string_pretty(card)?)?;
         return Ok(());
     }
-    let now = Utc::now();
+    let now = Timestamp::now();
     writeln!(out, "{} {}", card.label(), card.title)?;
     let status = if card.is_open() { "open" } else { "done" };
     let mut facts = vec![
@@ -565,7 +569,13 @@ fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write
                 bail!("--ticket needs a ticket reference");
             }
             let resolved = store.update(|board| {
-                Ok(board.resolve_ticket(&ticket, kind, by.as_deref(), note.as_deref(), Utc::now()))
+                Ok(board.resolve_ticket(
+                    &ticket,
+                    kind,
+                    by.as_deref(),
+                    note.as_deref(),
+                    Timestamp::now(),
+                ))
             })?;
             if resolved.is_empty() {
                 writeln!(out, "no open card is about ticket {ticket}")?;
@@ -584,7 +594,7 @@ fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write
                 bail!("--kind only narrows --ticket");
             }
             let changed = store.update(|board| {
-                let now = Utc::now();
+                let now = Timestamp::now();
                 queries
                     .iter()
                     .map(|query| {
@@ -655,7 +665,7 @@ fn run_list(args: &[String], settings: &BoardSettings, out: &mut dyn std::io::Wr
         }
         return Ok(());
     }
-    let now = Utc::now();
+    let now = Timestamp::now();
     for card in cards {
         let mut state = match (card.is_open(), card.resolved_by.as_deref()) {
             (true, _) => card.kind.as_str().to_string(),
@@ -720,7 +730,7 @@ fn run_import(
             // A note keeps whole seconds, so that is the precision compared.
             let already = board.cards.iter().any(|existing| {
                 existing.title == card.title
-                    && existing.created_at.timestamp() == card.created_at.timestamp()
+                    && existing.created_at.as_second() == card.created_at.as_second()
             });
             if already {
                 continue;

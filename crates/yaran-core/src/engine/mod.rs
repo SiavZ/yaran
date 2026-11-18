@@ -103,6 +103,7 @@
 //! ├── term_identity
 //! ├── test_git
 //! ├── test_scratch
+//! ├── timefmt
 //! ├── viewmodel
 //! ├── watch::runtime
 //! ├── wire
@@ -110,7 +111,7 @@
 //! ├── working_copy
 //! ├── worktree_manager
 //! └── worktree_ops
-//! External: anyhow, chrono, home, std, tempfile, toml, uuid
+//! External: anyhow, home, jiff, std, tempfile, toml, uuid
 //!
 //! Used by:
 //! engine/mod.rs
@@ -394,7 +395,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::config::{Config, ProjectConfig, YaranPaths};
 use crate::config_queue::{ConfigWriteQueue, QuiesceGuard};
@@ -1102,7 +1103,7 @@ pub struct Engine {
     /// stamp, taken at the same poll. A terminal's projected `updated_at` reads
     /// it, because a monotonic `Instant` does not advance while the machine
     /// sleeps and so cannot be mapped back onto the wall clock.
-    pub terminal_activity_at: HashMap<String, chrono::DateTime<Utc>>,
+    pub terminal_activity_at: HashMap<String, jiff::Timestamp>,
     /// When the user last forwarded keystrokes to each agent's PTY. The terminal
     /// echoes typing back as PTY output, which would otherwise read as the agent
     /// streaming ([`Engine::is_agent_streaming`]) and falsely light the working
@@ -2545,7 +2546,7 @@ pub(crate) struct PrPauseNotice {
 /// status line both show them verbatim.
 pub(crate) fn pr_pause_notice(
     sig: &crate::gh::HostSignal,
-    now: chrono::DateTime<Utc>,
+    now: jiff::Timestamp,
 ) -> Option<PrPauseNotice> {
     use crate::statusline::StatusTone;
     if let Some(r) = sig
@@ -2554,13 +2555,13 @@ pub(crate) fn pr_pause_notice(
         .filter(|r| r.remaining < crate::gh::RATE_LIMIT_BACKOFF_FLOOR)
     {
         let secs_until = r.reset_at.map_or(PR_RATE_LIMIT_BACKOFF_SECS, |t| {
-            u64::try_from((t - now).num_seconds().clamp(0, 3600))
+            u64::try_from(t.duration_since(now).as_secs().clamp(0, 3600))
                 .expect("clamped to a non-negative number of seconds")
         });
         let when = r.reset_at.map_or_default(|t| {
             format!(
                 " around {}",
-                t.with_timezone(&chrono::Local).format("%H:%M")
+                t.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M")
             )
         });
         return Some(PrPauseNotice {
@@ -2883,7 +2884,7 @@ impl Engine {
     pub fn poll_pty_activity(&mut self) {
         self.prune_operations();
         let now = Instant::now();
-        let now_wall = Utc::now();
+        let now_wall = Timestamp::now();
         // `providers` (and therefore `pty_activity`) is keyed by TAB id, not
         // session id. An agent's own key is whatever `AgentSession::slot_tab_id`
         // points at, never the session id read off the record.
@@ -2959,9 +2960,8 @@ impl Engine {
     /// Mark that a write reached this PTY on somebody's behalf during the run
     /// now in flight, which exempts the run from the rapid-exit failure. Every
     /// write a surface forwards counts (keys, pastes, macros, pointer reports)
-    /// except one nobody caused: an empty write, a focus report, or a mouse
-    /// report too malformed to read, all of which [`classify_pty_write`]
-    /// calls `Ignored`.
+    /// except one nobody caused: an empty write, a focus report or a mangled
+    /// mouse report (`Ignored` to [`classify_pty_write`]), or a `QueryReply`.
     ///
     /// [`classify_pty_write`]: crate::pty::classify_pty_write
     pub fn note_pty_used(&mut self, id: &str, bytes: &[u8]) {
@@ -2969,7 +2969,8 @@ impl Engine {
     }
 
     fn note_pty_used_kind(&mut self, id: &str, kind: crate::pty::PtyWriteKind) {
-        if !matches!(kind, crate::pty::PtyWriteKind::Ignored) {
+        use crate::pty::PtyWriteKind::{Ignored, QueryReply};
+        if !matches!(kind, Ignored | QueryReply) {
             self.pty_used.insert(id.to_string());
         }
     }
@@ -3017,7 +3018,7 @@ impl Engine {
         match kind {
             crate::pty::PtyWriteKind::Typing => self.note_pty_input(id),
             crate::pty::PtyWriteKind::Pointer(report) => self.note_pty_pointer(id, report),
-            crate::pty::PtyWriteKind::Ignored => {}
+            crate::pty::PtyWriteKind::Ignored | crate::pty::PtyWriteKind::QueryReply => {}
         }
         self.note_pty_used_kind(id, kind);
         kind
@@ -5201,7 +5202,7 @@ impl Engine {
     ) {
         for sig in signals {
             let key = format!("{PR_QUOTA_STATUS_KEY}:{}", sig.host);
-            if let Some(notice) = pr_pause_notice(sig, Utc::now()) {
+            if let Some(notice) = pr_pause_notice(sig, Timestamp::now()) {
                 let until = Instant::now() + notice.pause;
                 let already_active = {
                     let mut map = shared
@@ -5898,7 +5899,7 @@ impl Engine {
                 return false;
             }
             session.status = status;
-            session.updated_at = Utc::now();
+            session.updated_at = Timestamp::now();
             changed = true;
             if let Err(err) = self.session_store.upsert_session(session) {
                 crate::logger::error(&format!(
@@ -5927,7 +5928,7 @@ impl Engine {
                 return;
             }
             session.desired_running = desired;
-            session.updated_at = Utc::now();
+            session.updated_at = Timestamp::now();
             if let Err(err) = self.session_store.upsert_session(session) {
                 crate::logger::error(&format!(
                     "failed to persist session desired_running for {}: {err}",
@@ -5961,7 +5962,7 @@ impl Engine {
             return;
         }
 
-        session.updated_at = Utc::now();
+        session.updated_at = Timestamp::now();
         if let Err(err) = self.session_store.upsert_session(session) {
             crate::logger::error(&format!(
                 "failed to persist provider_started state for {}: {err}",
@@ -6231,7 +6232,7 @@ impl Engine {
     ) -> anyhow::Result<()> {
         if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id) {
             session.title = title;
-            session.updated_at = Utc::now();
+            session.updated_at = Timestamp::now();
         }
         if let Some(session) = self.sessions.iter().find(|s| s.id == session_id) {
             self.session_store.upsert_session(session)?;
@@ -6258,7 +6259,7 @@ impl Engine {
         self.clear_in_flight(&InFlightKey::BranchRename(session_id.to_string()));
         if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id) {
             session.title = previous_title;
-            session.updated_at = Utc::now();
+            session.updated_at = Timestamp::now();
             if let Err(err) = self.session_store.upsert_session(session) {
                 crate::logger::error(&format!(
                     "failed to persist rename revert for {session_id}: {err}"
@@ -6395,7 +6396,7 @@ impl Engine {
                 identity_at: entry
                     .identity
                     .as_ref()
-                    .and_then(|identity| chrono::DateTime::from_timestamp(identity.unix, 0)),
+                    .and_then(|identity| jiff::Timestamp::from_second(identity.unix).ok()),
                 tip: entry.tip.clone(),
                 last_ask: last_ask(&entry.name),
             })
@@ -6412,7 +6413,7 @@ impl Engine {
             history_per_cycle: usize::from(crate::config::effective_pr_history_branches_per_cycle(
                 self.config.ui.pr_history_branches_per_cycle,
             )),
-            settled_recheck: chrono::TimeDelta::seconds(i64::from(
+            settled_recheck: jiff::SignedDuration::from_secs(i64::from(
                 crate::config::effective_pr_settled_recheck_seconds(
                     self.config.ui.pr_settled_recheck_seconds,
                 ),
@@ -6490,7 +6491,7 @@ impl Engine {
             // Attaching is asking to see it.
             row.hidden = false;
         } else {
-            let mut row = crate::model::AgentPr::found(&info, chrono::Utc::now());
+            let mut row = crate::model::AgentPr::found(&info, jiff::Timestamp::now());
             row.found = false;
             row.attached = true;
             rows.push(row);
@@ -7483,7 +7484,7 @@ impl Engine {
 
         // The slot tab's row and the session's mirrored `provider` move
         // together, through the one write site that owns both.
-        let updated_at = Utc::now();
+        let updated_at = Timestamp::now();
         self.session_store
             .set_slot_provider(session_id, provider.as_str(), updated_at)?;
         let session = &mut self.sessions[index];
@@ -7584,7 +7585,7 @@ impl Engine {
             session_id: session_id.to_string(),
             provider: provider.clone(),
             sort_order,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         };
         self.session_store.insert_agent_tab(&tab)?;
         self.agent_tabs.insert(TabId::new(tab_id.clone()), tab);
@@ -7668,12 +7669,12 @@ impl Engine {
     /// duplicate provider labels are numbered by.
     pub fn tab_created_ms(&self, session: &AgentSession, tab_id: &TabIdRef) -> i64 {
         match self.agent_tabs.get(tab_id) {
-            Some(tab) => tab.created_at.timestamp_millis(),
+            Some(tab) => tab.created_at.as_millisecond(),
             None => self
                 .slot_tab_created_ms
                 .get(&session.id)
                 .copied()
-                .unwrap_or_else(|| session.created_at.timestamp_millis()),
+                .unwrap_or_else(|| session.created_at.as_millisecond()),
         }
     }
 
@@ -7763,7 +7764,7 @@ impl Engine {
             .successor_slot_tab(session_id)
             .map(|t| (TabId::new(t.id.clone()), t.provider.clone()))
             .ok_or_else(|| anyhow::anyhow!(crate::agent_tabs::ONLY_TAB_CLOSE_REFUSAL))?;
-        let updated_at = Utc::now();
+        let updated_at = Timestamp::now();
         self.session_store.promote_tab_to_slot(
             session_id.as_str(),
             new_slot.as_str(),
@@ -7780,7 +7781,7 @@ impl Engine {
                 .insert(session_id.as_str().to_string(), promoted.sort_order);
             self.slot_tab_created_ms.insert(
                 session_id.as_str().to_string(),
-                promoted.created_at.timestamp_millis(),
+                promoted.created_at.as_millisecond(),
             );
         }
         if let Some(session) = self
@@ -8336,7 +8337,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             },
         );
         (engine, tmp)
@@ -8414,9 +8415,9 @@ mod tests {
     #[test]
     fn ordered_tab_ids_for_session_sorts_by_sort_order_then_created_at_then_id() {
         let (mut engine, _tmp) = engine_with_an_extra_tab();
-        let early = Utc::now();
-        let late = early + chrono::Duration::seconds(5);
-        let mut add = |id: &str, sort_order: i64, created_at: chrono::DateTime<Utc>| {
+        let early = Timestamp::now();
+        let late = early + jiff::SignedDuration::from_secs(5);
+        let mut add = |id: &str, sort_order: i64, created_at: jiff::Timestamp| {
             engine.agent_tabs.insert(
                 TabId::new(id),
                 crate::model::AgentTab {
@@ -9492,7 +9493,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         engine
@@ -9544,7 +9545,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
 
@@ -12089,7 +12090,7 @@ mod tests {
             &["worktree", "add", "-b", "feat", worktree.to_str().unwrap()],
         );
         let mut session = sample_session("s1", "p1", "feat");
-        session.created_at = chrono::Utc::now() - chrono::Duration::hours(1);
+        session.created_at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
         session.workspace.as_managed_mut().unwrap().worktree_path =
             worktree.to_string_lossy().to_string();
         engine.session_store.create_session(&session).unwrap();
@@ -12186,7 +12187,7 @@ mod tests {
             session_id: "s1".to_string(),
             worktree_path: worktree.to_string_lossy().to_string(),
             branch_name: "feat".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::hours(1),
+            created_at: jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1),
             unidentified_birth: None,
             recorded_tips: vec![("spike".to_string(), recorded)],
             shared_workspace: false,
@@ -12230,7 +12231,7 @@ mod tests {
             .lock()
             .expect("branch sync sessions")
             .push(BranchSyncEntry {
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 unidentified_birth: None,
                 recorded_tips: Vec::new(),
                 session_id: "session-1".to_string(),
@@ -12268,7 +12269,7 @@ mod tests {
             worktree_path: path.to_string_lossy().to_string(),
             branch_name: branch.to_string(),
             shared_workspace: false,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
             unidentified_birth: None,
             recorded_tips: Vec::new(),
         }
@@ -12406,7 +12407,7 @@ mod tests {
             .lock()
             .expect("branch sync sessions")
             .push(BranchSyncEntry {
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 unidentified_birth: None,
                 recorded_tips: Vec::new(),
                 session_id: "session-1".to_string(),
@@ -12501,7 +12502,7 @@ mod tests {
         git(&pacer, &["init", "--initial-branch=main"]);
 
         let entry = |session_id: &str, worktree: &Path, branch_name: &str| BranchSyncEntry {
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
             unidentified_birth: None,
             recorded_tips: Vec::new(),
             session_id: session_id.to_string(),
@@ -13271,9 +13272,8 @@ mod tests {
         number: u64,
         owner_repo: &str,
         state: crate::model::PrState,
-        created_day: u32,
+        created_day: i8,
     ) -> crate::model::PrInfo {
-        use chrono::TimeZone;
         crate::model::PrInfo {
             number,
             state,
@@ -13281,20 +13281,16 @@ mod tests {
             host: "github.com".to_string(),
             owner_repo: owner_repo.to_string(),
             url: format!("https://github.com/{owner_repo}/pull/{number}"),
-            gh_created_at: Some(
-                chrono::Utc
-                    .with_ymd_and_hms(2026, 1, created_day, 0, 0, 0)
-                    .unwrap(),
-            ),
+            gh_created_at: Some(crate::timefmt::utc(2026, 1, created_day, 0, 0, 0)),
             ..Default::default()
         }
     }
 
     /// A pull request yaran found on `head`, opened on day `created_day`.
-    fn found_pr(number: u64, created_day: u32, head: &str) -> crate::model::AgentPr {
+    fn found_pr(number: u64, created_day: i8, head: &str) -> crate::model::AgentPr {
         let mut row = crate::model::AgentPr::found(
             &pr_info(number, "o/r", crate::model::PrState::Open, created_day),
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         );
         row.head_branch = Some(head.to_string());
         row
@@ -13304,7 +13300,7 @@ mod tests {
     fn attached_only_pr(number: u64, owner_repo: &str, head: &str) -> crate::model::AgentPr {
         let mut row = crate::model::AgentPr::found(
             &pr_info(number, owner_repo, crate::model::PrState::Open, 1),
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         );
         row.found = false;
         row.attached = true;
@@ -13678,7 +13674,6 @@ mod tests {
     /// open pull request shown while no head branch is known.
     #[test]
     fn the_branch_list_groups_pull_requests_by_former_names() {
-        use chrono::TimeZone;
         let on_old_name = found_pr(12, 3, "old-feat");
         let mut merged = found_pr(7, 1, "spike");
         merged.state = crate::model::PrState::Merged;
@@ -13686,8 +13681,7 @@ mod tests {
         unknown_head.head_branch = None;
         let found_on_main = found_pr(9, 4, "main");
         let mut elsewhere_on_feat = attached_only_pr(77, "acme/infra", "feat");
-        elsewhere_on_feat.gh_created_at =
-            Some(chrono::Utc.with_ymd_and_hms(2026, 1, 9, 0, 0, 0).unwrap());
+        elsewhere_on_feat.gh_created_at = Some(crate::timefmt::utc(2026, 1, 9, 0, 0, 0));
         let (mut engine, _tmp) = engine_with_prs(&[
             on_old_name,
             merged,
@@ -13695,7 +13689,7 @@ mod tests {
             found_on_main,
             elsewhere_on_feat,
         ]);
-        let day = |d| Some(chrono::Utc.with_ymd_and_hms(2026, 1, d, 0, 0, 0).unwrap());
+        let day = |d| Some(crate::timefmt::utc(2026, 1, d, 0, 0, 0));
         engine.projects.push(crate::model::Project {
             leading_branch: Some("main".to_string()),
             ..sample_project("p1", "/src/p1")
@@ -13959,7 +13953,7 @@ mod tests {
     fn attaching_adds_beside_the_found_pull_requests_and_keeps_the_hide_cutoff() {
         let (mut engine, _tmp) = engine_with_prs(&[found_pr(50, 5, "feat")]);
         let cutoff = crate::model::PrPrefs {
-            hide_created_before: Some(chrono::Utc::now()),
+            hide_created_before: Some(jiff::Timestamp::now()),
             ..Default::default()
         };
         let rows = engine.session_store.load_agent_prs_of("s1").unwrap();
@@ -14172,7 +14166,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -14206,7 +14200,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -14264,7 +14258,7 @@ mod tests {
             session_id: "s2".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&foreign_tab).unwrap();
         engine
@@ -14310,7 +14304,7 @@ mod tab_ops_tests {
             session_id: session_id.to_string(),
             provider: ProviderKind::new(provider),
             sort_order: 1,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         }
     }
 
@@ -14326,7 +14320,7 @@ mod tab_ops_tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -14828,7 +14822,7 @@ mod tab_ops_tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -14864,7 +14858,7 @@ mod tab_ops_tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -14901,7 +14895,7 @@ mod tab_ops_tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -15165,18 +15159,18 @@ mod tab_ops_tests {
         let (mut engine, _tmp) = test_engine();
         agent_with_tabs(&mut engine, &[("t2", "claude"), ("t3", "claude")]);
         // Created in the order slot, t2, t3: the labels follow that.
-        let now = Utc::now();
-        engine.sessions[0].created_at = now - chrono::Duration::seconds(30);
+        let now = Timestamp::now();
+        engine.sessions[0].created_at = now - jiff::SignedDuration::from_secs(30);
         engine
             .agent_tabs
             .get_mut(TabIdRef::new("t2"))
             .unwrap()
-            .created_at = now - chrono::Duration::seconds(20);
+            .created_at = now - jiff::SignedDuration::from_secs(20);
         engine
             .agent_tabs
             .get_mut(TabIdRef::new("t3"))
             .unwrap()
-            .created_at = now - chrono::Duration::seconds(10);
+            .created_at = now - jiff::SignedDuration::from_secs(10);
         engine.sessions[0].provider = ProviderKind::new("claude");
         let labels = |engine: &Engine| -> std::collections::BTreeMap<String, String> {
             engine
@@ -16153,7 +16147,7 @@ mod tab_ops_tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -16350,7 +16344,7 @@ mod resource_monitor_targets_tests {
                 foreground_cmd: None,
                 client: spawn_cat(worktree.path()),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -16401,7 +16395,7 @@ mod resource_monitor_targets_tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             },
         );
         engine
@@ -16415,7 +16409,7 @@ mod resource_monitor_targets_tests {
                 foreground_cmd: Some("npm".to_string()),
                 client: spawn_cat(worktree.path()),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -16503,7 +16497,7 @@ mod pr_pause_notice_tests {
     use super::{PR_HARD_FAILURE_BACKOFF_SECS, PR_RATE_LIMIT_BACKOFF_SECS, pr_pause_notice};
     use crate::gh::{HostSignal, RateLimitInfo};
     use crate::statusline::StatusTone;
-    use chrono::Utc;
+    use jiff::Timestamp;
     use std::time::Duration;
 
     fn signal(host: &str) -> HostSignal {
@@ -16517,18 +16511,21 @@ mod pr_pause_notice_tests {
 
     #[test]
     fn a_healthy_host_pauses_nothing() {
-        assert_eq!(pr_pause_notice(&signal("github.com"), Utc::now()), None);
+        assert_eq!(
+            pr_pause_notice(&signal("github.com"), Timestamp::now()),
+            None
+        );
     }
 
     /// Budgeting is not failing: the points-limit pause is an info, and it says
     /// when the checks come back.
     #[test]
     fn nearly_used_up_points_pause_as_an_info_until_the_reset() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut sig = signal("github.com");
         sig.rate = Some(RateLimitInfo {
             remaining: 5,
-            reset_at: Some(now + chrono::Duration::seconds(120)),
+            reset_at: Some(now + jiff::SignedDuration::from_secs(120)),
             cost: None,
         });
         let notice = pr_pause_notice(&sig, now).expect("a pause");
@@ -16544,7 +16541,7 @@ mod pr_pause_notice_tests {
     fn rate_limiting_is_a_warning() {
         let mut sig = signal("github.com");
         sig.rate_limited = true;
-        let notice = pr_pause_notice(&sig, Utc::now()).expect("a pause");
+        let notice = pr_pause_notice(&sig, Timestamp::now()).expect("a pause");
         assert_eq!(notice.tone, StatusTone::Warning);
         assert_eq!(
             notice.pause,
@@ -16564,7 +16561,7 @@ mod pr_pause_notice_tests {
     fn an_unreachable_host_is_a_warning_with_no_markup() {
         let mut sig = signal("ghe.example.com");
         sig.hard_failed = true;
-        let notice = pr_pause_notice(&sig, Utc::now()).expect("a pause");
+        let notice = pr_pause_notice(&sig, Timestamp::now()).expect("a pause");
         assert_eq!(notice.tone, StatusTone::Warning);
         assert_eq!(
             notice.pause,
@@ -16582,7 +16579,7 @@ mod pr_pause_notice_tests {
     /// budget outranks both.
     #[test]
     fn the_points_budget_outranks_rate_limiting_which_outranks_a_hard_failure() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut sig = signal("github.com");
         sig.hard_failed = true;
         sig.rate_limited = true;

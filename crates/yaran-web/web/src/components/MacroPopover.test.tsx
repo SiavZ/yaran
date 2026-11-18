@@ -57,7 +57,6 @@ const target: SelectedTarget = {
 // settle lets them land (the idiom the dropdown-menu tests use).
 function ownerPane(over: Partial<PaneMacroTarget> = {}): PaneMacroTarget {
   return {
-    takeoverCard: false,
     send: () => true,
     compose: null,
     typingSurface: () => null,
@@ -393,71 +392,6 @@ describe("MacroPopover returns focus to the pane from every variant", () => {
       screen.getByRole("button", { name: "Run a macro" }),
     )
     surface.remove()
-  })
-})
-
-// While the take-over card covers the pane a Macros control belongs to, this tab
-// is not driving the pty: the control stays on screen at its full size, cannot
-// be pressed, and says why through the shared tooltip. Both card states, another
-// device driving and nobody driving, publish the same `takeoverCard` verdict.
-describe("MacroPopover under the take-over card", () => {
-  const isDisabled = (el: HTMLElement) => (el as HTMLButtonElement).disabled
-  const covered = () =>
-    registerPaneMacroTarget("s1", { ...ownerPane(), takeoverCard: true, send: null })
-
-  it.each(["labeled", "icon", "pill"] as const)(
-    "the %s trigger is disabled and opens nothing",
-    async (variant) => {
-      covered()
-      render(<MacroPopover variant={variant} target={target} />)
-      const trigger = screen.getByRole("button", { name: "Run a macro" })
-      expect(isDisabled(trigger)).toBe(true)
-      fireEvent.click(trigger)
-      await settle()
-      expect(document.querySelector('[data-slot="popover-content"]')).toBeNull()
-      expect(runMacro).not.toHaveBeenCalled()
-    },
-  )
-
-  it("keeps the trigger's own size classes while disabled", () => {
-    covered()
-    render(<MacroPopover variant="pill" target={target} />)
-    expect(screen.getByRole("button", { name: "Run a macro" }).className).toContain(
-      "size-10",
-    )
-  })
-
-  it("explains itself through the shared tooltip, never a title", async () => {
-    covered()
-    render(<MacroPopover target={target} />)
-    const wrapper = screen.getByTestId("macros-disabled")
-    expect(wrapper.getAttribute("title")).toBeNull()
-    expect(
-      screen.getByRole("button", { name: "Run a macro" }).getAttribute("title"),
-    ).toBeNull()
-    act(() => wrapper.focus())
-    expect(await screen.findByText("Take over to send macros")).toBeTruthy()
-  })
-
-  it("re-enables the moment this tab becomes the owner", async () => {
-    const retire = covered()
-    render(<MacroPopover target={target} />)
-    expect(isDisabled(screen.getByRole("button", { name: "Run a macro" }))).toBe(true)
-    act(() => {
-      retire()
-      registerPaneMacroTarget("s1", ownerPane())
-    })
-    const trigger = screen.getByRole("button", { name: "Run a macro" })
-    expect(isDisabled(trigger)).toBe(false)
-    expect(screen.queryByTestId("macros-disabled")).toBeNull()
-    await openAndPick()
-    expect(runMacro).toHaveBeenCalledWith("Greet", target)
-  })
-
-  it("reads the card of its own pane, not another mounted one", () => {
-    registerPaneMacroTarget("t9", { ...ownerPane(), takeoverCard: true, send: null })
-    render(<MacroPopover target={target} />)
-    expect(isDisabled(screen.getByRole("button", { name: "Run a macro" }))).toBe(false)
   })
 })
 

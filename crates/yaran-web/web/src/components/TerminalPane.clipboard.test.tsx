@@ -632,51 +632,41 @@ describe("the paste report honors the configured dismiss window", () => {
 })
 
 describe("when an image paste cannot be taken", () => {
-  it("refuses it for a client that does not hold input, and saves nothing", async () => {
+  // Every page types, so a page that does not hold the terminal's size pastes
+  // exactly as the one that does.
+  it("uploads it for a page that does not hold the size", async () => {
+    uploadDroppedFile.mockResolvedValue(saved("image.png"))
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
-    act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
+    act(() => notifyPtyOwner("s1", "someone-else", undefined))
     const event = await paste(terminalHost(), [imageItem(png("image.png"))])
 
-    expect(uploadDroppedFile).not.toHaveBeenCalled()
-    expect(sentToSocket()).toEqual([])
-    // Cancelled, so the image does not fall through to xterm either.
+    expect(uploadDroppedFile).toHaveBeenCalledTimes(1)
     expect(event.defaultPrevented).toBe(true)
-    const message = toastText(vi.mocked(toast.error).mock.calls[0][0])
-    expect(message).toContain("Take over")
-    expect(TermStub.xtermPastes).toEqual([])
+    expect(toast.error).not.toHaveBeenCalled()
   })
 
-  it("lets a viewer's paste chord reach the browser, so the refusal is reachable at all", async () => {
-    // The refusal above is only ever seen if a native paste event fires, and
-    // the key handler used to swallow the chord for a non-owner: no event, no
-    // capture listener, no toast. Only on Linux and Windows, since `Cmd+v`
-    // classifies as passthrough and never reached that branch, so the bug was
-    // platform-asymmetric on top of being silent.
+  it("lets the paste chord reach the browser for a page that does not hold the size", async () => {
+    // The upload above only happens if a native paste event fires, so the key
+    // handler must not swallow the chord.
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
-    act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
+    act(() => notifyPtyOwner("s1", "someone-else", undefined))
 
     expect(pressKey({ code: "KeyV", ctrlKey: true })).toBe(false)
     expect(pressKey({ code: "KeyV", ctrlKey: true, shiftKey: true })).toBe(false)
   })
 
-  it("still keeps a viewer's TEXT paste off the wire", async () => {
-    // The safety property the fall-through rests on. xterm's own paste handler
-    // ends in `triggerDataEvent`, which is the pane's `onData` subscription,
-    // and that returns early for a non-owner. `TermStub.paste` reproduces that
-    // chain, so this is the real gate and not a restatement of it.
+  it("sends a text paste from a page that does not hold the size", async () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
-    act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
+    act(() => notifyPtyOwner("s1", "someone-else", undefined))
 
-    const event = await paste(terminalHost(), [textItem("rm -rf /")])
+    const event = await paste(terminalHost(), [textItem("echo hi")])
     expect(event.defaultPrevented).toBe(false)
-    // The event reaches xterm exactly as it would for an owner...
     expect(TermStub.xtermPastes).toEqual([event])
-    // ...and xterm handing that text on still writes nothing to the socket.
-    act(() => TermStub.instances.at(-1)!.paste("rm -rf /"))
-    expect(sentToSocket()).toEqual([])
+    act(() => TermStub.instances.at(-1)!.paste("echo hi"))
+    expect(sentToSocket()).not.toEqual([])
   })
 
   it("reports the server's own refusal when the image is too big", async () => {
@@ -911,33 +901,16 @@ describe("pasting a very long text onto an agent", () => {
     expect(TermStub.xtermPastes).toEqual([event])
   })
 
-  it("refuses it for a client that does not hold input, and saves nothing", async () => {
+  it("files it away for a page that does not hold the size too", async () => {
+    uploadDroppedFile.mockResolvedValue(saved("pasted-x.txt"))
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
-    act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
+    act(() => notifyPtyOwner("s1", "someone-else", undefined))
     const text = long(50_000)
     const event = await paste(terminalHost(), [textItem(text)], text)
 
-    expect(uploadDroppedFile).not.toHaveBeenCalled()
-    expect(sentToSocket()).toEqual([])
+    expect(uploadDroppedFile).toHaveBeenCalledTimes(1)
     expect(event.defaultPrevented).toBe(true)
-    const message = toastText(vi.mocked(toast.error).mock.calls[0][0])
-    expect(message).toContain("Take over")
-    // Its OWN toast id. On the image refusal's id the two would replace each
-    // other, so a viewer who pastes a screenshot and then a wall of text sees
-    // one message and is told nothing about the other.
-    const options = vi.mocked(toast.error).mock.calls[0][1] as { id: string }
-    expect(options.id).toBe("clipboard-text-paste")
-  })
-
-  it("keeps the image refusal on its own toast id", async () => {
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
-    act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
-    await paste(terminalHost(), [imageItem(png("shot.png"))])
-
-    const options = vi.mocked(toast.error).mock.calls[0][1] as { id: string }
-    expect(options.id).toBe("clipboard-image-paste")
   })
 
   it("fires at exactly one character over a threshold the server chose", async () => {

@@ -1,16 +1,10 @@
 //! The upload half of dropping a file onto a terminal or agent pane.
 //!
-//! This route saves bytes and never writes to a terminal. Writing is gated on
-//! being the connection that holds input, and that gate lives on the websocket in
-//! `PtySizeOwners::may_write`; a handler that pasted the path itself would be a
-//! plain HTTP request walking past it. So the route saves the file, returns where
-//! it landed, and the browser pastes that path over its own gated socket.
-//!
-//! The ownership check here is a courtesy that turns "saved and then silently not
-//! pasted" into a clear refusal. It is not the protection and must never be
-//! described as one. It needs its own identifier: `X-Connection-Id` names the
-//! EVENTS socket, and input ownership is tracked against the number minted when
-//! the terminal socket connects, which the upload carries in `conn`.
+//! This route saves bytes and never writes to a terminal. Writing happens on the
+//! terminal socket, which only a seated page holds; a handler that pasted the
+//! path itself would be a plain HTTP request walking past it. So the route saves
+//! the file, returns where it landed, and the browser pastes that path over its
+//! own socket. Every seated page may paste, whoever holds the terminal's size.
 //!
 //! Three destinations, for two intents:
 //!
@@ -88,10 +82,6 @@ struct DropQuery {
     /// The dropped filename, as the browser reported it. Validated, never
     /// rewritten.
     filename: String,
-    /// The TERMINAL SOCKET's connection id (not the events-socket id in
-    /// `X-Connection-Id`). Optional: a browser that has not yet received its
-    /// first frame simply skips the courtesy check.
-    conn: Option<u64>,
     /// Present means the drop came from the editor's file tree, and the value is the
     /// root-relative directory dropped on (`""` for the root). Absent means a drop
     /// on the agent or terminal pane. This one parameter carries both intents rather
@@ -215,8 +205,8 @@ fn unknown_pane(pane_id: &str) -> String {
 }
 
 /// The pty a drop is for, resolved from the pane's id, or the refusal that
-/// answers before the body is kept: file drop switched off, a pane id nothing
-/// answers to, or a terminal another device is driving.
+/// answers before the body is kept: file drop switched off, or a pane id
+/// nothing answers to.
 async fn drop_pty(
     state: &AppState,
     query: &DropQuery,
@@ -240,46 +230,13 @@ async fn drop_pty(
 
     // Canonicalized once, before anything is asked about it. A pane addresses its
     // PTY with whichever id its surface holds, and for an agent's slot tab that is
-    // the session id, which the PTY socket route resolves the same way. Resolving
-    // here rather than inside each lookup keeps the courtesy check honest: input
-    // ownership is recorded against the real pty key, so a check asked with the
-    // placeholder would find nothing and pass a drop it should have refused.
+    // the session id, which the PTY socket route resolves the same way.
     let Some(pty) = state.engine.pty_key_for_pane_id(query.pty.clone()).await else {
         return Err((StatusCode::NOT_FOUND, unknown_pane(&query.pty))
             .into_response()
             .into());
     };
-
-    if let Some(refusal) = held_elsewhere(state, &pty, query) {
-        return Err(refusal.into());
-    }
     Ok(pty)
-}
-
-/// The courtesy check: the websocket's own write check enforces input authority,
-/// and this only tells a viewer who cannot paste before the file is written. An
-/// editor tree drop pastes nothing, so it is skipped explicitly, or a browser
-/// carrying a `conn` from the pane it came from could have a durable save
-/// refused by a check that does not apply to it.
-///
-/// Asked twice: before the body is read, so a viewer is told at once, and again
-/// once the body has arrived, because another device can take over while a slow
-/// upload is still arriving, and the file would then be saved and never pasted.
-fn held_elsewhere(state: &AppState, pty: &str, query: &DropQuery) -> Option<Response> {
-    if query.dir.is_none()
-        && let Some(conn) = query.conn
-        && state.input_held_by_someone_else(pty, conn)
-    {
-        return Some(
-            (
-                StatusCode::CONFLICT,
-                "Another device is driving this terminal, so the path could not be \
-                 pasted. Take over input and drop the file again.",
-            )
-                .into_response(),
-        );
-    }
-    None
 }
 
 /// Read and discard what is left of a refused drop's body, up to `limit` bytes,
@@ -354,10 +311,6 @@ async fn upload_dropped_file(
         Ok(bytes) => bytes,
         Err(rejection) => return body_refusal(&rejection, state.file_drop_max_bytes),
     };
-    if let Some(refusal) = held_elsewhere(&state, &pty, &query) {
-        return refusal;
-    }
-
     let destination = match query.dir.clone() {
         Some(dir) => {
             state
@@ -421,7 +374,7 @@ async fn upload_dropped_file(
                     refused.sentence("save the dropped file").to_string(),
                 )
             })?;
-        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
         let saved =
             yaran_core::file_drop::save_drop(&dir, &filename, destination.naming(), &bytes, &stamp)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -481,7 +434,7 @@ mod tests {
     use yaran_core::storage::SessionStore;
 
     fn sample_session(id: &str, worktree: &str) -> yaran_core::model::AgentSession {
-        let n = chrono::Utc::now();
+        let n = jiff::Timestamp::now();
         yaran_core::model::AgentSession {
             id: id.to_string(),
             agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -1073,12 +1026,11 @@ mod tests {
             assert_eq!(std::fs::read(wt.join("assets/logo.png")).unwrap(), b"bytes");
         }
 
+        /// Every attached page may type, so every attached page may drop: who
+        /// holds the terminal's size has nothing to do with saving a file, and
+        /// the path is pasted over the dropper's own socket.
         #[tokio::test]
-        async fn a_pane_drop_is_refused_while_another_device_holds_the_terminal() {
-            // The courtesy check reads the same ownership map the terminal
-            // socket writes, and the socket records the SLOT TAB's id. Asked
-            // with the placeholder spelling it must still find that record, or
-            // the check silently never fires for the one pane every agent has.
+        async fn a_pane_drop_is_saved_while_another_device_holds_the_terminal_size() {
             let world = drop_world().await;
             let slot = world
                 .handle
@@ -1096,38 +1048,7 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            assert_eq!(resp.status(), StatusCode::CONFLICT);
-            assert!(
-                !world.wt.join(".yaran").exists(),
-                "a refused drop must write nothing"
-            );
-        }
-
-        #[tokio::test]
-        async fn a_take_over_while_the_body_arrives_refuses_and_writes_nothing() {
-            let world = drop_world().await;
-            let state = world.state.clone();
-            let body = axum::body::Body::from_stream(futures_util::stream::once(async move {
-                state.give_input_to("s1-slot", 7);
-                Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"png"))
-            }));
-            let resp = world
-                .app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/v1/file-drop?pty=s1-slot&filename=shot.png&conn=99")
-                        .body(body)
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::CONFLICT);
-            assert!(
-                !world.wt.join(".yaran").exists(),
-                "a drop refused after its body arrived must write nothing"
-            );
+            assert_eq!(resp.status(), StatusCode::OK, "{}", body_text(resp).await);
         }
 
         #[tokio::test]
@@ -1731,72 +1652,6 @@ mod tests {
                 "an errno is not a sentence: {msg}"
             );
             assert!(!wt.join("nope").exists());
-        }
-
-        /// The courtesy input-ownership check is SKIPPED for a tree drop, and
-        /// this is the test that pins the skip.
-        ///
-        /// It matters because the skip is otherwise invisible: deleting
-        /// `query.dir.is_none() &&` from the condition left every other test in
-        /// this file green, since none of them sets `conn` at all. A browser
-        /// really does carry a terminal-socket id (it holds one per pane it has
-        /// attached to), so without the skip a durable save into the user's own
-        /// project could be refused by a check about pasting into a terminal
-        /// that this drop never goes near.
-        #[tokio::test]
-        async fn a_tree_drop_is_saved_even_while_another_device_holds_the_terminal() {
-            let world = drop_world().await;
-            // Somebody ELSE owns input on this agent's PTY.
-            world.state.give_input_to("s1-slot", 7);
-            assert!(
-                world.state.input_held_by_someone_else("s1-slot", 99),
-                "the fixture must actually put input in another connection's hands"
-            );
-
-            let resp = world
-                .app
-                .clone()
-                .oneshot(drop_req(
-                    "pty=s1-slot&filename=notes.md&dir=&conn=99",
-                    b"bytes".to_vec(),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(
-                resp.status(),
-                StatusCode::OK,
-                "a tree drop pastes nothing into any terminal, so who holds \
-                 input has nothing to do with it: {}",
-                body_text(resp).await
-            );
-            assert_eq!(std::fs::read(world.wt.join("notes.md")).unwrap(), b"bytes");
-        }
-
-        /// The other direction, so the pair proves the check exists rather than
-        /// merely that it does not fire. A PANE drop ends in a paste over the
-        /// terminal socket, and a viewer who cannot write is better told before
-        /// a file is written than after.
-        #[tokio::test]
-        async fn a_pane_drop_is_refused_while_another_device_holds_the_terminal() {
-            let world = drop_world().await;
-            world.state.give_input_to("s1-slot", 7);
-
-            let resp = world
-                .app
-                .clone()
-                .oneshot(drop_req(
-                    "pty=s1-slot&filename=shot.png&conn=99",
-                    b"png".to_vec(),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::CONFLICT);
-            let msg = body_text(resp).await;
-            assert!(msg.contains("Take over input"), "got: {msg}");
-            assert!(
-                !world.wt.join(".yaran").exists(),
-                "a refused pane drop must write nothing"
-            );
         }
 
         #[tokio::test]

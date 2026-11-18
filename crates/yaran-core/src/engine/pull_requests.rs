@@ -17,6 +17,7 @@ use crate::model::{AgentPr, PrKey, PrPrefs, PrState};
 use crate::pr_list::{self, Arrange, ArrangeOutcome, MoveTo, PrSortMode};
 use crate::status_text::StatusText;
 use crate::statusline::QuietSurfaces;
+use crate::timefmt::Rfc3339;
 use crate::viewmodel::{PrBranchView, PrBranchesView, PrKeyView};
 
 /// What a refusal about a pull request the agent does not have says, so a

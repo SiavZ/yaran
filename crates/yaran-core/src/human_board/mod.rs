@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 pub use id::CardId;
@@ -320,12 +320,18 @@ pub struct Card {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
     /// When it was posted.
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "crate::timefmt::serde_rfc3339")]
+    pub created_at: Timestamp,
     /// When it last changed.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "crate::timefmt::serde_rfc3339")]
+    pub updated_at: Timestamp,
     /// Set while the card is resolved; cleared again by a reopen.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_at: Option<DateTime<Utc>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::timefmt::serde_rfc3339::option"
+    )]
+    pub resolved_at: Option<Timestamp>,
     /// Who resolved it, while it is resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by: Option<String>,
@@ -349,8 +355,12 @@ pub struct Card {
     pub assigned_by: Option<String>,
     /// When the card itself was passed to an agent on another side (see
     /// [`Message::relayed_at`]), so it is passed once.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relayed_at: Option<DateTime<Utc>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::timefmt::serde_rfc3339::option"
+    )]
+    pub relayed_at: Option<Timestamp>,
     /// The conversation on the card, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread: Vec<Message>,
@@ -361,7 +371,8 @@ pub struct Card {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     /// When it was written.
-    pub at: DateTime<Utc>,
+    #[serde(with = "crate::timefmt::serde_rfc3339")]
+    pub at: Timestamp,
     /// Who wrote it: a person's name, or an agent's handle.
     pub from: String,
     /// The person whose yaran it was written on (`[board] me` there). A
@@ -374,14 +385,18 @@ pub struct Message {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
     /// When yaran passed it to the agent the card belongs to on this side.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relayed_at: Option<DateTime<Utc>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::timefmt::serde_rfc3339::option"
+    )]
+    pub relayed_at: Option<Timestamp>,
 }
 
 impl Message {
     /// What names one message across machines: when, by whom, and what. Two
     /// boards that each gained messages are merged by this.
-    pub fn key(&self) -> (DateTime<Utc>, &str, &str) {
+    pub fn key(&self) -> (Timestamp, &str, &str) {
         (self.at, self.from.as_str(), self.text.as_str())
     }
 
@@ -621,7 +636,7 @@ impl Board {
     /// # Errors
     ///
     /// Fails when the title is empty after cleaning, or the board is at its limit of open cards.
-    pub fn post(&mut self, card: &NewCard, now: DateTime<Utc>) -> Result<PostOutcome> {
+    pub fn post(&mut self, card: &NewCard, now: Timestamp) -> Result<PostOutcome> {
         let Some(kind) = card.kind else {
             bail!("a card needs a kind: one of task, validate, confirm, info");
         };
@@ -789,7 +804,7 @@ impl Board {
         id: impl Into<CardId>,
         by: Option<&str>,
         note: Option<&str>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         let card = self.card_mut(id)?;
         if !card.is_open() {
@@ -810,7 +825,7 @@ impl Board {
         kind: Option<CardKind>,
         by: Option<&str>,
         note: Option<&str>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Vec<CardId> {
         let Some(ticket) = normalize_ticket(ticket) else {
             return Vec::new();
@@ -842,7 +857,7 @@ impl Board {
         &mut self,
         id: impl Into<CardId>,
         priority: Priority,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         let card = self.card_mut(id)?;
         if card.priority == priority {
@@ -865,7 +880,7 @@ impl Board {
         id: impl Into<CardId>,
         assignee: Option<&str>,
         by: Option<&str>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         let assignee = assignee.and_then(|assignee| clean_line(assignee, MAX_FROM_CHARS));
         let by = by.and_then(|by| clean_line(by, MAX_FROM_CHARS));
@@ -885,7 +900,7 @@ impl Board {
     /// # Errors
     ///
     /// Fails when no card has the id.
-    pub fn reopen(&mut self, id: impl Into<CardId>, now: DateTime<Utc>) -> Result<bool> {
+    pub fn reopen(&mut self, id: impl Into<CardId>, now: Timestamp) -> Result<bool> {
         let card = self.card_mut(id)?;
         if card.is_open() {
             return Ok(false);
@@ -909,7 +924,7 @@ impl Board {
         &mut self,
         id: impl Into<CardId>,
         message: &NewMessage,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Message> {
         let Some(text) = clean_text(&message.text, MAX_MESSAGE_CHARS) else {
             bail!("a reply needs some text");
@@ -934,7 +949,7 @@ impl Board {
         // merge.
         let mut at = now;
         while card.thread.iter().any(|m| m.at == at && m.from == from) {
-            at += chrono::Duration::milliseconds(1);
+            at += jiff::SignedDuration::from_millis(1);
         }
         let stored = Message {
             at,
@@ -965,7 +980,7 @@ impl Board {
         &mut self,
         id: impl Into<CardId>,
         blocking: Blocking,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         let card = self.card_mut(id)?;
         let blocking = blocking == Blocking::HoldsPoster;
@@ -987,8 +1002,8 @@ impl Board {
     pub fn mark_relayed(
         &mut self,
         id: impl Into<CardId>,
-        key: (DateTime<Utc>, &str, &str),
-        now: DateTime<Utc>,
+        key: (Timestamp, &str, &str),
+        now: Timestamp,
     ) -> Result<bool> {
         let card = self.card_mut(id)?;
         match card.thread.iter_mut().find(|m| m.key() == key) {
@@ -1006,7 +1021,7 @@ impl Board {
     /// # Errors
     ///
     /// Fails when no card has the id.
-    pub fn mark_card_relayed(&mut self, id: impl Into<CardId>, now: DateTime<Utc>) -> Result<bool> {
+    pub fn mark_card_relayed(&mut self, id: impl Into<CardId>, now: Timestamp) -> Result<bool> {
         let card = self.card_mut(id)?;
         if card.relayed_at.is_some() {
             return Ok(false);
@@ -1017,7 +1032,7 @@ impl Board {
 
     /// The open news cards posted before `cutoff`: the ones that close by
     /// themselves (see `[board] news_close_hours`).
-    pub fn stale_news(&self, cutoff: DateTime<Utc>) -> Vec<CardId> {
+    pub fn stale_news(&self, cutoff: Timestamp) -> Vec<CardId> {
         self.cards
             .iter()
             .filter(|card| {
@@ -1029,12 +1044,7 @@ impl Board {
 
     /// Close the open news cards posted before `cutoff`, as `by`, and return
     /// which. A card that is no longer open or no longer news is left alone.
-    pub fn close_stale_news(
-        &mut self,
-        cutoff: DateTime<Utc>,
-        by: &str,
-        now: DateTime<Utc>,
-    ) -> Vec<CardId> {
+    pub fn close_stale_news(&mut self, cutoff: Timestamp, by: &str, now: Timestamp) -> Vec<CardId> {
         let ids = self.stale_news(cutoff);
         for id in &ids {
             // Every id was just found open, so this cannot fail.
@@ -1051,7 +1061,7 @@ impl Board {
     /// Drop the oldest resolved cards past [`RESOLVED_HISTORY`]. Open cards are
     /// never dropped.
     pub fn prune(&mut self) {
-        let mut resolved: Vec<(DateTime<Utc>, CardId)> = self
+        let mut resolved: Vec<(Timestamp, CardId)> = self
             .cards
             .iter()
             .filter_map(|c| c.resolved_at.map(|at| (at, c.id.clone())))
@@ -1203,8 +1213,8 @@ pub fn render_reply(template: &str, card: &Card, reply: &str) -> String {
 }
 
 /// A short age for a board row: `now`, `5m`, `3h`, `2d`.
-pub fn compact_age(from: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let seconds = (now - from).num_seconds().max(0);
+pub fn compact_age(from: Timestamp, now: Timestamp) -> String {
+    let seconds = now.duration_since(from).as_secs().max(0);
     match seconds {
         s if s < 60 => "now".to_string(),
         s if s < 3_600 => format!("{}m", s / 60),

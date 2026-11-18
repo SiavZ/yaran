@@ -1,6 +1,6 @@
 ---
 title: The workspace in the browser
-description: The three-pane web layout, deep links, the browser terminals, one-writer take-over, clipboard and touch selection, companion terminals, self-clearing messages, and the mobile hub-and-spoke shell.
+description: The three-pane web layout, deep links, the browser terminals, shared typing from every device, clipboard and touch selection, companion terminals, self-clearing messages, and the mobile hub-and-spoke shell.
 group: Web UI
 order: 61
 ---
@@ -297,62 +297,45 @@ Opening the file editor or the changes screen steps out of the mode, since neith
 
 #### When a card covers the terminal
 
-One thing does bring the top bar back on either surface without asking you to leave the mode: a card over the whole terminal. That happens when:
-
-- another device took the driving seat,
-- nobody is driving it yet (it is running in the background and this device has not claimed it), or
-- the connection is being put back together.
+One thing does bring the top bar back on either surface without asking you to leave the mode: a card over the whole terminal, which happens while the connection is being put back together.
 
 The pill goes with the terminal underneath it, so the header returns with **Back** and the agent's name and you are never stuck staring at a card you cannot walk away from.
 
 On a computer the top bar comes back the same way, with the **Theater** button in it, since a tablet gets that layout on width alone and has no Escape key to leave with; the side panels stay away. The moment the card goes, theater picks up where it left off. A brief spinner during a quick reconnect is not a card and changes nothing.
 
 > [!TIP]
-> Theater is remembered per row of the agents list, in that browser, so the agent you like watching full-screen comes back full-screen and the others do not. Switching between an agent's tabs or terminals never takes you in or out of it; a project or standalone terminal keeps its own. If another device takes over the terminal, theater ends and the memory goes with it, so you always come back to the full layout to decide what to do next.
+> Theater is remembered per row of the agents list, in that browser, so the agent you like watching full-screen comes back full-screen and the others do not. Switching between an agent's tabs or terminals never takes you in or out of it; a project or standalone terminal keeps its own.
 
-### One writer, many watchers
+### Every device types, the last one to type sets the size
 
-Every device pointed at the same terminal sees the same output at the same time, but
-**only one device at a time can type.** That device is the owner, and **you join as a
-watcher unless nobody is driving.** If nobody holds the terminal, the first device to
-look at it picks it up.
+Every device pointed at the same terminal sees the same output at the same time, and
+**every one of them can type into it**: a browser on your laptop, the phone in your
+hand and the terminal UI, all at once. Nothing to claim, nothing to take over.
 
-**A device drives an agent and its terminals together.** Whoever has the keyboard for an
-agent's tab has it for every tab and every companion terminal of that agent, and taking
-one over takes them all, so one device never drives the agent while another drives its
-dev server. A terminal you open on an agent somebody else is driving is theirs too: you
-watch it until you press **Take over**. A project or standalone terminal is driven on its
-own.
+A terminal still has one size, so **the device that typed last sets it.** The moment you
+type, the terminal is resized to fit your screen and the program in it redraws for you.
+Every other device keeps showing exactly the same screen, scaled down to fit its own
+window: the browser shrinks the text (and lets you pan if even the smallest text does not
+fit), and the terminal UI shows what fits in its pane and leaves the rest blank. Type on
+another device and the size follows you there.
 
-![A card covering the terminal that says the agent is active on another device, with a Take over button.](/screens/take-over-card.png)
+**A device sizes an agent and its terminals together.** Typing into one of an agent's
+tabs or companion terminals sizes all of them for your screen. A project or standalone
+terminal is sized on its own.
 
-**The terminal UI is one of those devices.** When yaran is [serving in the background of a running TUI](/docs/server-mode#serve-in-the-background-and-keep-the-tui), that terminal can hold a terminal or be a watcher like any browser, and the card names it as `the yaran TUI`. It shows the same card, with the same words, when your browser is the one driving.
+**The terminal UI is one of those devices.** When yaran is [serving in the background of a running TUI](/docs/server-mode#serve-in-the-background-and-keep-the-tui), typing in the TUI sizes the terminal for the TUI's pane, and typing in a browser sizes it for the browser, exactly as between two browsers.
 
-**A watcher sees the take-over card**, a full-pane card naming who has the keyboard ("Active on Chrome on macOS") with a **Take over** button. Hit it and yaran resizes the PTY to your screen, repaints it fresh, and hands you the keyboard. Nothing is lost; the other device becomes the watcher.
+> [!NOTE]
+> Two people typing into the same terminal at the same moment see their keystrokes
+> interleaved, exactly as two keyboards plugged into one machine would. yaran does not
+> referee who goes first.
 
-Taking over reattaches, so it takes a moment and you will see "Reconnecting…" until the screen is really there. Behind the card, a watcher's terminal renders at the driver's true size with the text shrunk to fit, so the screen you take over is clean from the first frame.
+> [!TIP]
+> Clicking and scrolling in a program that uses the mouse does not move the size: only
+> typing does. A click lands on the cell you see, whichever device sized the terminal.
 
-> [!IMPORTANT]
-> **A take-over interrupted by a network drop is not retried; press Take over again.** The reconnect that follows a dropped signal is a plain attach, on purpose, so a request you made minutes ago on a train cannot surface later and yank the terminal out from under whoever is using it now.
->
-> The button always responds: if the attempt did not land, pressing it again starts a fresh one.
-
-> [!IMPORTANT]
-> **Losing the keyboard is sticky.** Nothing passive gives a terminal back, so a watcher left on screen never grabs a terminal somebody's flaky wifi dropped. Press **Take over**, reload, or navigate away and back, and it is yours. One tap is the whole cost of switching devices.
-
-**When the driver goes away.** If the driving device disconnects, every card switches to **Running in the background** rather than naming a browser that has gone: the session kept running without its driver.
-
-The card also keeps naming the device that had the keyboard even while your own connection is wobbling, so a flaky signal does not turn it into a vague "Active on another device".
-
-#### Reconnecting never takes the terminal from anybody
-
-Every automatic reconnect joins as a watcher unless nobody is driving. Taking a terminal away from a device that holds it is always something you press the button for.
-
-- **The one exception** takes nothing from anyone. The device that lost the keyboard to a blip gets it back when it returns, provided the server is still holding its old, dead session and nobody else has claimed the terminal in the meantime.
-- **If somebody has claimed it,** you come back as a watcher with the card up, and one tap puts you back in the driver's seat.
-- **If your page cannot confirm it is talking to the very same yaran** it started against, because yaran was restarted while you were away or the check could not get through, you land as a watcher and press the button. Coming back automatically is only safe when the old session is provably still the one you left.
-- **A page in the background** stays a watcher until it is in front again.
-- **If your own connection has given up entirely,** the card steps aside for the **Connection lost** notice and its **Reconnect** button.
+If your own connection has given up entirely, the terminal shows a **Connection lost**
+notice with a **Reconnect** button.
 
 ### Clipboard: the classic terminal model
 
@@ -514,7 +497,7 @@ If several arrive at once they stack, five deep on a desktop and three on a phon
 
 The **Macros…** button in a terminal pane's header (in the action flap on a phone) drops
 prewritten prompt snippets into that terminal without submitting them, so you review and
-press Enter yourself. It is greyed out while a take-over card covers the terminal. Each
+press Enter yourself. Each
 macro is scoped to agents, terminals, or both, and multi-line macros are inserted so they
 do not submit line by line. Full details in [Managing Macros](/docs/macros).
 
@@ -526,7 +509,7 @@ Below tablet width, the web UI becomes a **hub-and-spoke** shell built for one t
 
 ![The yaran home screen on a phone, listing agents with their state: one waiting on you, the rest working.](/screens/phone-hub.png)
 
-- **Home** is the hub: your projects and sessions with the same `⋯` menus as desktop, the same **New agent…** launcher along the bottom, and a **cog** button that opens the app menu as a bottom sheet (submenus drill down in place, with a back arrow). The launcher's **▾** opens its list as a bottom sheet too. Tap a session to jump into its terminal.
+- **Home** is the hub: your projects and sessions with the same `⋯` menus as desktop, the same **New agent…** launcher floating in the bottom-right corner, and a **cog** button that opens the app menu as a bottom sheet (submenus drill down in place, with a back arrow). The launcher's **▾** opens its list as a bottom sheet too. Tap a session to jump into its terminal.
 - **The terminal screen** is a full-screen terminal with a slim bar on top (Back, the agent's name over its assistant, branch and project, and an optional PR chip), with the strip of the part on screen under it when the agent has two or more tabs or two or more terminals: the tab strip over the agent, the dock strip over a terminal.
 - **An agent's own terminals** are on the same screen, one part at a time: the agent/terminals switch in the flap shows them in place of the agent, with the dock strip when there are two or more. The header, the menu and the count stay the agent's, and the menu adds a **Terminal** group for the terminal in front of you: **Open editor in new tab** and **Close…**. The message box says what it is talking to: "Write a message to the agent…" over the agent, "Type a command…" over a terminal.
 - **A project or standalone terminal** gets the same screen and the same flap, minus the two things a terminal does not have: there is no changed-file count and no PR chip. Its `⋯` opens the terminal's own menu, with the **Input** group, then a **Terminal** group holding **Open editor in new tab** and **Close…**, then the same **Settings** drill.
@@ -616,7 +599,7 @@ The input has no menu of its own under the terminal: nothing hangs off the messa
 - **Type directly in the terminal** or **Use virtual input**, whichever way the switch would take you, wherever the preference is **Automatic**.
 - **Hide terminal keys** or **Show terminal keys** on a computer, wherever the keys are on offer for the device. A phone has that toggle as a button in the action cluster instead, so it is in one place at each width.
 
-The group is there only while this device is driving the terminal, and a pane that offers none of those rows shows no group at all. Every group in the menu carries a heading, this one included.
+A pane that offers none of those rows shows no group at all. Every group in the menu carries a heading, this one included.
 
 ## Install it like an app
 

@@ -412,7 +412,6 @@ fn every_surface(bindings: fn() -> RuntimeBindings, width: u16, height: u16) -> 
             app.typeable_hint_line(SessionSurface::Agent, 200),
             &[],
         ),
-        ("take-over", app.takeover_hint_line(200), &[]),
         (
             "interactive",
             app.interactive_terminal_hint_line(0, 200),
@@ -496,7 +495,7 @@ fn every_surface(bindings: fn() -> RuntimeBindings, width: u16, height: u16) -> 
             session_id,
             provider: crate::model::ProviderKind::from_str("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         },
     );
     app.engine.config.ui.tab_reaches_agent = true;
@@ -824,7 +823,6 @@ const DIALOG_WORDS: &[(&str, &[Action])] = &[
         &[Action::ReconnectAgent, Action::FocusAgent],
     ),
     ("focus and type", &[Action::FocusAgent]),
-    ("take over", &[Action::FocusAgent]),
     ("next pane", &[Action::FocusNext]),
     ("previous pane", &[Action::FocusPrev]),
     ("actions", &[Action::FocusNext, Action::FocusPrev]),

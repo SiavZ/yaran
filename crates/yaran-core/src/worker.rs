@@ -30,7 +30,7 @@
 //! ├── watch::builtin
 //! ├── working_copy
 //! └── worktree_manager
-//! External: chrono, std
+//! External: jiff, std
 //!
 //! Used by:
 //! worker.rs
@@ -1439,7 +1439,7 @@ pub struct BranchSyncEntry {
     /// detached HEAD is a normal state rather than an error.
     pub(crate) shared_workspace: bool,
     /// When the agent was created: the HEAD reflog is read back to here.
-    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) created_at: jiff::Timestamp,
     /// The birth branch of a yaran-made agent whose identity is not recorded
     /// yet, read while the worktree is on it (see
     /// [`crate::branch_history::BranchIdentity`]).
@@ -1468,7 +1468,7 @@ pub struct BranchSyncUpdate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchAskRecord {
     /// When the cycle asked.
-    pub(crate) at: chrono::DateTime<chrono::Utc>,
+    pub(crate) at: jiff::Timestamp,
     /// Every name the branch was asked under came back with no ref.
     pub(crate) ref_gone: bool,
     /// The pull requests the branch's discovery returned.
@@ -1485,7 +1485,7 @@ pub struct PrSyncBranch {
     /// No pull request of this branch is older than this, give or take the
     /// clock slack: when yaran minted the current branch, or when an earlier
     /// branch was created. `None` when nothing says.
-    pub(crate) identity_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) identity_at: Option<jiff::Timestamp>,
     /// The commit the branch pointed at when yaran last saw the agent on it.
     pub(crate) tip: Option<String>,
     /// What the last cycle that asked about it learned, `None` before any.
@@ -1556,11 +1556,14 @@ pub struct PrSyncEntry {
     /// `[ui] pr_history_branches_per_cycle`, already clamped.
     pub(crate) history_per_cycle: usize,
     /// `[ui] pr_settled_recheck_seconds`, already clamped.
-    pub(crate) settled_recheck: chrono::TimeDelta,
+    pub(crate) settled_recheck: jiff::SignedDuration,
 }
 
 /// A project change to save to the session database.
 #[derive(Clone, Debug)]
+// jiff's larger Timestamp in `Project` tipped `Add` over the lint; boxing it would touch every
+// call site, and one action is built per project change and moved, never stored in bulk.
+#[expect(clippy::large_enum_variant, reason = "built once per change and moved")]
 pub enum ProjectPersistenceAction {
     /// Register a project.
     Add {

@@ -21,7 +21,6 @@
 //! ├── app::orphan_worktrees
 //! ├── app::pr_clone
 //! ├── app::project_actions
-//! ├── app::pty_ownership
 //! ├── app::render
 //! ├── app::reorder
 //! ├── app::session_settings
@@ -60,6 +59,7 @@
 //! ├── yaran-core::project_prose
 //! ├── yaran-core::prose
 //! ├── yaran-core::pty
+//! ├── yaran-core::pty_query_reply
 //! ├── yaran-core::reload_policy
 //! ├── yaran-core::reload_signal
 //! ├── yaran-core::status_text
@@ -72,7 +72,7 @@
 //! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! └── yaran-core::worktree_manager
-//! External: anyhow, chrono, crokey, crossterm, home, libc, ratatui, rusqlite, rustix, std, tempfile, toml, unicode_segmentation
+//! External: anyhow, crokey, crossterm, home, jiff, libc, ratatui, rusqlite, rustix, std, tempfile, toml, unicode_segmentation
 //!
 //! Used by:
 //! app/input.rs
@@ -757,7 +757,8 @@ pub(super) struct ForwardedInput {
 impl ForwardedInput {
     /// Fold one batch of bytes that reached the PTY into the accumulator.
     fn note(&mut self, bytes: &[u8]) {
-        match yaran_core::pty::classify_pty_write(bytes) {
+        // Keys typed here: a reply-shaped batch is typing (see the classifier).
+        match yaran_core::pty_query_reply::classify_keyboard_write(bytes) {
             yaran_core::pty::PtyWriteKind::Typing => self.typing = true,
             yaran_core::pty::PtyWriteKind::Pointer(report) => {
                 if let Some(window) = yaran_core::engine::pointer_suppression_window(report) {
@@ -765,7 +766,7 @@ impl ForwardedInput {
                         Some(self.pointer_window.map_or(window, |prev| prev.max(window)));
                 }
             }
-            yaran_core::pty::PtyWriteKind::Ignored => {}
+            yaran_core::pty::PtyWriteKind::Ignored | yaran_core::pty::PtyWriteKind::QueryReply => {}
         }
     }
 
@@ -779,18 +780,12 @@ impl RawInputDispatch {
         self.forward_batch.extend_from_slice(bytes);
     }
 
-    /// `may_write_pty` is the batch's up-front verdict, which decides what the
-    /// keys mean; the write asks again in its own critical section, so a
-    /// take-over landing mid-batch keeps the rest of it off the child.
     fn flush(&mut self, app: &mut App) {
         if self.forward_batch.is_empty() {
             return;
         }
         self.needs_selection_clear = true;
-        if !self.is_scrolled_back
-            && self.may_write_pty
-            && app.write_into_focused_pty(&self.forward_batch)
-        {
+        if !self.is_scrolled_back && app.write_into_focused_pty(&self.forward_batch) {
             self.forwarded.note(&self.forward_batch);
         }
         self.forward_batch.clear();
@@ -814,50 +809,6 @@ impl RawInputDispatch {
         }
         app.stamp_forwarded_input(&mut self.forwarded);
     }
-}
-
-/// What a scrolled-back pane can do with a scroll key right now.
-#[derive(Clone, Copy, Debug)]
-struct LocalScroll {
-    /// The pane is scrolled back from the live edge.
-    has_scrollback: bool,
-    /// The pty has a known height to scroll by.
-    has_page_height: bool,
-}
-
-fn raw_action_can_reach_pty(action: &RawSeqAction, local: LocalScroll) -> bool {
-    match action {
-        RawSeqAction::Intercept(
-            Action::OpenMacroBar
-            | Action::ToggleFullscreen
-            | Action::OpenPalette
-            | Action::FocusAgent
-            | Action::ScrollPageUp
-            | Action::ScrollPageDown,
-            ..,
-        )
-        | RawSeqAction::Mouse(..) => false,
-        RawSeqAction::Intercept(Action::ScrollLineUp | Action::ScrollLineDown, scroll, ..) => {
-            !(*scroll == RawScroll::WhenScrolledBack
-                && local.has_scrollback
-                && local.has_page_height)
-        }
-        RawSeqAction::Intercept(Action::ScrollToBottom | Action::ScrollToTop, scroll, ..) => {
-            !(*scroll == RawScroll::WhenScrolledBack && local.has_scrollback)
-        }
-        RawSeqAction::Forward(_) | RawSeqAction::ForwardKey(..) | RawSeqAction::Intercept(..) => {
-            true
-        }
-    }
-}
-
-/// Who a key pressed in the typeable center pane belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum KeyClaim {
-    /// Typing: the agent would get it.
-    Typing,
-    /// A yaran chord.
-    Yaran,
 }
 
 /// Which of the selected agent's git verdicts a changes-panel action needs.
@@ -1351,24 +1302,6 @@ impl App {
         Ok(KeyRoute::Continue)
     }
 
-    fn takeover_card_owns_center_key(&self) -> bool {
-        self.focus == FocusPane::Center
-            && !self.resize_mode
-            && matches!(self.center_mode, CenterMode::Agent)
-            && self.card_covers_center()
-    }
-
-    fn handle_takeover_card_key(&mut self, key: KeyEvent, claim: KeyClaim) -> bool {
-        let presses_button = self.bindings.lookup(&key, BindingScope::Center)
-            == Some(Action::FocusAgent)
-            || (key.code == KeyCode::Char(' ') && key.modifiers.is_empty());
-        if presses_button {
-            self.take_over_focused_pty();
-            return true;
-        }
-        claim == KeyClaim::Typing && !matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-    }
-
     fn route_minimized_center_key(&mut self, key: KeyEvent) -> bool {
         let typing_owns_key = crate::keybindings::center_typing_owns_key(
             &key,
@@ -1379,16 +1312,7 @@ impl App {
             },
             self.extended_keys,
         );
-        let card_owns_center = self.takeover_card_owns_center_key();
-        let claim = if typing_owns_key {
-            KeyClaim::Typing
-        } else {
-            KeyClaim::Yaran
-        };
-        if card_owns_center && self.handle_takeover_card_key(key, claim) {
-            return true;
-        }
-        if !card_owns_center && self.center_typeable() && typing_owns_key {
+        if self.center_typeable() && typing_owns_key {
             if !self.scroll_mode_active() {
                 self.forward_typing_key_to_center(&key);
                 return true;
@@ -2138,9 +2062,9 @@ impl App {
     }
 
     /// True while keys typed at the center pane go to its child: a live,
-    /// typeable surface at the live edge with no take-over card over it.
+    /// typeable surface at the live edge.
     pub(crate) fn center_takes_typing(&self) -> bool {
-        self.center_typeable() && !self.scroll_mode_active() && !self.card_covers_center()
+        self.center_typeable() && !self.scroll_mode_active()
     }
 
     fn forward_unbound_center_key(&mut self, key: &KeyEvent) {
@@ -3228,35 +3152,8 @@ impl App {
                         yaran_core::macros::macro_payload_bytes(text),
                     )
                 }) {
-                    // A macro is a write like any other, so it goes through the
-                    // ownership gate. A refusal must not then claim the macro was
-                    // sent: say what actually happened and name the device.
-                    match self.focused_pty_takeover_card() {
-                        Some(crate::app::pty_ownership::PtyTakeoverCard::Elsewhere { device }) => {
-                            let device = device.unwrap_or_else(|| {
-                                crate::app::pty_ownership::UNNAMED_DEVICE.to_string()
-                            });
-                            self.set_warning(format!(
-                                "Did not send macro \"{name}\": {device} is driving this \
-                                 terminal, so keystrokes from here are not reaching it. Press \
-                                 Take over on the card covering it first."
-                            ));
-                        }
-                        // Nobody is driving it, so nothing was taken away; the
-                        // macro still went nowhere, and saying it was sent would
-                        // be the one thing this branch exists to prevent.
-                        Some(crate::app::pty_ownership::PtyTakeoverCard::Free) => {
-                            self.set_warning(format!(
-                                "Did not send macro \"{name}\": nothing is driving this terminal \
-                                 yet, so keystrokes from here are not reaching it. Press Take \
-                                 over on the card covering it first."
-                            ));
-                        }
-                        None => {
-                            let _ = self.write_into_focused_pty(&payload);
-                            self.set_info(format!("Sent macro \"{name}\"."));
-                        }
-                    }
+                    let _ = self.write_into_focused_pty(&payload);
+                    self.set_info(format!("Sent macro \"{name}\"."));
                 }
                 self.close_macro_bar();
             }
@@ -3818,20 +3715,6 @@ impl App {
         sequences
     }
 
-    fn demoted_input_patterns(&self) -> DemotedInputPatterns {
-        if !self.card_covers_center() {
-            return DemotedInputPatterns::default();
-        }
-
-        let mut takeover = self.bindings.byte_patterns_for(Action::FocusAgent);
-        takeover.push(b" ".to_vec());
-        DemotedInputPatterns {
-            card_covers: true,
-            palette: self.bindings.byte_patterns_for(Action::OpenPalette),
-            takeover,
-        }
-    }
-
     /// What `seq` is when this run reads extended keys: a `CSI … u` key, or a
     /// legacy-shaped key carrying a field a classic xterm never sends (a lock,
     /// Super, Hyper or Meta bit, an event type), read by meaning, with Ctrl-`[`
@@ -3862,26 +3745,9 @@ impl App {
     /// it never fires an action and never reaches the child. A press or repeat
     /// matches the bindings with exact modifiers, so Shift-Enter and Ctrl-Alt-g
     /// still reach the child.
-    fn classify_decoded_raw_key(
-        &self,
-        key: KeyEvent,
-        seq: &[u8],
-        patterns: &DemotedInputPatterns,
-    ) -> Option<RawSeqAction> {
+    fn classify_decoded_raw_key(&self, key: KeyEvent, seq: &[u8]) -> Option<RawSeqAction> {
         if key.kind == crossterm::event::KeyEventKind::Release {
             return None;
-        }
-        if patterns.card_covers {
-            for action in [Action::OpenPalette, Action::FocusAgent] {
-                if self.bindings.binds_exactly(action, &key) {
-                    return Some(RawSeqAction::Intercept(
-                        action,
-                        RawScroll::Never,
-                        seq.to_vec(),
-                        Some(key),
-                    ));
-                }
-            }
         }
         if let Some(action) = self.bindings.lookup_exact(&key, BindingScope::Interactive) {
             let scroll = if crate::keybindings::scrolls_only_when_scrolled_back(action) {
@@ -3929,17 +3795,14 @@ impl App {
         &mut self,
         sequences: &[crate::raw_input::ParsedSequence],
     ) -> RawInputPlan {
-        let patterns = self.demoted_input_patterns();
         let mut plan = RawInputPlan {
             actions: Vec::with_capacity(sequences.len()),
             normalized_paste_forwarded: false,
         };
         for parsed in sequences {
-            if let Some(action) = self.classify_raw_input_sequence(
-                parsed,
-                &patterns,
-                &mut plan.normalized_paste_forwarded,
-            ) {
+            if let Some(action) =
+                self.classify_raw_input_sequence(parsed, &mut plan.normalized_paste_forwarded)
+            {
                 plan.actions.push(action);
             }
         }
@@ -3949,14 +3812,13 @@ impl App {
     fn classify_raw_input_sequence(
         &mut self,
         parsed: &crate::raw_input::ParsedSequence,
-        patterns: &DemotedInputPatterns,
         normalized_paste_forwarded: &mut bool,
     ) -> Option<RawSeqAction> {
         let seq = parsed.bytes.as_slice();
         let intercepts_allowed = !parsed.in_bracket_paste;
         if intercepts_allowed {
             match self.decoded_extended_key(seq) {
-                RawKeyDecode::Key(key) => return self.classify_decoded_raw_key(key, seq, patterns),
+                RawKeyDecode::Key(key) => return self.classify_decoded_raw_key(key, seq),
                 // Forwarded, the host's bytes would type escape-code garbage at
                 // the child's prompt; no key was read, so none is typed.
                 RawKeyDecode::Undecodable => {
@@ -3968,22 +3830,6 @@ impl App {
                 }
                 RawKeyDecode::Classic => {}
             }
-        }
-        if intercepts_allowed && patterns.palette.iter().any(|pattern| pattern == seq) {
-            return Some(RawSeqAction::Intercept(
-                Action::OpenPalette,
-                RawScroll::Never,
-                seq.to_vec(),
-                None,
-            ));
-        }
-        if intercepts_allowed && patterns.takeover.iter().any(|pattern| pattern == seq) {
-            return Some(RawSeqAction::Intercept(
-                Action::FocusAgent,
-                RawScroll::Never,
-                seq.to_vec(),
-                None,
-            ));
         }
         if seq == crate::raw_input::BRACKET_PASTE_START {
             self.raw_paste.in_bracket = self.raw_input_parser.in_bracket_paste();
@@ -4047,23 +3893,6 @@ impl App {
             self.retire_pending_link_click();
             self.terminal_focus.on_focus_lost();
         }
-    }
-
-    /// The batch's up-front verdict, which decides what its keys MEAN; each
-    /// write then asks again in its own critical section. A take-over landing
-    /// between two stdin batches therefore cuts a host paste mid-sequence, which
-    /// is what losing the pty mid-paste has always done.
-    fn raw_input_batch_may_write(&mut self, actions: &[RawSeqAction]) -> bool {
-        let local = LocalScroll {
-            has_scrollback: self
-                .selected_terminal_surface_client()
-                .is_some_and(|provider| provider.scrollback_offset() > 0),
-            has_page_height: self.focused_pty_size().0 > 0,
-        };
-        let batch_can_reach_pty = actions
-            .iter()
-            .any(|action| raw_action_can_reach_pty(action, local));
-        !batch_can_reach_pty || self.may_type_into_focused_pty()
     }
 
     fn route_raw_page_scroll(
@@ -4165,7 +3994,7 @@ impl App {
             self.terminal_selection = None;
             dispatch.needs_selection_clear = false;
         }
-        if self.handle_takeover_card_mouse(mouse) || self.handle_dormant_card_mouse(mouse) {
+        if self.handle_dormant_card_mouse(mouse) {
             return RawInputFlow::Continue;
         }
 
@@ -4383,18 +4212,6 @@ impl App {
                     self.raw_input_parser.clear();
                     return Some(false);
                 }
-                // Only reachable while the take-over card covers this pane (see
-                // the match above), which is the one state where this key means
-                // something other than "type into the child".
-                RawSeqAction::Intercept(Action::FocusAgent, ..) => {
-                    dispatch.flush_and_stamp(self);
-                    self.take_over_focused_pty();
-                    self.raw_input_buf.clear();
-                    self.raw_input_parser.clear();
-                    return Some(false);
-                }
-                // Only reachable while another device drives the pty (see the
-                // match above); the prompt takes over input from here.
                 RawSeqAction::Intercept(Action::OpenPalette, ..) => {
                     dispatch.flush_and_stamp(self);
                     self.open_command_palette();
@@ -4479,12 +4296,9 @@ impl App {
 
         let is_scrolled_back = self.scroll_mode_active();
         self.reconcile_scroll_mode();
-        let may_write_pty = is_scrolled_back || self.raw_input_batch_may_write(&actions);
-
         let mut dispatch = RawInputDispatch {
             forward_batch: Vec::new(),
             is_scrolled_back,
-            may_write_pty,
             needs_selection_clear: false,
             forwarded: ForwardedInput::default(),
         };
@@ -11921,7 +11735,7 @@ impl App {
             // `App::pressed_button` and this dispatch cannot be reached for
             // them; each has its own press field and handler owning the gesture
             // end to end.
-            ButtonPressedTarget::TakeOverCard | ButtonPressedTarget::DormantTabCard => false,
+            ButtonPressedTarget::DormantTabCard => false,
             ButtonPressedTarget::PullRequestChooseProject => {
                 self.open_pull_request_project_picker();
                 false
@@ -13351,7 +13165,7 @@ impl App {
     fn intercept_mouse_before_targets(&mut self, mouse: MouseEvent) -> bool {
         if matches!(self.center_mode, CenterMode::Agent)
             && !matches!(self.fullscreen_overlay, FullscreenOverlay::StartupLog)
-            && (self.handle_takeover_card_mouse(mouse) || self.handle_dormant_card_mouse(mouse))
+            && self.handle_dormant_card_mouse(mouse)
         {
             return true;
         }
@@ -13903,86 +13717,6 @@ impl App {
         };
         let tab_id = self.focused_tab_id(&session_id);
         self.launch_focused_extra_tab(&session_id, &tab_id, LaunchView::Minimized);
-    }
-
-    /// The take-over card's answer to one mouse event. Returns whether the card
-    /// consumed it.
-    ///
-    /// The card covers the grid, so every event over the grid is the card's:
-    /// pressing its button and releasing inside it takes the terminal over
-    /// (dragging off cancels, as every other button in yaran does), and everything
-    /// else over the covered area is swallowed. A press there starts no
-    /// selection, because a highlight the user cannot see would still copy the
-    /// child's cells on release, and a wheel scrolls nothing.
-    ///
-    /// An in-flight press is tracked wherever the pointer goes, so a drag that
-    /// leaves the pane still ends in a released button rather than a stuck one.
-    pub(crate) fn handle_takeover_card_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if !self.card_covers_center() {
-            // The card can vanish under the pointer: this surface takes over, or
-            // a launch started here claims the pty, between press and release.
-            self.takeover_press = None;
-            return false;
-        }
-        if self.mouse_drag.is_some() {
-            // A pane divider grabbed beside the card is dragged across it.
-            return false;
-        }
-        let on_button = |app: &Self, mouse: &MouseEvent| {
-            app.mouse_layout.takeover_button.is_some_and(|rect| {
-                crate::app::modal::click_target(&[(rect, ())], mouse.column, mouse.row).is_some()
-            })
-        };
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) if on_button(self, &mouse) => {
-                self.focus = FocusPane::Center;
-                self.takeover_press = Some(components::PressedButton {
-                    target: ButtonPressedTarget::TakeOverCard,
-                    inside: true,
-                });
-                true
-            }
-            MouseEventKind::Drag(_) if self.takeover_press.is_some() => {
-                let inside = on_button(self, &mouse);
-                if let Some(press) = self.takeover_press.as_mut() {
-                    press.inside = inside;
-                }
-                true
-            }
-            MouseEventKind::Up(_) if self.takeover_press.is_some() => {
-                let held = self.takeover_press.take().is_some_and(|press| press.inside);
-                if held && on_button(self, &mouse) {
-                    self.take_over_focused_pty();
-                }
-                true
-            }
-            _ => {
-                if matches!(mouse.kind, MouseEventKind::Up(_)) {
-                    // A DRAG CAN PREDATE THE CARD: the user was selecting output
-                    // when another device claimed the pty. The text it covers is
-                    // gone from the screen, so the release retires the selection
-                    // rather than leaving one stuck to a hidden grid, still
-                    // marked as dragging.
-                    self.terminal_selection = None;
-                }
-                // Over an agent's stack the card covers every part of it, so
-                // nothing under it can be focused, selected, scrolled or
-                // followed.
-                let covered_area = if self.drawing_agent_stack() {
-                    self.mouse_layout.card_cover
-                } else {
-                    self.mouse_layout.focused_term
-                };
-                let covered =
-                    covered_area.is_some_and(|rect| contains_point(rect, mouse.column, mouse.row));
-                if covered && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                    // A click on a pane still focuses it, which is the one thing
-                    // a click on the covered area may still do.
-                    self.focus = FocusPane::Center;
-                }
-                covered
-            }
-        }
     }
 
     fn handle_terminal_selection_mouse(&mut self, mouse_ev: MouseEvent) {
@@ -14545,9 +14279,9 @@ mod tests {
     };
     use crate::pty::PtyClient;
     use crate::theme::Theme;
-    use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use jiff::Timestamp;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
@@ -14685,7 +14419,6 @@ mod tests {
             focused_term: Some(Rect::new(21, 1, 55, 16)),
             other_term: None,
             agent_scrollbar: None,
-            takeover_button: None,
             dormant_tab_button: None,
             pr_banner: None,
             unstaged_list: Some(Rect::new(78, 1, 21, 8)),
@@ -14701,7 +14434,7 @@ mod tests {
     /// identity mouse map installed, row `y = left_list.y + i` is item `i`.
     fn drag_test_app() -> App {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["s1", "s2", "s3"] {
             app.engine
@@ -15086,7 +14819,7 @@ mod tests {
     #[test]
     fn a_drop_under_a_live_filter_still_sends_every_agent() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["alpha", "zulu", "alto"] {
             app.engine
@@ -18111,7 +17844,7 @@ not_a_real_action = ["x"]
                     head_branch: branch,
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         app.engine.pr_own_repos.insert(
@@ -18263,7 +17996,7 @@ not_a_real_action = ["x"]
                 client: PtyClient::spawn("/bin/sh", &args, worktree, 24, 80, 1_000)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -18317,7 +18050,7 @@ not_a_real_action = ["x"]
                 client: PtyClient::spawn("/bin/sh", &args, worktree, 24, 80, 1_000)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -18584,7 +18317,7 @@ not_a_real_action = ["x"]
         let worktree = std::path::Path::new(&worktree_path);
         std::fs::create_dir_all(app.engine.paths.worktrees_root.join("other"))
             .expect("other worktree");
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.push(AgentSession {
             id: "session-2".to_string(),
             agent_handle: "session-2".to_string(),
@@ -18661,7 +18394,7 @@ not_a_real_action = ["x"]
         // config.ui.agent_sort = "name" and rebuilding orders left_items()
         // alphabetically while engine.sessions stays in its incoming order.
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         let project_path = app.engine.projects[0].path.clone();
 
@@ -18741,7 +18474,7 @@ not_a_real_action = ["x"]
         id: &str,
         branch: &str,
         project_id: &str,
-        now: chrono::DateTime<Utc>,
+        now: jiff::Timestamp,
     ) -> AgentSession {
         AgentSession {
             id: id.to_string(),
@@ -18790,7 +18523,7 @@ not_a_real_action = ["x"]
     #[test]
     fn slash_opens_filter_mode_and_typing_narrows_the_agent_list() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web", "auth"] {
@@ -18830,7 +18563,7 @@ not_a_real_action = ["x"]
     #[test]
     fn filter_matches_project_name_across_projects() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let demo_id = app.engine.projects[0].id.clone();
         // A second project whose name (not branch) is the discriminating field.
         let mut website = app.engine.projects[0].clone();
@@ -18877,7 +18610,7 @@ not_a_real_action = ["x"]
         // the core vector `provider_names_do_not_match` and the web's
         // "does NOT match on provider names".
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         app.engine.sessions.push(filter_test_session(
@@ -18920,7 +18653,7 @@ not_a_real_action = ["x"]
     #[test]
     fn agent_filter_zero_matches_navigation_and_enter_do_not_panic() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web"] {
@@ -18964,7 +18697,7 @@ not_a_real_action = ["x"]
     #[test]
     fn esc_exits_filter_mode_and_restores_full_list() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web"] {
@@ -18995,7 +18728,7 @@ not_a_real_action = ["x"]
     #[test]
     fn enter_activates_filtered_row_and_exits_filter_mode() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         app.engine.sessions.clear();
         for branch in ["api", "web"] {
@@ -19070,7 +18803,7 @@ not_a_real_action = ["x"]
         // A web-set "manual" renders engine.sessions in verbatim order; the TUI
         // displays but never offers manual.
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let project_id = app.engine.projects[0].id.clone();
         let project_path = app.engine.projects[0].path.clone();
 
@@ -19153,7 +18886,7 @@ not_a_real_action = ["x"]
                 client: PtyClient::spawn("/bin/sh", &args, worktree, 24, 80, 1_000)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -20468,8 +20201,8 @@ not_a_real_action = ["x"]
             desired_running: true,
             auto_reopen_enabled: true,
             status: SessionStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
             workspace: yaran_core::model::AgentWorkspace::Managed(
                 yaran_core::model::ManagedWorkspace {
@@ -22045,7 +21778,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         app.focus = FocusPane::Left;
@@ -23089,7 +22822,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn pty"),
                 sort_order: 0,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -23377,7 +23110,7 @@ not_a_real_action = ["x"]
                     url: url.clone(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         app.mouse_layout.pr_banner = Some(Rect::new(20, 19, 57, 1));
@@ -24057,7 +23790,7 @@ not_a_real_action = ["x"]
     #[test]
     fn mouse_wheel_left_pane_scrolls_overflowing_agent_list() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for i in 0..40 {
             let id = format!("s{i:02}");
@@ -24890,7 +24623,7 @@ not_a_real_action = ["x"]
                 session_id: session_id.to_string(),
                 provider: ProviderKind::from_str(provider),
                 sort_order: order,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             },
         );
     }
@@ -25434,7 +25167,7 @@ not_a_real_action = ["x"]
     #[test]
     fn left_move_down_closes_open_diff_when_moving_between_agents() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.push(AgentSession {
             id: "session-2".to_string(),
             agent_handle: "session-2".to_string(),
@@ -26285,7 +26018,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -26480,7 +26213,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
         assert_eq!(
@@ -26586,7 +26319,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -26606,7 +26339,7 @@ not_a_real_action = ["x"]
         app.engine.sessions.clear();
         app.engine
             .sessions
-            .push(filter_test_session("s1", "b1", "p1", Utc::now()));
+            .push(filter_test_session("s1", "b1", "p1", Timestamp::now()));
         // Idle: nothing is animating, so the loop can stay on the lazy cadence.
         assert!(!app.any_row_animating());
         // Fresh PTY activity on the session-slot tab marks it streaming (working),
@@ -26642,7 +26375,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -26688,7 +26421,7 @@ not_a_real_action = ["x"]
             url: stored.url.clone(),
             ..Default::default()
         };
-        let mut row = yaran_core::model::AgentPr::found(&info, chrono::Utc::now());
+        let mut row = yaran_core::model::AgentPr::found(&info, jiff::Timestamp::now());
         row.found = false;
         row.attached = true;
         app.engine
@@ -26870,7 +26603,7 @@ not_a_real_action = ["x"]
     #[test]
     fn move_agent_up_reorders_switches_to_manual_and_follows_the_selection() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         app.engine
             .sessions
@@ -26900,7 +26633,7 @@ not_a_real_action = ["x"]
     #[test]
     fn apply_list_order_reorders_flips_to_manual_and_follows_the_agent() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["s1", "s2", "s3"] {
             app.engine
@@ -26930,7 +26663,7 @@ not_a_real_action = ["x"]
     #[test]
     fn apply_list_order_is_a_no_op_when_the_order_matches_its_baseline() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ["s1", "s2"] {
             app.engine
@@ -26955,7 +26688,7 @@ not_a_real_action = ["x"]
     #[test]
     fn execute_command_routes_move_agent_top_to_the_handler() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         app.engine
             .sessions
@@ -26979,7 +26712,7 @@ not_a_real_action = ["x"]
     /// Seed `ids` as stored + in-memory agents of one project, manual sort,
     /// Left focus, for the Shift-J/K tests below.
     fn seed_reorder_agents(app: &mut App, ids: &[&str]) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         for id in ids {
             let session = filter_test_session(id, id, "p1", now);
@@ -27044,7 +26777,7 @@ not_a_real_action = ["x"]
     #[test]
     fn move_agent_up_at_the_top_is_a_no_op() {
         let mut app = test_app(default_bindings());
-        let now = Utc::now();
+        let now = Timestamp::now();
         app.engine.sessions.clear();
         app.engine
             .sessions
@@ -27137,7 +26870,7 @@ not_a_real_action = ["x"]
                 )
                 .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -27159,7 +26892,7 @@ not_a_real_action = ["x"]
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -28985,7 +28718,7 @@ cyan = "#00ffff"
                 foreground_cmd: None,
                 client: term_client,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -29451,7 +29184,7 @@ cyan = "#00ffff"
                 session_id: session.id.clone(),
                 provider: yaran_core::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             })
             .expect("store the second tab");
         assert_eq!(
@@ -30310,7 +30043,7 @@ cyan = "#00ffff"
                 foreground_cmd: None,
                 client,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -36054,7 +35787,7 @@ cyan = "#00ffff"
                 client: PtyClient::spawn("sh", &args, std::path::Path::new("."), 24, 80, 100)
                     .expect("spawn terminal"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -41184,7 +40917,7 @@ cyan = "#00ffff"
                 session_id: session_id.to_string(),
                 provider: yaran_core::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
     }

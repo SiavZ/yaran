@@ -35,8 +35,6 @@ export type ClipboardPasteContext = {
   /// Whether uploads exist at all on this server (`[server] file_drop_max_bytes`
   /// above zero). When they do not, every paste is left to xterm.
   uploadsEnabled: boolean
-  /// Whether this client holds input for the pane being pasted into.
-  isOwner: boolean
   /// Whether the user asked for a text paste with the `Ctrl+Shift+v` /
   /// `Cmd+Shift+v` chord (`forcesTextPaste` in `termkeys.ts`). One hatch for
   /// both triggers: it skips image handling, beats the long-text rule, and
@@ -46,10 +44,9 @@ export type ClipboardPasteContext = {
   pane: ClipboardPastePane
 }
 
-/// What the pane must do with one `paste` event. `refused` is separate from
-/// `ignore` because a paste a watcher cannot make must save nothing and say so.
-/// `ignore` and `xterm` are the same inaction today and stay apart because they
-/// say different things: no text at all, versus text that belongs to xterm.
+/// What the pane must do with one `paste` event. `ignore` and `xterm` are the
+/// same inaction today and stay apart because they say different things: no
+/// text at all, versus text that belongs to xterm.
 export type ClipboardPasteAction =
   | { kind: "ignore" }
   | { kind: "xterm" }
@@ -61,24 +58,6 @@ export type ClipboardPasteAction =
       /// leads with. Absent for an image paste.
       pastedTextChars?: number
     }
-  | {
-      kind: "refused"
-      /// What was turned away, so the caller can give the two refusals two toast
-      /// ids; on one shared id the second silently replaces the first.
-      subject: "image" | "text"
-      reason: string
-    }
-
-/// Why an image paste is refused for a watcher, as the whole sentence the toast
-/// shows: the outcome first, so there is no stray file to hunt for, then the way
-/// out, because taking over is one tap away.
-export const NOT_OWNER_IMAGE_PASTE_REASON =
-  "The image was not saved: another device is driving this session. Take over to paste it here."
-
-/// The same, for a long text paste that would have become a file. Its own
-/// sentence: "the image was not saved" would be a lie about a paragraph of text.
-export const NOT_OWNER_TEXT_PASTE_REASON =
-  "The pasted text was not saved: another device is driving this session. Take over to paste it here."
 
 /// The extension for an image the clipboard handed over with no name, keyed by
 /// mime type. Explicit rather than derived from the subtype, which disagrees
@@ -175,12 +154,8 @@ export function clipboardPasteAction(
     ? { kind: "xterm" }
     : { kind: "ignore" }
   if (!ctx.uploadsEnabled) return fallback
-  // Before the ownership gate: a forced text paste has refused nothing, so a
-  // watcher using the hatch must not be told an image was turned away.
   if (ctx.forceText) return fallback
 
-  // Resolved before the ownership gate, so a clipboard carrying no usable image
-  // is never reported to a watcher as a refusal.
   const files: File[] = []
   for (const item of items) {
     if (!isImageFile(item)) continue
@@ -192,16 +167,7 @@ export function clipboardPasteAction(
       }),
     )
   }
-  if (files.length > 0) {
-    if (!ctx.isOwner) {
-      return {
-        kind: "refused",
-        subject: "image",
-        reason: NOT_OWNER_IMAGE_PASTE_REASON,
-      }
-    }
-    return { kind: "upload", files }
-  }
+  if (files.length > 0) return { kind: "upload", files }
 
   // No image. A long enough text paste onto an agent becomes a document. After
   // the image, so a paste carrying both still prefers the image.
@@ -223,13 +189,6 @@ function longTextPasteAction(
   // Counting stops at `limit + 1`, so an ordinary paste costs O(limit) inside
   // the paste handler. Strictly greater: exactly the threshold is still typed.
   if (countCodePoints(text, limit + 1) <= limit) return null
-  if (!ctx.isOwner) {
-    return {
-      kind: "refused",
-      subject: "text",
-      reason: NOT_OWNER_TEXT_PASTE_REASON,
-    }
-  }
   // Only now is the exact size worth a full pass: the toast reports it, and it
   // is the number the user acts on when setting the threshold.
   const chars = countCodePoints(text)

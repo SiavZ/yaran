@@ -528,67 +528,15 @@ describe("PtySocket", () => {
     expect(epochs.at(-1)).toBeUndefined()
   })
 
-  // The owner's device label rides the handshake for the mere-attach case: a
-  // watcher that simply opens the pane hears no `pty.owner` broadcast, so this
-  // key is its only source of a specific name for the take-over card. Absent
-  // (never null) when there is nothing to name, and only a string is accepted.
-  it("passes the handshake's owner_device through, and undefined when absent", () => {
-    const devices: (string | undefined)[] = []
-    const sock = new PtySocket("ws://x/pty")
-    sock.onConnected = (_id, _owner, _ownerEpoch, ownerDevice) => {
-      devices.push(ownerDevice)
-    }
-    sock.connect()
-    last().open()
-
-    last().text(
-      JSON.stringify({
-        event: "connected",
-        id: "c-1",
-        gen: 1,
-        owner: "c-9",
-        owner_epoch: 7,
-        owner_device: "Driver UA",
-      }),
-    )
-    expect(devices.at(-1)).toBe("Driver UA")
-
-    // An owner that sent no User-Agent: the key is omitted.
-    last().text(
-      JSON.stringify({
-        event: "connected",
-        id: "c-2",
-        gen: 2,
-        owner: "c-9",
-        owner_epoch: 8,
-      }),
-    )
-    expect(devices.at(-1)).toBeUndefined()
-
-    // Old server: no owner key, no epoch, no device.
-    last().text(JSON.stringify({ event: "connected", id: "c-3", gen: 3 }))
-    expect(devices.at(-1)).toBeUndefined()
-  })
-
-  // A take-over is the ONE frame this client sends while it knows it is not the
-  // owner, and the flag is what makes the server grant it. The ordinary frame
-  // stays byte-identical to the one every prior version sent, so an old server
-  // reading it sees exactly what it always did.
-  it("flags a take-over resize, and only a take-over resize", () => {
+  // The resize frame stays byte-identical to the one every prior version sent,
+  // so an old server reading it sees exactly what it always did.
+  it("sends a plain resize frame", () => {
     const sock = new PtySocket("ws://x/pty")
     sock.connect()
     const ws = last()
     ws.open()
     expect(sock.sendResize(40, 120)).toBe(true)
-    expect(JSON.parse(ws.sent[0] as string)).toEqual({ rows: 40, cols: 120 })
-    expect(sock.sendResize(40, 120, false)).toBe(true)
-    expect(JSON.parse(ws.sent[1] as string)).toEqual({ rows: 40, cols: 120 })
-    expect(sock.sendResize(40, 120, true)).toBe(true)
-    expect(JSON.parse(ws.sent[2] as string)).toEqual({
-      rows: 40,
-      cols: 120,
-      takeover: true,
-    })
+    expect(ws.sent[0]).toBe('{"rows":40,"cols":120}')
   })
 
   it("fires onOpen on each (re)open", () => {
@@ -871,62 +819,18 @@ describe("PtySocket", () => {
 })
 
 describe("a resize outside the PTY's grid bounds", () => {
-  // The server refuses such a frame without a word, so sending it would spend
-  // a take-over on a claim that never happened. Reported as not sent, which is
-  // what keeps the caller's take-over intent armed for the next real frame.
+  // The server refuses such a frame without a word, so it is reported as not
+  // sent, which keeps the caller from booking a size the pty never heard.
   it("never goes on the wire and is reported as not sent", () => {
     const sock = new PtySocket("ws://x/pty")
     sock.connect()
     const ws = last()
     ws.open()
-    expect(sock.sendResize(0, 0, true)).toBe(false)
-    expect(sock.sendResize(65535, 65535, true, "41")).toBe(false)
+    expect(sock.sendResize(0, 0)).toBe(false)
+    expect(sock.sendResize(65535, 65535)).toBe(false)
     expect(ws.sent).toEqual([])
-    expect(sock.sendResize(24, 80, true)).toBe(true)
-    expect(JSON.parse(ws.sent[0] as string)).toEqual({
-      rows: 24,
-      cols: 80,
-      takeover: true,
-    })
-  })
-})
-
-describe("the take-over frame names the ghost it expects to succeed", () => {
-  it("a PRESSED take-over carries no expected_owner, because a press may take from anyone", () => {
-    const sock = new PtySocket("ws://x/pty")
-    sock.connect()
-    last().open()
-    expect(sock.sendResize(40, 120, true)).toBe(true)
-    expect(JSON.parse(last().sent.at(-1) as string)).toEqual({
-      rows: 40,
-      cols: 120,
-      takeover: true,
-    })
-  })
-
-  it("a SELF-SUCCESSION names the dead connection it believes still holds the pty", () => {
-    const sock = new PtySocket("ws://x/pty")
-    sock.connect()
-    last().open()
-    expect(sock.sendResize(40, 120, true, "41")).toBe(true)
-    expect(JSON.parse(last().sent.at(-1) as string)).toEqual({
-      rows: 40,
-      cols: 120,
-      takeover: true,
-      expected_owner: "41",
-    })
-  })
-
-  it("leaves an ordinary resize byte-identical to the one every prior version sent", () => {
-    const sock = new PtySocket("ws://x/pty")
-    sock.connect()
-    last().open()
-    sock.sendResize(40, 120)
-    expect(last().sent.at(-1)).toBe('{"rows":40,"cols":120}')
-    // And an expected owner is meaningless without the flag, so it is dropped
-    // rather than sent as a claim nobody asked for.
-    sock.sendResize(40, 120, false, "41")
-    expect(last().sent.at(-1)).toBe('{"rows":40,"cols":120}')
+    expect(sock.sendResize(24, 80)).toBe(true)
+    expect(JSON.parse(ws.sent[0] as string)).toEqual({ rows: 24, cols: 80 })
   })
 })
 
