@@ -38,6 +38,7 @@
 //! ├── yaran-core::operations
 //! ├── yaran-core::serve_log
 //! ├── yaran-core::statusline
+//! ├── yaran-core::timefmt
 //! ├── yaran-core::wire
 //! └── yaran-core::worker
 //! External: anyhow, std, tempfile

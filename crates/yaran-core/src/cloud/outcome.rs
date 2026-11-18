@@ -12,10 +12,10 @@
 //! Uses:
 //! cloud/outcome.rs
 //! ├── cloud::machine_api_error
-//! ├── crate
 //! ├── engine
 //! ├── status_text
-//! └── statusline
+//! ├── statusline
+//! └── timefmt
 //! External: jiff
 //!
 //! Used by:

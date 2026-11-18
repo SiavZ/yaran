@@ -18,10 +18,10 @@
 //! ├── cloud::push_emitter
 //! ├── cloud::push_link
 //! ├── cloud::push_queue
-//! ├── crate
 //! ├── engine
 //! ├── status_text
 //! ├── statusline
+//! ├── timefmt
 //! ├── watch::rule
 //! ├── wire
 //! └── worker

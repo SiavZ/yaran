@@ -28,6 +28,7 @@
 //! ├── sidebar
 //! ├── tab_verdict
 //! ├── test_scratch
+//! ├── timefmt
 //! ├── urls
 //! ├── welcome
 //! ├── welcome_screen

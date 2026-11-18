@@ -14,8 +14,8 @@
 //! cloud/push_queue.rs
 //! ├── cloud::protocol
 //! ├── cloud::protocol::machine
-//! ├── crate
-//! └── numeric
+//! ├── numeric
+//! └── timefmt
 //! External: jiff, std, uuid
 //!
 //! Used by:

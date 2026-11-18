@@ -6,7 +6,6 @@
 //! ```text
 //! Uses:
 //! bootstrap.rs
-//! ├── yaran-core
 //! ├── yaran-core::attachments
 //! ├── yaran-core::auto_resume
 //! ├── yaran-core::changes_status
@@ -26,6 +25,7 @@
 //! ├── yaran-core::statusline
 //! ├── yaran-core::storage
 //! ├── yaran-core::term_identity
+//! ├── yaran-core::timefmt
 //! ├── yaran-core::watch::runtime
 //! └── yaran-core::worker
 //! External: anyhow, std, tempfile

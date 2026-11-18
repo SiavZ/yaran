@@ -24,8 +24,8 @@
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_start
 //! ├── cloud::leg_state
-//! ├── crate
-//! └── sanitize
+//! ├── sanitize
+//! └── timefmt
 //! External: jiff, rand, std, tracing
 //!
 //! Used by:

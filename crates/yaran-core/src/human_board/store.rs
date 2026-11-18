@@ -19,11 +19,11 @@
 //! ```text
 //! Uses:
 //! human_board/store.rs
-//! ├── crate
 //! ├── human_board
 //! ├── human_board::id
 //! ├── human_board::markdown
-//! └── private_file
+//! ├── private_file
+//! └── timefmt
 //! External: anyhow, jiff, serde_json, std, tempfile
 //!
 //! Used by:

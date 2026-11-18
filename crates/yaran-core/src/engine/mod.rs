@@ -22,7 +22,6 @@
 //! ├── config_effective
 //! ├── config_queue
 //! ├── config_write
-//! ├── crate
 //! ├── destructive
 //! ├── engine::admission
 //! ├── engine::amq
@@ -104,6 +103,7 @@
 //! ├── term_identity
 //! ├── test_git
 //! ├── test_scratch
+//! ├── timefmt
 //! ├── viewmodel
 //! ├── watch::runtime
 //! ├── wire

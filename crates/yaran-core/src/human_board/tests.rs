@@ -7,9 +7,9 @@
 //! ```text
 //! Uses:
 //! human_board/tests.rs
-//! ├── crate
 //! ├── human_board
-//! └── human_board::tests::watcher_tests
+//! ├── human_board::tests::watcher_tests
+//! └── timefmt
 //! External: jiff, std, tempfile
 //!
 //! Used by:

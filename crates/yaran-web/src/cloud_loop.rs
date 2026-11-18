@@ -20,7 +20,6 @@
 //! ├── cloud_mode
 //! ├── console
 //! ├── engine_actor
-//! ├── yaran-core
 //! ├── yaran-core::cloud::cloudflared::child_registry
 //! ├── yaran-core::cloud::cloudflared::command
 //! ├── yaran-core::cloud::cloudflared::ready
@@ -32,7 +31,8 @@
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
-//! └── yaran-core::statusline
+//! ├── yaran-core::statusline
+//! └── yaran-core::timefmt
 //! External: jiff, std, tokio
 //!
 //! Used by:

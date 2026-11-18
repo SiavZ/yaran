@@ -29,7 +29,6 @@
 //! ├── keybindings
 //! ├── raw_input
 //! ├── theme
-//! ├── yaran-core
 //! ├── yaran-core::add_project_plan
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::attachments
@@ -69,6 +68,7 @@
 //! ├── yaran-core::terminal_title
 //! ├── yaran-core::test_git
 //! ├── yaran-core::test_provider
+//! ├── yaran-core::timefmt
 //! ├── yaran-core::watch::runtime
 //! ├── yaran-core::wire
 //! ├── yaran-core::worker

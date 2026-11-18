@@ -101,6 +101,7 @@
 //! ├── yaran-core::statusline
 //! ├── yaran-core::tailscale
 //! ├── yaran-core::test_scratch
+//! ├── yaran-core::timefmt
 //! ├── yaran-core::wire
 //! └── yaran-core::worker
 //! External: anyhow, axum, std, tempfile, tokio, tower

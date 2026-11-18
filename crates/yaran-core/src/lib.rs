@@ -128,6 +128,7 @@
 //! ├── text
 //! ├── text_encoding
 //! ├── theme
+//! ├── timefmt
 //! ├── urls
 //! ├── version
 //! ├── viewmodel
@@ -146,53 +147,17 @@
 //!
 //! Used by:
 //! lib.rs
-//! ├── attachments
 //! ├── brand_env
-//! ├── cloud::leg_run
-//! ├── cloud::outcome
-//! ├── cloud::push_queue
-//! ├── cloud::push_runner
 //! ├── config
-//! ├── engine
-//! ├── engine::pull_requests
-//! ├── flat_list
-//! ├── gh
-//! ├── human_board::markdown
-//! ├── human_board::relay
-//! ├── human_board::seen
-//! ├── human_board::store
-//! ├── human_board::sync::tests
-//! ├── human_board::tests
-//! ├── logger
-//! ├── pr_list
-//! ├── project_order
-//! ├── purge
-//! ├── resume_recovery
-//! ├── startup
-//! ├── storage
-//! ├── storage::diff_comments
 //! ├── viewmodel
-//! ├── watch::reset_time
-//! ├── worktree_file
-//! ├── yaran-core[test cloud_push_emitter]
-//! ├── yaran-core[test storage_identity]
-//! ├── yaran-core[test upgrade_database]
 //! ├── yaran-tui::app
 //! ├── yaran-tui::app::first_load
-//! ├── yaran-tui::app::human_board::tests
-//! ├── yaran-tui::app::pull_requests
-//! ├── yaran-tui::app::sessions
 //! ├── yaran-web
 //! ├── yaran-web::background
-//! ├── yaran-web::bootstrap
 //! ├── yaran-web::build_routes
-//! ├── yaran-web::cloud_loop
-//! ├── yaran-web::console
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::first_load_routes
-//! ├── yaran-web::startup_logs
 //! ├── yaran-web[test first_load_routes]
-//! ├── yaran-web[test serve_with_engine]
 //! └── yaran[bin yaran]
 //! ```
 //! <module-headers:end>
