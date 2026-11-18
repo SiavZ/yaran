@@ -2138,3 +2138,17 @@ fn a_long_reply_scrolls_with_the_wheel_and_the_line_keys() {
         super::super::human_board_dialog::reply_window(&reply.input, width, reply.scroll);
     assert_eq!(row_after + 1, row_before, "Up moved the caret one row up");
 }
+
+#[test]
+fn a_huge_news_close_hours_closes_nothing_and_does_not_panic() {
+    let mut app = board_app(Some(sample_board()));
+    app.engine.config.board.news_close_hours = u32::MAX;
+    app.human_board.settings = Some(yaran_core::human_board::BoardSettings::from_config(
+        &app.engine.config.board,
+        &app.engine.paths.root,
+    ));
+    app.human_board.news_checked = None;
+    app.human_board.job = None;
+    app.close_stale_news();
+    assert!(app.human_board.job.is_none(), "nothing is old enough");
+}

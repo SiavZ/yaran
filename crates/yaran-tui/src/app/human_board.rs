@@ -756,7 +756,10 @@ impl App {
         let Ok(age) = jiff::SignedDuration::try_from(after) else {
             return;
         };
-        let cutoff = jiff::Timestamp::now() - age;
+        // A span too long to subtract means nothing is old enough to close.
+        let Ok(cutoff) = jiff::Timestamp::now().checked_sub(age) else {
+            return;
+        };
         let any = self
             .human_board
             .readable()

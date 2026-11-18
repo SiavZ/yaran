@@ -102,7 +102,8 @@ pub fn parse_rfc3339(text: &str) -> Result<Timestamp, jiff::Error> {
 
 /// The earliest instant a wall-clock time names in `tz`: the earlier of the
 /// two in a fold, and none at all in a gap, where that wall-clock time never
-/// happens.
+/// happens. This differs from chrono 0.4.44's `Local` `.earliest()`, which
+/// picked the later instant in a fold and accepted the first minute of a gap.
 pub fn earliest(tz: &TimeZone, at: civil::DateTime) -> Option<Timestamp> {
     let ambiguous = tz.to_ambiguous_timestamp(at);
     match ambiguous.offset() {
@@ -464,14 +465,16 @@ mod tests {
     }
 
     #[test]
-    fn earliest_matches_chrono_in_a_gap_and_a_fold() {
+    fn earliest_is_the_first_instant_in_a_fold_and_none_in_a_gap() {
         let tz = TimeZone::get("America/New_York").unwrap();
-        // 2026-03-08 02:30 never happens in New York.
+        // 2026-03-08 02:30 never happens in New York, so there is no instant.
+        // (chrono 0.4.44 also accepted a gap's first minute, 02:00; jiff does not.)
         assert_eq!(
             earliest(&tz, civil::datetime(2026, 3, 8, 2, 30, 0, 0)),
             None
         );
-        // 2026-11-01 01:30 happens twice; the earlier is still on EDT.
+        // 2026-11-01 01:30 happens twice; we take the earlier, still on EDT.
+        // (chrono 0.4.44 picked the later one, 06:30Z.)
         assert_eq!(
             earliest(&tz, civil::datetime(2026, 11, 1, 1, 30, 0, 0)),
             Some(utc(2026, 11, 1, 5, 30, 0))
