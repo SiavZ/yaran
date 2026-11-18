@@ -14,7 +14,6 @@ const settled: AttachCoverInputs = {
   everReady: true,
   offline: false,
   waitExpired: false,
-  isOwner: true,
   firstAttach: false,
   handoffGrace: false,
 }
@@ -32,13 +31,6 @@ describe("a socket that failed while its tab may be handing over", () => {
     expect(attachCover(failed)).toEqual({ kind: "box", reason: "lost" })
   })
 
-  it("holds nothing over a watcher's card while the app is offline", () => {
-    // The offline overlay owns that signal, and the hold has nothing to do with
-    // it: a socket that failed while globally offline was never handing over.
-    expect(attachCover({ ...failed, offline: true, isOwner: false })).toEqual({
-      kind: "card",
-    })
-  })
 })
 
 describe("the settled pane", () => {
@@ -79,29 +71,27 @@ describe("the cover clears on the applied replay, never on the socket opening", 
       for (const everReady of [true, false]) {
         for (const offline of [true, false]) {
           for (const waitExpired of [true, false]) {
-            for (const isOwner of [true, false]) {
-              for (const firstAttach of [true, false]) {
-                const cover = attachCover({
-                  socket,
-                  replayApplied: false,
-                  everReady,
-                  offline,
-                  waitExpired,
-                  isOwner,
-                  firstAttach,
-                })
-                expect(cover.kind).not.toBe("none")
-                // AND THE BOX ONLY EVER CLAIMS WHAT IT CAN SEE. Its wording is
-                // about a healthy socket that never sent a screen, so a socket
-                // that is not open must never produce it: the visible clock is
-                // reset by `pty.onOpen` alone and keeps running across a drop,
-                // so a slow reconnect used to slam an opaque panel over a
-                // perfectly good frozen picture. The loop covered this input all
-                // along and only asserted "not none", which is exactly why it
-                // did not catch it.
-                if (cover.kind === "box" && cover.reason === "no-screen") {
-                  expect(socket).toBe("open")
-                }
+            for (const firstAttach of [true, false]) {
+              const cover = attachCover({
+                socket,
+                replayApplied: false,
+                everReady,
+                offline,
+                waitExpired,
+                firstAttach,
+                handoffGrace: false,
+              })
+              expect(cover.kind).not.toBe("none")
+              // AND THE BOX ONLY EVER CLAIMS WHAT IT CAN SEE. Its wording is
+              // about a healthy socket that never sent a screen, so a socket
+              // that is not open must never produce it: the visible clock is
+              // reset by `pty.onOpen` alone and keeps running across a drop,
+              // so a slow reconnect used to slam an opaque panel over a
+              // perfectly good frozen picture. The loop covered this input all
+              // along and only asserted "not none", which is exactly why it
+              // did not catch it.
+              if (cover.kind === "box" && cover.reason === "no-screen") {
+                expect(socket).toBe("open")
               }
             }
           }
@@ -142,9 +132,9 @@ describe("the bounded wait", () => {
   })
 })
 
-describe("a dead socket and a watched pty", () => {
-  it("a failed socket is the connection-lost box, which outranks the card", () => {
-    expect(attachCover({ ...settled, socket: "failed", isOwner: false })).toEqual({
+describe("a dead socket", () => {
+  it("a failed socket is the connection-lost box", () => {
+    expect(attachCover({ ...settled, socket: "failed" })).toEqual({
       kind: "box",
       reason: "lost",
     })
@@ -171,17 +161,10 @@ describe("a dead socket and a watched pty", () => {
     ).toEqual({ kind: "spinner", wording: "reconnecting" })
   })
 
-  it("a watcher gets the take-over card, replay landed or not", () => {
-    expect(attachCover({ ...settled, isOwner: false })).toEqual({ kind: "card" })
-    expect(
-      attachCover({ ...settled, isOwner: false, replayApplied: false }),
-    ).toEqual({ kind: "card" })
-  })
 })
 
 describe("coverOwnsThePane", () => {
-  it("gives the whole pane to the card and the Reconnect box", () => {
-    expect(coverOwnsThePane({ kind: "card" })).toBe(true)
+  it("gives the whole pane to the Reconnect box", () => {
     expect(coverOwnsThePane({ kind: "box", reason: "lost" })).toBe(true)
     expect(coverOwnsThePane({ kind: "box", reason: "no-screen" })).toBe(true)
   })

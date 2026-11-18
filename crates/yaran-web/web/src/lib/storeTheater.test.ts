@@ -583,67 +583,6 @@ describe("the editor and the changes screen", () => {
   })
 })
 
-describe("losing input ownership", () => {
-  it("leaves theater and forgets the pane's memory", async () => {
-    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
-    mod.selectSession("s1")
-    mod.enterTheater()
-    expect(store.get("yaran:theater:agent:s1")).toBe("on")
-
-    mod.noteTheaterOwnershipLost("agent", "s1")
-
-    expect(mod.getSnapshot().theater).toBe(false)
-    expect(loc.hash).toBe("#/agent/s1")
-    expect(store.has("yaran:theater:agent:s1")).toBe(false)
-  })
-
-  it("does not come back on re-selection, because the memory went with it", async () => {
-    const mod = await loadStore("", [
-      { id: "s1", project_id: "p1", tabs: ["t2"] },
-    ])
-    mod.selectSession("s1")
-    mod.enterTheater()
-    mod.noteTheaterOwnershipLost("agent", "s1")
-    mod.selectTab("s1", "t2")
-    mod.selectTab("s1", "s1")
-    expect(mod.getSnapshot().theater).toBe(false)
-  })
-
-  it("leaves another row's mode alone", async () => {
-    const mod = await loadStore("", [
-      { id: "s1", project_id: "p1" },
-      { id: "s2", project_id: "p1", tabs: ["t2"] },
-    ])
-    mod.selectSession("s1")
-    mod.enterTheater()
-    mod.noteTheaterOwnershipLost("agent", "t2")
-    expect(mod.getSnapshot().theater).toBe(true)
-    expect(store.get("yaran:theater:agent:s1")).toBe("on")
-  })
-
-  it("forgets the agent row's mode when the terminal theater shows is lost", async () => {
-    const mod = await loadStore("", [
-      { id: "s1", project_id: "p1", terminals: ["tm1"] },
-    ])
-    mod.selectTerminal("tm1", { kind: "session", sessionId: "s1" })
-    mod.enterTheater()
-    mod.noteTheaterOwnershipLost("terminal", "tm1")
-    expect(mod.getSnapshot().theater).toBe(false)
-    expect(store.has("yaran:theater:agent:s1")).toBe(false)
-  })
-
-  it("stays in theater when only the part off screen is lost", async () => {
-    const mod = await loadStore("", [
-      { id: "s1", project_id: "p1", terminals: ["tm1"] },
-    ])
-    mod.selectSession("s1")
-    mod.enterTheater()
-    mod.noteTheaterOwnershipLost("terminal", "tm1")
-    expect(mod.getSnapshot().theater).toBe(true)
-    expect(store.get("yaran:theater:agent:s1")).toBe("on")
-  })
-})
-
 describe("the side panels theater takes away", () => {
   // Theater is a temporary override of the desktop layout, never a write to
   // the sidebar's own memory: the panels come back exactly as they were, and
@@ -787,17 +726,6 @@ describe("the side panels theater takes away", () => {
     expect(mod.getSnapshot().theaterLayout).not.toBeNull()
   })
 
-  it("puts the layout back when ownership is lost", async () => {
-    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
-    mod.selectSession("s1")
-    mod.setSidebarOpen(false)
-    mod.enterTheater()
-
-    mod.noteTheaterOwnershipLost("agent", "s1")
-
-    expect(mod.getSnapshot().theaterLayout).toBeNull()
-    expect(mod.getSnapshot().sidebarOpen).toBe(false)
-  })
 })
 
 describe("the snapshot and the mode are one decision", () => {

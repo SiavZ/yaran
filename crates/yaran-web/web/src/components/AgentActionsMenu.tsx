@@ -67,7 +67,6 @@ import {
   openStartupLogs,
   openStopAgent,
   rerunStartupCommand,
-  sessionActiveElsewhere,
   standaloneEditorHash,
   toggleSessionAutoReopen,
   useYaran,
@@ -97,14 +96,6 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
   // pull requests, startup commands. They are about a branch yaran manages, and
   // a standalone agent has none whatever its folder contains.
   const branchGit = supportsBranchGit(session.workspace)
-  // While another connection input-owns one of this agent's PTYs, the mutating
-  // entries disable: deleting, renaming or relaunching an agent someone else is
-  // driving surprises them. `sessionActiveElsewhere` answers from a mounted
-  // pane's live verdict and from the spine's `input_owner`, which is what lets a
-  // row gate an agent no pane here is attached to. Read-only entries and this
-  // device's own view preferences stay usable. The reason is an inline label,
-  // because a disabled item is pointer-events-none and touch has no hover.
-  const activeElsewhere = sessionActiveElsewhere(yaranState, session)
   // Whether there is a process to ask to shut down at all. The SERVER's answer,
   // from the same oracle the engine's teardown and the terminal UI's palette
   // gate ask, rather than a scan of the tab rows here.
@@ -113,15 +104,6 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
 
   return (
     <>
-      {activeElsewhere ? (
-        <DropdownMenuGroup>
-          <DropdownMenuLabel className="max-w-60 whitespace-normal">
-            This agent is active on another device, so actions that modify it
-            are disabled. Take over in its terminal to use them here.
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
-        </DropdownMenuGroup>
-      ) : null}
       {/* The changed-file row and the shared input-menu items belong to
         * `PaneMenu`, the one menu every surface opens, which renders this body
         * as its agent group with the pane's input group above it. */}
@@ -133,7 +115,6 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
           defaultProvider={defaultProvider}
           atTabCap={atTabCap}
           addingTab={addingTab}
-          activeElsewhere={activeElsewhere}
         />
         <AgentProjectSubmenu projectId={projectId} projectName={projectName} />
       </DropdownMenuGroup>
@@ -141,7 +122,6 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
       <DropdownMenuGroup>
         <DropdownMenuLabel>{MENU_GROUP_LABELS.running}</DropdownMenuLabel>
         <DropdownMenuItem
-          disabled={activeElsewhere}
           onClick={() => openForceReconnect(session.id)}
         >
           <RotateCcw />
@@ -153,8 +133,7 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
           * gets it: yaran does not create, move or remove the user's own folder. */}
         {copyMissing ? (
           <DropdownMenuItem
-            disabled={activeElsewhere}
-            onClick={() => openRecreateWorkingCopy(session.id)}
+              onClick={() => openRecreateWorkingCopy(session.id)}
           >
             <FolderSync />
             Recreate working copy…
@@ -166,15 +145,13 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
           * every other destructive item here; the dialog is the danger signal. */}
         {liveProcess ? (
           <DropdownMenuItem
-            disabled={activeElsewhere}
-            onClick={() => openStopAgent(session.id)}
+              onClick={() => openStopAgent(session.id)}
           >
             <Unplug />
             Detach agent…
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem
-          disabled={activeElsewhere}
           onClick={() => toggleSessionAutoReopen(session.id, !session.auto_reopen_enabled)}
         >
           <RefreshCw />
@@ -187,7 +164,6 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
       <DropdownMenuGroup>
         <DropdownMenuLabel>{MENU_GROUP_LABELS.agent}</DropdownMenuLabel>
         <DropdownMenuItem
-          disabled={activeElsewhere}
           onClick={() => openRename(session.id)}
         >
           <Pencil />
@@ -196,7 +172,6 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
         <AgentIdentityItems
           sessionId={session.id}
           branchGit={branchGit}
-          activeElsewhere={activeElsewhere}
         />
       </DropdownMenuGroup>
       {branchGit ? (
@@ -255,7 +230,6 @@ export function AgentActionsMenu({ session }: { session: SessionView }) {
         <DropdownMenuItem
           variant="destructive"
           className="not-focus:text-destructive/70! not-focus:*:[svg]:text-destructive/70!"
-          disabled={activeElsewhere}
           onClick={() => openDelete(session.id)}
         >
           <Trash2 />
@@ -272,19 +246,17 @@ function AgentTabSubmenu({
   defaultProvider,
   atTabCap,
   addingTab,
-  activeElsewhere,
 }: {
   sessionId: string
   providers: string[]
   defaultProvider: string
   atTabCap: boolean
   addingTab: boolean
-  activeElsewhere: boolean
 }) {
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger
-        disabled={atTabCap || addingTab || activeElsewhere}
+        disabled={atTabCap || addingTab}
       >
         <Plus />
         <span className="min-w-0 truncate">New agent tab…</span>
@@ -338,11 +310,9 @@ function AgentProjectSubmenu({
 function AgentIdentityItems({
   sessionId,
   branchGit,
-  activeElsewhere,
 }: {
   sessionId: string
   branchGit: boolean
-  activeElsewhere: boolean
 }) {
   return (
     <>
@@ -353,7 +323,6 @@ function AgentIdentityItems({
         </DropdownMenuItem>
       ) : null}
       <DropdownMenuItem
-        disabled={activeElsewhere}
         onClick={() => openChangeProvider(sessionId)}
       >
         <Cpu />
@@ -361,8 +330,7 @@ function AgentIdentityItems({
       </DropdownMenuItem>
       {/* Offered with or without gh: the dialog says when attaching needs a
         * signed-in gh, and hiding or detaching talks to nothing, so a pull
-        * request never outlives the way to remove it. Left enabled while
-        * another device drives the agent: the list ends nobody's terminal. */}
+        * request never outlives the way to remove it. */}
       {branchGit ? (
         <DropdownMenuItem onClick={() => openPullRequests(sessionId)}>
           <GitPullRequest />

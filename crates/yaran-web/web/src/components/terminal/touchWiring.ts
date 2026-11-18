@@ -32,7 +32,6 @@ type TerminalTouchWiringOptions = {
   container: HTMLDivElement
   composeInputRef: RefObject<HTMLTextAreaElement | null>
   live: LiveSettings
-  ownership: { read: () => boolean }
   resize: ResizeCoordinator
   links: LinkPress
 }
@@ -42,7 +41,6 @@ type Disposable = { dispose: () => void }
 function forwardsWheel(options: TerminalTouchWiringOptions): boolean {
   return (
     options.term.buffer.active.type !== "normal" &&
-    options.ownership.read() &&
     options.term.modes.mouseTrackingMode !== "none"
   )
 }
@@ -138,7 +136,7 @@ function handleTap(
   event: TouchEvent,
 ): void {
   if (options.term.hasSelection()) options.term.clearSelection()
-  if (!options.live.current.composeActive || !options.ownership.read()) return
+  if (!options.live.current.composeActive) return
   const compose = options.composeInputRef.current
   if (!compose) return
 

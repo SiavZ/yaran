@@ -112,9 +112,10 @@ Change that wording with `human_board_reply_template` in `[ui]`. It understands 
 `{card}`, `{ticket}` and `{title}`; an empty template sends your reply alone.
 
 > [!NOTE]
-> A reply typed into an agent is a keystroke like any other: when another device is driving
-> the agent's terminal, the send is refused, nothing is marked done, and your reply stays in
-> the box.
+> A reply typed into an agent is a keystroke like any other: it lands even when other
+> devices are attached to the same terminal, and it makes this device the one that sets the
+> terminal's size. If the agent is not running, the send is refused, nothing is marked done,
+> and your reply stays in the box.
 
 On a board with people, an open task's **Assign…** opens the list of everyone on the board:
 pick whose queue it goes to, or leave the list to go back to the card. Only tasks can be

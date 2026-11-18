@@ -400,13 +400,10 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
     },
     WelcomeTip {
         web: Some(
-            "Only one device types at a time. When somebody else is driving, a card names them and `Take over` hands you the keyboard, with nothing lost.",
+            "Your phone, your laptop and three browser tabs can all type into the same agent at once. The terminal fits whoever typed last; everyone else gets a faithful, slightly squished view.",
         ),
-        tui: Some(|cx| {
-            format!(
-                "The terminal UI is just another device in the queue: when a browser is driving, a card says so and `{}` presses its `Take over` button on the focused pane.",
-                cx.key(Action::FocusAgent)
-            )
+        tui: Some(|_cx| {
+            "The terminal UI types into the same agents your browsers do, all at the same time. Whoever typed last decides the size; the rest of us just watch it fit.".to_string()
         }),
     },
     WelcomeTip {

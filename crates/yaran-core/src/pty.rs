@@ -2845,6 +2845,9 @@ pub enum PtyWriteKind {
     /// too: it is certainly not typing, and a report we cannot read is no basis
     /// for suppressing anything.
     Ignored,
+    /// A terminal's automatic answer to a query the child printed; see
+    /// [`crate::pty_query_reply`]. Only the size holder's reaches the child.
+    QueryReply,
 }
 
 /// Which pointer gesture a forwarded mouse report encodes. The three are kept
@@ -2880,6 +2883,9 @@ pub enum PointerReport {
 pub fn classify_pty_write(bytes: &[u8]) -> PtyWriteKind {
     if bytes.is_empty() || is_focus_report(bytes) {
         return PtyWriteKind::Ignored;
+    }
+    if crate::pty_query_reply::is_query_reply(bytes) {
+        return PtyWriteKind::QueryReply;
     }
     if !looks_like_mouse_report(bytes) {
         return PtyWriteKind::Typing;

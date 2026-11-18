@@ -2,10 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   THEATER_STORAGE_PREFIX,
-  clearTheaterMemory,
   theaterEscapeAction,
-  theaterOwnershipStep,
-  theaterOwnershipWatchStart,
   isTypingSurfaceElement,
   readTheaterMemory,
   theaterMemoryKey,
@@ -66,9 +63,9 @@ describe("theaterMemoryKey", () => {
 describe("theater memory", () => {
   beforeEach(() => {
     installStorage()
-    clearTheaterMemory(theaterMemoryKey(agent))
-    clearTheaterMemory(theaterMemoryKey(other))
-    clearTheaterMemory(theaterMemoryKey(terminal))
+    writeTheaterMemory(theaterMemoryKey(agent), false)
+    writeTheaterMemory(theaterMemoryKey(other), false)
+    writeTheaterMemory(theaterMemoryKey(terminal), false)
   })
 
   it("reads false for a pane nobody has put in theater", () => {
@@ -87,12 +84,6 @@ describe("theater memory", () => {
     expect(readTheaterMemory(theaterMemoryKey(other))).toBe(false)
   })
 
-  it("clears a pane's memory outright", () => {
-    writeTheaterMemory(theaterMemoryKey(terminal), true)
-    clearTheaterMemory(theaterMemoryKey(terminal))
-    expect(readTheaterMemory(theaterMemoryKey(terminal))).toBe(false)
-  })
-
   it("degrades to off when storage throws", () => {
     vi.stubGlobal("localStorage", {
       getItem: () => {
@@ -107,7 +98,7 @@ describe("theater memory", () => {
     })
     expect(() => writeTheaterMemory(theaterMemoryKey(agent), true)).not.toThrow()
     expect(readTheaterMemory(theaterMemoryKey(agent))).toBe(false)
-    expect(() => clearTheaterMemory(theaterMemoryKey(agent))).not.toThrow()
+    expect(() => writeTheaterMemory(theaterMemoryKey(agent), false)).not.toThrow()
   })
 
   it("writes and reads nothing at all for no target", () => {
@@ -196,67 +187,6 @@ describe("theaterEscapeAction", () => {
     expect(theaterEscapeAction({ ...base, defaultPrevented: true })).toBe("none")
   })
 
-})
-
-describe("theaterOwnershipStep", () => {
-  it("says nothing about the foreground guess a mount starts from", () => {
-    // `isOwner` is optimistic before the handshake answers, so the very first
-    // honest verdict is not a transition. A watcher opening a shared theater
-    // link used to enter, exit and clear its memory in one breath.
-    const first = theaterOwnershipStep(theaterOwnershipWatchStart, {
-      handshakeSeen: false,
-      isOwner: true,
-    })
-    expect(first.lost).toBe(false)
-    const verdict = theaterOwnershipStep(first.state, {
-      handshakeSeen: true,
-      isOwner: false,
-    })
-    expect(verdict.lost).toBe(false)
-  })
-
-  it("reports a real demotion once a verdict has landed", () => {
-    const owner = theaterOwnershipStep(theaterOwnershipWatchStart, {
-      handshakeSeen: true,
-      isOwner: true,
-    })
-    expect(owner.lost).toBe(false)
-    const lost = theaterOwnershipStep(owner.state, {
-      handshakeSeen: true,
-      isOwner: false,
-    })
-    expect(lost.lost).toBe(true)
-  })
-
-  it("reports the spine correction's demotion too, and only once", () => {
-    // The refetched spine naming another connection is the other way a pane
-    // loses the pty, and it lands as the same verdict flip.
-    let step = theaterOwnershipStep(theaterOwnershipWatchStart, {
-      handshakeSeen: true,
-      isOwner: true,
-    })
-    step = theaterOwnershipStep(step.state, {
-      handshakeSeen: true,
-      isOwner: false,
-    })
-    expect(step.lost).toBe(true)
-    step = theaterOwnershipStep(step.state, {
-      handshakeSeen: true,
-      isOwner: false,
-    })
-    expect(step.lost).toBe(false)
-  })
-
-  it("arms again after a take-over, so the next loss still counts", () => {
-    let step = theaterOwnershipStep(theaterOwnershipWatchStart, {
-      handshakeSeen: true,
-      isOwner: false,
-    })
-    step = theaterOwnershipStep(step.state, { handshakeSeen: true, isOwner: true })
-    expect(step.lost).toBe(false)
-    step = theaterOwnershipStep(step.state, { handshakeSeen: true, isOwner: false })
-    expect(step.lost).toBe(true)
-  })
 })
 
 describe("isTypingSurfaceElement", () => {

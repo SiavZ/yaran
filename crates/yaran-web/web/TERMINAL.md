@@ -81,13 +81,10 @@ only guard and the rewrite's review must weigh whether that is still acceptable.
 5. **The last-told-size record books only what actually went on the wire.**
    Trap: two things swallow a resize silently (the owner gate, and the socket when not
    OPEN, which is every reconnect); a swallowed send booked as sent makes the dedupe
-   suppress the re-assert forever. The take-over arc leans on the SAME boolean for a
-   second job: the armed take-over intent is consumed only when `sendResize` confirms the
-   frame went out, so a claim the socket discarded stays armed instead of being spent on
-   nothing. Fix: src/components/terminal/resizeCoordinator.ts (`sendOwned`),
-   `src/lib/ptySocket.ts` (`sendResize` returns whether the frame went out, and takes the
-   optional `takeover` flag), src/components/terminal/useTerminalLifecycle.ts (the
-   wrapper that reads the answer).
+   suppress the re-assert forever. Since the shared-input arc a page that does not hold
+   the size books its natural-grid REPORT the same way (`lastReported`). Fix:
+   src/components/terminal/resizeCoordinator.ts (`sendOwned`, `reportNatural`),
+   `src/lib/ptySocket.ts` (`sendResize` returns whether the frame went out).
    Pinned: `components/TerminalPane.test.tsx` "does not record a resize the owner gate
    dropped, so it is re-sent once ownership returns" and "does not record a resize the
    SOCKET dropped, so it is re-sent once it reopens"; `src/lib/ptySocket.test.ts`
@@ -109,12 +106,11 @@ only guard and the rewrite's review must weigh whether that is still acceptable.
    very first open (the deliberate first-frame bypass)" and "carries a re-grid landing
    INSIDE the jiggle window through to the PTY".
 
-8. **A reconnect's first frame sends a single plain resize and never jiggles**, and
-   since the take-over arc, that single frame is ALSO the carrier of a take-over claim
-   when one is armed (the flag rides it; the plan itself is unchanged). Original entry:
+8. **A reconnect's first frame sends a single plain resize and never jiggles.**
    Trap: mobile reconnects constantly; a jiggle forces two full-screen repaints at two
-   widths on every one. The single resize still re-asserts ownership and is a kernel
-   no-op when the size is unchanged. Fix: src/components/terminal/resizeCoordinator.ts:312-322, `src/lib/firstFrameResize.ts`.
+   widths on every one. The single resize still re-asserts the size and is a kernel
+   no-op when the size is unchanged. A page that does not hold the size reports its
+   natural grid instead and never jiggles. Fix: src/components/terminal/resizeCoordinator.ts:312-322, `src/lib/firstFrameResize.ts`.
    Pinned: `src/lib/firstFrameResize.test.ts` "sends a single resize on a reconnect...";
    `components/TerminalPane.test.tsx` "still sends one plain resize on a RECONNECT's
    first frame, and does not jiggle".
@@ -130,9 +126,8 @@ only guard and the rewrite's review must weigh whether that is still acceptable.
     Trap: the PTY is shared; another client resized it while this tab was hidden or
     unfocused, so the cached last-size wrongly suppresses the re-assert; and a return can
     coincide with the replay still streaming, where a mid-replay resize corrupts scroll
-    position. Since the take-over arc it is also the standing recovery for a resize the
-    SERVER refused (the record books "written to the socket" and nothing more), and it is
-    gated on ownership like every other send, so a watcher's alt-tab volunteers nothing.
+    position. For a page that does not hold the size it re-reports the natural grid
+    instead (recorded server-side, applied only when this page types).
     Fix: src/components/terminal/resizeCoordinator.ts (`resyncToForeground`, called from the lifecycle on visibilitychange AND window focus,
     150ms debounce, `term.write("")` drain gate, forced send). Pinned:
     `src/components/terminal/resizeCoordinator.test.ts` "the resize coordinator's
@@ -227,10 +222,10 @@ only guard and the rewrite's review must weigh whether that is still acceptable.
     when the server could not read the pty, which the client reads as "nothing
     known" and never as agreement), and every APPLIED resize is pushed to every
     socket attached to that pty as a Text event frame
-    `{"event":"size","rows":R,"cols":C,"seq":N}`. A refused resize (a non-owner's
-    plain frame) applies nothing and therefore announces nothing, exactly like the
-    `pty.owner` broadcast beside it, or every viewer would heal itself towards a
-    size the child never took. The broadcast is a `tokio::sync::broadcast` read by
+    `{"event":"size","rows":R,"cols":C,"seq":N}`. A recorded-only resize (a plain
+    frame from a page that does not hold the size) applies nothing and therefore
+    announces nothing, or every viewer would heal itself towards a size the child
+    never took. The broadcast is a `tokio::sync::broadcast` read by
     one more arm in each socket's existing `select!` loop, NOT a registry of sinks:
     the crate deliberately holds no other task's sink and locks none across an
     await.
@@ -369,6 +364,14 @@ only guard and the rewrite's review must weigh whether that is still acceptable.
     viewer grid divergence": "bounces the socket ONCE after a burst of grid changes
     settles", "never bounces on the handshake's OWN grid", "never bounces the
     OWNER", "stands down while a take-over is armed".
+    SUPERSEDED at shared input: the heal is DELETED. The size now moves with
+    whoever typed last, so a grid change is usually a typing handover, and the
+    page that just lost the size bounced its socket while still typing,
+    dropping its keys behind a reconnect cover. Adoption (A23) re-grids xterm on
+    each `size` event before the child's repaint for it arrives, so there is no
+    polluted scrollback left to heal. `viewerGrid.ts` only records the grids.
+    Pinned: `components/TerminalPane.test.tsx` "never reconnects when the grid
+    changes under a page that does not hold the size".
 
 23. **NEW at the faithful-view arc: a WATCHER RENDERS AT THE PTY'S TRUE GRID.**
     The divergence class is not managed, it is removed: the coordinator gains a
@@ -646,6 +649,24 @@ only guard and the rewrite's review must weigh whether that is still acceptable.
     Uint8Array", "reconnects ... (resends nothing)".
 
 ## C. Ownership
+
+0. **SUPERSEDED at the shared-input arc: every attached page types, and "owner" means
+    SIZE HOLDER.** There is no take-over card, no take-over button, no take-over intent,
+    no flagged resize from this client, no sticky loss and no self-succession. The server
+    moves the size to whichever participant types (applying the grid that page last
+    reported) and broadcasts it as the same `pty.owner` event; the client keeps the
+    verdict only to choose between fitting its own viewport (holder) and rendering the
+    holder's grid scaled to fit (everyone else, the faithful view of A23). Every page,
+    holder or not, reports its NATURAL grid as a plain resize (`reportNatural` in
+    `resizeCoordinator.ts`, measured by `naturalGridFor` in `src/lib/viewerFit.ts` at the
+    user's own font while the pane renders a shrunk one); the server records it and
+    applies it when that page types. Input gates, the macro and upload refusals, the
+    agent menu's active-elsewhere gating, theater's ownership-lost exit and the store's
+    ownership ledger are gone. Entries below that describe take-over are history;
+    where one contradicts this entry, this entry wins. Pinned:
+    `src/components/terminal/ownership.test.ts`,
+    `src/components/terminal/resizeCoordinator.test.ts` "a page that does not hold the
+    size".
 
 1. **REWRITTEN at the take-over arc: ATTACHING NEVER STEALS. The `connected` handshake
     says who drives, and the foreground guess survives only for claiming an UNOWNED

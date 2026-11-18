@@ -76,7 +76,7 @@ function setup(
   opts: {
     owner?: boolean
     wire?: boolean
-    flagged?: boolean
+    natural?: { rows: number; cols: number } | null
     onScreen?: boolean
     rowConfirmed?: boolean
   } = {},
@@ -87,7 +87,7 @@ function setup(
   const relayouts: number[] = []
   let owner = opts.owner ?? true
   let wire = opts.wire ?? true
-  let flagged = opts.flagged ?? false
+  let natural = opts.natural ?? null
   let onScreen = opts.onScreen ?? true
   let rowConfirmed = opts.rowConfirmed ?? true
   const coord = createResizeCoordinator({
@@ -99,7 +99,7 @@ function setup(
       return true
     },
     isOwner: () => owner,
-    lastSendWasFlagged: () => flagged,
+    naturalGrid: () => natural,
     onViewerLayout: () => relayouts.push(1),
     onScreen: () => onScreen,
     rowConfirmed: () => rowConfirmed,
@@ -116,8 +116,8 @@ function setup(
     setWire: (v: boolean) => {
       wire = v
     },
-    setFlagged: (v: boolean) => {
-      flagged = v
+    setNatural: (v: { rows: number; cols: number } | null) => {
+      natural = v
     },
     setOnScreen: (v: boolean) => {
       onScreen = v
@@ -189,49 +189,6 @@ describe("the resize coordinator's record of what the PTY was told", () => {
     term.regrid(30, 100)
     vi.advanceTimersByTime(500)
     expect(sent.at(-1)).toEqual({ rows: 30, cols: 100 })
-  })
-
-  // A FLAGGED FRAME IS A REQUEST, NOT A FACT. A take-over claim can be refused
-  // whole (a self-succession whose named predecessor no longer holds the pty),
-  // and a refusal applies NOTHING, geometry included. Booking the geometry as
-  // delivered would then let the dedupe suppress every re-assert of it, leaving
-  // the child drawing for a viewport nobody is looking at.
-  it("does not book the geometry of a FLAGGED send until the wire confirms it", () => {
-    const { term, coord, sent, setFlagged } = setup()
-    coord.start(document.createElement("div"))
-    settleFirstFrame(coord, sent)
-    setFlagged(true)
-    term.regrid(30, 100)
-    vi.advanceTimersByTime(500)
-    expect(sent).toEqual([{ rows: 30, cols: 100 }])
-    // The same geometry again: it still reaches the wire, because nothing has
-    // confirmed that the first one was applied.
-    setFlagged(false)
-    term.regrid(24, 80)
-    term.regrid(30, 100)
-    vi.advanceTimersByTime(500)
-    expect(sent).toEqual([
-      { rows: 30, cols: 100 },
-      { rows: 30, cols: 100 },
-    ])
-  })
-
-  it("books the geometry a flagged claim asked for once the pty reports it", () => {
-    const { term, coord, sent, setFlagged } = setup()
-    coord.start(document.createElement("div"))
-    settleFirstFrame(coord, sent)
-    setFlagged(true)
-    term.regrid(30, 100)
-    vi.advanceTimersByTime(500)
-    expect(sent).toHaveLength(1)
-    // The server applied it and says so, on the handshake or a `size` event.
-    setFlagged(false)
-    coord.noteRemoteGrid({ rows: 30, cols: 100 })
-    // Nothing to re-assert now: the record and the pty agree.
-    term.regrid(24, 80)
-    term.regrid(30, 100)
-    vi.advanceTimersByTime(500)
-    expect(sent).toHaveLength(1)
   })
 
   it("sends nothing when the geometry has not moved since the last send", () => {
@@ -885,7 +842,7 @@ describe("whether an open has asserted a size at all", () => {
     expect(coord.sizeSentSinceOpen()).toBe(false)
   })
 
-  it("stays false for a watcher, whose sends are gated on ownership", () => {
+  it("stays false for a watcher with no natural grid to report", () => {
     const { coord, sent } = setup({ owner: false })
     coord.start(document.createElement("div"))
     coord.noteOpen(false)
@@ -973,5 +930,45 @@ describe("a pane kept mounted off screen", () => {
     coord.resyncToForeground()
     vi.advanceTimersByTime(1000)
     expect(sent).toEqual([{ rows: 24, cols: 80 }])
+  })
+})
+
+// A page that does not hold the size renders the holder's grid and REPORTS its
+// own natural grid, which the server records and applies when this page types.
+// The report never touches the local grid.
+describe("a page that does not hold the size", () => {
+  const natural = { rows: 50, cols: 160 }
+
+  it("reports its natural grid on the first frame, and never jiggles", () => {
+    const { coord, sent, term } = setup({ owner: false, natural })
+    coord.start(document.createElement("div"))
+    coord.noteOpen(true)
+    coord.noteRemoteGrid({ rows: 40, cols: 120 }, true)
+    coord.firstFrameLanded()
+    vi.advanceTimersByTime(1000)
+    expect(sent).toEqual([natural])
+    expect([term.rows, term.cols]).toEqual([40, 120])
+    expect(coord.sizeSentSinceOpen()).toBe(true)
+  })
+
+  it("re-reports on a foreground return, bypassing the dedupe", () => {
+    const { coord, sent } = setup({ owner: false, natural })
+    coord.start(document.createElement("div"))
+    settleFirstFrame(coord, sent)
+    coord.resyncToForeground()
+    vi.advanceTimersByTime(1000)
+    expect(sent).toEqual([natural])
+  })
+
+  it("fits and sends its own grid again once it holds the size", () => {
+    const { coord, sent, fit, setOwner } = setup({ owner: false, natural })
+    coord.start(document.createElement("div"))
+    settleFirstFrame(coord, sent)
+    coord.noteRemoteGrid({ rows: 40, cols: 120 }, true)
+    setOwner(true)
+    fit.next = natural
+    coord.refitForFonts()
+    vi.advanceTimersByTime(1000)
+    expect(sent).toEqual([natural])
   })
 })

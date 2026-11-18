@@ -1,9 +1,14 @@
-// Owner mode coordinates debounced xterm fits with PTY resizes; viewer mode only
-// adopts the driver's grid. Gesture holds suspend the fit/send pair together.
+// Owner mode (this page holds the pty's size) coordinates debounced xterm fits
+// with PTY resizes; viewer mode adopts the holder's grid and only REPORTS this
+// page's natural grid, which the server records and applies the moment this
+// page types. Gesture holds suspend the fit/send pair together.
 import type { Terminal } from "@xterm/xterm"
 import type { FitAddon } from "@xterm/addon-fit"
 
 import { firstFrameResizePlan } from "@/lib/firstFrameResize"
+import { isForeground } from "@/lib/ptyOwnership"
+
+import { createNaturalReport } from "./naturalReport"
 
 import { RESIZE_SEND_DEBOUNCE_MS } from "./constants"
 
@@ -23,14 +28,13 @@ export type ResizeCoordinatorDeps = {
   /// swallow a resize silently and neither raises anything, so the record of
   /// what the PTY has been told is built from this and nothing else.
   sendResize: (rows: number, cols: number) => boolean
-  /// The ownership verdict, read live: a resize frame IS a claim server-side,
-  /// so a read-only observer (and a backgrounded tab) drives nothing.
+  /// The size-holder verdict, read live: whether this page's grid is the
+  /// pty's. Anyone else renders the holder's grid and only reports its own.
   isOwner: () => boolean
-  /// Whether the frame `sendResize` just wrote carried the take-over flag. Read
-  /// immediately after a confirmed send, and only then. A flagged frame is a
-  /// REQUEST the server may refuse whole, so its geometry is not booked until
-  /// the pty reports it back; see `sendOwned`.
-  lastSendWasFlagged?: () => boolean
+  /// This page's natural grid at the user's own font, measured while the pane
+  /// renders somebody else's grid at a shrunk one. Null when it cannot be
+  /// measured yet. Absent means no reports.
+  naturalGrid?: () => { rows: number; cols: number } | null
   /// The observed layout (the pane's HOST; see `start`) moved while in VIEWER
   /// mode. There is no fit to run, but the font shrink is computed from that
   /// box, so the pane recomputes it here. Called from the same ResizeObserver
@@ -43,8 +47,7 @@ export type ResizeCoordinatorDeps = {
   /// claimed by the part the user is looking at. Absent means on screen.
   onScreen?: () => boolean
   /// Whether the server has said this pane's row is this page's (the pane's
-  /// own driver id named as the owner), or a flagged claim is armed to ask for
-  /// it. Until then a pane off screen renders as a watcher at the pty's own
+  /// own driver id named as the size holder). Until then a pane off screen renders as a watcher at the pty's own
   /// grid and sends nothing. Absent means confirmed.
   rowConfirmed?: () => boolean
 }
@@ -115,7 +118,7 @@ export function createResizeCoordinator(
   deps: ResizeCoordinatorDeps,
 ): ResizeCoordinator {
   const { term, fit, sendResize, onViewerLayout } = deps
-  const lastSendWasFlagged = deps.lastSendWasFlagged ?? (() => false)
+  const naturalGrid = deps.naturalGrid ?? (() => null)
   const onScreen = deps.onScreen ?? (() => true)
   const rowConfirmed = deps.rowConfirmed ?? (() => true)
 
@@ -169,12 +172,9 @@ export function createResizeCoordinator(
   // the next `size` event.
   let remoteGrid: { rows: number; cols: number } | null = null
   // Set while this open has taken the pty's grid off the handshake and the
-  // replay drawn for it has not been parsed yet. Adopting alone is not enough:
-  // the mount's observer callback, the bundled-font refit and container
-  // settling all fit the terminal back to this viewport, which puts the grid
-  // back exactly where the replay loses its lines. So every local fit is
-  // refused for the width of the window, closed by `firstFrameLanded` or, for a
-  // session that emits no first frame, by the fallback timer behind it.
+  // replay drawn for it is not parsed yet. Every local fit (observer, font
+  // refit, container settling) would put the grid back where the replay loses
+  // its lines, so all are refused until `firstFrameLanded` or the fallback.
   let holdingAdoptedGrid = false
   // Which open the hold and the fallback timer behind it belong to: a timer
   // armed under the previous open, firing during this one, would release a hold
@@ -224,36 +224,34 @@ export function createResizeCoordinator(
     adoptRemoteGrid()
   }
 
-  // Records what the PTY has been told, and only what actually went out. The
-  // owner gate here and the socket (which discards a frame whenever the
-  // WebSocket is not OPEN) both swallow a resize silently, and a swallowed send
-  // booked as sent is worse than no send: the dedupe then suppresses the
-  // re-assert forever and the child keeps drawing for a viewport nobody sees.
-  // What the server does with a frame it received is its own business, so this
-  // records "written to the socket" and claims nothing more.
-  //
-  // A steady-state resize by the current owner changes no owner and arms no
-  // handover; only an ownership-acquiring claim does, and a claim always runs
-  // with the verdict already flipped to "mine", so it passes this gate.
-  //
-  // A flagged frame is the one frame booked by the answer rather than the send.
-  // A self-succession is refused routinely (that is what its compare-and-swap
-  // is for) and a refusal applies no geometry at all, so booking it would let
-  // the dedupe suppress every re-assert of that size. Its confirmation is the
-  // pty's own reported grid; see `noteRemoteGrid`. A plain refusable frame is
-  // still booked on the send, with the foreground resync as the recovery.
+  // Books only what actually went out: the owner gate and a socket that is not
+  // OPEN both swallow a resize silently, and a swallowed send booked as sent
+  // would let the dedupe suppress the re-assert forever.
   const sendOwned = (rows: number, cols: number): boolean => {
     if (!isOwner()) return false
     if (!sendResize(rows, cols)) return false
-    // A frame really went out on this open. Recorded even for a flagged one,
-    // whose GEOMETRY is deliberately not booked below: the question this
-    // answers is "has this open asked the size question at all", which a
-    // take-over request asks as loudly as a plain resize does.
     sizeSentSinceOpen = true
-    if (lastSendWasFlagged()) return true
     lastRows = rows
     lastCols = cols
+    natural.note({ rows, cols })
     return true
+  }
+
+  // Only on screen and in the foreground, where typing comes from.
+  const natural = createNaturalReport({
+    reports: () => !deps.isOwner() && onScreen() && isForeground(),
+    naturalGrid,
+    sendResize: (rows, cols) => {
+      const sent = sendResize(rows, cols)
+      if (sent) sizeSentSinceOpen = true
+      return sent
+    },
+  })
+
+  // A direct re-assert of this page's size, whichever mode it is in.
+  const assertSize = () => {
+    if (viewerMode()) natural.report(true)
+    else sendOwned(term.rows, term.cols)
   }
 
   // The debounce settling. Releases the pair it held: the refit runs first, at
@@ -279,6 +277,10 @@ export function createResizeCoordinator(
       // size the drag ended on. It re-enters `armDebounce` through xterm's own
       // resize event, which is a no-op send one window later.
       runFit()
+    }
+    if (viewerMode()) {
+      natural.report(false)
+      return
     }
     if (term.rows !== lastRows || term.cols !== lastCols) {
       sendOwned(term.rows, term.cols)
@@ -352,22 +354,19 @@ export function createResizeCoordinator(
     // Fit and notify as one pair, deferred whole if a touch gesture is in
     // flight.
     fitAndSend(() => {
-      // Attaching while foregrounded claims ownership by sending our size. The
-      // server broadcasts a `pty.owner` carrying our connection id; the
-      // handover handler recognises it as ours by id, so no echo bookkeeping is
-      // needed here. A backgrounded observer is not the owner, so the sends
-      // below no-op.
+      // Attaching to a row nobody holds claims the size by sending it (the
+      // `pty.owner` echo is recognised by id). A page that does not hold the
+      // size reports its natural grid, and never jiggles a pty it does not size.
+      if (viewerMode()) {
+        natural.report(true)
+        return
+      }
       if (firstFrameResizePlan(firstFrameIsFirstOpen) === "jiggle") {
-        // First open only. A same-size resize is a kernel no-op, so when the
-        // PTY already matches this viewport the agent never repaints and the
-        // initial snapshot stays on screen with the cursor and input box
-        // misplaced. Nudging the width down one column and back makes two real
-        // winsize changes, so the kernel raises SIGWINCH and the agent redraws
-        // at the correct size.
-        //
-        // One jiggle per open: a slow handshake can re-owe the first-frame
-        // resize after the fallback has run the plan once (see
-        // `noteRemoteGrid`), and that second pass is a plain resize.
+        // First open only. A same-size resize is a kernel no-op, so the agent
+        // would never repaint over the initial snapshot; down one column and
+        // back is two real winsize changes, so SIGWINCH redraws it. One jiggle
+        // per open: a handshake that re-owes the first-frame resize after the
+        // fallback ran the plan (see `noteRemoteGrid`) gets a plain resize.
         firstFrameIsFirstOpen = false
         sendOwned(term.rows, Math.max(1, term.cols - 1))
         jiggleTimer = setTimeout(() => {
@@ -379,7 +378,7 @@ export function createResizeCoordinator(
       } else {
         // Reconnect: the PTY is still alive at its prior size. Jiggling would
         // force two full-screen repaints on every reconnect, and mobile
-        // reconnects constantly. A single resize still re-asserts ownership and
+        // reconnects constantly. A single resize still re-asserts the size and
         // raises one SIGWINCH only if the viewport really changed.
         sendOwned(term.rows, term.cols)
       }
@@ -435,12 +434,12 @@ export function createResizeCoordinator(
       // drawn for.
       ro = new ResizeObserver(() => {
         cancelAnimationFrame(fitFrame)
-        // Viewer mode: the observed box decides nothing about the grid, only
-        // how small the font must be for the PTY's grid to fit. In the same
-        // callback the fit would have used, so two observers can never
-        // disagree about when a resize happened.
+        // Viewer mode: the box decides only the font shrink and, after the
+        // debounce, the natural grid reported. Same callback as the fit, so two
+        // observers never disagree about when a resize happened.
         if (viewerMode()) {
           fitFrame = requestAnimationFrame(() => onViewerLayout())
+          armDebounce()
           return
         }
         // Through the hold, never a bare fit: a refit landing mid-touch-gesture
@@ -454,6 +453,7 @@ export function createResizeCoordinator(
       openEpoch++
       initialResizeDone = false
       sizeSentSinceOpen = false
+      natural.reset()
       // A new open owes a new handshake, so the previous one's hold is not this
       // one's; the new handshake takes it again, and the clock this open runs
       // on starts here.
@@ -478,7 +478,7 @@ export function createResizeCoordinator(
         term.write("", () => {
           // The pair again: a foreground return that lands mid-gesture defers
           // both halves to the lift rather than refitting under the finger.
-          fitAndSend(() => sendOwned(term.rows, term.cols))
+          fitAndSend(assertSize)
         })
       }, FOREGROUND_RESYNC_MS)
     },
@@ -526,12 +526,11 @@ export function createResizeCoordinator(
     },
     noteRemoteGrid(grid, fromHandshake) {
       // Null is "the server could not say", never "it matches": the last grid
-      // it DID report stands, which is the same rule `gridsDiverge` applies.
+      // it DID report stands.
       if (grid) remoteGrid = grid
-      // The confirmation half of the flagged-send rule above: a reported grid
-      // is the pty's own geometry, so for the owner it answers whether the size
-      // it asked for was applied, and it is what the dedupe should compare
-      // against even when it is not what this client last asked for.
+      // A reported grid is the pty's own geometry, so for the owner it is what
+      // the dedupe should compare against even when it is not what this client
+      // last asked for.
       if (grid && isOwner()) {
         lastRows = grid.rows
         lastCols = grid.cols

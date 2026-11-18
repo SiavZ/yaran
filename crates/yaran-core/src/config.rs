@@ -140,7 +140,6 @@
 //! ├── yaran-tui::app::human_board
 //! ├── yaran-tui::app::input
 //! ├── yaran-tui::app::picker_lists
-//! ├── yaran-tui::app::pty_ownership
 //! ├── yaran-tui::app::render
 //! ├── yaran-tui::app::sessions
 //! ├── yaran-tui::app::shared_workspace_tests
@@ -1325,10 +1324,9 @@ pub struct ServerConfig {
     /// `stop-background-server` palette commands, and this setting decides only
     /// whether it comes up serving at startup.
     ///
-    /// While it serves, the terminal UI is an ordinary participant in the same
-    /// one-driver-at-a-time model the browsers use: a terminal it does not drive
-    /// is covered by the take-over card until somebody presses that card's
-    /// button.
+    /// While it serves, the terminal UI and every browser type into the same
+    /// terminals at once, and a terminal is sized for whichever of them typed
+    /// into it last.
     pub serve_while_tui: bool,
     /// The owner-only Unix socket yaran serves its API on to local command-line
     /// clients, relative to the config folder. Bound once at start by the yaran

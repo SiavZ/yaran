@@ -11,7 +11,6 @@ const {
   freshen,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -22,7 +21,6 @@ module.exports = {
     const by = await agents()
     await freshen(by["add-rate-limits"].id, 0)
     await goto(page, `#/agent/${by["add-rate-limits"].id}`)
-    await takeOver(page)
     await sleep(2500)
     await clearToasts(page)
     // The six rows the caption counts beside its terminal UI twin, and the one

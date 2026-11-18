@@ -12,9 +12,11 @@
 //   - Then one Binary frame replaying the buffered scrollback; feed it straight to
 //     xterm. `gen` labels it so a replay already applied can be dropped.
 //   - server to client Binary = raw PTY bytes; client to server Binary = PTY stdin.
-//   - client to server Text = `{"rows":R,"cols":C}`, which claims sizing and input
-//     only when the PTY is unowned. Adding `"takeover":true` transfers ownership,
-//     and is the only frame this client sends while it knows it is not the owner.
+//   - client to server Text = `{"rows":R,"cols":C}`: this page's natural grid,
+//     sent whether or not it holds the size. The server applies it when this
+//     page holds the size or nobody does, and otherwise only records it, to
+//     apply the moment this page types. Typing goes straight down the socket:
+//     every attached page may type.
 //   - Close = detach.
 //   - Every open names this tab's events connection as `?events=<id>`, waiting up to
 //     `CONNECTION_ID_WAIT_MS` for one, so the tab is never in its own way, and
@@ -133,7 +135,6 @@ interface PtyControlFrame {
   gen?: number
   owner?: string | null
   owner_epoch?: number
-  owner_device?: string
   rows?: number | null
   cols?: number | null
   seq?: number
@@ -222,10 +223,10 @@ export class PtySocket extends ReconnectingSocket {
   // duplicate or late blob cannot stack a second copy of the scrollback.
   private replayGen: number | null = null
 
-  // Who the server says currently drives this PTY, as of the most recent
+  // Who the server says holds this PTY's size, as of the most recent
   // `connected` frame. Three distinct values, and the pane needs all three:
-  //   - a connection id: somebody is driving (this client, if it equals `connId`)
-  //   - `null`: the key was present and empty, so nobody is driving
+  //   - a connection id: somebody holds it (this client, if it equals `connId`)
+  //   - `null`: the key was present and empty, so nobody holds it
   //   - `undefined`: the key was absent, so this server does not answer and the
   //     client falls back to its foreground guess
   // Only the handshake writes it; live changes arrive as `pty.owner` events on
@@ -240,14 +241,6 @@ export class PtySocket extends ReconnectingSocket {
   // owner, and that direction emits no correcting event. `undefined` means the
   // key was absent, from a server that omits `owner` too.
   private connectedOwnerEpoch: number | undefined = undefined
-
-  // The owner's device label on the handshake's owner snapshot
-  // (`owner_device`): the raw `User-Agent` the owning connection presented,
-  // the same string a `pty.owner` handover carries as `device`. It rides the
-  // handshake because a mere attach hears no handover, leaving a watcher with
-  // only generic copy on its take-over card. `undefined` when the key is absent
-  // (an unowned pty, or an owner with no User-Agent).
-  private connectedOwnerDevice: string | undefined = undefined
 
   // The PTY's grid as of the most recent frame that reported one: the
   // `connected` handshake at attach, then every `size` event after it. Null means
@@ -269,7 +262,6 @@ export class PtySocket extends ReconnectingSocket {
     id: string,
     owner: string | null | undefined,
     ownerEpoch: number | undefined,
-    ownerDevice: string | undefined,
   ) => void = () => {}
 
   // Fired with the PTY's grid every time the wire reports one. `fromHandshake`
@@ -397,17 +389,10 @@ export class PtySocket extends ReconnectingSocket {
     this.connectedOwner = "owner" in frame ? (frame.owner ?? null) : undefined
     this.connectedOwnerEpoch =
       typeof frame.owner_epoch === "number" ? frame.owner_epoch : undefined
-    this.connectedOwnerDevice =
-      typeof frame.owner_device === "string" ? frame.owner_device : undefined
     this.ptyGrid = readGrid(frame)
     this.lastGridSeq =
       typeof frame.grid_seq === "number" ? frame.grid_seq : null
-    this.onConnected(
-      id,
-      this.connectedOwner,
-      this.connectedOwnerEpoch,
-      this.connectedOwnerDevice,
-    )
+    this.onConnected(id, this.connectedOwner, this.connectedOwnerEpoch)
     this.onPtyGrid(this.ptyGrid, true)
   }
 
@@ -473,37 +458,24 @@ export class PtySocket extends ReconnectingSocket {
   // Send a resize control frame as Text. The server parses `{rows, cols}` (u16)
   // and issues the SIGWINCH; an unchanged size is a kernel no-op server-side.
   //
-  // `takeover` requests an ownership transfer, set only by a deliberate press of
-  // Take over. Without it the server grants the claim only on an unowned pty and
-  // refuses the resize outright when somebody else drives it, which is what stops
-  // an ordinary attach or window change from stealing the prompt. The flag is
-  // omitted from the JSON when false rather than sent as `false`.
+  // The server applies it only when this page holds the size or nobody does,
+  // and otherwise records it as the grid to apply when this page types.
   //
   // Returns whether the frame actually went on the wire. A dropped resize is
   // re-typed by nobody: the caller skips a size it believes is already there, so
   // a frame discarded here must be reported rather than booked as delivered and
-  // never re-asserted. A take-over intent is cleared only when this returns true.
+  // never re-asserted.
   //
   // A grid outside the PTY's bounds is not sent either: the server would drop
-  // it without a word, and a take-over riding on it would be spent on nothing.
-  sendResize(
-    rows: number,
-    cols: number,
-    takeover = false,
-    expectedOwner?: string,
-  ): boolean {
+  // it without a word.
+  sendResize(rows: number, cols: number): boolean {
     if (!ptyGridInBounds(rows, cols)) return false
     // Refused, and reported as refused: the resize coordinator re-asserts the
     // size once the page is signed in again (`authResync.ts`), through its own
     // ownership rules.
     if (authPaused()) return false
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      const frame = takeover
-        ? expectedOwner === undefined
-          ? { rows, cols, takeover: true }
-          : { rows, cols, takeover: true, expected_owner: expectedOwner }
-        : { rows, cols }
-      this.ws.send(JSON.stringify(frame))
+      this.ws.send(JSON.stringify({ rows, cols }))
       return true
     }
     return false

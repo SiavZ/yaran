@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest"
 
 import {
-  NOT_OWNER_IMAGE_PASTE_REASON,
-  NOT_OWNER_TEXT_PASTE_REASON,
   clipboardPasteAction,
   countCodePoints,
   pastedImageName,
@@ -25,13 +23,12 @@ function png(name: string): File {
 }
 
 const NOW = new Date(2026, 7, 9, 14, 15, 30)
-/// The ordinary case: an agent pane, held by this client, with the long-text
+/// The ordinary case: an agent pane with the long-text
 /// threshold at its shipped default. The image tests below never reach it,
 /// because none of them pastes any text worth speaking of.
 const AGENT_PANE = { kind: "agent" as const, longTextChars: 1000 }
 const OWNER = {
   uploadsEnabled: true,
-  isOwner: true,
   forceText: false,
   pane: AGENT_PANE,
 }
@@ -114,34 +111,6 @@ describe("clipboardPasteAction", () => {
     )
   })
 
-  it("refuses an image paste from a client that does not hold input", () => {
-    const action = clipboardPasteAction(
-      [item("file", "image/png", png("shot.png"))],
-      "",
-      { uploadsEnabled: true, isOwner: false, forceText: false, pane: AGENT_PANE },
-      NOW,
-    )
-    expect(action).toEqual({
-      kind: "refused",
-      subject: "image",
-      reason: NOT_OWNER_IMAGE_PASTE_REASON,
-    })
-  })
-
-  it("leaves a text paste alone for a non-owner, because xterm already gates it", () => {
-    // Only the IMAGE half is refused here. Text is xterm's business and its
-    // write is gated on the socket anyway, so nothing is gained by
-    // intercepting it and a refusal toast would be a lie about what happened.
-    expect(
-      clipboardPasteAction(
-        [item("string", "text/plain")],
-        "",
-        { uploadsEnabled: true, isOwner: false, forceText: false, pane: AGENT_PANE },
-        NOW,
-      ),
-    ).toEqual({ kind: "xterm" })
-  })
-
   it("does nothing special with an image while uploads are switched off", () => {
     // `[server] file_drop_max_bytes = 0` switches the whole upload feature off.
     // The paste then behaves exactly as it did before this feature existed.
@@ -150,13 +119,13 @@ describe("clipboardPasteAction", () => {
       item("file", "image/png", png("shot.png")),
     ]
     expect(
-      clipboardPasteAction(items, "", { uploadsEnabled: false, isOwner: true, forceText: false, pane: AGENT_PANE }, NOW),
+      clipboardPasteAction(items, "", { uploadsEnabled: false, forceText: false, pane: AGENT_PANE }, NOW),
     ).toEqual({ kind: "xterm" })
     expect(
       clipboardPasteAction(
         [items[1]],
         "",
-        { uploadsEnabled: false, isOwner: true, forceText: false, pane: AGENT_PANE },
+        { uploadsEnabled: false, forceText: false, pane: AGENT_PANE },
         NOW,
       ),
     ).toEqual({ kind: "ignore" })
@@ -205,19 +174,6 @@ describe("clipboardPasteAction", () => {
         [item("string", "text/plain"), item("file", "image/png", png("s.png"))],
         "",
         { ...OWNER, forceText: true },
-        NOW,
-      ),
-    ).toEqual({ kind: "xterm" })
-  })
-
-  it("does not report a refusal to a non-owner who forced a text paste", () => {
-    // Nothing was turned away, so nothing must be said. Ordering matters: the
-    // hatch is checked BEFORE the ownership gate for exactly this reason.
-    expect(
-      clipboardPasteAction(
-        [item("string", "text/plain"), item("file", "image/png", png("s.png"))],
-        "",
-        { uploadsEnabled: true, isOwner: false, forceText: true, pane: AGENT_PANE },
         NOW,
       ),
     ).toEqual({ kind: "xterm" })
@@ -280,7 +236,6 @@ describe("pastedImageName", () => {
 function agent(longTextChars = 1000) {
   return {
     uploadsEnabled: true,
-    isOwner: true,
     forceText: false,
     pane: { kind: "agent" as const, longTextChars },
   }
@@ -289,7 +244,6 @@ function agent(longTextChars = 1000) {
 function terminal() {
   return {
     uploadsEnabled: true,
-    isOwner: true,
     forceText: false,
     pane: { kind: "terminal" as const },
   }
@@ -441,23 +395,6 @@ describe("a long text paste onto an agent", () => {
         uploadsEnabled: false,
       }, NOW),
     ).toEqual({ kind: "xterm" })
-  })
-
-  it("refuses a long text paste from a client that does not hold input, and saves nothing", () => {
-    const action = clipboardPasteAction(
-      [TEXT_ITEM],
-      long(1001),
-      { ...agent(1000), isOwner: false },
-      NOW,
-    )
-    expect(action).toEqual({
-      kind: "refused",
-      // Its OWN subject, so the two refusals cannot land on one toast id and
-      // replace each other: an image refusal and a text refusal are two
-      // different things that went wrong.
-      subject: "text",
-      reason: NOT_OWNER_TEXT_PASTE_REASON,
-    })
   })
 
   it("still prefers the image when the same paste carries both", () => {

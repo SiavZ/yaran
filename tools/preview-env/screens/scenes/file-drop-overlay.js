@@ -10,7 +10,6 @@ const {
   freshen,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -22,7 +21,6 @@ module.exports = {
     // minutes of accumulated output read as a grey wall rather than a session.
     await freshen(by["add-rate-limits"].id, 2)
     await goto(page, `#/agent/${by["add-rate-limits"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     // Read BEFORE the drag, deliberately: the overlay paints over the terminal
     // at nine tenths opacity, so afterwards the pane's own pixels are the

@@ -11,7 +11,6 @@ const {
   goto,
   openLauncherEntry,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -20,7 +19,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["design-notes"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     await openLauncherEntry(page, "new-terminal-for-agent")
     await sleep(600)

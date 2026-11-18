@@ -7,7 +7,6 @@ const {
   expectVisibleText,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -16,7 +15,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
-    await takeOver(page)
     await sleep(2000)
     await clearToasts(page)
     // A DOM click rather than a pointer one: under touch emulation the

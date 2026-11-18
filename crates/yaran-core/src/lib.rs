@@ -148,9 +148,13 @@
 //! lib.rs
 //! ├── brand_env
 //! ├── config
+//! ├── pty
+//! ├── pty_owners
 //! ├── viewmodel
 //! ├── yaran-tui::app
 //! ├── yaran-tui::app::first_load
+//! ├── yaran-tui::app::input
+//! ├── yaran-tui::app::pty_ownership
 //! ├── yaran-web
 //! ├── yaran-web::background
 //! ├── yaran-web::build_routes
@@ -244,7 +248,9 @@ pub mod prose;
 pub mod provider;
 pub mod pty;
 pub mod pty_adopt_child;
+pub mod pty_handover;
 pub mod pty_owners;
+pub mod pty_query_reply;
 pub mod pty_reattach;
 // Hard purge (GDPR erasure) and the opt-in orphan-worktree cleaner, ported
 // from the fork (purge workstream).

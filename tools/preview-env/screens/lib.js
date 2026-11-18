@@ -218,27 +218,6 @@ async function showAgent(page) {
   })
 }
 
-// A capture opens a real connection to the PTY, so it arrives as a watcher and
-// the full-pane card covers the terminal until this presses its button.
-async function takeOver(page) {
-  for (let i = 0; i < 20; i++) {
-    const pressed = await page.evaluate(() => {
-      const btn = [...document.querySelectorAll("button")].find((b) =>
-        /take over/i.test(b.textContent || ""),
-      )
-      if (!btn) return false
-      btn.click()
-      return true
-    })
-    if (pressed) {
-      await sleep(3000)
-      return true
-    }
-    await sleep(500)
-  }
-  return false
-}
-
 // Toasts stack over the bottom of the page and are never part of a scene.
 //
 // Hidden with a stylesheet rather than removed: the toaster's list is a node
@@ -579,7 +558,7 @@ async function openNewAgent(page) {
 // A capture that shows the wrong thing is worse than one that never happened:
 // the docs carry the picture and nobody looks at it again. Three went out at
 // once (a pane stuck on "Attaching…", a blank sidebar, a menu that had closed
-// itself under a take-over card) and the tool reported success for all three,
+// itself under a cover) and the tool reported success for all three,
 // because nothing it did was about what the picture contains.
 //
 // So every scene states what its own caption promises, immediately before the
@@ -802,9 +781,7 @@ async function expectFieldValue(page, selector, text) {
 
 // --- The pane --------------------------------------------------------------
 
-// Every wording the pane's cover can carry. The card is matched on its button
-// rather than on its words, because an agent row's menu carries a sentence
-// about taking over as ordinary prose.
+// Every wording the pane's cover can carry.
 const COVER_WORDINGS = [
   ["Attaching…", "the pane is still attaching"],
   ["Reconnecting…", "the pane is still reconnecting"],
@@ -813,14 +790,12 @@ const COVER_WORDINGS = [
   ["Still waiting for the terminal's screen.", "the pane is showing the reconnect box"],
 ]
 
-// Nothing is covering the terminal. `card` says the scene is ABOUT the take-over
-// card, which is the one picture where the card is the subject rather than the
-// failure; the spinner and the reconnect box are refused there too.
-async function expectNoCover(page, { card = false } = {}) {
-  await settle(() => coverProblem(page, card))
+// Nothing is covering the terminal: no spinner, no reconnect box.
+async function expectNoCover(page) {
+  await settle(() => coverProblem(page))
 }
 
-async function coverProblem(page, card) {
+async function coverProblem(page) {
   const state = await page.evaluate((wordings) => {
     const flat = (value) => (value || "").replace(/\s+/g, " ").trim()
     const shown = (el) => {
@@ -850,7 +825,6 @@ async function coverProblem(page, card) {
     return {
       hit,
       starting,
-      takeOver: button("Take over"),
       // A tab with no process behind it. Both surfaces that say so carry this
       // one button, which is also the only way out of them.
       dormant: button("Start session"),
@@ -867,12 +841,6 @@ async function coverProblem(page, card) {
   }
   if (state.dormant) {
     return "the tab is dormant and the pane is its start-session card, not a session"
-  }
-  if (state.takeOver && !card) {
-    return "the take-over card is covering the terminal; this scene never took the pty"
-  }
-  if (!state.takeOver && card) {
-    return "this scene is about the take-over card and there is no card on the pane"
   }
   return null
 }
@@ -1069,5 +1037,4 @@ module.exports = {
   setSceneName,
   showAgent,
   sleep,
-  takeOver,
 }
