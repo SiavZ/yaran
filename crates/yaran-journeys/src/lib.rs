@@ -20,8 +20,9 @@
 //! - [`ws`] opens the events and PTY sockets with that person's cookie.
 //! - [`sidecars`] runs nginx and Caddy in front of a yaran.
 //! - [`browser::Browser`] is Chromium over `WebDriver`, in a container of its own.
-//! - [`container`] is what every container has in common: labels, a reaper,
-//!   and ports published on the host's loopback only.
+//! - [`container`] drives Docker through its CLI, and is what every container
+//!   has in common: labels, a reaper, and ports published on the host's
+//!   loopback only.
 //! - [`run`] is this test process's run: its heartbeat, its Ctrl-C cleanup,
 //!   and the sweep of what dead runs left.
 //! - [`api`] is the handful of REST calls the journeys share (add a project,

@@ -7,20 +7,15 @@
 
 use std::time::Duration;
 
-use testcontainers::core::WaitFor;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
-
-use crate::container::{identity, labelled, share_namespace_of};
-use crate::image::{Reaper, pinned_parts};
+use crate::container::{Container, ContainerRequest, Ready};
+use crate::image::pinned;
 use crate::util::eventually;
 use crate::yaran::Yaran;
 
 /// One proxy container. Removed when dropped.
 #[derive(Debug)]
 pub struct Sidecar {
-    container: ContainerAsync<GenericImage>,
-    _reaper: Reaper,
+    container: Container,
 }
 
 /// Start `image_key` (a pinned image from journey-images.env) with `config`
@@ -31,22 +26,18 @@ async fn start_in(
     kind: &str,
     files: &[(String, Vec<u8>)],
 ) -> Sidecar {
-    let (image, tag) = pinned_parts(image_key);
-    let (name, reaper, logs) = identity(kind);
-    let request = GenericImage::new(image, tag).with_wait_for(WaitFor::millis(200));
-    let mut request = labelled(request.into(), &name, &logs);
+    let mut request = ContainerRequest::new(kind, pinned(image_key)).share_namespace_of(yaran.id());
     for (path, bytes) in files {
-        request = request.with_copy_to(path.clone(), bytes.clone());
+        request = request.copy_to(path.clone(), bytes.clone());
     }
     let container = request
-        .with_host_config_modifier(share_namespace_of(yaran.id()))
-        .start()
+        .start(
+            Ready::After(Duration::from_millis(200)),
+            Duration::from_secs(60),
+        )
         .await
-        .unwrap_or_else(|err| panic!("start the {kind} sidecar {name}: {err}"));
-    Sidecar {
-        container,
-        _reaper: reaper,
-    }
+        .unwrap_or_else(|err| panic!("start the {kind} sidecar: {err}"));
+    Sidecar { container }
 }
 
 impl Sidecar {
@@ -114,15 +105,12 @@ impl Sidecar {
             "Caddy's local certificate authority",
             Duration::from_secs(30),
             || async {
-                let mut run = self
+                let pem = self
                     .container
-                    .exec(testcontainers::core::ExecCommand::new([
-                        "cat",
-                        "/data/caddy/pki/authorities/local/root.crt",
-                    ]))
+                    .exec(&["cat", "/data/caddy/pki/authorities/local/root.crt"])
                     .await
-                    .ok()?;
-                let pem = run.stdout_to_vec().await.ok()?;
+                    .ok()?
+                    .stdout;
                 pem.starts_with(b"-----BEGIN").then_some(pem)
             },
         )

@@ -70,35 +70,6 @@ pub fn pinned(key: &str) -> String {
         .to_string()
 }
 
-/// Split an image reference into the `(name, tag)` pair testcontainers puts back
-/// together with a colon. The tag is after the last colon only when that colon
-/// comes after the last slash (a registry's port is not a tag), defaults to
-/// `latest`, and keeps a digest (`tag@sha256:...`) so the pin survives.
-pub fn split_reference(reference: &str) -> (String, String) {
-    let (named, digest) = match reference.split_once('@') {
-        Some((named, digest)) => (named, Some(digest)),
-        None => (reference, None),
-    };
-    let last_slash = named.rfind('/').map_or(0, |i| i + 1);
-    let (name, tag) = match named[last_slash..].rfind(':') {
-        Some(colon) => (
-            &named[..last_slash + colon],
-            &named[last_slash + colon + 1..],
-        ),
-        None => (named, "latest"),
-    };
-    let tag = match digest {
-        Some(digest) => format!("{tag}@{digest}"),
-        None => tag.to_string(),
-    };
-    (name.to_string(), tag)
-}
-
-/// A pinned reference split for testcontainers.
-pub fn pinned_parts(key: &str) -> (String, String) {
-    split_reference(&pinned(key))
-}
-
 /// The repository root, found from this crate's own manifest.
 ///
 /// # Panics
@@ -242,19 +213,19 @@ fn content_tag() -> String {
     format!("j-{}", &hex[..16])
 }
 
-static SETUP: OnceCell<Result<(String, String), String>> = OnceCell::const_new();
+static SETUP: OnceCell<Result<String, String>> = OnceCell::const_new();
 
 /// Everything a journey needs that is not its own containers, done once per
 /// test process before any journey's deadline starts: this run started (its
 /// heartbeat and Ctrl-C cleanup), dead runs' leftovers removed, the journey
-/// image present, the pinned proxy images pulled. Returns the journey image as
-/// `(name, tag)`.
+/// image present, the pinned proxy images pulled. Returns the journey image's
+/// reference.
 ///
 /// # Panics
 ///
 /// When a step fails (Docker missing, a heartbeat, build or pull failing) or the setup takes
 /// over 30 minutes; every later call in the process then panics with the same reason.
-pub async fn setup() -> (String, String) {
+pub async fn setup() -> String {
     once_within(
         &SETUP,
         "the journey setup (image build and pulls)",
@@ -263,11 +234,11 @@ pub async fn setup() -> (String, String) {
             run_id();
             sweep_dead_runs();
             let image = if let Ok(full) = std::env::var("YARAN_JOURNEY_IMAGE") {
-                split_reference(&full)
+                full
             } else {
                 let tag = content_tag();
                 ensure_built(&tag);
-                (IMAGE_NAME.to_string(), tag)
+                format!("{IMAGE_NAME}:{tag}")
             };
             for key in ["JOURNEY_NGINX_IMAGE", "JOURNEY_CADDY_IMAGE"] {
                 ensure_pulled(&pinned(key));
@@ -321,7 +292,7 @@ fn panic_text(error: tokio::task::JoinError) -> String {
 }
 
 /// The journey image, after [`setup`].
-pub async fn journey_image() -> (String, String) {
+pub async fn journey_image() -> String {
     setup().await
 }
 
@@ -482,37 +453,6 @@ impl Drop for JourneyNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_reference_splits_into_name_and_tag_the_way_docker_reads_it() {
-        let cases = [
-            ("yaran-journeys:ci", ("yaran-journeys", "ci")),
-            ("yaran-journeys", ("yaran-journeys", "latest")),
-            (
-                "localhost:5000/yaran-journeys",
-                ("localhost:5000/yaran-journeys", "latest"),
-            ),
-            (
-                "localhost:5000/team/yaran:j-1",
-                ("localhost:5000/team/yaran", "j-1"),
-            ),
-            (
-                "nginx:1-alpine@sha256:abc",
-                ("nginx", "1-alpine@sha256:abc"),
-            ),
-            (
-                "registry:5000/nginx@sha256:abc",
-                ("registry:5000/nginx", "latest@sha256:abc"),
-            ),
-        ];
-        for (reference, (name, tag)) in cases {
-            assert_eq!(
-                split_reference(reference),
-                (name.to_string(), tag.to_string()),
-                "{reference}"
-            );
-        }
-    }
 
     /// How a call to [`once_within`] on `cell` ended: its value, or its panic's text.
     async fn try_once(

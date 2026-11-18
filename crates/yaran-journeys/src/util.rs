@@ -7,8 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::FutureExt as _;
-use testcontainers::core::logs::LogFrame;
-use testcontainers::core::logs::consumer::LogConsumer;
 
 /// Everything one container has printed, shared between the container's log
 /// stream and the journey that may need to print it.
@@ -20,15 +18,10 @@ impl LogBuffer {
     pub(crate) fn text(&self) -> String {
         self.0.lock().expect("log buffer").clone()
     }
-}
 
-impl LogConsumer for LogBuffer {
-    fn accept<'a>(&'a self, record: &'a LogFrame) -> futures_util::future::BoxFuture<'a, ()> {
-        async move {
-            let text = String::from_utf8_lossy(record.bytes());
-            self.0.lock().expect("log buffer").push_str(&text);
-        }
-        .boxed()
+    /// Append what the container printed next.
+    pub(crate) fn push(&self, text: &str) {
+        self.0.lock().expect("log buffer").push_str(text);
     }
 }
 
