@@ -14,7 +14,7 @@
 /// ├── MachineViewCore/B64url (inferred)
 /// ├── MachineViewCore/CookieSpec (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
-/// ├── MachineViewCore/Direct (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/SealedEnvelope (inferred)
 /// └── MachineViewCore/Seams (inferred)
 /// External: Foundation

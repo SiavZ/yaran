@@ -23,6 +23,7 @@
 /// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectAuth (inferred)
 /// ├── MachineViewCore/DirectLifecycle (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/Messages (inferred)
 /// ├── MachineViewCore/PendingChooser (inferred)
 /// ├── MachineViewCore/RenewalPolicy (inferred)
@@ -252,7 +253,7 @@ extension MachineViewController {
         // One attempt (preflight, sheet, POST) per window and route; a route change or close ends it.
         guard let attempt = prompts.reserveSignIn() else { return }
         let owned = tenure.check()
-        DirectFlow.signIn(from: self, host: host, owned: owned, onSheet: { [weak self] in self?.prompts.sheet = $0 }) { [weak self] outcome in
+        DirectFlow.signIn(from: self, host: host, owned: owned, onSheet: { [weak self] in self?.prompts.sheet = $0 }, done: { [weak self] outcome in
             self?.prompts.releaseSignIn(attempt)
             guard let self, owned() else { return }
             switch outcome {
@@ -268,7 +269,7 @@ extension MachineViewController {
                 let detail = [Messages.direct[outcome.kind].map { Messages.fill($0, values) }, outcome.serverMessage].compactMap { $0 }
                 self.showOverlay("reauth", detail: detail.joined(separator: "\n\n"))
             }
-        }
+        })
     }
 
     /// Injects only this host's own session, issued by the instance just observed, then loads. A

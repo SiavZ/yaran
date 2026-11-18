@@ -16,6 +16,7 @@
 /// Used by:
 /// MachineViewCore/CoverState
 /// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewController+Covers (inferred)
 /// └── MachineViewCoreTests/DirectTests (inferred)
 /// <module-headers:end>
 public struct CoverState: Equatable {

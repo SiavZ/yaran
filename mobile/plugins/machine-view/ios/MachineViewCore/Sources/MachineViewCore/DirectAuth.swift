@@ -15,6 +15,7 @@
 /// MachineViewCore/DirectAuth
 /// ├── MachineViewCore/CookieSpec (inferred)
 /// ├── MachineViewCore/Direct (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
 /// ├── MachineViewCore/Seams (inferred)
 /// └── MachineViewCore/SessionStore (inferred)
@@ -108,6 +109,8 @@ public final class DirectAuth {
         }
     }
 
+    // One request primitive for status, login and logout; each argument is one request field.
+    // swiftlint:disable:next function_parameter_count
     private func send(host: String, path: String, method: String, body: Data?, cookie: String?, bearer: String?,
                       timeout: TimeInterval) async -> Sent {
         guard let url = URL(string: "https://\(host)\(path)") else { return .offline }

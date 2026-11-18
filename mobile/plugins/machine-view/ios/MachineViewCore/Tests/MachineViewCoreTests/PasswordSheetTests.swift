@@ -31,10 +31,10 @@ struct PasswordSheetTests {
         var posted: [String] = []
 
         func sheet(_ route: String, owned: @escaping () -> Bool) -> PendingSheet {
-            PendingSheet(dismiss: { [unowned self] in self.dismissed.append(route) }) { [unowned self] password in
+            PendingSheet(dismiss: { [unowned self] in self.dismissed.append(route) }, answer: { [unowned self] password in
                 guard let password, owned() else { return self.cancelled += 1 }
-                self.posted.append("\(route):\(String(decoding: password, as: UTF8.self))")
-            }
+                self.posted.append("\(route):\(String(bytes: password, encoding: .utf8) ?? "")")
+            })
         }
     }
 
@@ -71,7 +71,7 @@ struct PasswordSheetTests {
         let prompts = OpenPrompts()
         #expect(!prompts.settleAll())
         var answers: [[URL]?] = []
-        prompts.chooser = PendingChooser(held: [], owned: { true }) { answers.append($0) }
+        prompts.chooser = PendingChooser(held: [], owned: { true }, answer: { answers.append($0) })
         #expect(prompts.settleAll() && answers.count == 1 && answers[0] == nil && prompts.chooser == nil)
     }
 

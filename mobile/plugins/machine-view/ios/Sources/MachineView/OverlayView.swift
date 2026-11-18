@@ -15,7 +15,9 @@
 ///
 /// Used by:
 /// MachineView/OverlayView
-/// └── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewController+Covers (inferred)
+/// └── MachineView/MachineViewController+Overlays (inferred)
 /// <module-headers:end>
 import MachineViewCore
 import UIKit

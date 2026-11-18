@@ -141,7 +141,7 @@ struct AppLockTests {
         #expect(try vault.get(namespace: "orgs", key: "list") == "[]")
         let item = KeychainItem(service: Vault.service, account: "ns.session-direct", access: .whenUnlockedThisDeviceOnly)
         let raw = try #require(try store.read(item, prompt: nil))
-        #expect(!String(decoding: raw, as: UTF8.self).contains("direct-token"))
+        #expect(raw.range(of: Data("direct-token".utf8)) == nil)
     }
 
     @Test func aFailedPromotionLeavesTheLockOffAndEveryEntryReadable() throws {
@@ -237,8 +237,8 @@ struct AppLockTests {
         #expect(try relaunched.unlock() == .unlocked)
         #expect(try fresh.get(namespace: "session-direct", key: "h1") == "direct-token")
         let item = KeychainItem(service: Vault.service, account: "ns.session-direct", access: .whenUnlockedThisDeviceOnly)
-        let raw = String(decoding: try #require(try store.read(item, prompt: nil)), as: UTF8.self)
-        #expect(!raw.contains("direct-token"), "promoted into the sealed class at the unlock")
+        let raw = try #require(try store.read(item, prompt: nil))
+        #expect(raw.range(of: Data("direct-token".utf8)) == nil, "promoted into the sealed class at the unlock")
     }
 
     // Round 4: the biometric set changes before any unlock could promote them.

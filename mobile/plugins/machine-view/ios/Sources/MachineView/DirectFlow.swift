@@ -18,6 +18,7 @@
 /// ├── MachineView/AppServices (inferred)
 /// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectLifecycle (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/Messages (inferred)
 /// ├── MachineViewCore/PendingChooser (inferred)
 /// └── MachineViewCore/Seams (inferred)

@@ -14,8 +14,8 @@
 /// Used by:
 /// MachineViewCore/Messages
 /// ├── MachineView/DirectFlow (inferred)
-/// ├── MachineView/MachineViewController (inferred)
 /// ├── MachineView/MachineViewController+Direct (inferred)
+/// ├── MachineView/MachineViewController+Overlays (inferred)
 /// ├── MachineView/OverlayView (inferred)
 /// ├── MachineViewCoreTests/DirectTests (inferred)
 /// └── MachineViewCoreTests/FormatTests (inferred)

@@ -9,6 +9,7 @@
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
 /// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectLifecycle (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/InstallIdStore (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
@@ -200,12 +201,12 @@ extension DirectAuthTests {
 @Suite struct IncomingInboxTests {
     // F10: only iOS's own copy in the real Documents/Inbox is deleted.
     @Test func onlyTheRealInboxCopyIsDeleted() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? fm.removeItem(at: root) }
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fileManager.removeItem(at: root) }
         let inboxRoot = root.appendingPathComponent("Documents/Inbox", isDirectory: true)
         let lookalike = root.appendingPathComponent("Library/Caches/x/Documents/Inbox", isDirectory: true)
-        for dir in [inboxRoot, lookalike] { try fm.createDirectory(at: dir, withIntermediateDirectories: true) }
+        for dir in [inboxRoot, lookalike] { try fileManager.createDirectory(at: dir, withIntermediateDirectories: true) }
         func file(_ dir: URL, _ name: String) throws -> URL {
             let url = dir.appendingPathComponent(name)
             try Data(name.utf8).write(to: url)
@@ -215,13 +216,13 @@ extension DirectAuthTests {
         let outside = try file(lookalike, "outside.txt")
         let target = try file(root, "target.txt")
         let link = inboxRoot.appendingPathComponent("link.txt")
-        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+        try fileManager.createSymbolicLink(at: link, withDestinationURL: target)
         let inbox = ShareInbox(dir: root.appendingPathComponent("Library/Caches/shared-inbox"), incomingRoot: inboxRoot)
         _ = inbox.intake([real, outside, link], supported: false)
-        #expect(!fm.fileExists(atPath: real.path), "iOS's own copy goes")
-        #expect(fm.fileExists(atPath: outside.path), "a look-alike path is someone else's file")
-        #expect(fm.fileExists(atPath: target.path), "a link's target is never deleted")
-        #expect((try? fm.destinationOfSymbolicLink(atPath: link.path)) != nil, "nor the link itself")
+        #expect(!fileManager.fileExists(atPath: real.path), "iOS's own copy goes")
+        #expect(fileManager.fileExists(atPath: outside.path), "a look-alike path is someone else's file")
+        #expect(fileManager.fileExists(atPath: target.path), "a link's target is never deleted")
+        #expect((try? fileManager.destinationOfSymbolicLink(atPath: link.path)) != nil, "nor the link itself")
     }
 }
 

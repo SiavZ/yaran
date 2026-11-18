@@ -22,6 +22,7 @@
 /// Used by:
 /// MachineViewCore/RenewalCoordinator
 /// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MainScheduler (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
 /// └── MachineViewCoreTests/RenewalCoordinatorTests (inferred)

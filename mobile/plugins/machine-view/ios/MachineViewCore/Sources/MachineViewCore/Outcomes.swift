@@ -12,7 +12,7 @@
 ///
 /// Used by:
 /// MachineViewCore/Outcomes
-/// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewController+Overlays (inferred)
 /// ├── MachineView/NativeOrgApi (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)

@@ -8,10 +8,12 @@
 /// MachineViewCoreTests/AdmissionTests
 /// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectLifecycle (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/NavigationDelegate (inferred)
 /// ├── MachineViewCore/PendingChooser (inferred)
 /// ├── MachineViewCore/RouteTenure (inferred)
 /// ├── MachineViewCoreTests/DirectSettleTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// └── MachineViewCoreTests/Fixtures (inferred)
 /// External: Foundation, Testing
@@ -174,8 +176,7 @@ extension DirectAuthTests {
     // is too old for the app, or is i2. The verdict follows the newer answer.
     @Test func aDocumentProbeActsOnTheAuthenticatedAnswer() async {
         let stored = DirectSession(host: "yaran.example.com", token: "tokA", cookieName: "yaran_session_443", instance: "i1", issuedAt: 1)
-        let tooOld = (200, json, try! JSONSerialization.data(withJSONObject: ["password_set": true, "required_here": true, "signed_in": true,
-                                                                             "transport_encrypted": true, "instance": "i1"]))
+        let tooOld = (200, json, Data(#"{"password_set":true,"required_here":true,"signed_in":true,"transport_encrypted":true,"instance":"i1"}"#.utf8))
         DirectStub.onRequest = nil
         DirectStub.seen = []
         DirectStub.replies = [status("i1"), tooOld]

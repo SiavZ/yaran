@@ -11,6 +11,7 @@
 /// MachineViewCoreTests/DirectSettleTests
 /// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectLifecycle (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/PendingChooser (inferred)
 /// ├── MachineViewCoreTests/DirectOwnershipTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)

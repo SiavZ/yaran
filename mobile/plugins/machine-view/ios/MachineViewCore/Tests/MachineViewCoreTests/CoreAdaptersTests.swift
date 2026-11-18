@@ -4,7 +4,7 @@
 /// Uses:
 /// MachineViewCoreTests/CoreAdaptersTests
 /// ├── MachineViewCore/CoreAdapters (inferred)
-/// ├── MachineViewCore/Direct (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/Seams (inferred)
 /// ├── MachineViewCoreTests/DirectSettleTests (inferred)
 /// ├── YaranCore/AppLock (inferred)

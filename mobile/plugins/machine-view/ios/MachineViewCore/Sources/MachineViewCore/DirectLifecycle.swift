@@ -8,6 +8,7 @@
 /// MachineViewCore/DirectLifecycle
 /// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectAuth (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// └── MachineViewCore/Seams (inferred)
 /// External: Foundation
 ///
@@ -15,7 +16,7 @@
 /// MachineViewCore/DirectLifecycle
 /// ├── MachineView/DirectFlow (inferred)
 /// ├── MachineView/MachineViewController+Direct (inferred)
-/// ├── MachineViewCore/Direct (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCoreTests/AdmissionTests (inferred)
 /// ├── MachineViewCoreTests/DirectOwnershipTests (inferred)
 /// ├── MachineViewCoreTests/DirectRepairTests (inferred)
@@ -104,13 +105,15 @@ public enum DirectLifecycle {
     /// What a direct window does once its session is read: ask for the password, or go on.
     public enum Settle: Equatable { case signIn, proceed }
 
+    // The window's direct state is passed in whole, so the decision stays one testable function.
     /// Every direct sheet-or-proceed decision (Android `RouteDriver.settleDirect`). The session is
     /// read first: a record not usable for the instance `observed` is deleted and the host's cookies
     /// cleared before anything is decided, so a sheet never opens over a stale session. The password
     /// is asked only when no fresh sign-in of this window covers an instance-less machine and the
     /// machine (or, with no status, the missing record) asks for one. Nil once the window moved on.
-    public static func settle(host: String, status: DirectStatus?, observed: String?, fresh: String?, store: DirectSessionStore,
-                              jar: DirectCookieJar, owned: () -> Bool) async throws -> Settle? {
+    public static func settle( // swiftlint:disable:this function_parameter_count
+        host: String, status: DirectStatus?, observed: String?, fresh: String?, store: DirectSessionStore,
+        jar: DirectCookieJar, owned: () -> Bool) async throws -> Settle? {
         guard owned() else { return nil }
         let current = try store.current(host, instance: observed, fresh: fresh)
         if current.dropped, await !inject(host: host, dropped: true, cookie: nil, into: jar, owned: owned) { return nil }

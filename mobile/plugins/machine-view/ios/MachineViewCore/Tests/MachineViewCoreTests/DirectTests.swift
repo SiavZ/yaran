@@ -8,6 +8,7 @@
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
 /// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectAuth (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/InstallIdStore (inferred)
 /// ├── MachineViewCore/Messages (inferred)
@@ -27,26 +28,29 @@
 ///
 /// Used by: entry point (Swift Testing, via bash ios/MachineViewCore/test.sh)
 /// MachineViewCoreTests/DirectTests
+/// ├── MachineViewCoreTests/AdmissionTests (inferred)
 /// ├── MachineViewCoreTests/CryptoTests (inferred)
 /// ├── MachineViewCoreTests/DirectRepairTests (inferred)
 /// ├── MachineViewCoreTests/FormatTests (inferred)
 /// ├── MachineViewCoreTests/OrgApiClientTests (inferred)
-/// └── MachineViewCoreTests/PolicyTests (inferred)
+/// ├── MachineViewCoreTests/PolicyTests (inferred)
+/// ├── MachineViewCoreTests/RenewalCoordinatorTests (inferred)
+/// └── MachineViewCoreTests/WindowSlotTests (inferred)
 /// <module-headers:end>
 import Foundation
 import Testing
 @testable import MachineViewCore
 
-private func body(_ row: [String: Any]) -> Data {
+private func body(_ row: [String: Any]) throws -> Data {
     if let text = row["body_text"] as? String { return Data(text.utf8) }
-    if let obj = row["body"] { return try! JSONSerialization.data(withJSONObject: obj) }
+    if let obj = row["body"] { return try JSONSerialization.data(withJSONObject: obj) }
     return Data()
 }
 
 /// Both sides as JSON text per key, so 42 and 42.0 or NSNull and nil compare alike.
 private func same(_ want: [String: Any], _ got: [String: Any]) -> Bool {
     guard Set(want.keys) == Set(got.keys) else { return false }
-    let text = { (value: Any) in String(data: try! JSONSerialization.data(withJSONObject: [value]), encoding: .utf8)! }
+    let text = { (value: Any) in (try? JSONSerialization.data(withJSONObject: [value])).flatMap { String(bytes: $0, encoding: .utf8) } }
     return want.allSatisfy { text($0.value) == text(got[$0.key]!) }
 }
 
@@ -55,20 +59,20 @@ private func same(_ want: [String: Any], _ got: [String: Any]) -> Bool {
 
     @Test func statusAnswers() throws {
         for row in try #require(fixture["status"] as? [[String: Any]]) {
-            let got = DirectWire.classifyStatus(status: row["status"] as! Int, location: row["location"] as? String,
-                                                contentType: row["content_type"] as? String, body: body(row))
-            #expect(same(row["want"] as! [String: Any], got.jsObject), "\(row["name"]!)")
+            let got = DirectWire.classifyStatus(status: try #require(row["status"] as? Int), location: row["location"] as? String,
+                                                contentType: row["content_type"] as? String, body: try body(row))
+            #expect(same(try #require(row["want"] as? [String: Any]), got.jsObject), "\(row["name"]!)")
         }
     }
 
     @Test func loginAnswers() throws {
         for row in try #require(fixture["login"] as? [[String: Any]]) {
-            let name = row["name"] as! String
-            let want = row["want"] as! [String: Any]
-            switch DirectWire.classifyLogin(status: row["status"] as! Int, location: row["location"] as? String,
-                                            contentType: row["content_type"] as? String, body: body(row)) {
+            let name = try #require(row["name"] as? String)
+            let want = try #require(row["want"] as? [String: Any])
+            switch DirectWire.classifyLogin(status: try #require(row["status"] as? Int), location: row["location"] as? String,
+                                            contentType: row["content_type"] as? String, body: try body(row)) {
             case let .token(token, cookieName):
-                let store = row["store"] as! [String: Any]
+                let store = try #require(row["store"] as? [String: Any])
                 #expect(want["kind"] as? String == "signed_in" && token == store["token"] as? String && cookieName == store["cookie_name"] as? String, "\(name)")
                 #expect(!LoginAnswer.token(token, cookieName: cookieName).description.contains(token))
             case let .failed(outcome, revoke):
@@ -77,14 +81,14 @@ private func same(_ want: [String: Any], _ got: [String: Any]) -> Bool {
             }
         }
         let long = try #require(fixture["long_message"] as? [String: Any])
-        let raw = String(repeating: long["repeat"] as! String, count: long["times"] as! Int)
-        #expect(DirectWire.cleanMessage(raw).unicodeScalars.count == long["want_length"] as! Int)
+        let raw = String(repeating: try #require(long["repeat"] as? String), count: try #require(long["times"] as? Int))
+        #expect(DirectWire.cleanMessage(raw).unicodeScalars.count == (try #require(long["want_length"] as? Int)))
     }
 
     @Test func sessionCookie() throws {
         for row in try #require(fixture["cookie"] as? [[String: Any]]) {
-            let token = (row["token_length"] as? Int).map { String(repeating: "a", count: $0) } ?? row["token"] as! String
-            let got = DirectWire.setCookie(name: row["name"] as! String, token: token)
+            let token = try #require((row["token_length"] as? Int).map { String(repeating: "a", count: $0) } ?? row["token"] as? String)
+            let got = DirectWire.setCookie(name: try #require(row["name"] as? String), token: token)
             if row["set_cookie_ok"] as? Bool == true { #expect(got != nil) } else { #expect(got == row["set_cookie"] as? String, "\(row)") }
         }
     }
@@ -93,20 +97,20 @@ private func same(_ want: [String: Any], _ got: [String: Any]) -> Bool {
         let rows = try #require(Fixtures.proto("fixtures/uri/add-machine.json")["build"] as? [[String: Any]])
         #expect(rows.count > 5)
         for row in rows {
-            let host = row["host"] as! String
+            let host = try #require(row["host"] as? String)
             #expect(DirectWire.isPublicHost(host) == !(row["expect"] is NSNull), "\(host)")
         }
     }
 
     @Test func routeChoice() throws {
         for row in try #require(fixture["routes"] as? [[String: Any]]) {
-            let probes = (row["probes"] as! [String]).map { Probe(rawValue: $0)! }
+            let probes = try #require(row["probes"] as? [String]).map { Probe(rawValue: $0)! }
             var probed: [Int] = []
             let current = row["mode"] as? String == "open" ? nil : row["current"] as? Int
             let got = RouteSelector.select(count: probes.count, current: current) { probed.append($0); return probes[$0] }
-            let want = row["want"] as! [String: Any]
+            let want = try #require(row["want"] as? [String: Any])
             let index = want["index"] as? Int ?? -1
-            let expected: Selection = switch want["kind"] as! String {
+            let expected: Selection = switch try #require(want["kind"] as? String) {
             case "chosen": .chosen(index)
             case "kept": .kept(index)
             case "sign_in_first": .signInFirst(index)
@@ -317,9 +321,12 @@ final class DirectStub: URLProtocol {
     let auth = DirectAuth(session: OrgApiClient.makeSession(protocolClasses: [DirectStub.self]), userAgent: "YaranApp/1.0.0 (ios; phone)", diagnostics: nil)
     let json = ["Content-Type": "application/json"]
 
+    // The tuple is DirectStub.replies' element shape.
+    // swiftlint:disable:next large_tuple
     func status(_ instance: String, signedIn: Bool = false) -> (Int, [String: String], Data) {
-        (200, json, try! JSONSerialization.data(withJSONObject: ["password_set": true, "required_here": true, "signed_in": signedIn,
-                                                                   "transport_encrypted": true, "instance": instance, "native_auth_ui": true]))
+        (200, json, Data("""
+        {"password_set":true,"required_here":true,"signed_in":\(signedIn),"transport_encrypted":true,"instance":"\(instance)","native_auth_ui":true}
+        """.utf8))
     }
 
     @Test func theSessionGoesOnlyToItsOwnInstanceAndRedirectsAreNotFollowed() async {

@@ -6,6 +6,7 @@
 /// Uses:
 /// MachineViewCoreTests/WindowSlotTests
 /// ├── MachineViewCore/WindowSlot (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// └── MachineViewCoreTests/Fixtures (inferred)
 /// External: Foundation, Testing
 ///
@@ -42,17 +43,17 @@ private final class Rig {
 
 @MainActor
 struct WindowSlotTests {
-    private let a1 = URL(fileURLWithPath: "/tmp/inbox/A/0/a1")
+    private let fileA = URL(fileURLWithPath: "/tmp/inbox/A/0/a1")
 
     // open A while an old window shows, then close: A never appears, and its claimed file goes.
     @Test func aCloseCancelsTheOpenWaitingForTheOldWindow() throws {
         let rig = Rig()
         rig.open("old")
         let old = try #require(rig.current())
-        rig.open("A", files: [a1])
+        rig.open("A", files: [fileA])
         #expect(rig.closed == ["old"] && rig.shown == ["old"], "A waits for old's dismissal")
         rig.slot.closeAll()
-        #expect(rig.released == [[a1]])
+        #expect(rig.released == [[fileA]])
         rig.slot.dismissed(old)
         #expect(rig.shown == ["old"] && rig.slot.current == nil, "A never opens after the close")
     }
@@ -62,10 +63,10 @@ struct WindowSlotTests {
         let rig = Rig()
         rig.open("old")
         let old = try #require(rig.current())
-        rig.open("A", files: [a1])
+        rig.open("A", files: [fileA])
         rig.open("B")
         #expect(rig.closed == ["old"], "the old window is asked once")
-        #expect(rig.released == [[a1]], "A's claimed file goes, nothing else")
+        #expect(rig.released == [[fileA]], "A's claimed file goes, nothing else")
         rig.slot.dismissed(old)
         #expect(rig.shown == ["old", "B"] && rig.current()?.name == "B")
     }
@@ -86,8 +87,8 @@ struct WindowSlotTests {
     @Test func anOpenWithNothingToPresentOnReleasesItsFiles() {
         let rig = Rig()
         rig.presenter = false
-        rig.open("A", files: [a1])
-        #expect(rig.released == [[a1]] && rig.slot.current == nil)
+        rig.open("A", files: [fileA])
+        #expect(rig.released == [[fileA]] && rig.slot.current == nil)
     }
 
     @Test func anOpenWithNoWindowShowsAtOnce() {

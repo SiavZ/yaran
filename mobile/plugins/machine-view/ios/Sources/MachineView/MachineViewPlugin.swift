@@ -109,8 +109,15 @@ public class MachineViewPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc private func lockChanged() { DispatchQueue.main.async { ShareIntake.flush() } }
 
+    /// One validated open form: its kind, its route list and the instance it must answer as.
+    struct OpenForm {
+        let kind: String
+        let routes: [MachineRoute]
+        let instance: String?
+    }
+
     /// The three open forms (org, direct, routes) as one validated route list, or nil.
-    static func routes(_ call: CAPPluginCall) -> (kind: String, routes: [MachineRoute], instance: String?)? {
+    static func routes(_ call: CAPPluginCall) -> OpenForm? {
         let kind = call.getString("kind") ?? "org"
         let instance = call.getString("instance")
         if let instance, !instancePattern.matches(instance) { return nil }
@@ -119,15 +126,15 @@ public class MachineViewPlugin: CAPPlugin, CAPBridgedPlugin {
             let object: [String: Any] = ["kind": "org", "orgId": call.getString("orgId") ?? "", "machineId": call.getString("machineId") ?? "",
                                          "host": call.getString("host") ?? ""]
             guard instance == nil, let route = MachineRoute(object) else { return nil }
-            return (kind, [route], nil)
+            return OpenForm(kind: kind, routes: [route], instance: nil)
         case "direct":
             guard let route = MachineRoute(["kind": "direct", "host": call.getString("host") ?? ""]) else { return nil }
-            return (kind, [route], instance)
+            return OpenForm(kind: kind, routes: [route], instance: instance)
         case "routes":
             let list = (call.getArray("routes") ?? []).compactMap { ($0 as? [String: Any]).flatMap(MachineRoute.init) }
             guard let instance, (1...4).contains(list.count), list.count == call.getArray("routes")?.count,
                   Set(list.map(\.host)).count == list.count else { return nil }
-            return (kind, list, instance)
+            return OpenForm(kind: kind, routes: list, instance: instance)
         default:
             return nil
         }

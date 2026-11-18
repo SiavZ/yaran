@@ -100,9 +100,9 @@ public final class ShareInbox {
 
     /// The production inbox: private caches, excluded from backup by being caches.
     public static func appInbox() -> ShareInbox {
-        let fm = FileManager.default
-        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let fileManager = FileManager.default
+        let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return ShareInbox(dir: caches.appendingPathComponent("shared-inbox", isDirectory: true),
                           incomingRoot: documents.appendingPathComponent("Inbox", isDirectory: true))
     }

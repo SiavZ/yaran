@@ -5,20 +5,17 @@
 /// renewal (`RenewalCoordinator` and the handoff client) for org routes, the native overlays
 /// and banner, the App Lock and screen-privacy covers, renderer-crash recovery, and the close
 /// reasons the shell routes on. Direct routes, route choice and shared files are the
-/// `+Direct` half (G1, G2, G5).
+/// `+Direct` half (G1, G2, G5); the lifecycle and the covers are the `+Covers` half, and the
+/// overlays, banners and `RenewalUi` the `+Overlays` half.
 ///
 /// - Main actor. Every iPad orientation, Split View and Stage Manager size: a size change is a
 ///   layout pass, never a reload. Not compiled on this machine (UIKit).
-/// - While any cover obscures the page (App Lock, or the screen-privacy cover during capture
-///   and in the app switcher) the WebView is detached from the window, so the page reports
-///   itself hidden; it comes back only when no cover is up (`CoverState`). Opening, resuming and renewal wait while App Lock is engaged (`LockGate`), and run once
-///   at the unlock the core's own lock notification reports. A resume while a renewal's
-///   sign-in is out waits for it, and a WebContent crash behind the lock reloads at the unlock.
 ///
 /// <module-headers:begin>
 /// Uses:
 /// MachineView/MachineViewController
 /// ├── MachineView/AppServices (inferred)
+/// ├── MachineView/MainScheduler (inferred)
 /// ├── MachineView/OverlayView (inferred)
 /// ├── MachineView/UIDelegate (inferred)
 /// ├── MachineView/WebViewFactory (inferred)
@@ -27,12 +24,10 @@
 /// ├── MachineViewCore/CoreAdapters (inferred)
 /// ├── MachineViewCore/CoverState (inferred)
 /// ├── MachineViewCore/Direct (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/LockGate (inferred)
-/// ├── MachineViewCore/Messages (inferred)
 /// ├── MachineViewCore/NavigationDelegate (inferred)
-/// ├── MachineViewCore/Outcomes (inferred)
 /// ├── MachineViewCore/PendingChooser (inferred)
-/// ├── MachineViewCore/RefusalPolicy (inferred)
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
 /// ├── MachineViewCore/RenewalPolicy (inferred)
 /// ├── MachineViewCore/RouteTenure (inferred)
@@ -41,7 +36,9 @@
 ///
 /// Used by:
 /// MachineView/MachineViewController
+/// ├── MachineView/MachineViewController+Covers (inferred)
 /// ├── MachineView/MachineViewController+Direct (inferred)
+/// ├── MachineView/MachineViewController+Overlays (inferred)
 /// └── MachineView/MachineViewPlugin (inferred)
 /// <module-headers:end>
 import MachineViewCore
@@ -66,12 +63,14 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
     private var uiDelegate: UIDelegate!
     var coordinator: RenewalCoordinator!
     private let scheduler = MainScheduler()
-    private var overlay: OverlayView?
-    private var banner: OverlayView?
-    private var shareBanner: OverlayView?
-    private var lockCover: CoverView?
-    private var privacyCover: CoverView?
-    private var covers = CoverState()
+    // Internal, not private: the overlays half (`+Overlays`) owns these views.
+    var overlay: OverlayView?
+    var banner: OverlayView?
+    var shareBanner: OverlayView?
+    // Internal, not private: the covers half (`+Covers`) reads and sets these.
+    var lockCover: CoverView?
+    var privacyCover: CoverView?
+    var covers = CoverState()
     var lastUrl: URL
     var chosen = 0
     var shared: [URL]
@@ -81,14 +80,14 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
     /// The sign-in this window itself just made: usable before a probe can bind it.
     var fresh: String?
     var reloads = PageReload()
-    private var started = false
+    var started = false
     /// Once true, no continuation of this window (a probe, a read, a sign-in, an injection) acts.
     var closed: Bool { tenure.closed }
     /// Which route this window's pending work belongs to; a route switch or the close ends it.
     let tenure = RouteTenure()
     /// The page's file chooser and the route's password sheet waiting on the user, if any.
     let prompts = OpenPrompts()
-    private var gate = LockGate()
+    var gate = LockGate()
     var locked: Bool { CoreBindings.appLock?.isLocked() == true }
     var host: String { target.routes[chosen].host }
     var orgRoute: (orgId: String, host: String)? {
@@ -211,14 +210,14 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
             // Behind the lock nothing loads: the resume after the unlock owes the page exactly one reload.
             guard let self, self.reloads.contentTerminated(locked: self.locked) else { return }
             self.toast("renderer_crashed")
-            self.target.kind == "org" ? self.loadCurrent() : self.select(current: self.chosen, retry: true)
+            if self.target.kind == "org" { self.loadCurrent() } else { self.select(current: self.chosen, retry: true) }
         }
         navigation.onCommitted = { [weak self] url in self?.lastUrl = url }
     }
 
     // MARK: loading
 
-    private func run(_ step: LockGate.Step) {
+    func run(_ step: LockGate.Step) {
         switch step {
         case .none: break
         case .open: open(context: .open)
@@ -286,183 +285,6 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         }
     }
 
-    // MARK: overlays
-
-    private func showRefusal(_ verdict: RefusalVerdict, code: String?) {
-        switch verdict.decision {
-        case .none: break
-        case .reauth: reauthSignal()
-        case .notOwner: showOverlay("not_owner")
-        case .keysUnavailable: showOverlay("keys_unavailable")
-        case .unavailable: showOverlay("unavailable")
-        case .hostDisconnected: showOverlay("host_disconnected")
-        case .codeOverlay: showOverlay("code_overlay", extra: ["code": code ?? "-"])
-        case .offline: showOverlay("offline")
-        }
-    }
-
-    func reauthSignal() { if orgRoute != nil { coordinator.onReauthSignal() } else { showOverlay("reauth") } }
-
-    func showOverlay(_ key: String, extra: [String: String] = [:], detail: String? = nil) {
-        overlay?.removeFromSuperview()
-        let shown = OverlayView.overlay(key, vars: vars.merging(extra) { $1 }, detail: detail) { [weak self] action in self?.perform(action) }
-        view.pin(shown)
-        overlay = shown
-        bringCoversToFront()
-        UIAccessibility.post(notification: .screenChanged, argument: shown)
-    }
-
-    private func perform(_ action: String) {
-        guard !locked else { return } // nothing behind the lock cover may act
-        switch action {
-        case "sign_in", "renew":
-            guard orgRoute != nil else { return directSignIn() }
-            let owned = tenure.check()
-            coordinator.renewNow { [weak self] outcome in
-                guard owned() else { return }
-                if case .signedIn = outcome { return }
-                self?.toastSignIn(outcome)
-            }
-        case "back_to_machines": close("user")
-        case "retry":
-            hideOverlay()
-            if target.kind == "org" { loadCurrent() } else { select(current: webView.url == nil ? nil : chosen, retry: true) }
-        case "try_another_route":
-            hideOverlay()
-            select(current: chosen, retry: true)
-        case "discard": discardShare()
-        default: close("user")
-        }
-    }
-
-    func toast(_ key: String) { view.toast(Messages.fill(Messages.overlay[key]?.message ?? key, vars)) }
-
-    private func toastSignIn(_ outcome: SignInOutcome) {
-        var values = vars
-        if case .verificationFailed(let domain) = outcome { values["domain"] = domain }
-        if case .refused(let code) = outcome { values["code"] = code }
-        if case .deviceKeyRejected(let code, _) = outcome { values["code"] = code }
-        if case .decryptFailed(let code) = outcome { values["code"] = code }
-        view.toast(Messages.fill(Messages.signIn[outcome.kind]?.message ?? outcome.kind, values))
-    }
-
-    func showShareBanner() {
-        shareBanner?.removeFromSuperview()
-        shareBanner = nil
-        guard !shared.isEmpty else { return }
-        let bannerView = OverlayView.overlay("share_ready", vars: vars.merging(["count": String(shared.count)]) { $1 }, style: .banner) { [weak self] in
-            self?.perform($0)
-        }
-        view.addSubview(bannerView)
-        NSLayoutConstraint.activate([
-            bannerView.bottomAnchor.constraint(equalTo: view.bottomAnchor), bannerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            bannerView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-        ])
-        shareBanner = bannerView
-        bringCoversToFront()
-    }
-
-    // MARK: RenewalUi
-
-    func showBanner() {
-        guard banner == nil else { return }
-        let bannerView = OverlayView.overlay("banner", vars: vars, style: .banner) { [weak self] action in self?.perform(action) }
-        view.addSubview(bannerView)
-        NSLayoutConstraint.activate([
-            bannerView.topAnchor.constraint(equalTo: view.topAnchor), bannerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            bannerView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-        ])
-        banner = bannerView
-        bringCoversToFront()
-    }
-
-    func hideBanner() { banner?.removeFromSuperview(); banner = nil }
-    func showReauthOverlay() { showOverlay("reauth") }
-    func hideOverlay() { overlay?.removeFromSuperview(); overlay = nil }
-    /// After a renewal: a routed window checks the route's instance again before anything loads.
-    func reloadSameUrl() { target.kind == "routes" ? select(current: chosen, retry: true) : loadCurrent() }
-
-    // MARK: lifecycle, lock and privacy
-
-    @objc private func willResignActive() {
-        if CoreBindings.screenPrivacy?.enabled() == true { setPrivacyCover(true) }
-    }
-
-    @objc private func didBecomeActive() {
-        updatePrivacyCover()
-        updateLockCover()
-        guard started, !closed else { return }
-        run(gate.becameActive(locked: locked))
-    }
-
-    @objc private func didEnterBackground() {
-        coordinator.onVisibilityChanged(false)
-        gate.enteredBackground()
-        backgroundedAt = Date()
-    }
-
-    /// Posted on whatever thread changed the lock (the unlock's Keychain read runs off main).
-    @objc private nonisolated func lockStateDidChange() {
-        Task { @MainActor [weak self] in self?.lockChanged() }
-    }
-
-    private func lockChanged() {
-        updateLockCover()
-        guard started, !closed else { return }
-        run(gate.lockChanged(locked: locked))
-    }
-
-    /// WebKit counts a page visible while its view is in a window and the app is not in the
-    /// background (`isHidden` is not an input), so any cover that obscures the page takes the
-    /// WebView out of the window, which turns `document.visibilityState` hidden and stops the
-    /// viewed beat. It returns only when no cover is up. A WebContent crash meanwhile keeps the
-    /// same `WKWebView`, so it stays out.
-    private func updateLockCover() {
-        if locked, lockCover == nil {
-            let cover = CoverView()
-            view.pin(cover)
-            lockCover = cover
-        } else if !locked {
-            lockCover?.removeFromSuperview()
-            lockCover = nil
-        }
-        applyCovers(covers.set(lock: locked))
-    }
-
-    private func updatePrivacyCover() {
-        let capturing = traitCollection.sceneCaptureState == .active
-        setPrivacyCover(CoreBindings.screenPrivacy?.enabled() == true && capturing)
-    }
-
-    private func setPrivacyCover(_ shown: Bool) {
-        if shown, privacyCover == nil {
-            let cover = CoverView()
-            view.pin(cover)
-            privacyCover = cover
-        } else if !shown {
-            privacyCover?.removeFromSuperview()
-            privacyCover = nil
-        }
-        applyCovers(covers.set(privacy: shown))
-    }
-
-    private func applyCovers(_ change: CoverState.Change) {
-        guard let webView else { return }
-        switch change {
-        case .detach: webView.removeFromSuperview()
-        case .attach:
-            if webView.superview == nil {
-                view.pin(webView)
-                view.sendSubviewToBack(webView)
-            }
-        case .none: break
-        }
-    }
-
-    private func bringCoversToFront() {
-        [lockCover, privacyCover].compactMap { $0 }.forEach { view.bringSubviewToFront($0) }
-    }
-
     // MARK: closing
 
     func close(_ reason: String, code: String? = nil) {
@@ -477,23 +299,5 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         services.shareInbox.remove(target.shared) // only this window's own files; a newer share stays
         let payload = ClosedPayload.make(reason: reason, code: code, routes: target.routes.map(\.host), chosen: chosen)
         dismiss(animated: true) { [onClosed] in onClosed(payload) }
-    }
-}
-
-/// Wall-clock one-shot timers; a timer that slept through the background is re-checked on resume.
-@MainActor
-final class MainScheduler: @preconcurrency OneShotScheduler {
-    final class Token: Cancellable {
-        var timer: Timer?
-        func cancel() { timer?.invalidate() }
-    }
-
-    func schedule(at second: Int64, _ fire: @escaping () -> Void) -> Cancellable {
-        let token = Token()
-        let delay = max(0, Double(second) - Date().timeIntervalSince1970)
-        token.timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
-            MainActor.assumeIsolated { fire() }
-        }
-        return token
     }
 }

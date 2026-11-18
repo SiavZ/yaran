@@ -20,6 +20,7 @@
 /// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/Vault (inferred)
+/// ├── YaranCore/Vault+LockSeam (inferred)
 /// ├── YaranCoreTests/KeychainWriteTests (inferred)
 /// ├── YaranCoreTests/LockTransitionTests (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)

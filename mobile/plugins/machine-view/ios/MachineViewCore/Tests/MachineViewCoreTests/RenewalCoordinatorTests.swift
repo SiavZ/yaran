@@ -14,6 +14,7 @@
 /// ├── MachineViewCore/Outcomes (inferred)
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
 /// ├── MachineViewCoreTests/DirectSettleTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// └── MachineViewCoreTests/Fakes (inferred)
 /// External: Foundation, Testing
 ///

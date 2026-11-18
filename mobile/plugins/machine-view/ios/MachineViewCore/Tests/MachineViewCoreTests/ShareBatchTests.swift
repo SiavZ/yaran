@@ -23,6 +23,8 @@ import Testing
 
 @MainActor
 struct ShareBatchTests {
+    // The test rig: the inbox, a file maker, and the root to remove.
+    // swiftlint:disable:next large_tuple
     private func inbox() throws -> (ShareInbox, (String) throws -> URL, URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("src", isDirectory: true)
@@ -43,29 +45,29 @@ struct ShareBatchTests {
     @Test func aPressForShareANeverTakesShareB() throws {
         let (inbox, file, root) = try inbox()
         defer { try? FileManager.default.removeItem(at: root) }
-        let a = try batch(inbox.intake([try file("a1")], supported: true))
+        let batchA = try batch(inbox.intake([try file("a1")], supported: true))
         let eventB = inbox.intake([try file("b1"), try file("b2")], supported: true) // lands before A's queued Send
-        let b = try batch(eventB)
-        #expect(a != b)
-        #expect(ShareCommand.open(inbox, batch: a) == .failure(.shareChanged))
-        #expect(inbox.count == 2 && inbox.batch == b && inbox.held.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
-        guard case let .success(files) = ShareCommand.open(inbox, batch: b) else { Issue.record("B is held"); return }
+        let batchB = try batch(eventB)
+        #expect(batchA != batchB)
+        #expect(ShareCommand.open(inbox, batch: batchA) == .failure(.shareChanged))
+        #expect(inbox.count == 2 && inbox.batch == batchB && inbox.held.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        guard case let .success(files) = ShareCommand.open(inbox, batch: batchB) else { Issue.record("B is held"); return }
         #expect(files.map(\.lastPathComponent) == ["b1", "b2"] && inbox.count == 0 && inbox.batch == nil)
-        #expect(ShareCommand.open(inbox, batch: b) == .failure(.noShare))
+        #expect(ShareCommand.open(inbox, batch: batchB) == .failure(.noShare))
     }
 
     @Test func aDiscardForShareALeavesShareBAndItsEvent() throws {
         let (inbox, file, root) = try inbox()
         defer { try? FileManager.default.removeItem(at: root) }
-        let a = try batch(inbox.intake([try file("a1")], supported: true))
+        let batchA = try batch(inbox.intake([try file("a1")], supported: true))
         var waiting: ShareEvent? = inbox.intake([try file("b1")], supported: true) // B not told yet (the lock is up)
-        let b = try batch(waiting!)
-        #expect(ShareCommand.discard(inbox, batch: a, waiting: &waiting) == .shareChanged)
-        #expect(inbox.count == 1 && inbox.batch == b && waiting?.tells(b) == true, "B and its event stay")
+        let batchB = try batch(waiting!)
+        #expect(ShareCommand.discard(inbox, batch: batchA, waiting: &waiting) == .shareChanged)
+        #expect(inbox.count == 1 && inbox.batch == batchB && waiting?.tells(batchB) == true, "B and its event stay")
         let held = inbox.held
-        #expect(ShareCommand.discard(inbox, batch: b, waiting: &waiting) == nil)
+        #expect(ShareCommand.discard(inbox, batch: batchB, waiting: &waiting) == nil)
         #expect(inbox.count == 0 && waiting == nil && held.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
-        #expect(ShareCommand.discard(inbox, batch: b, waiting: &waiting) == nil, "nothing held: done")
+        #expect(ShareCommand.discard(inbox, batch: batchB, waiting: &waiting) == nil, "nothing held: done")
     }
 
     @Test func malformedIdsAreRefusedAndChangeNothing() throws {

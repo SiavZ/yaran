@@ -11,8 +11,8 @@
 /// <module-headers:begin>
 /// Uses:
 /// MachineViewCoreTests/DirectOwnershipTests
-/// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/DirectLifecycle (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCoreTests/DirectSettleTests (inferred)
 /// └── MachineViewCoreTests/Fakes (inferred)
 /// External: Foundation, Testing
