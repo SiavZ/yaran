@@ -15,6 +15,7 @@
  * Used by:
  * io.github.siavz.yaran.machineview.CookieSpec
  * ├── io.github.siavz.yaran.machineview.CookieInjector (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectFlow (inferred)
  * ├── io.github.siavz.yaran.machineview.Fallbacks (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClient (inferred)

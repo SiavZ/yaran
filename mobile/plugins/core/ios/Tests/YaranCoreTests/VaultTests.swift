@@ -125,6 +125,140 @@ struct AppLockTests {
         #expect(relaunched.status().enabled && relaunched.locked)
     }
 
+    // A session token an older build wrote while the lock was off must not stay readable once it is on.
+    @Test func enablingTheLockMovesLegacySessionEntriesIntoTheLockedClass() throws {
+        let (vault, store) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .standard)
+        try vault.set(namespace: "session-direct", key: "names", value: "a.example.com", protection: .standard)
+        try vault.set(namespace: "session", key: "h2", value: "access-jwt", protection: .standard)
+        try vault.set(namespace: "orgs", key: "list", value: "[]", protection: .standard)
+        #expect(try lock.enable(allowPasscode: false) == .enabled)
+        lock.engage()
+        #expect(throws: VaultError.locked) { try vault.get(namespace: "session-direct", key: "h1") }
+        #expect(throws: VaultError.locked) { try vault.get(namespace: "session", key: "h2") }
+        #expect(try vault.get(namespace: "session-direct", key: "names") == "a.example.com")
+        #expect(try vault.get(namespace: "orgs", key: "list") == "[]")
+        let item = KeychainItem(service: Vault.service, account: "ns.session-direct", access: .whenUnlockedThisDeviceOnly)
+        let raw = try #require(try store.read(item, prompt: nil))
+        #expect(!String(decoding: raw, as: UTF8.self).contains("direct-token"))
+    }
+
+    @Test func aFailedPromotionLeavesTheLockOffAndEveryEntryReadable() throws {
+        let (vault, store) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .standard)
+        let bad = KeychainItem(service: Vault.service, account: "ns.session", access: .whenUnlockedThisDeviceOnly)
+        try store.write(Data("not a blob".utf8), to: bad)
+        #expect(throws: VaultError.tampered) { try lock.enable(allowPasscode: false) }
+        #expect(!lock.status().enabled)
+        #expect(try vault.get(namespace: "session-direct", key: "h1") == "direct-token")
+    }
+
+    // F8: the enable's setting cannot be saved. Nothing is lost and the lock stays off.
+    @Test func anEnableWhoseSettingCannotBeSavedRollsBack() throws {
+        let (vault, store) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .locked)
+        store.failingWrites = ["meta.applock"]
+        #expect(throws: (any Error).self) { try lock.enable(allowPasscode: false) }
+        #expect(!lock.status().enabled && !lock.locked)
+        #expect(store.stored(service: Vault.service, account: Vault.guardedKeyAccount) == nil)
+        #expect(store.stored(service: Vault.service, account: Vault.dataKeyAccount) != nil)
+        #expect(try vault.get(namespace: "session-direct", key: "h1") == "direct-token")
+        store.failingWrites = []
+        let relaunched = AppLock(vault: Vault(store: store, accessGroup: nil), biometry: { .available })
+        #expect(!relaunched.status().enabled)
+    }
+
+    // F8: a process that died after the guarded copy was written but before the setting was saved.
+    @Test func aProcessThatDiedBeforeTheSettingWasSavedComesBackUnlocked() throws {
+        let (vault, store) = makeVault()
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .locked)
+        try vault.guardDataKey(.biometryCurrentSet, prompt: "p")
+        let fresh = Vault(store: store, accessGroup: nil)
+        let relaunched = AppLock(vault: fresh, biometry: { .available })
+        #expect(!relaunched.status().enabled && !relaunched.locked)
+        #expect(store.stored(service: Vault.service, account: Vault.guardedKeyAccount) == nil)
+        #expect(try fresh.get(namespace: "session-direct", key: "h1") == "direct-token")
+    }
+
+    // F8: a process that died after the setting was saved but before the plain copy went.
+    @Test func aProcessThatDiedAfterTheSettingWasSavedComesBackLocked() throws {
+        let (vault, store) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .locked)
+        store.failingDeletes = [Vault.dataKeyAccount]
+        #expect(try lock.enable(allowPasscode: false) == .enabled)
+        store.failingDeletes = []
+        #expect(store.stored(service: Vault.service, account: Vault.dataKeyAccount) != nil, "the stage the test stands for")
+        let fresh = Vault(store: store, accessGroup: nil)
+        let relaunched = AppLock(vault: fresh, biometry: { .available })
+        #expect(relaunched.status().enabled && relaunched.locked)
+        #expect(store.stored(service: Vault.service, account: Vault.dataKeyAccount) == nil, "no plain key bypasses the lock")
+        #expect(throws: VaultError.locked) { try fresh.get(namespace: "session-direct", key: "h1") }
+        #expect(try relaunched.unlock() == .unlocked)
+        #expect(try fresh.get(namespace: "session-direct", key: "h1") == "direct-token")
+    }
+
+    // F8: a disable whose setting cannot be saved keeps the lock, and its key.
+    @Test func aDisableWhoseSettingCannotBeSavedKeepsTheLock() throws {
+        let (vault, store) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .locked)
+        #expect(try lock.enable(allowPasscode: false) == .enabled)
+        store.failingWrites = ["meta.applock"]
+        #expect(throws: (any Error).self) { try lock.disable() }
+        store.failingWrites = []
+        #expect(lock.status().enabled)
+        #expect(store.stored(service: Vault.service, account: Vault.guardedKeyAccount) != nil)
+        #expect(store.stored(service: Vault.service, account: Vault.dataKeyAccount) == nil)
+        let fresh = Vault(store: store, accessGroup: nil)
+        let relaunched = AppLock(vault: fresh, biometry: { .available })
+        #expect(relaunched.locked)
+        #expect(try relaunched.unlock() == .unlocked)
+        #expect(try fresh.get(namespace: "session-direct", key: "h1") == "direct-token")
+    }
+
+    // F4: a lock an older build enabled never promoted its session entries.
+    @Test func aLockEnabledByAnOlderBuildRefusesThenPromotesLegacySessions() throws {
+        let (vault, store) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        #expect(try lock.enable(allowPasscode: false) == .enabled)
+        // What the older build wrote while unlocked, after its lock was on.
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .standard)
+        try vault.set(namespace: "session-direct", key: "names", value: "a.example.com", protection: .standard)
+        try vault.set(namespace: "session", key: "h2", value: "access-jwt", protection: .standard)
+        let fresh = Vault(store: store, accessGroup: nil)
+        let relaunched = AppLock(vault: fresh, biometry: { .available })
+        #expect(throws: VaultError.locked) { try fresh.get(namespace: "session-direct", key: "h1") }
+        #expect(throws: VaultError.locked) { try fresh.get(namespace: "session", key: "h2") }
+        #expect(try fresh.get(namespace: "session-direct", key: "names") == "a.example.com")
+        #expect(try relaunched.unlock() == .unlocked)
+        #expect(try fresh.get(namespace: "session-direct", key: "h1") == "direct-token")
+        let item = KeychainItem(service: Vault.service, account: "ns.session-direct", access: .whenUnlockedThisDeviceOnly)
+        let raw = String(decoding: try #require(try store.read(item, prompt: nil)), as: UTF8.self)
+        #expect(!raw.contains("direct-token"), "promoted into the sealed class at the unlock")
+    }
+
+    // Round 4: the biometric set changes before any unlock could promote them.
+    @Test func anInvalidationBeforePromotionDropsLegacySessions() throws {
+        let (vault, store) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        #expect(try lock.enable(allowPasscode: false) == .enabled)
+        try vault.set(namespace: "session-direct", key: "h1", value: "direct-token", protection: .standard)
+        try vault.set(namespace: "session-direct", key: "names", value: "a.example.com", protection: .standard)
+        try vault.set(namespace: "session", key: "h2", value: "access-jwt", protection: .standard)
+        try vault.set(namespace: "orgs", key: "list", value: "[]", protection: .standard)
+        store.drop(service: Vault.service, account: Vault.guardedKeyAccount)
+        let fresh = Vault(store: store, accessGroup: nil)
+        #expect(try AppLock(vault: fresh, biometry: { .available }).unlock() == .invalidated)
+        #expect(try fresh.list(namespace: "session-direct") == ["names"])
+        #expect(try fresh.list(namespace: "session").isEmpty)
+        #expect(try fresh.get(namespace: "session-direct", key: "names") == "a.example.com")
+        #expect(try fresh.get(namespace: "orgs", key: "list") == "[]")
+    }
+
     @Test func invalidationWipesLockedAndKeepsStandard() throws {
         let (vault, store) = makeVault()
         let lock = AppLock(vault: vault, biometry: { .available })

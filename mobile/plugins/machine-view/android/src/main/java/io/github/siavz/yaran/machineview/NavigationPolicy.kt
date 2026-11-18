@@ -17,12 +17,12 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.NavigationPolicy
- * ├── io.github.siavz.yaran.machineview.CallbackUrl (inferred)
- * ├── io.github.siavz.yaran.machineview.MachineState (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
- * ├── io.github.siavz.yaran.machineview.MachineViewPlugin (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineWebViewClient (inferred)
- * └── io.github.siavz.yaran.machineview.MachineWindowRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.PolicyFixtureTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.SessionGenerationRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.StaleOpenRobolectricTest (inferred)
+ * └── io.github.siavz.yaran.machineview.WindowEvents (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
@@ -44,7 +44,7 @@ internal object NavigationPolicy {
             val ok = isAboutBlankOrSrcdoc(u) || (u.scheme == "https" && sameHost(u, loaded))
             return of(if (ok) NavAction.ALLOW else NavAction.BLOCK)
         }
-        val external = if (gesture) NavAction.EXTERNAL else NavAction.BLOCK
+        val offSite = if (gesture) NavAction.EXTERNAL else NavAction.BLOCK
         val action = when (u.scheme) {
             "about" -> if (isAboutBlankOrSrcdoc(u) && !newWindow) NavAction.ALLOW else NavAction.BLOCK
             "yaranapp" -> when (val c = ControlUrl.decide(url, loaded)) {
@@ -53,12 +53,12 @@ internal object NavigationPolicy {
                 ControlDecision.Settings -> NavAction.CLOSE_SETTINGS
                 is ControlDecision.Ignore -> NavAction.IGNORE
             }
-            "https" -> https(u, loaded, newWindow, external)
+            "https" -> https(u, loaded, newWindow, offSite)
             "http" -> {
                 val hp = u.authority?.let { HostRules.hostPort(it) }
-                if (hp == null || hp.first == loaded) NavAction.BLOCK else external
+                if (hp == null || hp.first == loaded) NavAction.BLOCK else offSite
             }
-            "mailto", "tel" -> external
+            "mailto", "tel" -> offSite
             "blob" -> {
                 val inner = UrlParts.parse(u.rest)
                 if (!newWindow && inner != null && inner.scheme == "https" && sameHost(inner, loaded)) NavAction.ALLOW else NavAction.BLOCK
@@ -68,14 +68,14 @@ internal object NavigationPolicy {
         return of(action)
     }
 
-    private fun https(u: UrlParts, loaded: String, newWindow: Boolean, external: NavAction): NavAction {
+    private fun https(u: UrlParts, loaded: String, newWindow: Boolean, offSite: NavAction): NavAction {
         val (h, port) = u.authority?.let { HostRules.hostPort(it) } ?: return NavAction.BLOCK
         return when {
             h == loaded && HostRules.isDefaultHttpsPort(port) ->
                 if (u.path.startsWith(ACCESS_LOGIN_PATH)) NavAction.REAUTH
                 else if (newWindow) NavAction.ALLOW_IN_PLACE else NavAction.ALLOW
             h.endsWith(ACCESS_SUFFIX) && h.length > ACCESS_SUFFIX.length -> NavAction.REAUTH
-            else -> external
+            else -> offSite
         }
     }
 

@@ -46,7 +46,7 @@ class HandoffClientTest {
     private val installIds = InstallIdStore(vault)
     private val keys = DeviceKeyStore(backend, installIds, diag)
     private val lock = FakeLock()
-    private val sessions = SessionStore(vault, lock, diag) { }
+    private val sessions = SessionStore(vault, diag) { }
     private val orgs = OrgDirectory { if (it == "org1") "https://cp.example.com" else null }
 
     private fun client(mode: CallbackMode = CallbackMode.Https("app.example.com")) =
@@ -106,15 +106,19 @@ class HandoffClientTest {
     fun wrongFormForTheBuildIsRefused() {
         val c = client()
         val q = begin(c)
-        assertEquals(SignInOutcome.Mismatch, c.onRedirect("yaranapp://auth/callback?state=${q["state"]}&jwe=${sealed(q)}"))
+        // The wrong form for this build is not this sign-in's callback: ignored, nothing stored (round 7).
+        assertNull(c.onRedirect("yaranapp://auth/callback?state=${q["state"]}&jwe=${sealed(q)}"))
         assertNull(sessions.get(host))
+        assertTrue(c.hasPending())
     }
 
     @Test
     fun stateMismatchAndTtl() {
         val c = client()
         val q = begin(c)
-        assertEquals(SignInOutcome.Mismatch, c.onRedirect("https://app.example.com/auth/callback?state=${"A".repeat(43)}&jwe=${sealed(q)}"))
+        // Not this sign-in's state: ignored, and the sign-in stays pending (round 7).
+        assertNull(c.onRedirect("https://app.example.com/auth/callback?state=${"A".repeat(43)}&jwe=${sealed(q)}"))
+        assertTrue(c.hasPending())
         val q2 = begin(c)
         clock += 601
         assertEquals(SignInOutcome.Mismatch, c.onRedirect("https://app.example.com/auth/callback?state=${q2["state"]}&jwe=${sealed(q2)}"))
@@ -123,7 +127,7 @@ class HandoffClientTest {
     @Test
     fun callbackErrorsMapToOutcomes() {
         val c = client()
-        fun err(code: String, extra: String = ""): SignInOutcome {
+        fun err(code: String, extra: String = ""): SignInOutcome? {
             val q = begin(c)
             return c.onRedirect("https://app.example.com/auth/callback?state=${q["state"]}&error=$code$extra")
         }

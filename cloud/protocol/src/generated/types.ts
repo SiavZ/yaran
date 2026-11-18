@@ -795,6 +795,10 @@ export interface MachineConfig {
     min_interval_ms: number;
   };
   server_time: Timestamp;
+  /**
+   * Optional, additive: the phone app's verified link domain, the one host of the Worker's https APP_CALLBACK_URLS ending /auth/callback. Absent when there is none or they disagree. Public metadata; never proof of origin or ownership.
+   */
+  publisher_domain?: string;
 }
 /**
  * W6; always a batch, even of one event.

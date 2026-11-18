@@ -15,13 +15,14 @@
  * io.github.siavz.yaran.machineview.UrlParts
  * ├── io.github.siavz.yaran.machineview.CallbackUrl (inferred)
  * ├── io.github.siavz.yaran.machineview.ControlUrl (inferred)
+ * ├── io.github.siavz.yaran.machineview.Direct (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineState (inferred)
- * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.NavigationPolicy (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClient (inferred)
  * ├── io.github.siavz.yaran.machineview.SealedEnvelope (inferred)
- * └── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
+ * ├── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
+ * └── io.github.siavz.yaran.machineview.WindowEvents (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview

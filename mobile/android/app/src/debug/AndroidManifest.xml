@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: lets one phone run independent instances of the app on several displays
+     (multi-agent device testing). singleTask makes a hard singleton that jumps to whichever display
+     launched it last. The machine window becomes singleTop so it opens in the caller's task rather
+     than hunting for a task by affinity on another display. Release keeps singleTask for both
+     (BuildOutputsTest pins it). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <activity
+            android:name="io.github.siavz.yaran.app.MainActivity"
+            android:launchMode="standard"
+            android:resizeableActivity="true"
+            tools:replace="android:launchMode" />
+        <activity
+            android:name="io.github.siavz.yaran.machineview.MachineViewActivity"
+            android:launchMode="singleTop"
+            tools:replace="android:launchMode" />
+    </application>
+</manifest>

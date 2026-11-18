@@ -27,6 +27,8 @@ const unavailable = (): Promise<never> =>
 export class MachineViewWeb extends WebPlugin implements Omit<MachineViewPlugin, "addListener" | "removeAllListeners"> {
   open = unavailable;
   close = unavailable;
+  shareStatus = unavailable;
+  discardShare = unavailable;
 }
 
 export class SessionWeb extends WebPlugin implements SessionPlugin {
@@ -38,4 +40,8 @@ export class SessionWeb extends WebPlugin implements SessionPlugin {
   deviceKey = unavailable;
   callbackMode = unavailable;
   signOut = unavailable;
+  directStatus = unavailable;
+  directSignIn = unavailable;
+  directSignOut = unavailable;
+  routeStatus = unavailable;
 }

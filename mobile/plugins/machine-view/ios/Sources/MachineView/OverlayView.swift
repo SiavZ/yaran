@@ -86,15 +86,18 @@ final class OverlayView: UIView {
         case "try_again": return "Try again"
         case "back": return "Back"
         case "unlock": return "Unlock"
+        case "try_another_route": return "Try another route"
+        case "discard": return "Discard"
         default: return action
         }
     }
 
     /// An overlay from the shared table's `overlay` section.
-    static func overlay(_ key: String, vars: [String: String], style: Style = .fullPane,
+    /// `detail` is plain text shown under the sentence (a machine's own refusal, never markup).
+    static func overlay(_ key: String, vars: [String: String], style: Style = .fullPane, detail: String? = nil,
                         onAction: @escaping (String) -> Void) -> OverlayView {
         let row = Messages.overlay[key] ?? Messages.Row(message: key, actions: ["back_to_machines"])
-        return OverlayView(style: style, message: Messages.fill(row.message, vars),
+        return OverlayView(style: style, message: Messages.fill(row.message, vars) + (detail.map { "\n\n" + $0 } ?? ""),
                            actions: row.actions.map { ($0, title($0)) }, onAction: onAction)
     }
 }

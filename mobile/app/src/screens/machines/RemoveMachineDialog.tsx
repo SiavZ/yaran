@@ -16,7 +16,8 @@
  * ├── @yaran/ui-kit:src/inline-code.tsx
  * ├── src/lib/api.ts
  * ├── src/lib/machinesStore.ts
- * └── src/lib/notify.ts
+ * ├── src/lib/notify.ts
+ * └── src/lib/orgStore.ts
  * External: @lingui/react
  *
  * Used by:
@@ -33,6 +34,7 @@ import { InlineCode } from '@yaran/ui-kit/inline-code';
 
 import { failureMessage, removeMachine, type ApiFailure } from '../../lib/api.ts';
 import { dropMachine, refreshMachines } from '../../lib/machinesStore.ts';
+import { orgIncarnation } from '../../lib/orgStore.ts';
 import { notify, notifyBusy } from '../../lib/notify.ts';
 
 export function RemoveMachineDialog({
@@ -44,19 +46,21 @@ export function RemoveMachineDialog({
   orgId: string;
   machine: MachineSummary | null;
   onClose: () => void;
-  onFailure: (failure: ApiFailure) => void;
+  /** `inc`: the org's incarnation when the request went out (see `orgIncarnation`). */
+  onFailure: (failure: ApiFailure, inc: number | undefined) => void;
 }) {
   const { i18n } = useLingui();
 
   async function confirm(m: MachineSummary) {
     onClose();
+    const inc = orgIncarnation(orgId);
     const id = `remove-machine:${m.id}`;
     const name = <InlineCode>{m.name}</InlineCode>;
     notifyBusy(id, <Trans>Removing {name}…</Trans>, <Trans>Still waiting for the control plane to confirm removing {name}. Tap Refresh on Machines to check.</Trans>);
     const got = await removeMachine(orgId, m.id);
     if (!got.ok) {
       notify('error', <Trans>Couldn't remove {name}: {i18n._(failureMessage(got.failure))}</Trans>, { id });
-      onFailure(got.failure);
+      onFailure(got.failure, inc);
       return;
     }
     dropMachine(orgId, m.id);

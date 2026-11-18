@@ -13,15 +13,16 @@
  * Uses:
  * io.github.siavz.yaran.machineview.CallbackUrl
  * ├── io.github.siavz.yaran.machineview.ControlUrl (inferred)
- * ├── io.github.siavz.yaran.machineview.NavigationPolicy (inferred)
  * └── io.github.siavz.yaran.machineview.UrlParts (inferred)
  * External: java.security
  *
  * Used by:
  * io.github.siavz.yaran.machineview.CallbackUrl
+ * ├── io.github.siavz.yaran.machineview.AuthTabRegistryRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.BrowserLauncher (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.HandoffFailureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffUrl (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffUrlFixtureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
@@ -72,6 +73,15 @@ internal object CallbackUrl {
         }
         if (now - pending.createdAt > TTL_S) return CallbackResult.Refused(CallbackRefusal.EXPIRED)
         return shaped
+    }
+
+    /** Whether [uri] is a callback in [mode]'s form carrying exactly [state]. */
+    fun carriesState(mode: CallbackMode, uri: String, state: String): Boolean {
+        val u = UrlParts.parse(uri) ?: return false
+        if (!formMatches(mode, u)) return false
+        val p = UriParams.parseUri(uri) ?: return false
+        val got = (if (p.query.isNotEmpty()) p.query else p.fragment)["state"] ?: return false
+        return MessageDigest.isEqual(got.toByteArray(), state.toByteArray())
     }
 
     private fun formMatches(mode: CallbackMode, u: UrlParts): Boolean = when (mode) {

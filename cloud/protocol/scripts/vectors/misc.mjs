@@ -1,7 +1,8 @@
 /**
- * Generates the decision-table fixtures: `uri/add-org.json`, `uri/handoff-redirect.json`,
- * `uri/control-urls.json`, `ua/ua.json` and `version/negotiate.json` (Design §3, §8, §10,
- * §11).
+ * Generates the decision-table fixtures: `uri/add-org.json`, `uri/add-machine.json`,
+ * `uri/agent-link.json`, `uri/handoff-redirect.json`, `uri/control-urls.json`, `ua/ua.json`
+ * and `version/negotiate.json` (Design §3, §8, §10, §11; the two newer URI forms in
+ * docs/operations/mobile-parity-contracts.md).
  *
  * These are rules rather than derived bytes, so the expected outcome of each row is
  * written here by hand from the contract text; the generator only keeps the files in one
@@ -46,6 +47,113 @@ function addOrg() {
       { uri: `https://add-org?u=${ORG_ENC}`, expect: "uri_invalid" },
       { uri: `yaranapp://add-org?u=${ORG_ENC}&pad=${"x".repeat(480)}`, expect: "uri_invalid" },
     ],
+  };
+}
+
+const MACHINE = "yaran.example.com";
+const TS_HOST = "laptop.tail1234.ts.net";
+const amUri = (u) => `yaranapp://add-machine?u=${u}`;
+const amEnc = (host) => amUri(`https%3A%2F%2F${host}`);
+
+function addMachine() {
+  return {
+    description:
+      "yaranapp://add-machine?u=<pct-encoded https origin>, total <= 512 chars. STRICT: exactly one parameter u; no path, fragment, empty pair or other parameter; the host is lowercase, two or more labels, alphabetic TLD, no port, IP literal, userinfo or xn-- label. It only pre-fills Confirm machine, never adds. parseAppUri answers uri_invalid for it, so existing AppUri switches are unchanged. build: expect is the URI or null (refused). parse: expect is {host} or uri_invalid.",
+    build: [
+      { host: TS_HOST, expect: amEnc(TS_HOST) },
+      { host: MACHINE, expect: amEnc(MACHINE) },
+      { host: "localhost", expect: null },
+      { host: "192.168.1.20", expect: null },
+      { host: "Yaran.example.com", expect: null },
+      { host: "yaran.example.com:8443", expect: null },
+      { host: "xn--yrn-1na.example.com", expect: null },
+      { host: "", expect: null },
+      { host: `${Array.from({ length: 8 }, () => "a".repeat(63)).join(".")}.com`, expect: null },
+    ],
+    parse: [
+      { uri: amEnc(TS_HOST), expect: { host: TS_HOST } },
+      { uri: `YARANAPP://add-machine?u=https%3A%2F%2F${MACHINE}`, expect: { host: MACHINE } },
+      { uri: amUri(`https://${MACHINE}`), expect: { host: MACHINE } },
+      { uri: `${amEnc(MACHINE)}&utm=qr`, expect: "uri_invalid" },
+      { uri: `${amEnc(MACHINE)}&u=https%3A%2F%2F${MACHINE}`, expect: "uri_invalid" },
+      { uri: `${amEnc(MACHINE)}&`, expect: "uri_invalid" },
+      { uri: `${amEnc(MACHINE)}#x=1`, expect: "uri_invalid" },
+      { uri: `${amEnc(MACHINE)}#`, expect: "uri_invalid" },
+      { uri: `yaranapp://add-machine/x?u=https%3A%2F%2F${MACHINE}`, expect: "uri_invalid" },
+      { uri: "yaranapp://add-machine", expect: "uri_invalid" },
+      { uri: "yaranapp://add-machine?u", expect: "uri_invalid" },
+      { uri: amUri(`http%3A%2F%2F${MACHINE}`), expect: "uri_invalid" },
+      { uri: amEnc(`${MACHINE}%2F`), expect: "uri_invalid" },
+      { uri: amEnc(`${MACHINE}%3A8443`), expect: "uri_invalid" },
+      { uri: amEnc(`user%40${MACHINE}`), expect: "uri_invalid" },
+      { uri: amEnc("10.0.0.5"), expect: "uri_invalid" },
+      { uri: amEnc("localhost"), expect: "uri_invalid" },
+      { uri: amEnc("Yaran.example.com"), expect: "uri_invalid" },
+      { uri: amEnc("xn--yrn-1na.example.com"), expect: "uri_invalid" },
+      { uri: amUri("%E0%A4%A"), expect: "uri_invalid" },
+      { uri: `https://add-machine?u=https%3A%2F%2F${MACHINE}`, expect: "uri_invalid" },
+      { uri: `yaranapp://add-org?u=https%3A%2F%2F${MACHINE}`, expect: "uri_invalid" },
+    ],
+  };
+}
+
+const PUBLISHER = "apps.example.org";
+const MID = "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a";
+const LINK = `https://${PUBLISHER}/open#`;
+const O = `o=${ORG_ENC}&m=${MID}`;
+const orgTarget = { kind: "org", orgUrl: ORG, machineId: MID };
+const tsTarget = { kind: "direct", host: TS_HOST };
+
+function agentLink() {
+  const bad = (url) => ({ url, expect: "uri_invalid" });
+  const noBuild = (target, agentId) => ({ link: { target, agentId }, expect: null });
+  return {
+    description:
+      "Verified agent link: https://<publisher_domain>/open#o=<OrgUrl>&m=<machine Uuid>&a=<YaranId>[&t=<YaranId>] or #d=<host>&a=...[&t=...]. publisher_domain comes from build or runtime config (Session.callbackMode https domain), never from the link. STRICT: exact lowercase authority, path exactly /open, no query, exactly one target form, a required, t optional, no other, empty or duplicate parameter. The link opens only a machine this phone already has; it never adds one. build: link -> expect URL or null (throws). parse: expect is the link or uri_invalid.",
+    publisher_domain: PUBLISHER,
+    build: [
+      { link: { target: orgTarget, agentId: "a1b2" }, expect: `${LINK}${O}&a=a1b2` },
+      { link: { target: orgTarget, agentId: "a1b2", tabId: "t/9#x" }, expect: `${LINK}${O}&a=a1b2&t=t%2F9%23x` },
+      { link: { target: tsTarget, agentId: "s-1" }, expect: `${LINK}d=${TS_HOST}&a=s-1` },
+      noBuild({ kind: "direct", host: "10.0.0.5" }, "s-1"),
+      noBuild({ kind: "org", orgUrl: "http://cp.example.com", machineId: MID }, "s-1"),
+      noBuild({ kind: "org", orgUrl: ORG, machineId: "machine-1" }, "s-1"),
+      noBuild(orgTarget, "has space"),
+      noBuild(orgTarget, ""),
+      noBuild(orgTarget, "x".repeat(129)),
+    ],
+    build_bad_domain: ["", "localhost", "Apps.example.org", "apps.example.org:443", "https://apps.example.org"],
+    parse: [
+      { url: `${LINK}${O}&a=a1b2`, expect: { target: orgTarget, agentId: "a1b2" } },
+      { url: `${LINK}a=a1b2&t=t%2F9%23x&${O}`, expect: { target: orgTarget, agentId: "a1b2", tabId: "t/9#x" } },
+      { url: `HTTPS://${PUBLISHER}/open#d=${TS_HOST}&a=s-1`, expect: { target: tsTarget, agentId: "s-1" } },
+      bad(`${LINK}${O}`),
+      bad(`${LINK}${O}&a=a1b2&x=1`),
+      bad(`${LINK}${O}&a=a1b2&a=a1b2`),
+      bad(`${LINK}${O}&a=a1b2&`),
+      bad(`${LINK}${O}&a`),
+      bad(`${LINK}${O}&a=a1b2&t=`),
+      bad(`${LINK}${O}&d=${TS_HOST}&a=a1b2`),
+      bad(`${LINK}d=${TS_HOST}&m=${MID}&a=a1b2`),
+      bad(`${LINK}d=10.0.0.5&a=a1b2`),
+      bad(`${LINK}d=${TS_HOST}%3A8443&a=a1b2`),
+      bad(`${LINK}o=http%3A%2F%2Fcp.example.com&m=${MID}&a=a1b2`),
+      bad(`${LINK}o=${ORG_ENC}&m=MACHINE&a=a1b2`),
+      bad(`${LINK}${O}&a=has%20space`),
+      bad(`${LINK}${O}&a=%E0%A4%A`),
+      bad(`https://${PUBLISHER}/open?${O}&a=a1b2`),
+      bad(`https://${PUBLISHER}/open?x=1#${O}&a=a1b2`),
+      bad(`https://${PUBLISHER}/open/#${O}&a=a1b2`),
+      bad(`https://${PUBLISHER}/Open#${O}&a=a1b2`),
+      bad(`http://${PUBLISHER}/open#${O}&a=a1b2`),
+      bad(`https://evil.example.net/open#${O}&a=a1b2`),
+      bad(`https://${PUBLISHER}.evil.example.net/open#${O}&a=a1b2`),
+      bad(`https://user@${PUBLISHER}/open#${O}&a=a1b2`),
+      bad(`https://${PUBLISHER}:443/open#${O}&a=a1b2`),
+      bad(`https://Apps.example.org/open#${O}&a=a1b2`),
+      bad(`yaranapp://${PUBLISHER}/open#${O}&a=a1b2`),
+    ],
+    parse_without_domain: { url: `${LINK}${O}&a=a1b2`, domains: ["", "localhost", "Apps.example.org"], expect: "uri_invalid" },
   };
 }
 
@@ -161,6 +269,8 @@ function negotiate() {
 export async function generate() {
   return {
     "uri/add-org.json": addOrg(),
+    "uri/add-machine.json": addMachine(),
+    "uri/agent-link.json": agentLink(),
     "uri/handoff-redirect.json": handoffRedirect(),
     "uri/control-urls.json": controlUrls(),
     "ua/ua.json": ua(),

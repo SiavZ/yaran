@@ -43,6 +43,21 @@ internal fun interface OneShotScheduler {
     fun schedule(atEpochSeconds: Long?, task: () -> Unit)
 }
 
+/** The machine window's [OneShotScheduler]: one pending main-thread timer at a time. */
+internal class MainTimer : OneShotScheduler {
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var timer: Runnable? = null
+
+    override fun schedule(atEpochSeconds: Long?, task: () -> Unit) {
+        timer?.let { main.removeCallbacks(it) }
+        timer = null
+        if (atEpochSeconds == null) return
+        val r = Runnable { task() }
+        timer = r
+        main.postDelayed(r, maxOf(0L, (atEpochSeconds - System.currentTimeMillis() / 1000) * 1000))
+    }
+}
+
 internal class RenewalCoordinator(
     private val session: () -> Session?,
     private val now: () -> Long,

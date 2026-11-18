@@ -1,6 +1,7 @@
 /**
  * Routes a notification tap: validates it, resolves the machine against this org's paired
- * machines, opens the agent in machine-view, and clears that agent's delivered notifications.
+ * machines, opens the agent in machine-view, and clears that agent's delivered notifications
+ * only once the window actually opened.
  *
  * - Trust boundary (T42): a tap never names a host. The machine id must be one this phone has
  *   paired with that org; an unknown one toasts and opens the Machines list instead of loading
@@ -30,15 +31,18 @@ export interface TapDeps {
   push: PushPlugin;
   /** Paired machine ids for the org, from the shell's last authenticated machine list. */
   pairedMachineIds(orgId: string): string[];
-  /** Phase 15's open path (`openMachine.ts`): resolves the host locally, then `MachineView.open`. */
-  openAgent(options: { orgId: string; machineId: string; route: string }): Promise<void>;
+  /**
+   * Phase 15's open path (`openMachine.ts`): resolves the host locally, then `MachineView.open`.
+   * Resolves `false` when the window did not open (the adapter has already said why).
+   */
+  openAgent(options: { orgId: string; machineId: string; route: string }): Promise<boolean>;
   showMachines(orgId: string): void;
   /** Applies "Mute this machine" through the mute sync and toasts the outcome. */
   muteMachine(orgId: string, machineId: string): Promise<void>;
   toast(key: PushStringKey): void;
 }
 
-export type TapOutcome = "invalid" | "unpaired" | "opened" | "muted";
+export type TapOutcome = "invalid" | "unpaired" | "opened" | "open_failed" | "muted";
 
 /** Phase 15's route builder (`#/agent/<sid>[/tab/<tab>]`, each segment encoded). */
 export { agentRoute };
@@ -55,7 +59,8 @@ export async function handleTap(deps: TapDeps, event: unknown): Promise<TapOutco
     return "muted";
   }
   const agentId = event.agentId as string;
-  await deps.openAgent({ orgId: event.orgId, machineId: event.machineId, route: agentRoute(agentId, event.tabId) });
+  // The alert stays in the shade until the agent is actually on screen: it is the way back.
+  if (!(await deps.openAgent({ orgId: event.orgId, machineId: event.machineId, route: agentRoute(agentId, event.tabId) }))) return "open_failed";
   await deps.push.clearDelivered({
     orgId: event.orgId,
     machineId: event.machineId,

@@ -49,16 +49,33 @@ export type ApiFailure =
   | { kind: 'refused'; reason: string }
   | { kind: 'protocol_unsupported'; update: 'client' | 'server' }
   | { kind: 'api_error'; code: string; known: boolean; status: number; requestId: string | null }
-  | { kind: 'invalid_response'; status: number };
+  | { kind: 'invalid_response'; status: number }
+  | { kind: 'native_error'; code: string };
 
 export type ApiOutcome<T> = { ok: true; value: T } | { ok: false; failure: ApiFailure };
 
 /** A page cap so a misbehaving server cannot make the shell loop forever. */
 export const MAX_MACHINE_PAGES = 20;
 
+type Answer = ApiResult | { kind: 'native_error'; code: string };
+
+// A rejected native call (vault locked, a native failure) is an answer too, so no caller is left waiting.
+async function ask(options: Parameters<typeof Session.request>[0]): Promise<Answer> {
+  try {
+    return await Session.request(options);
+  } catch (err) {
+    const code = typeof err === 'object' && err !== null && 'code' in err ? (err as { code: unknown }).code : undefined;
+    const safe = typeof code === 'string' && /^[a-z0-9_]{1,64}$/.test(code) ? code : 'unknown';
+    log('warn', `native org API call failed (${safe})`);
+    return { kind: 'native_error', code: safe };
+  }
+}
+
 // Maps a native result to a validated value or a failure; `orgId` names the host in a TLS failure.
-function interpret<T>(result: ApiResult, typeName: string, okStatus: number[], orgId: string): ApiOutcome<T> {
+function interpret<T>(result: Answer, typeName: string, okStatus: number[], orgId: string): ApiOutcome<T> {
   switch (result.kind) {
+    case 'native_error':
+      return { ok: false, failure: { kind: 'native_error', code: result.code } };
     case 'ok': {
       if (!okStatus.includes(result.status) || !validate(typeName, result.body).valid) {
         log('warn', `org API answered ${result.status} with a body that is not a ${typeName}`);
@@ -87,7 +104,7 @@ function interpret<T>(result: ApiResult, typeName: string, okStatus: number[], o
 }
 
 export async function getMe(orgId: string): Promise<ApiOutcome<Me>> {
-  return interpret<Me>(await Session.request({ orgId, method: 'GET', path: '/v1/me' }), 'Me', [200], orgId);
+  return interpret<Me>(await ask({ orgId, method: 'GET', path: '/v1/me' }), 'Me', [200], orgId);
 }
 
 /** Every machine of the signed-in user, following `next_cursor`. */
@@ -96,7 +113,7 @@ export async function listMachines(orgId: string): Promise<ApiOutcome<MachineSum
   let cursor: string | null = null;
   for (let page = 0; page < MAX_MACHINE_PAGES; page++) {
     const path: string = cursor === null ? '/v1/me/machines' : `/v1/me/machines?cursor=${encodeURIComponent(cursor)}`;
-    const got = interpret<MachinePage>(await Session.request({ orgId, method: 'GET', path }), 'MachinePage', [200], orgId);
+    const got = interpret<MachinePage>(await ask({ orgId, method: 'GET', path }), 'MachinePage', [200], orgId);
     if (!got.ok) return got;
     all.push(...got.value.items);
     cursor = got.value.next_cursor;
@@ -108,7 +125,7 @@ export async function listMachines(orgId: string): Promise<ApiOutcome<MachineSum
 
 /** Starts the teardown of one machine; a 404 means it is already gone. */
 export async function removeMachine(orgId: string, machineId: string): Promise<ApiOutcome<TeardownStarted | 'already_gone'>> {
-  const result = await Session.request({ orgId, method: 'DELETE', path: `/v1/me/machines/${encodeURIComponent(machineId)}` });
+  const result = await ask({ orgId, method: 'DELETE', path: `/v1/me/machines/${encodeURIComponent(machineId)}` });
   if (result.kind === 'api_error' && result.status === 404) return { ok: true, value: 'already_gone' };
   return interpret<TeardownStarted>(result, 'TeardownStarted', [202], orgId);
 }
@@ -118,7 +135,12 @@ export type MetaFailure = 'offline' | 'tls_error' | 'not_json' | 'access_redirec
 
 /** `GET <orgUrl>/v1/meta` through the native client, validated as a 02 `Meta`. */
 export async function getMeta(orgUrl: string): Promise<{ ok: true; meta: Meta } | { ok: false; code: MetaFailure }> {
-  const result = await Session.meta({ orgUrl });
+  let result: ApiResult;
+  try {
+    result = await Session.meta({ orgUrl });
+  } catch {
+    return { ok: false, code: 'refused' };
+  }
   switch (result.kind) {
     case 'ok':
       return result.status === 200 && validate('Meta', result.body).valid ? { ok: true, meta: result.body as Meta } : { ok: false, code: 'invalid' };
@@ -188,6 +210,10 @@ export function failureMessage(failure: ApiFailure): MessageDescriptor {
       return codeMessage(failure.code, failure.known);
     case 'invalid_response':
       return msg`The control plane sent an answer this app couldn't read. Updating the app may help.`;
+    case 'native_error':
+      return failure.code === 'vault_locked'
+        ? msg`Unlock the app, then try again.`
+        : msg`This phone couldn't finish the request. Try again; if it keeps happening, send diagnostics from Settings.`;
     default:
       return assertNever(failure);
   }

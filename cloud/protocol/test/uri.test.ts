@@ -1,6 +1,7 @@
 /**
  * Pins the app URIs (Design §10): the add-org builder and parser, the in-WebView control
- * URL decisions, and the handoff callback parameter split (query, else fragment).
+ * URL decisions, the handoff callback parameter split (query, else fragment), and the
+ * strict add-machine and verified agent-link forms.
  *
  * <module-headers:begin>
  * Uses:
@@ -13,7 +14,17 @@
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";
-import { addOrgUri, controlUrlDecision, handoffCallbackParams, parseAppUri, reauthUri } from "../src/uri.ts";
+import {
+  addMachineUri,
+  addOrgUri,
+  agentLinkUrl,
+  controlUrlDecision,
+  handoffCallbackParams,
+  parseAddMachineUri,
+  parseAgentLink,
+  parseAppUri,
+  reauthUri,
+} from "../src/uri.ts";
 import { fixture } from "./fixtures.ts";
 
 describe("add-org", () => {
@@ -50,5 +61,61 @@ describe("handoff callback parameters", () => {
     expect(handoffCallbackParams("https://app.example.com/auth/callback?state=s&jwe=j")?.get("jwe")).toBe("j");
     expect(handoffCallbackParams("https://app.example.com/auth/callback#state=s&error=handoff_declined")?.get("error")).toBe("handoff_declined");
     expect(handoffCallbackParams("yaranapp://auth/callback?state=a&state=b")).toBeNull();
+  });
+});
+
+describe("add-machine", () => {
+  const f = fixture("uri/add-machine.json");
+  for (const c of f.build) {
+    it(`build ${c.host.slice(0, 40)}`, () => {
+      if (c.expect === null) expect(() => addMachineUri(c.host)).toThrow();
+      else expect(addMachineUri(c.host)).toBe(c.expect);
+    });
+  }
+  for (const c of f.parse) {
+    it(`parse ${c.uri.slice(0, 70)}`, () => {
+      const r = parseAddMachineUri(c.uri);
+      if (c.expect === "uri_invalid") expect(r).toEqual({ ok: false, code: "uri_invalid" });
+      else expect(r).toEqual({ ok: true, kind: "add-machine", host: c.expect.host });
+      // The older parser and the machine-view control decision never act on it.
+      if (c.uri.toLowerCase().startsWith("yaranapp://add-machine")) {
+        expect(parseAppUri(c.uri)).toEqual({ ok: false, code: "uri_invalid" });
+        expect(controlUrlDecision(c.uri, "yaran.example.com")).toBe("ignore");
+      }
+    });
+  }
+  it("round-trips every built URI", () => {
+    for (const c of f.build.filter((b: { expect: string | null }) => b.expect !== null)) {
+      expect(parseAddMachineUri(addMachineUri(c.host))).toEqual({ ok: true, kind: "add-machine", host: c.host });
+    }
+  });
+});
+
+describe("agent link", () => {
+  const f = fixture("uri/agent-link.json");
+  const domain: string = f.publisher_domain;
+  for (const c of f.build) {
+    it(`build ${JSON.stringify(c.link).slice(0, 70)}`, () => {
+      if (c.expect === null) expect(() => agentLinkUrl(domain, c.link)).toThrow();
+      else {
+        expect(agentLinkUrl(domain, c.link)).toBe(c.expect);
+        expect(parseAgentLink(c.expect, domain)).toEqual({ ok: true, ...c.link });
+      }
+    });
+  }
+  it("refuses to build without a valid publisher domain", () => {
+    const link = f.build[0].link;
+    for (const d of f.build_bad_domain) expect(() => agentLinkUrl(d, link)).toThrow();
+  });
+  for (const c of f.parse) {
+    it(`parse ${c.url.slice(0, 80)}`, () => {
+      const r = parseAgentLink(c.url, domain);
+      if (c.expect === "uri_invalid") expect(r).toEqual({ ok: false, code: "uri_invalid" });
+      else expect(r).toEqual({ ok: true, ...c.expect });
+    });
+  }
+  it("refuses everything when the build has no valid publisher domain", () => {
+    const g = f.parse_without_domain;
+    for (const d of g.domains) expect(parseAgentLink(g.url, d)).toEqual({ ok: false, code: "uri_invalid" });
   });
 });

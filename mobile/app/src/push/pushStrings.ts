@@ -25,7 +25,7 @@ export const pushStrings = {
   "push.row.no_distributor": "No UnifiedPush distributor installed",
   "push.row.no_distributor.detail": "Install a distributor app such as ntfy to receive notifications.",
   "push.row.push_unavailable": "Notifications cannot reach this phone",
-  "push.row.registration_failed": "Turning on notifications failed",
+  "push.row.registration_failed": "Updating notifications on this phone failed",
   "push.row.refresh_pending": "Refreshing the notification registration",
   "push.row.delivery_failing": "The push service keeps failing; the organization keeps retrying",
   "push.row.org_disabled": "This organization has turned notifications off",
@@ -49,8 +49,11 @@ export const pushStrings = {
   "push.rationale": "yaran tells you when an agent needs you or stops with an error. Allow notifications to get those alerts on this phone.",
   "push.toast.machine_muted": "Notifications from {name} are muted on this phone. Unmute it in Settings, Notifications.",
   "push.toast.mute_saved_offline": "Muted on this phone. The change reaches {name} when the phone is back online.",
+  "push.toast.mute_full": "This phone already mutes the most machines it can for {name}. Unmute one in Settings, Notifications, first.",
   "push.toast.machine_unpaired": "That machine is no longer paired with this phone, so the notification cannot open it. Here are your machines.",
   "push.toast.turned_off": "Notifications from {name} are off on this phone.",
+  "push.toast.turn_on_failed": "Notifications from {name} are not turned on yet. Settings, Notifications says why; try again from there.",
+  "push.toast.turn_off_failed": "Notifications from {name} are not turned off yet. Settings, Notifications says why; try again from there.",
   "push.toast.revoked": "This phone was removed from {name}, so its notifications stopped.",
 } as const;
 

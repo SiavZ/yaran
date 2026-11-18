@@ -17,6 +17,8 @@
  *
  * Used by:
  * src/lib/native/nativeShell.ts
+ * ├── src/components/AuthGate.tsx
+ * ├── src/components/AuthGateNative.test.tsx
  * ├── src/components/OfflineOverlay.tsx
  * ├── src/lib/deviceLabel.ts
  * ├── src/lib/native/nativeShell.test.ts

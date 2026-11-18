@@ -15,12 +15,18 @@
  *
  * Used by:
  * src/button.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/DirectCheck.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/DirectSection.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/InstanceChangedDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/MachineList.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/MachineRoutes.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/RemoveMachineDialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/ShareTarget.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/states/Empty.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/states/ErrorState.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/states/Offline.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/states/PhoneRemoved.tsx
+ * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmMachine.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmOrg.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/EnterUrl.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/ScanQr.tsx

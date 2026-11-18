@@ -5,6 +5,9 @@
  * Uses:
  * src/screens/settings/Settings.tsx
  * ├── @yaran/ui-kit:src/button.tsx
+ * ├── @yaran/ui-kit:src/inline-code.tsx
+ * ├── src/lib/notify.ts
+ * ├── src/lib/openMachine.ts
  * ├── src/lib/route.ts
  * ├── src/lib/settingsStore.ts
  * ├── src/lib/store.ts
@@ -22,10 +25,13 @@
  */
 import { Trans } from '@lingui/react/macro';
 import { Button } from '@yaran/ui-kit/button';
+import { InlineCode } from '@yaran/ui-kit/inline-code';
 import { ChevronRightIcon, FileTextIcon, LanguagesIcon, ShieldCheckIcon, StethoscopeIcon } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 
 import { navigate, type SettingsPage } from '../../lib/route.ts';
+import { notify } from '../../lib/notify.ts';
+import { rejectionCode } from '../../lib/openMachine.ts';
 import { settingsStore, updateSettings } from '../../lib/settingsStore.ts';
 import { useStore } from '../../lib/store.ts';
 import { Page } from '../Page.tsx';
@@ -49,6 +55,13 @@ function Link({ page, children, icon }: { page: SettingsPage; children: ReactNod
 export function Settings() {
   const { reopenLastMachine } = useStore(settingsStore);
   const [erasing, setErasing] = useState(false);
+  async function setReopen(on: boolean) {
+    try { await updateSettings({ reopenLastMachine: on }); }
+    catch (err) {
+      const code = <InlineCode>{rejectionCode(err)}</InlineCode>;
+      notify('error', <Trans>The reopen preference couldn't be saved ({code}). It kept its previous value. Try again.</Trans>);
+    }
+  }
   return (
     <Page title={<Trans>Settings</Trans>}>
       <section>
@@ -61,7 +74,7 @@ export function Settings() {
         <h2 className="settings-heading"><Trans>Preferences</Trans></h2>
         <div className="settings-group">
           <Link page="security" icon={<ShieldCheckIcon aria-hidden className="size-5" />}><Trans>Security</Trans></Link>
-          <div className="pl-9 max-[24rem]:pl-0"><SwitchRow label={<Trans>Reopen last machine on launch</Trans>} checked={reopenLastMachine} onChange={(on) => void updateSettings({ reopenLastMachine: on })} /></div>
+          <div className="pl-9 max-[24rem]:pl-0"><SwitchRow label={<Trans>Reopen last machine on launch</Trans>} checked={reopenLastMachine} onChange={(on) => void setReopen(on)} /></div>
           <Link page="language" icon={<LanguagesIcon aria-hidden className="size-5" />}><Trans>Language</Trans></Link>
         </div>
       </section>

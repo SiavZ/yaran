@@ -14,13 +14,24 @@
  *
  * Used by:
  * src/inline-code.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/DirectCheck.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/DirectSection.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/InstanceChangedDialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/MachineRoutes.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/RemoveMachineDialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/ShareTarget.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/directText.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/states/Empty.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/states/PhoneRemoved.tsx
+ * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmMachine.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmOrg.tsx
+ * ├── @yaran/mobile-shell:src/screens/onboarding/EnterUrl.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/SignInResult.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/Welcome.tsx
  * ├── @yaran/mobile-shell:src/screens/orgs/SignOutOrgDialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/settings/LockScreen.tsx
+ * ├── @yaran/mobile-shell:src/screens/settings/SecuritySettings.tsx
+ * ├── @yaran/mobile-shell:src/screens/settings/Settings.tsx
  * ├── src/inline-code.test.tsx
  * ├── web:src/components/AddProjectDialog.tsx
  * ├── web:src/components/AgentEnvDialog.tsx

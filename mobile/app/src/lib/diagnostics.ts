@@ -18,10 +18,16 @@
  * ├── src/lib/api.ts
  * ├── src/lib/deepLinks.ts
  * ├── src/lib/diagnostics.test.ts
+ * ├── src/lib/directStore.ts
  * ├── src/lib/lifecycle.ts
  * ├── src/lib/orgStore.ts
+ * ├── src/lib/share.ts
  * ├── src/push/pushDeps.ts
  * ├── src/push/pushWiring.ts
+ * ├── src/screens/machines/DirectCheck.tsx
+ * ├── src/screens/machines/DirectSection.tsx
+ * ├── src/screens/machines/MachineList.tsx
+ * ├── src/screens/machines/ShareTarget.tsx
  * └── src/screens/onboarding/ConfirmOrg.tsx
  * <module-headers:end>
  */

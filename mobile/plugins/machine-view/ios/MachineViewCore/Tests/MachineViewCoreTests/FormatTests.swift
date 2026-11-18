@@ -16,12 +16,17 @@
 /// ├── MachineViewCore/Messages (inferred)
 /// ├── MachineViewCore/Outcomes (inferred)
 /// ├── MachineViewCore/UaToken (inferred)
+/// ├── MachineViewCoreTests/DirectOwnershipTests (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// └── MachineViewCoreTests/Fixtures (inferred)
 /// External: Foundation, Testing
 ///
 /// Used by: entry point (Swift Testing, via bash ios/MachineViewCore/test.sh)
 /// MachineViewCoreTests/FormatTests
 /// ├── MachineViewCoreTests/CryptoTests (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/HandoffClientTests (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
@@ -144,7 +149,7 @@ import Testing
         let allKinds: [SignInOutcome] = [.cancelled, .declined, .interrupted, .verificationFailed(domain: "d"), .rateLimited,
             .protocolUnsupported(min: nil, max: nil), .clockSkewed(serverTime: nil), .deviceKeyRejected(code: "c", securityLevel: .software),
             .refused(code: "c"), .noBrowser, .mismatch, .decryptFailed(code: "c"), .envelopeExpired, .notOwner(email: nil), .offline,
-            .tlsError, .vaultLocked]
+            .tlsError, .vaultLocked, .secureStorageFailed]
         for outcome in allKinds { #expect(Messages.signIn[outcome.kind] != nil, "\(outcome.kind)") }
         #expect(Messages.fill("{email} isn't the owner of {machine}.", ["email": "a@b.c", "machine": "m"]) == "a@b.c isn't the owner of m.")
     }

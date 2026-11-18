@@ -18,6 +18,8 @@ use yaran_core::auth::{MinimumFailure, Password};
 use yaran_core::web_sessions::{NewToken, SessionKind};
 use zeroize::Zeroizing;
 
+#[path = "status_answer.rs"]
+mod status_answer;
 use super::provenance::ClientClass;
 use super::{RequestAuth, Verify, cookie};
 use crate::server::AppState;
@@ -84,8 +86,7 @@ async fn status(
     State(state): State<AppState>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Response {
-    let mut doc = state.auth.status(&auth.0);
-    doc.instance = state.engine.instance_id().map(str::to_string);
+    let doc = status_answer::answer(state.auth.status(&auth.0), state.engine.instance_id());
     let mut response = Json(doc).into_response();
     response
         .headers_mut()
@@ -242,8 +243,8 @@ async fn login(
     response
 }
 
-/// `POST /api/v1/auth/cli-login` with `{password, label}`: a bearer token instead of a
-/// cookie. `expires_at` is null because the token ends only after `cli_token_idle_days` unused.
+/// `POST /api/v1/auth/cli-login` with `{password, label}`: a bearer token (`expires_at` null: it ends
+/// after `cli_token_idle_days` unused), and `cookie_name`, this listener's cookie (null off TCP).
 async fn cli_login(
     State(state): State<AppState>,
     Extension(auth): Extension<RequestAuth>,
@@ -260,7 +261,10 @@ async fn cli_login(
                     format!(" as {label:?}")
                 }
             ));
-            Json(json!({ "token": token.cookie_value, "expires_at": null })).into_response()
+            let name = (auth.0.cookie_port != 0).then(|| cookie::name(auth.0.cookie_port));
+            let body =
+                json!({ "token": token.cookie_value, "expires_at": null, "cookie_name": name });
+            Json(body).into_response()
         }
         SignIn::Refused(refusal) => refusal,
     }

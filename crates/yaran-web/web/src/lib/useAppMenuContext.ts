@@ -14,8 +14,9 @@ export function useAppMenuContext(): AppMenuContext {
     ghAvailable: bootstrap?.gh_available ?? false,
     githubIntegrationEnabled: bootstrap?.github_integration ?? false,
     nativeShell,
-    // A phone already inside the app needs no QR code to get there.
-    phonePairing: (bootstrap?.cloud?.paired ?? false) && !nativeShell,
+    // A phone already inside the app needs no QR code to get there. Paired or
+    // not: the dialog also offers this machine directly, or says what that needs.
+    phonePairing: !nativeShell,
     canSignOut,
   }
 }

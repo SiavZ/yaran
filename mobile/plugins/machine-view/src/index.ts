@@ -4,7 +4,8 @@
  * The web fallbacks (`web.ts`) only exist so Vitest and a plain browser load the package;
  * they reject every call with `unavailable`.
  *
- * - Re-exports the contract, the outcome unions and the shell-side machine opener.
+ * - Re-exports the contract (types plus the `MAX_ROUTES` and `MAX_SHARED_FILES` bounds), the
+ *   outcome unions and the shell-side machine opener.
  *
  * <module-headers:begin>
  * Uses:
@@ -17,9 +18,11 @@
  *
  * Used by: entry point (package entry of @yaran/machine-view, the "." export in mobile/plugins/machine-view/package.json)
  * src/index.ts
+ * ├── @yaran/mobile-shell:src/lib/deepLinks.ts
  * ├── @yaran/mobile-shell:src/lib/native/machineView.ts
  * ├── @yaran/mobile-shell:src/lib/openMachine.test.ts
  * ├── @yaran/mobile-shell:src/lib/openMachine.ts
+ * ├── @yaran/mobile-shell:src/push/muteIntent.test.ts
  * ├── @yaran/mobile-shell:src/push/notificationTap.ts
  * └── @yaran/mobile-shell:src/screens/onboarding/onboarding.test.tsx
  * <module-headers:end>
@@ -35,6 +38,6 @@ export const Session = registerPlugin<SessionPlugin>("Session", {
   web: () => import("./web.ts").then((m) => new m.SessionWeb()),
 });
 
-export type * from "./definitions.ts";
+export * from "./definitions.ts";
 export * from "./outcomes.ts";
 export * from "./routes.ts";

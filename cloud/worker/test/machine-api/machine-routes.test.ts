@@ -6,6 +6,7 @@
  * Uses:
  * test/machine-api/machine-routes.test.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/machine-api/config.ts
  * ├── test/pairing/pair-helpers.ts
  * └── test/phase06/fakes.ts
  * External: vitest
@@ -14,6 +15,7 @@
  * <module-headers:end>
  */
 import { validate } from "@yaran/protocol";
+import { publisherDomain } from "../../src/machine-api/config.ts";
 import { describe, expect, it } from "vitest";
 import { machineCall, pairedMachine, pairWorld } from "../pairing/pair-helpers.ts";
 import { machineRow, opsOf } from "../phase06/fakes.ts";
@@ -33,6 +35,33 @@ describe("GET /v1/machine/config", () => {
     expect(body).toMatchObject({ machine_id: machineId, tunnel: { token_version: 1 }, push: { enabled: true, detail: "names" }, events: { max_batch: 16 } });
     const row = await pw.w.ctx.db.prepare("SELECT last_seen_at, reported_protocol FROM machines WHERE id = ?").bind(machineId).first();
     expect(row).toEqual({ last_seen_at: pw.w.clock.now, reported_protocol: 1 });
+  });
+  it("names the publisher domain its APP_CALLBACK_URLS imply, and omits it when they imply none", async () => {
+    const pw = await pairWorld();
+    const { m, machineId } = await pairedMachine(pw);
+    const body = (await (await machineCall(pw, m, machineId, "GET", "/v1/machine/config")).json()) as Record<string, unknown>;
+    expect(body.publisher_domain).toBe("yaran.example");
+    pw.w.env.APP_CALLBACK_URLS = "yaranapp://auth/callback";
+    const none = (await (await machineCall(pw, m, machineId, "GET", "/v1/machine/config")).json()) as Record<string, unknown>;
+    expect(validate("MachineConfig", none).valid).toBe(true);
+    expect("publisher_domain" in none).toBe(false);
+  });
+  it("derives the publisher domain by the rule yaran shares (links.rs)", () => {
+    expect(publisherDomain([])).toBeUndefined();
+    expect(publisherDomain(["https://app.example.org/auth/callback"])).toBe("app.example.org");
+    expect(publisherDomain(["yaranapp://auth/callback", "https://app.example.org/auth/callback", "https://app.example.org/auth/callback"])).toBe("app.example.org");
+    for (const refused of [
+      ["https://a.example.org/auth/callback", "https://b.example.org/auth/callback"],
+      ["https://<publisher-domain>/auth/callback"],
+      ["https://app.example.org:8443/auth/callback"],
+      ["https://App.example.org/auth/callback"],
+      ["https://app.example.org/other"],
+      ["http://app.example.org/auth/callback"],
+      ["https://user@app.example.org/auth/callback"],
+      ["https://10.0.0.5/auth/callback"],
+    ]) {
+      expect(publisherDomain(refused), refused.join(" ")).toBeUndefined();
+    }
   });
   it("throttles the last_seen write to once a minute (04's signature check)", async () => {
     const pw = await pairWorld();

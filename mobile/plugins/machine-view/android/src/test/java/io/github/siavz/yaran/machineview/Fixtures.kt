@@ -13,6 +13,7 @@
  * Used by:
  * io.github.siavz.yaran.machineview.Fixtures
  * ├── io.github.siavz.yaran.machineview.CryptoFixtureTest
+ * ├── io.github.siavz.yaran.machineview.DirectFixtureTest
  * ├── io.github.siavz.yaran.machineview.HandoffUrlFixtureTest
  * └── io.github.siavz.yaran.machineview.PolicyFixtureTest
  * <module-headers:end>

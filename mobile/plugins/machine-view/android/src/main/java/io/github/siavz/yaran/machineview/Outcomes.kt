@@ -15,11 +15,13 @@
  * ├── io.github.siavz.yaran.app.PushGateway
  * ├── io.github.siavz.yaran.app.PushGatewayTest
  * ├── io.github.siavz.yaran.machineview.AndroidKeyStoreBackend (inferred)
+ * ├── io.github.siavz.yaran.machineview.AuthTabRegistryRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.BrowserLauncher (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
  * ├── io.github.siavz.yaran.machineview.Fakes (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.HandoffFailureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.NativeOrgApi (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClient (inferred)
@@ -55,6 +57,9 @@ sealed class SignInOutcome(val kind: String) {
     data object TlsError : SignInOutcome("tls_error")
     data object VaultLocked : SignInOutcome("vault_locked")
 
+    /** The key store or vault failed while the app was unlocked; only [VaultLockedException] is [VaultLocked]. */
+    data object SecureStorageFailed : SignInOutcome("secure_storage_failed")
+
     fun toJs(): Map<String, Any> {
         val m = linkedMapOf<String, Any>("kind" to kind)
         when (this) {
@@ -66,7 +71,7 @@ sealed class SignInOutcome(val kind: String) {
             is Refused -> m["code"] = code
             is DecryptFailed -> m["code"] = code
             is NotOwner -> email?.let { m["email"] = it }
-            Cancelled, Declined, Interrupted, RateLimited, NoBrowser, Mismatch, EnvelopeExpired, Offline, TlsError, VaultLocked -> Unit
+            Cancelled, Declined, Interrupted, RateLimited, NoBrowser, Mismatch, EnvelopeExpired, Offline, TlsError, VaultLocked, SecureStorageFailed -> Unit
         }
         return m
     }

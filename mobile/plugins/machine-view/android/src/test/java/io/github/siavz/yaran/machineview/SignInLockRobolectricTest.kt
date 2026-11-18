@@ -54,7 +54,7 @@ class SignInLockRobolectricTest {
     private val vault = FakeVault()
     private val diag = FakeDiagnostics()
     private val lock = FakeLock(enabled = true).also { it.vault = vault; it.grace = LockGrace.IMMEDIATELY }
-    private val sessions = SessionStore(vault, lock, diag) { }
+    private val sessions = SessionStore(vault, diag) { }
     private val keys = DeviceKeyStore(SoftwareKeyBackend(), InstallIdStore(vault), diag)
     private val client = HandoffClient(vault, { "https://cp.example.com" }, sessions, keys, CallbackMode.Https("app.example.com"), "Ada's Pixel", { clock }, diag, lock)
     private val app = ApplicationProvider.getApplicationContext<Application>()
@@ -108,7 +108,7 @@ class SignInLockRobolectricTest {
             "verification failed" to { _ -> client.onVerificationFailed() },
             "no browser" to { _ -> client.onNoBrowser() },
             "declined" to { q -> client.onRedirect("https://app.example.com/auth/callback?state=${q["state"]}&error=handoff_declined") },
-            "mismatch" to { _ -> client.onRedirect("https://app.example.com/auth/callback?state=${"A".repeat(43)}&jwe=x.y") },
+            "refused" to { q -> client.onRedirect("https://app.example.com/auth/callback?state=${q["state"]}&error=handoff_owner_mismatch") },
         )
         for ((name, end) in endings) {
             lock.locked = false

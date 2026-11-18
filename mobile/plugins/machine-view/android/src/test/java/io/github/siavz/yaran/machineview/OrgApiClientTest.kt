@@ -52,7 +52,7 @@ class OrgApiClientTest {
     private val backend = SoftwareKeyBackend()
     private val installIds = InstallIdStore(vault)
     private val keys = DeviceKeyStore(backend, installIds, diag)
-    private val sessions = SessionStore(vault, FakeLock(), diag) { }
+    private val sessions = SessionStore(vault, diag) { }
     private val urls = mutableListOf<URL>()
     private val wiped = mutableListOf<String>()
     private val orgs = OrgDirectory { mapOf("org1" to "https://cp.example.com", "org2" to "https://cp2.example.com", "bad" to "http://x.example.com")[it] }
@@ -195,5 +195,14 @@ class OrgApiClientTest {
         server.enqueue(json(200, "{}"))
         assertEquals(ApiResult.TlsError, untrusted.request("org1", "GET", "/v1/me", null))
         assertTrue(diag.lines.none { it.contains("eyJ") })
+    }
+
+    // F5: org B's session stored under org A's control-plane host is never sent for org A, nor deleted.
+    @Test
+    fun anotherOrgsSessionIsNeverSent() {
+        sessions.put("org2", HandoffPayload("control_plane", "cp.example.com", TestSealer.jwt(now + 86_400), "ada@example.org", now + 86_400, now, null))
+        assertEquals(ApiResult.SessionExpired, client.request("org1", "GET", "/v1/me/devices", null))
+        assertEquals("no request carried its Cookie or cf-access-token", 0, server.requestCount)
+        assertEquals("org2", sessions.get("cp.example.com")!!.orgId)
     }
 }

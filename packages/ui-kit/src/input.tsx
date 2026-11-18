@@ -13,6 +13,7 @@
  *
  * Used by:
  * src/input.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/MachineRoutes.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/EnterUrl.tsx
  * ├── web:src/components/AddProjectDialog.tsx
  * ├── web:src/components/AgentNameFields.tsx

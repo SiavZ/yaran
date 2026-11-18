@@ -91,8 +91,10 @@ internal class VaultSecrets(private val vault: Vault) : SecretVault {
                 ProtectionClass.STANDARD -> Protection.STANDARD
                 ProtectionClass.LOCKED -> Protection.LOCKED
             }
+            // The index first, and only when the name is new: the record write is then the one atomic
+            // step, so a failure never leaves a replaced record behind a half-written index.
+            n.name?.let { name -> names(n.namespace).let { if (name !in it) saveNames(n.namespace, it + name) } }
             vault.set(n.namespace, n.key, String(value, Charsets.UTF_8), protection)
-            n.name?.let { name -> saveNames(n.namespace, names(n.namespace) + name) }
             Unit
         }
 

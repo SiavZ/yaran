@@ -17,6 +17,7 @@
 //! ├── cloud::protocol::fingerprint
 //! ├── cloud::protocol::handoff
 //! ├── cloud::protocol::handoff_consent
+//! ├── cloud::protocol::links
 //! ├── cloud::protocol::machine
 //! ├── cloud::protocol::meta
 //! ├── cloud::protocol::pairing
@@ -52,6 +53,7 @@ pub mod errors;
 pub mod fingerprint;
 pub mod handoff;
 pub mod handoff_consent;
+pub mod links;
 pub mod machine;
 pub mod meta;
 pub mod pairing;

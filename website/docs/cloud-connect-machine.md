@@ -86,8 +86,10 @@ The same actions are reachable from both front ends, named differently on each:
   comes up, `☁ downloading…` while it fetches `cloudflared`, and `☁ revoked` or
   `☁ failed` when something needs you (and `☁ not paired` with `mode = "yes"`).
 - **In the browser**, the cog menu's **Yaran Cloud…** opens a dialog with **Connect**,
-  **Rotate token…** and **Disconnect…**, and **Connect a phone…** shows the QR code. The
-  cloud mode is a row in **Preferences…**.
+  **Rotate token…** and **Disconnect…**, and **Connect a phone…** shows the QR code (and,
+  when the page is open over an HTTPS address yaran can vouch for, a second code that adds
+  the machine directly; see [the phone app](/docs/mobile-apps#adding-a-machine-without-cloud-connect)).
+  The cloud mode is a row in **Preferences…**.
 
 Rotating the consent key is in the command line only.
 
@@ -170,7 +172,7 @@ connection starts.
 | `unauthorized_confirm_seconds` | `60` | How long Cloudflare must keep refusing the tunnel before yaran checks whether the machine was revoked |
 | `login_timeout_seconds` | `900` | How long `yaran cloud login` waits for the browser |
 | `request_timeout_seconds` | `15` | Timeout for each call to the control plane |
-| `app_callback_urls` | the official app's sign-in link | Where phone sign-ins may hand back to. Empty in a build of yaran made without a publisher domain |
+| `app_callback_urls` | the official app's sign-in link | Where phone sign-ins may hand back to. Its one https domain is also where **Copy phone link** points on a machine added to the app by its address. Empty in a build of yaran made without a publisher domain |
 | `access_clock_skew_seconds` | `30` | Clock difference tolerated when checking an Access sign-in. Raise it on a machine with poor time sync |
 | `access_jwks_refresh_seconds` | `14400` | How often yaran refreshes Cloudflare Access's signing keys |
 | `access_jwks_retry_cooldown_seconds` | `30` | How long yaran waits before retrying a failed key fetch |

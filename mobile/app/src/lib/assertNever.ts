@@ -11,7 +11,9 @@
  * src/lib/assertNever.ts
  * ├── src/lib/api.ts
  * ├── src/lib/route.ts
+ * ├── src/lib/share.ts
  * ├── src/screens/machines/MachineRow.tsx
+ * ├── src/screens/machines/directText.tsx
  * └── src/screens/onboarding/SignInResult.tsx
  * <module-headers:end>
  */

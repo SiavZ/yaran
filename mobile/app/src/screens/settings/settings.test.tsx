@@ -10,25 +10,31 @@
  * Uses:
  * src/screens/settings/settings.test.tsx
  * ├── @yaran/secure-store:src/index.ts
+ * ├── src/App.tsx
  * ├── src/lib/buildInfo.ts
  * ├── src/lib/orgStore.ts
+ * ├── src/lib/settingsStore.ts
  * ├── src/screens/settings/Diagnostics.tsx
  * ├── src/screens/settings/Licenses.tsx
  * ├── src/screens/settings/LockScreen.tsx
  * ├── src/screens/settings/SecuritySettings.tsx
  * ├── src/screens/settings/Settings.tsx
- * └── src/test/render.tsx
+ * ├── src/test/render.tsx
+ * └── src/test/setup.ts
  * External: @testing-library/react, sonner, vitest
  *
  * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { AppLock, BuildInfo, Diagnostics as DiagnosticsLog, SecureStore } from '@yaran/secure-store';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { AppLock, BuildInfo, Diagnostics as DiagnosticsLog, ScreenPrivacy, SecureStore } from '@yaran/secure-store';
 import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetBuildInfoForTests } from '../../lib/buildInfo.ts';
+import { DEFAULT_SETTINGS, settingsStore } from '../../lib/settingsStore.ts';
+import { App } from '../../App.tsx';
+import { vault } from '../../test/setup.ts';
 import { orgStore } from '../../lib/orgStore.ts';
 import { renderShell } from '../../test/render.tsx';
 import { Diagnostics } from './Diagnostics.tsx';
@@ -44,7 +50,59 @@ vi.mock('sonner', async (orig) => ({
 
 beforeEach(resetBuildInfoForTests);
 
+it.each([false, true])('a failed explicit reopen preference keeps %s, explains why and can be retried', async (initial) => {
+  orgStore.set({ loaded: true, orgs: [] });
+  settingsStore.set({ ...DEFAULT_SETTINGS, reopenLastMachine: initial });
+  vault.set('settings/shell', JSON.stringify(settingsStore.get()));
+  window.location.hash = '#/settings';
+  renderShell(<App />);
+  const control = screen.getByRole('switch', { name: 'Reopen last machine on launch' });
+  vi.mocked(SecureStore.set).mockRejectedValueOnce({ code: 'unavailable', message: 'private diagnostic' });
+  fireEvent.click(control);
+  await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
+  expect(control.getAttribute('aria-checked')).toBe(String(initial));
+  expect(settingsStore.get().reopenLastMachine).toBe(initial);
+  expect(JSON.parse(vault.get('settings/shell')!).reopenLastMachine).toBe(initial);
+  const error = renderShell(<>{vi.mocked(toast.error).mock.calls[0]![0]}</>).container.textContent;
+  expect(error).toMatch(/couldn't be saved.*unavailable.*previous value.*Try again/);
+  expect(error).not.toContain('private diagnostic');
+  fireEvent.click(control);
+  await waitFor(() => expect(control.getAttribute('aria-checked')).toBe(String(!initial)));
+  expect(JSON.parse(vault.get('settings/shell')!).reopenLastMachine).toBe(!initial);
+});
+
 describe('SecuritySettings', () => {
+  it.each(['lock', 'privacy'])('explains an unreadable initial %s state and leaves that control disabled', async (kind) => {
+    if (kind === 'lock') vi.mocked(AppLock.status).mockRejectedValueOnce({ code: 'unavailable' });
+    else vi.mocked(ScreenPrivacy.get).mockRejectedValueOnce({ code: 'unavailable' });
+    renderShell(<SecuritySettings />);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
+    const control = screen.getByRole('switch', { name: kind === 'lock' ? 'App lock' : 'Hide screen content' });
+    expect(control.hasAttribute('disabled') || control.getAttribute('aria-disabled') === 'true').toBe(true);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it.each(['enable', 'disable', 'privacy', 'status after enable', 'status after options'])('explains a rejected %s and keeps confirmed state', async (action) => {
+    const initial = { enabled: action === 'disable', allowPasscode: false, grace: '1min' as const, locked: false, biometry: 'available' as const };
+    const failure = { code: 'unavailable', message: 'private diagnostic text' };
+    vi.mocked(AppLock.status).mockResolvedValue(initial);
+    vi.mocked(ScreenPrivacy.get).mockResolvedValue({ enabled: false });
+    renderShell(<SecuritySettings />);
+    const control = await screen.findByRole('switch', { name: action === 'privacy' ? 'Hide screen content' : action === 'status after options' ? 'Allow device passcode' : 'App lock' });
+    await waitFor(() => expect(control.hasAttribute('disabled')).toBe(false));
+    if (action === 'enable') vi.mocked(AppLock.enable).mockRejectedValueOnce(failure);
+    if (action === 'disable') vi.mocked(AppLock.disable).mockRejectedValueOnce(failure);
+    if (action === 'privacy') vi.mocked(ScreenPrivacy.set).mockRejectedValueOnce(failure);
+    if (action.startsWith('status')) vi.mocked(AppLock.status).mockRejectedValueOnce(failure);
+    fireEvent.click(control);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledOnce());
+    expect(control.getAttribute('aria-checked')).toBe(action === 'disable' ? 'true' : 'false');
+    expect(toast.success).not.toHaveBeenCalled();
+    renderShell(<>{vi.mocked(toast.error).mock.calls[0]![0]}</>);
+    expect(screen.getByText('unavailable')).toBeTruthy();
+    expect(screen.queryByText(/private diagnostic text/)).toBeNull();
+  });
+
   it('enabling the lock calls AppLock.enable and confirms the outcome', async () => {
     renderShell(<SecuritySettings />);
     const lock = await screen.findByRole('switch', { name: 'App lock' });
@@ -66,11 +124,35 @@ describe('lock options', () => {
     vi.mocked(AppLock.setOptions).mockRejectedValueOnce({ code: 'invalid_argument' });
     renderShell(<SecuritySettings />);
     fireEvent.click(await screen.findByRole('switch', { name: 'Allow device passcode' }));
-    await waitFor(() => expect(toast.warning).toHaveBeenCalled());
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
   });
 });
 
 describe('LockScreen', () => {
+  it('an unlock ending after teardown does not invoke the retired callback', async () => {
+    let resolve!: (answer: { outcome: 'unlocked' }) => void;
+    vi.mocked(AppLock.unlock).mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+    const onUnlocked = vi.fn();
+    const view = renderShell(<LockScreen onUnlocked={onUnlocked} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+    view.unmount();
+    await act(async () => { resolve({ outcome: 'unlocked' }); });
+    expect(onUnlocked).not.toHaveBeenCalled();
+  });
+
+  it('explains a rejected unlock without leaving the lock screen or exposing raw diagnostics', async () => {
+    const unlocked = vi.fn();
+    vi.mocked(AppLock.unlock).mockRejectedValueOnce({ code: 'token=private', message: 'private diagnostic text' });
+    renderShell(<LockScreen onUnlocked={unlocked} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('unknown');
+    expect(alert.textContent).not.toMatch(/token=private|private diagnostic text/);
+    expect(unlocked).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Unlock' })).toBeTruthy();
+  });
+
   it('an invalidated lock shows the wiped-sessions sentence', async () => {
     vi.mocked(AppLock.unlock).mockResolvedValueOnce({ outcome: 'invalidated' });
     renderShell(<LockScreen onUnlocked={() => {}} />);

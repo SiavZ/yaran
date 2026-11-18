@@ -4,7 +4,8 @@
  * Phase 15's native client runs the sealed handoff; the shell turns its `SignInOutcome` into
  * words. Names (hosts, domains, emails, machines) render as chips.
  *
- * - Exhaustive over `SignInOutcome`; a new variant fails to compile here.
+ * - Exhaustive over `SignInOutcome`; a new variant fails to compile here. A native call that
+ *   rejected is shown with its own code (`rejected`), never relabelled as offline or locked.
  *
  * <module-headers:begin>
  * Uses:
@@ -20,6 +21,7 @@
  * Used by:
  * src/screens/onboarding/SignInResult.tsx
  * ├── src/screens/machines/MachineList.tsx
+ * ├── src/screens/machines/MachineRoutes.tsx
  * └── src/screens/onboarding/ConfirmOrg.tsx
  * <module-headers:end>
  */
@@ -33,10 +35,12 @@ import type { SignInOutcome } from '../../lib/native/machineView.ts';
 import { updateFor } from '../../lib/protocolCompat.ts';
 import { navigate } from '../../lib/route.ts';
 
-type Failure = Exclude<SignInOutcome, { kind: 'signed_in' }>;
+/** A sign-in that did not end signed in, or (`rejected`) a native call that never answered with an outcome. */
+export type SignInFailure = Exclude<SignInOutcome, { kind: 'signed_in' }> | { kind: 'rejected'; code: string };
+type Failure = SignInFailure;
 
 // The 15 failure matrix, in the shell's catalog; `host` is the org being signed in to.
-function sentence(o: Failure, host: string): { text: ReactNode; retry: boolean } {
+export function signInSentence(o: Failure, host: string): { text: ReactNode; retry: boolean } {
   switch (o.kind) {
     case 'cancelled':
       return { text: <Trans>Sign-in was cancelled.</Trans>, retry: true };
@@ -102,6 +106,16 @@ function sentence(o: Failure, host: string): { text: ReactNode; retry: boolean }
       return { text: <Trans>The connection to <InlineCode>{host}</InlineCode> isn't secure, so the app stopped.</Trans>, retry: false };
     case 'vault_locked':
       return { text: <Trans>Unlock the app first, then sign in.</Trans>, retry: true };
+    case 'secure_storage_failed':
+      return {
+        text: <Trans>This phone's secure storage couldn't create or use the sign-in key, or save the sign-in. Try again; if it keeps failing, restart the phone.</Trans>,
+        retry: true,
+      };
+    case 'rejected':
+      return {
+        text: <Trans>The app couldn't start the sign-in (<InlineCode>{o.code}</InlineCode>). Try again; if it keeps happening, send diagnostics from Settings.</Trans>,
+        retry: true,
+      };
     default:
       return assertNever(o);
   }
@@ -110,7 +124,7 @@ function sentence(o: Failure, host: string): { text: ReactNode; retry: boolean }
 export function SignInResult({ outcome, host, onRetry, embedded = false, onBack }: {
   outcome: Failure; host: string; onRetry: () => void; embedded?: boolean; onBack?: () => void;
 }) {
-  const { text, retry } = sentence(outcome, host);
+  const { text, retry } = signInSentence(outcome, host);
   const result = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // The sign-in button is replaced by this result. Keep keyboard focus in its recovery flow;

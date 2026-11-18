@@ -93,6 +93,8 @@ internal class OverlayView(context: Context, private val banner: Boolean, privat
         "back_to_machines" -> "Back to machines"
         "retry" -> "Retry"
         "renew" -> "Renew"
+        "try_another_route" -> "Try another route"
+        "discard" -> "Discard"
         else -> action
     }
 

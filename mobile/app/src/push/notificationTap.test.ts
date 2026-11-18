@@ -25,6 +25,7 @@ function deps() {
     pairedMachineIds: (orgId) => (orgId === "org-1" ? [MACHINE] : []),
     openAgent: async (o) => {
       opened.push(o);
+      return true;
     },
     showMachines: (orgId) => log.push(`machines:${orgId}`),
     muteMachine: async (orgId, machineId) => {
@@ -41,6 +42,13 @@ describe("notification taps", () => {
     expect(await handleTap(d, { orgId: "org-1", machineId: MACHINE, agentId: "a1", tabId: "t2", action: "open" })).toBe("opened");
     expect(opened).toEqual([{ orgId: "org-1", machineId: MACHINE, route: "#/agent/a1/tab/t2" }]);
     expect(calls.find((c) => c.method === "clearDelivered")?.args).toEqual({ orgId: "org-1", machineId: MACHINE, agentId: "a1", tabId: "t2" });
+  });
+
+  it("keeps the delivered alerts when the window did not open", async () => {
+    const { d, calls } = deps();
+    d.openAgent = async () => false;
+    expect(await handleTap(d, { orgId: "org-1", machineId: MACHINE, agentId: "a1", action: "open" })).toBe("open_failed");
+    expect(calls.some((c) => c.method === "clearDelivered")).toBe(false);
   });
 
   it("opens the bare agent hash when the payload omitted t", async () => {

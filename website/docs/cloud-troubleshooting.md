@@ -110,6 +110,32 @@ Something between you and yaran answered instead of yaran. Through Cloud Connect
 is usually an expired Access sign-in, as the message itself says: reload the page to
 sign in again.
 
+### "This page did not reach yaran over an HTTPS address yaran can vouch for, and the phone app only opens machines over HTTPS."
+
+**Connect a phone…** shows this instead of the machine code, and **Copy phone link** says
+it on a machine with no org. Open the web UI through the machine's `tailscale serve`
+HTTPS address (or a Tailscale Funnel) and try again. yaran does not take a proxy's word
+that a request was HTTPS, so behind your own HTTPS proxy, type the address into the app
+instead.
+
+### "This page's address is not a DNS name on the default HTTPS port, so a phone could not open it."
+
+The page is open on an IP address, `localhost`, or an address with a port. Open it
+through the machine's `tailscale serve` name.
+
+### "This is the machine's Cloud Connect address, which a phone opens through its organisation, never as a machine of its own."
+
+The page is open on the machine's Cloud Connect hostname. Use the organisation code in
+the same dialog, or add the org in the app.
+
+### "This machine's [cloud] app_callback_urls names no single https callback of the phone app, so yaran does not know which domain the app opens links on."
+
+**Copy phone link** copies nothing because yaran does not know which domain the app
+verifies links on. On a paired machine, the sentence before it says what the org's control
+plane answered: its `APP_CALLBACK_URLS` must hold exactly one https sign-in callback, and
+an older control plane names none. On a machine without an org, set `app_callback_urls`
+in `[cloud]` to the app's https sign-in callback (an official yaran build has it already).
+
 ### The `workers.dev` address refuses everything
 
 That is intended. Once setup finishes, the control plane answers only on
@@ -253,6 +279,12 @@ serving, the machine is asleep, or its connection is down. Check `yaran cloud st
 the machine. "`<machine>` is no longer connected to the cloud. Check yaran cloud status
 on the machine." means yaran on the machine no longer answers for that address, usually
 because the machine was logged out or revoked.
+
+### "yaran on `<host>` is too old for the app. Update yaran on that machine, then try again."
+
+The machine runs a yaran from before the app could sign in to it safely, so the app does
+not show its page, through an org or on its own. Update yaran on that machine to a
+current release and open it again. Nothing was signed in or kept on the phone.
 
 ### "yaran on `<machine>` can't reach Cloudflare's key service, so signing in again won't help."
 

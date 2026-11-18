@@ -40,21 +40,43 @@
  * Used by: entry point (package entry of @yaran/protocol, the "." export in cloud/protocol/package.json)
  * src/index.ts
  * ├── @yaran/machine-view:src/outcomes.ts
+ * ├── @yaran/mobile-shell:src/approvalNavigation.test.tsx
+ * ├── @yaran/mobile-shell:src/continuations.test.tsx
+ * ├── @yaran/mobile-shell:src/explicitOpen.test.tsx
+ * ├── @yaran/mobile-shell:src/launch.test.tsx
  * ├── @yaran/mobile-shell:src/lib/api.ts
+ * ├── @yaran/mobile-shell:src/lib/deepLinks.test.ts
  * ├── @yaran/mobile-shell:src/lib/deepLinks.ts
+ * ├── @yaran/mobile-shell:src/lib/directStore.test.ts
+ * ├── @yaran/mobile-shell:src/lib/directStore.ts
+ * ├── @yaran/mobile-shell:src/lib/heldLinks.test.ts
  * ├── @yaran/mobile-shell:src/lib/lifecycle.test.ts
  * ├── @yaran/mobile-shell:src/lib/machinesStore.ts
  * ├── @yaran/mobile-shell:src/lib/openMachine.ts
  * ├── @yaran/mobile-shell:src/lib/protocolCompat.ts
+ * ├── @yaran/mobile-shell:src/push/muteIntent.test.ts
+ * ├── @yaran/mobile-shell:src/push/muteSync.ts
+ * ├── @yaran/mobile-shell:src/push/pushRaces.test.ts
  * ├── @yaran/mobile-shell:src/push/pushRegistration.ts
+ * ├── @yaran/mobile-shell:src/push/pushRejections.test.ts
  * ├── @yaran/mobile-shell:src/push/pushTestKit.ts
+ * ├── @yaran/mobile-shell:src/push/pushToggles.test.ts
+ * ├── @yaran/mobile-shell:src/push/pushTurns.test.ts
  * ├── @yaran/mobile-shell:src/push/pushWiring.test.ts
  * ├── @yaran/mobile-shell:src/push/pushWiring.ts
+ * ├── @yaran/mobile-shell:src/reopenPriority.test.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/MachineList.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/MachineRoutes.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/MachineRow.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/RemoveMachineDialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/approval.test.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/direct.test.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/instanceChanged.test.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/machines.test.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/upgradeRequired.test.tsx
+ * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmMachine.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmOrg.tsx
+ * ├── @yaran/mobile-shell:src/screens/onboarding/ScanQr.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/onboarding.test.tsx
  * ├── @yaran/push:src/definitions.ts
  * ├── @yaran/push:test/guards.test.ts

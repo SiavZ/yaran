@@ -14,6 +14,7 @@
  * ├── io.github.siavz.yaran.machineview.B64url (inferred)
  * ├── io.github.siavz.yaran.machineview.CoreBindings (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectAuth (inferred)
  * ├── io.github.siavz.yaran.machineview.Outcomes (inferred)
  * ├── io.github.siavz.yaran.machineview.P256 (inferred)
  * └── io.github.siavz.yaran.machineview.SealedEnvelope (inferred)
@@ -21,11 +22,26 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.Fakes
+ * ├── io.github.siavz.yaran.machineview.AbandonedLoginRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.AdmissionRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.AuthTabRegistryRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.CoreAdaptersTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectAuthTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectFixtureTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectWindowRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.FreshSignInRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.HandoffFailureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineWindowRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.NativeCookieIsolationRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.SessionGenerationRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
- * └── io.github.siavz.yaran.machineview.StoresTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.StaleOpenRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.StoresTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.UpgradeRequiredRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.WindowRepairRobolectricTest (inferred)
+ * └── io.github.siavz.yaran.machineview.WindowRound12RobolectricTest (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
@@ -169,4 +185,50 @@ object TestSealer {
 
     fun payload(kind: String, host: String, exp: Long, iat: Long, jwtExp: Long = exp): JSONObject =
         JSONObject().put("v", 1).put("kind", kind).put("host", host).put("jwt", jwt(jwtExp)).put("email", "ada@example.org").put("exp", exp).put("iat", iat)
+}
+
+/** PluginRuntime is one per process and outlives a test class: every window test drives these. */
+object TestBindings {
+    val lock = FakeLock()
+    val vault = FakeVault()
+}
+
+/**
+ * A yaran on loopback HTTPS answering every status request with [body] (by default a build
+ * whose page signs in natively, no password needed): what an org window's admission probe
+ * reaches. No request leaves the machine; [requests] counts them.
+ */
+internal class FakeYaran(var body: JSONObject = capableStatus()) : AutoCloseable {
+    /** What a request carrying a session cookie gets instead of [body], when set. */
+    @Volatile var signedBody: JSONObject? = null
+
+    /** True: every connection is dropped, as an unreachable machine's would be. */
+    @Volatile var offline = false
+    private val cert = okhttp3.tls.HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
+    private val trust = okhttp3.tls.HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()
+    private val server = okhttp3.mockwebserver.MockWebServer().apply {
+        useHttps(okhttp3.tls.HandshakeCertificates.Builder().heldCertificate(cert).build().sslSocketFactory(), false)
+        dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = if (offline) {
+                okhttp3.mockwebserver.MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START)
+            } else {
+                okhttp3.mockwebserver.MockResponse().setHeader("Content-Type", "application/json")
+                    .setBody(((if (request.getHeader("Cookie") != null) signedBody else null) ?: body).toString())
+            }
+        }
+        start()
+    }
+    val requests get() = server.requestCount
+    val auth = DirectAuth("YaranApp/1.0.0 (android; phone)", FakeDiagnostics()) { url ->
+        (java.net.URL("https", "localhost", server.port, url.file).openConnection() as javax.net.ssl.HttpsURLConnection)
+            .apply { sslSocketFactory = trust.sslSocketFactory() }
+    }
+
+    override fun close() = server.shutdown()
+
+    companion object {
+        fun capableStatus(capable: Boolean = true): JSONObject = JSONObject().put("password_set", false).put("required_here", false)
+            .put("signed_in", false).put("client_class", "network").put("transport_encrypted", true).put("instance", JSONObject.NULL)
+            .apply { if (capable) put("native_auth_ui", true) }
+    }
 }

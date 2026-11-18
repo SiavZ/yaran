@@ -31,6 +31,7 @@
 //! ├── cloud_ingress
 //! ├── cloud_mode
 //! ├── cloud_mode_routes
+//! ├── cloud_phone_links
 //! ├── cloud_phone_routes
 //! ├── cloud_routes
 //! ├── config_routes
@@ -94,6 +95,7 @@
 //! ├── build_routes
 //! ├── changes_routes
 //! ├── cloud_mode_routes
+//! ├── cloud_phone_links
 //! ├── cloud_phone_routes
 //! ├── cloud_routes
 //! ├── cloud_test_support
@@ -1194,6 +1196,7 @@ fn gated_routes(
         // the auth layer then counts that owner as signed in (`auth::provenance`).
         .merge(crate::cloud_handoff::cloud_routes(cloud.clone()))
         .merge(crate::cloud_phone_routes::routes())
+        .merge(crate::cloud_phone_links::routes())
         .merge(extra_gated)
         .route("/healthz", get(|| async { "ok" }))
         .fallback(crate::control_socket::fallback)

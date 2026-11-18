@@ -28,26 +28,54 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.webkit.CookieManager
+import android.webkit.WebStorage
 
 internal class CookieInjector : WebDataCleaner {
     private val main = Handler(Looper.getMainLooper())
 
-    fun inject(host: String, setCookie: String, done: (Boolean) -> Unit) {
+    /**
+     * Sets [setCookie] for [host] on the main thread. [owned] is asked right before the cookie is
+     * set, inside the queued step: a window closed or replaced while it waited changes nothing.
+     */
+    fun inject(host: String, setCookie: String, owned: () -> Boolean = { true }, done: (Boolean) -> Unit) {
         main.post {
+            if (!owned()) return@post done(false)
             val cm = CookieManager.getInstance()
             cm.setAcceptCookie(true)
             cm.setCookie(CookieSpec.cookieUrl(host), setCookie) { ok ->
-                if (!ok || Fallbacks.COOKIE_POLL_MS <= 0) done(ok) else poll(host, SystemClock.uptimeMillis() + Fallbacks.COOKIE_POLL_MS, done)
+                val name = setCookie.substringBefore('=') + "="
+                if (!ok || Fallbacks.COOKIE_POLL_MS <= 0) done(ok) else poll(host, name, SystemClock.uptimeMillis() + Fallbacks.COOKIE_POLL_MS, done)
             }
         }
     }
 
-    private fun poll(host: String, deadline: Long, done: (Boolean) -> Unit) {
-        val present = CookieManager.getInstance().getCookie(CookieSpec.cookieUrl(host))?.contains("CF_Authorization=") == true
+    private fun poll(host: String, name: String, deadline: Long, done: (Boolean) -> Unit) {
+        val present = CookieManager.getInstance().getCookie(CookieSpec.cookieUrl(host))?.split("; ")?.any { it.startsWith(name) } == true
         when {
             present -> done(true)
             SystemClock.uptimeMillis() >= deadline -> done(false)
-            else -> main.postDelayed({ poll(host, deadline, done) }, 25)
+            else -> main.postDelayed({ poll(host, name, deadline, done) }, 25)
+        }
+    }
+
+    /**
+     * A direct machine's sign-out: expires every cookie the store shows for [host] (host-only,
+     * `Path=/`) and, with [storage], deletes the origin's web storage (a dropped stale session keeps
+     * the page's drafts). Cookies set with another path or a parent
+     * domain are not reachable this way; yaran sets neither.
+     */
+    fun clearHost(host: String, storage: Boolean = true, owned: () -> Boolean = { true }) {
+        main.post {
+            if (!owned()) return@post // the window that dropped the session moved on: the jar may be another's now
+            val cm = CookieManager.getInstance()
+            val url = CookieSpec.cookieUrl(host)
+            cm.getCookie(url)?.split(";")?.map { it.trim().substringBefore('=') }?.filter { it.isNotEmpty() }?.toSet()?.forEach {
+                // Overwrite the value first, then expire: the secret is gone even where an expiry is not honoured at once.
+                cm.setCookie(url, "$it=; Path=/; Secure; HttpOnly")
+                cm.setCookie(url, "$it=; Path=/; Secure; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+            }
+            if (storage) WebStorage.getInstance().deleteOrigin("https://$host")
+            Thread({ cm.flush() }, "machine-view-cookie-flush").start()
         }
     }
 

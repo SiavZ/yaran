@@ -19,6 +19,7 @@
 ///
 /// Used by:
 /// MachineViewCore/SealedEnvelope
+/// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
 /// ├── MachineViewCore/SessionStore (inferred)

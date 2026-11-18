@@ -9,6 +9,7 @@
  *
  * Used by:
  * src/screens/machines/states/Offline.tsx
+ * ├── src/screens/machines/DirectCheck.tsx
  * ├── src/screens/machines/MachineList.tsx
  * └── src/screens/onboarding/ConfirmOrg.tsx
  * <module-headers:end>

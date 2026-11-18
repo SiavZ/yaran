@@ -24,9 +24,26 @@ const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const PRODUCTION = ['lib/notify.ts'];
 // Each mocks sonner's `toast` to assert which tone a flow raised; none raises a toast itself.
 const TESTS = [
+  'explicitOpen.test.tsx',
+  'launch.test.tsx',
   'lib/deepLinks.test.ts',
+  'lib/heldLinks.test.ts',
   'lib/notify.test.ts',
+  'push/pushRejections.test.ts',
+  'push/pushToggles.test.ts',
+  'approvalNavigation.test.tsx',
+  'continuations.test.tsx',
+  'orgStaging.test.tsx',
+  'orgStagingSettle.test.tsx',
+  'reopenPriority.test.tsx',
+  'push/pushTurns.test.ts',
+  'push/pushWiring.test.ts',
+  'screens/machines/approval.test.tsx',
+  'screens/machines/direct.test.tsx',
+  'screens/machines/instanceChanged.test.tsx',
   'screens/machines/machines.test.tsx',
+  'screens/machines/upgradeRequired.test.tsx',
+  'shareBatch.test.tsx',
   'screens/settings/settings.test.tsx',
 ];
 const IMPORTS_SONNER = /(?:from\s*|import\(\s*)['"]sonner['"]/;

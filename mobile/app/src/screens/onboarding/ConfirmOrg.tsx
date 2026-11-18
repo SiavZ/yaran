@@ -18,9 +18,12 @@
  * ├── @yaran/ui-kit:src/inline-code.tsx
  * ├── src/lib/api.ts
  * ├── src/lib/diagnostics.ts
+ * ├── src/lib/erasure.ts
  * ├── src/lib/hostRules.ts
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/native/machineView.ts
+ * ├── src/lib/notify.ts
+ * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.ts
  * ├── src/lib/protocolCompat.ts
  * ├── src/lib/route.ts
@@ -42,24 +45,27 @@ import type { Meta } from '@yaran/protocol';
 import { Button } from '@yaran/ui-kit/button';
 import { InlineCode } from '@yaran/ui-kit/inline-code';
 import { LoaderCircleIcon, ShieldCheckIcon } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { log } from '../../lib/diagnostics.ts';
+import { eraseEpoch, erasing } from '../../lib/erasure.ts';
 import { orgUrl } from '../../lib/hostRules.ts';
 import { refreshMachines } from '../../lib/machinesStore.ts';
 import { getMeta, type MetaFailure } from '../../lib/api.ts';
 import { Session, type SignInOutcome } from '../../lib/native/machineView.ts';
-import { addOrg, findOrg, removeOrgLocal } from '../../lib/orgStore.ts';
+import { notify } from '../../lib/notify.ts';
+import { machineChoices, rejectionCode } from '../../lib/openMachine.ts';
+import { orgIncarnation, ownsStaging, settleStaging, stageOrg, unstageOrg, type Staging } from '../../lib/orgStore.ts';
 import { protocolVerdict } from '../../lib/protocolCompat.ts';
 import { navigate } from '../../lib/route.ts';
 import { Page } from '../Page.tsx';
 import { Offline } from '../machines/states/Offline.tsx';
 import { ProtocolMismatch } from '../machines/states/ProtocolMismatch.tsx';
 import { SetupIncomplete } from '../machines/states/SetupIncomplete.tsx';
-import { SignInResult } from './SignInResult.tsx';
+import { SignInResult, type SignInFailure } from './SignInResult.tsx';
 
 type MetaState = { kind: 'loading' } | { kind: 'ready'; meta: Meta } | { kind: 'failed'; code: MetaFailure };
-type SignInState = { kind: 'idle' } | { kind: 'running' } | { kind: 'failed'; outcome: Exclude<SignInOutcome, { kind: 'signed_in' }> };
+type SignInState = { kind: 'idle' } | { kind: 'running' } | { kind: 'failed'; outcome: SignInFailure };
 
 function MetaError({ code, host, onRetry }: { code: MetaFailure; host: string; onRetry: () => void }) {
   if (code === 'offline') return <Offline onRetry={onRetry} />;
@@ -101,6 +107,13 @@ export function ConfirmOrg({ url }: { url: string }) {
   const [meta, setMeta] = useState<MetaState>({ kind: 'loading' });
   const [signIn, setSignIn] = useState<SignInState>({ kind: 'idle' });
   const [attempt, setAttempt] = useState(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const retry = useCallback(() => {
     setMeta({ kind: 'loading' });
     setAttempt((n) => n + 1);
@@ -133,21 +146,60 @@ export function ConfirmOrg({ url }: { url: string }) {
 
   async function startSignIn(m: Meta) {
     setSignIn({ kind: 'running' });
-    const previous = findOrg(org!);
-    let outcome: SignInOutcome;
+    // This screen's effects only while it is where the person is: mounted, and still at the address
+    // pressed on, with no newer machine choice. The org staging below settles regardless.
+    const from = window.location.hash;
+    const choices = machineChoices();
+    const here = () => mounted.current && window.location.hash === from && machineChoices() === choices;
+    // Everything after the sign-in is fenced: an erase meanwhile owns the org list, and a staged
+    // org removed and added again is another incarnation this screen must not touch.
+    const asOf = eraseEpoch();
+    // The staging is this sign-in's own: an older one still out never removes or overwrites it.
+    let staging: Staging;
     try {
-      await addOrg({ id: org!, name: m.org?.name ?? host, teamDomain: m.access?.team_domain ?? null });
-      outcome = await Session.signIn({ orgId: org!, target: 'control-plane' }).catch((): SignInOutcome => ({ kind: 'offline' }));
+      staging = await stageOrg({ id: org!, name: m.org?.name ?? host, teamDomain: m.access?.team_domain ?? null }, asOf);
     } catch (err) {
+      // The vault refused the write: say what it said, never guess that the app is locked.
       log('error', `could not stage the org for sign-in: ${err instanceof Error ? err.message : String(err)}`);
-      outcome = { kind: 'vault_locked' };
+      if (here()) setSignIn({ kind: 'failed', outcome: { kind: 'rejected', code: rejectionCode(err) } });
+      return;
     }
+    const staged = orgIncarnation(org!);
+    const outcome: SignInOutcome | SignInFailure = here()
+      ? await Session.signIn({ orgId: org!, target: 'control-plane' }).catch((err: unknown): SignInFailure => ({ kind: 'rejected', code: rejectionCode(err) }))
+      : { kind: 'cancelled' };
+    const erased = asOf !== eraseEpoch() || erasing();
     if (outcome.kind !== 'signed_in') {
-      await (previous ? addOrg(previous) : removeOrgLocal(org!)).catch(() => undefined);
-      return setSignIn({ kind: 'failed', outcome });
+      // After an erase there is nothing to put back: restoring would bring the erased org back.
+      // Only while this screen's staging still owns the org: a sign-out (or a re-add) meanwhile wins.
+      if (!erased) {
+        try {
+          // Only while this staging still owns the entry: the durable record before it goes back.
+          await unstageOrg(org!, staging.token, asOf);
+        } catch (err) {
+          if (rejectionCode(err) === 'fallback_unsaved' && asOf === eraseEpoch() && !erasing()) {
+            // An older sign-in to this org succeeded while this one was undone, and its details could
+            // not be stored after all: what Orgs shows is what is saved, and it may be older or gone.
+            const name = <InlineCode>{host}</InlineCode>;
+            notify('error', <Trans>A sign-in to {name} succeeded, but the app couldn't save its details. Check Orgs, and add the org again if it is missing or out of date.</Trans>);
+          } else if (asOf === eraseEpoch() && !erasing() && orgIncarnation(org!) === staged && ownsStaging(org!, staging.token)) {
+            const code = <InlineCode>{rejectionCode(err)}</InlineCode>;
+            const name = <InlineCode>{host}</InlineCode>;
+            notify('error', <Trans>The app couldn't undo the temporary org details for {name} ({code}). Its entry is still saved; review it in Orgs or sign out to remove it.</Trans>);
+          }
+        }
+      }
+      if (here()) setSignIn(erased ? { kind: 'idle' } : { kind: 'failed', outcome });
+      return;
     }
+    // Signed in: this staging's record is durable now. A newer sign-in still out owns the entry
+    // and the screen: this one settles quietly and moves nothing.
+    if (erased || orgIncarnation(org!) !== staged) return;
+    const owner = ownsStaging(org!, staging.token);
+    settleStaging(org!, staging);
+    if (!owner) return;
     void refreshMachines(org!);
-    navigate({ name: 'machines' }, { replace: true });
+    if (here()) navigate({ name: 'machines' }, { replace: true });
   }
 
   const verdict = meta.kind === 'ready' ? protocolVerdict(meta.meta) : null;

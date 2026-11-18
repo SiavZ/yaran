@@ -21,6 +21,7 @@
 /// MachineViewCore/NavigationDelegate
 /// ├── MachineView/MachineViewController (inferred)
 /// ├── MachineView/UIDelegate (inferred)
+/// ├── MachineViewCoreTests/AdmissionTests (inferred)
 /// └── MachineViewCoreTests/WebKitTests (inferred)
 /// <module-headers:end>
 #if canImport(WebKit)
@@ -41,6 +42,10 @@ public final class NavigationDelegate: NSObject, WKNavigationDelegate {
     public var onContentProcessTerminated: () -> Void = {}
     /// The page's same-host URL after each committed main-frame load (process-death restore).
     public var onCommitted: (URL) -> Void = { _ in }
+    /// Admits a main-frame document navigation the policy allows (a native load, a reload, a link,
+    /// a form, a new-window target loaded in place): call the decision exactly once, true to load.
+    /// Unset: allowed as before.
+    public var admitDocument: ((URL, @escaping @MainActor (Bool) -> Void) -> Void)?
 
     public init(pinnedHost: String, diagnostics: DiagnosticsSink?) {
         self.pinnedHost = pinnedHost
@@ -75,9 +80,22 @@ public final class NavigationDelegate: NSObject, WKNavigationDelegate {
         let newWindow = navigationAction.targetFrame == nil
         // A new window only opens on a user gesture (javaScriptCanOpenWindowsAutomatically is off).
         let gesture = newWindow || navigationAction.navigationType == .linkActivated
-        let proceed = apply(url: navigationAction.request.url, mainFrame: navigationAction.targetFrame?.isMainFrame ?? true,
+        let mainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        let proceed = apply(url: navigationAction.request.url, mainFrame: mainFrame,
                        newWindow: newWindow, gesture: gesture) { webView.load(URLRequest(url: $0)) }
-        decisionHandler(proceed ? .allow : .cancel)
+        guard proceed, mainFrame, !newWindow, let url = navigationAction.request.url, let admit = admitDocument,
+              !Self.isSameDocument(url, from: webView.url, reload: navigationAction.navigationType == .reload,
+                                   method: navigationAction.request.httpMethod) else {
+            return decisionHandler(proceed ? .allow : .cancel)
+        }
+        admit(url) { decisionHandler($0 ? .allow : .cancel) }
+    }
+
+    /// A move within the page already loaded (a fragment change by a link or `location.hash`):
+    /// no document is fetched, so nothing to admit. A reload, a form post or any other URL is a document.
+    public static func isSameDocument(_ url: URL, from current: URL?, reload: Bool, method: String?) -> Bool {
+        guard !reload, (method ?? "GET").uppercased() == "GET", url.fragment != nil, let current else { return false }
+        return url.absoluteString.components(separatedBy: "#")[0] == current.absoluteString.components(separatedBy: "#")[0]
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,

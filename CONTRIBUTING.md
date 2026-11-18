@@ -81,6 +81,12 @@ toolchain. What it does and does not do:
   banner and `yaran.log` both carry a warning saying the web UI was not built from
   this source. The wording differs from the notice-page one on purpose, since here
   there IS a web UI. Unset the variable to rebuild.
+- **The phone app will not show either kind of binary's pages.** The auth status
+  says `native_auth_ui: true` only when this binary's own build script built the
+  frontend from this source (it records the state in a file in `$OUT_DIR`, which
+  no environment variable can stand in for). A reused `dist` or the notice page
+  says `false`, so the phone app asks for the machine to be updated rather than
+  showing a page whose sign-in it cannot vouch for. Use a normal build to test the app.
 - **The static-serving tests skip, in both cases.**
   `crates/yaran-web/tests/static_serving.rs` cannot assert anything about a build
   that never happened, so the tests that need a real build print a `SKIPPED` line

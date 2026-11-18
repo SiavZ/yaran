@@ -18,15 +18,22 @@
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
 /// ├── MachineViewCore/SealedEnvelope (inferred)
 /// ├── MachineViewCore/Seams (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
 /// ├── MachineViewCoreTests/FormatTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// External: CryptoKit, Foundation
 ///
 /// Used by:
 /// MachineViewCoreTests/Fakes
+/// ├── MachineViewCoreTests/AdmissionTests (inferred)
+/// ├── MachineViewCoreTests/DirectOwnershipTests (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/HandoffClientTests (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── MachineViewCoreTests/OrgApiClientTests (inferred)
+/// ├── MachineViewCoreTests/OrgWipeTests (inferred)
 /// ├── MachineViewCoreTests/RenewalCoordinatorTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// <module-headers:end>

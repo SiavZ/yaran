@@ -1,0 +1,92 @@
+{
+  "description": "Direct machines (G1) and routes (G2), shared by the Kotlin and Swift twins. status: an unauthenticated GET /api/v1/auth/status answer (status, location, content_type, body as JSON or body_text as raw text) and the DirectStatus it means; a 3xx is never followed. login: a POST /api/v1/auth/cli-login answer and the DirectSignInOutcome it means; signed_in rows also name the record native keeps (never returned to JS). message is the machine's own sentence, trimmed to 300 characters with control characters removed. cookie: the host-only session cookie line, null when the name or token is unsafe. routes: probe answers in route order and the selection; at resume and retry (mode revisit) the current route is probed first and kept when it matches, then the others in order. A token_length row is a token of that many a characters.",
+  "status": [
+    {
+      "name": "a yaran that wants a password on this route",
+      "status": 200, "content_type": "application/json; charset=utf-8",
+      "body": { "password_set": true, "required_here": true, "signed_in": false, "client_class": "network", "transport_encrypted": true, "instance": "inst-1", "native_auth_ui": true },
+      "want": { "kind": "yaran", "instance": "inst-1", "passwordSet": true, "requiredHere": true, "signedIn": false, "transportEncrypted": true }
+    },
+    {
+      "name": "a tailnet route with no password and no instance",
+      "status": 200, "content_type": "application/json",
+      "body": { "password_set": false, "required_here": false, "signed_in": false, "client_class": "tailnet", "transport_encrypted": true, "instance": null, "native_auth_ui": true },
+      "want": { "kind": "yaran", "instance": null, "passwordSet": false, "requiredHere": false, "signedIn": false, "transportEncrypted": true }
+    },
+    {
+      "name": "extra fields are ignored",
+      "status": 200, "content_type": "application/json",
+      "body": { "password_set": true, "required_here": true, "signed_in": true, "client_class": "network", "transport_encrypted": false, "instance": "inst-2", "weak_password": false, "native_auth_ui": true },
+      "want": { "kind": "yaran", "instance": "inst-2", "passwordSet": true, "requiredHere": true, "signedIn": true, "transportEncrypted": false }
+    },
+    { "name": "an older yaran whose page could ask for the password in the window", "status": 200, "content_type": "application/json", "body": { "password_set": false, "required_here": false, "signed_in": false, "client_class": "tailnet", "transport_encrypted": true, "instance": "inst-1" }, "want": { "kind": "upgrade_required" } },
+    { "name": "native_auth_ui false", "status": 200, "content_type": "application/json", "body": { "password_set": true, "required_here": true, "signed_in": true, "client_class": "network", "transport_encrypted": true, "instance": "inst-1", "native_auth_ui": false }, "want": { "kind": "upgrade_required" } },
+    { "name": "native_auth_ui not a boolean", "status": 200, "content_type": "application/json", "body": { "password_set": true, "required_here": false, "signed_in": false, "client_class": "network", "transport_encrypted": true, "instance": "inst-1", "native_auth_ui": "true" }, "want": { "kind": "upgrade_required" } },
+    { "name": "a malformed document is not a yaran, flag or not", "status": 200, "content_type": "application/json", "body": { "password_set": "yes", "required_here": true, "signed_in": false, "transport_encrypted": true, "instance": null, "native_auth_ui": true }, "want": { "kind": "not_yaran" } },
+    { "name": "Access login on its own domain", "status": 302, "location": "https://team.cloudflareaccess.com/cdn-cgi/access/login/yaran.example.com?kid=x", "want": { "kind": "access_required" } },
+    { "name": "Access login on the host", "status": 302, "location": "https://yaran.example.com/cdn-cgi/access/login?redirect_url=%2F", "want": { "kind": "access_required" } },
+    { "name": "a relative Access login", "status": 307, "location": "/cdn-cgi/access/login", "want": { "kind": "access_required" } },
+    { "name": "a bare cloudflareaccess.com is not a team domain", "status": 302, "location": "https://cloudflareaccess.com/", "want": { "kind": "redirected" } },
+    { "name": "any other redirect", "status": 301, "location": "https://elsewhere.example.com/", "want": { "kind": "redirected" } },
+    { "name": "a redirect with no location", "status": 302, "want": { "kind": "redirected" } },
+    { "name": "an html page", "status": 200, "content_type": "text/html", "body_text": "<html></html>", "want": { "kind": "not_yaran" } },
+    { "name": "json without the status fields", "status": 200, "content_type": "application/json", "body": { "ok": true }, "want": { "kind": "not_yaran" } },
+    { "name": "a wrong field type", "status": 200, "content_type": "application/json", "body": { "password_set": "yes", "required_here": true, "signed_in": false, "transport_encrypted": true, "instance": null }, "want": { "kind": "not_yaran" } },
+    { "name": "an instance that is not a string", "status": 200, "content_type": "application/json", "body": { "password_set": true, "required_here": true, "signed_in": false, "transport_encrypted": true, "instance": 7 }, "want": { "kind": "not_yaran" } },
+    { "name": "a json type with a body that is not json", "status": 200, "content_type": "application/json", "body_text": "{nope", "want": { "kind": "refused", "reason": "not_json" } },
+    { "name": "a json array", "status": 200, "content_type": "application/json", "body_text": "[1]", "want": { "kind": "not_yaran" } },
+    { "name": "not found", "status": 404, "content_type": "text/plain", "body_text": "no", "want": { "kind": "not_yaran" } },
+    { "name": "a server error", "status": 502, "content_type": "text/html", "body_text": "bad gateway", "want": { "kind": "not_yaran" } }
+  ],
+  "login": [
+    {
+      "name": "signed in", "status": 200, "content_type": "application/json",
+      "body": { "token": "AbC-_09xyz", "expires_at": null, "cookie_name": "yaran_session_443" },
+      "want": { "kind": "signed_in" }, "store": { "token": "AbC-_09xyz", "cookie_name": "yaran_session_443" }
+    },
+    { "name": "an older yaran with no cookie name", "status": 200, "content_type": "application/json", "body": { "token": "AbC", "expires_at": null }, "want": { "kind": "server_refused", "status": 200, "code": "cookie_name_missing", "message": "" }, "revoke": true },
+    { "name": "a null cookie name", "status": 200, "content_type": "application/json", "body": { "token": "AbC", "expires_at": null, "cookie_name": null }, "want": { "kind": "server_refused", "status": 200, "code": "cookie_name_missing", "message": "" }, "revoke": true },
+    { "name": "an unsafe cookie name", "status": 200, "content_type": "application/json", "body": { "token": "AbC", "cookie_name": "CF_Authorization" }, "want": { "kind": "server_refused", "status": 200, "code": "cookie_name_invalid", "message": "" }, "revoke": true },
+    { "name": "an unsafe token", "status": 200, "content_type": "application/json", "body": { "token": "a;b", "cookie_name": "yaran_session_443" }, "want": { "kind": "server_refused", "status": 200, "code": "token_invalid", "message": "" }, "revoke": false },
+    { "name": "a 200 that is not json", "status": 200, "content_type": "text/html", "body_text": "<html>", "want": { "kind": "refused", "reason": "not_json" } },
+    { "name": "wrong password", "status": 401, "content_type": "application/json", "body": { "error": "wrong_password", "message": "That password is not right." }, "want": { "kind": "wrong_password", "message": "That password is not right." } },
+    { "name": "rate limited", "status": 429, "content_type": "application/json", "body": { "error": "rate_limited", "retry_after_seconds": 42, "from": "this address", "message": "Too many wrong passwords. Wait 42 seconds." }, "want": { "kind": "rate_limited", "retryAfterSeconds": 42, "message": "Too many wrong passwords. Wait 42 seconds." } },
+    { "name": "rate limited without a wait", "status": 429, "content_type": "application/json", "body": { "error": "rate_limited", "message": "Busy." }, "want": { "kind": "rate_limited", "retryAfterSeconds": 0, "message": "Busy." } },
+    { "name": "no password set", "status": 409, "content_type": "application/json", "body": { "error": "no_password", "message": "Set a password first." }, "want": { "kind": "no_password", "message": "Set a password first." } },
+    { "name": "password changed", "status": 409, "content_type": "application/json", "body": { "error": "password_changed", "message": "The password changed." }, "want": { "kind": "server_refused", "status": 409, "code": "password_changed", "message": "The password changed." } },
+    { "name": "password too long", "status": 400, "content_type": "application/json", "body": { "error": "password_too_long", "message": "Too long." }, "want": { "kind": "server_refused", "status": 400, "code": "password_too_long", "message": "Too long." } },
+    { "name": "blocked", "status": 403, "content_type": "application/json", "body": { "error": "blocked", "message": "Blocked." }, "want": { "kind": "server_refused", "status": 403, "code": "blocked", "message": "Blocked." } },
+    { "name": "internal", "status": 500, "content_type": "application/json", "body": { "error": "internal", "message": "Oops." }, "want": { "kind": "server_refused", "status": 500, "code": "internal", "message": "Oops." } },
+    { "name": "a refusal with no body", "status": 503, "content_type": "text/html", "body_text": "down", "want": { "kind": "server_refused", "status": 503, "code": "unknown", "message": "" } },
+    { "name": "an unsafe error code", "status": 400, "content_type": "application/json", "body": { "error": "Bad Code!", "message": "x" }, "want": { "kind": "server_refused", "status": 400, "code": "unknown", "message": "x" } },
+    { "name": "control characters are removed", "status": 401, "content_type": "application/json", "body": { "error": "wrong_password", "message": "Wrong\u001b[31m pass\u0007word‮." }, "want": { "kind": "wrong_password", "message": "Wrong[31m password." } },
+    { "name": "Access in front", "status": 302, "location": "https://team.cloudflareaccess.com/cdn-cgi/access/login/x", "want": { "kind": "access_required" } },
+    { "name": "another redirect", "status": 308, "location": "https://other.example.com/api/v1/auth/cli-login", "want": { "kind": "redirected" } }
+  ],
+  "long_message": { "repeat": "abcdefghij", "times": 40, "want_length": 300 },
+  "cookie": [
+    { "name": "yaran_session_443", "token": "AbC-_09", "set_cookie": "yaran_session_443=AbC-_09; Path=/; Secure; HttpOnly; SameSite=Strict" },
+    { "name": "yaran_session_8080", "token": "x", "set_cookie": "yaran_session_8080=x; Path=/; Secure; HttpOnly; SameSite=Strict" },
+    { "name": "yaran_session_", "token": "x", "set_cookie": null },
+    { "name": "yaran_session_123456", "token": "x", "set_cookie": null },
+    { "name": "CF_Authorization", "token": "x", "set_cookie": null },
+    { "name": "yaran_session_443", "token": "", "set_cookie": null },
+    { "name": "yaran_session_443", "token": "a.b", "set_cookie": null },
+    { "name": "yaran_session_443", "token": "a b", "set_cookie": null },
+    { "name": "yaran_session_443", "token_length": 257, "set_cookie": null },
+    { "name": "yaran_session_443", "token_length": 256, "set_cookie_ok": true }
+  ],
+  "routes": [
+    { "name": "the first matching route wins", "mode": "open", "current": 0, "probes": ["match", "match"], "want": { "kind": "chosen", "index": 0 } },
+    { "name": "an unreachable first route falls through", "mode": "open", "current": 0, "probes": ["unreachable", "match"], "want": { "kind": "chosen", "index": 1 } },
+    { "name": "a different instance is skipped", "mode": "open", "current": 0, "probes": ["mismatch", "match"], "want": { "kind": "chosen", "index": 1 } },
+    { "name": "a matching route that needs a password is chosen", "mode": "open", "current": 0, "probes": ["unreachable", "match_sign_in"], "want": { "kind": "chosen", "index": 1 } },
+    { "name": "an unverified org route is the fallback", "mode": "open", "current": 0, "probes": ["sign_in_first", "unreachable"], "want": { "kind": "sign_in_first", "index": 0 } },
+    { "name": "a verified route beats an earlier unverified one", "mode": "open", "current": 0, "probes": ["sign_in_first", "match"], "want": { "kind": "chosen", "index": 1 } },
+    { "name": "nothing answers", "mode": "open", "current": 0, "probes": ["unreachable", "mismatch"], "want": { "kind": "no_route" } },
+    { "name": "resume keeps a healthy current route", "mode": "revisit", "current": 1, "probes": ["match", "match"], "want": { "kind": "kept", "index": 1 }, "probed": [1] },
+    { "name": "resume moves off a failed current route, in the user's order", "mode": "revisit", "current": 1, "probes": ["match", "unreachable"], "want": { "kind": "chosen", "index": 0 }, "probed": [1, 0] },
+    { "name": "retry skips the failed route", "mode": "revisit", "current": 0, "probes": ["unreachable", "unreachable", "match"], "want": { "kind": "chosen", "index": 2 }, "probed": [0, 1, 2] },
+    { "name": "retry with nothing answering keeps the page", "mode": "revisit", "current": 0, "probes": ["unreachable", "unreachable"], "want": { "kind": "no_route" } }
+  ]
+}

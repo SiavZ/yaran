@@ -52,6 +52,7 @@
 //! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-web::cloud_ingress
+//! ├── yaran-web::cloud_phone_links
 //! ├── yaran-web::cloud_phone_routes
 //! └── yaran-web::cloud_routes::tests
 //! ```

@@ -17,6 +17,7 @@
  * ├── io.github.siavz.yaran.machineview.Fixtures
  * ├── io.github.siavz.yaran.machineview.InsetsMode (inferred)
  * ├── io.github.siavz.yaran.machineview.Messages (inferred)
+ * ├── io.github.siavz.yaran.machineview.NavigationPolicy (inferred)
  * ├── io.github.siavz.yaran.machineview.RefusalPolicy (inferred)
  * ├── io.github.siavz.yaran.machineview.RenewalPolicy (inferred)
  * ├── io.github.siavz.yaran.machineview.RouteFragment (inferred)

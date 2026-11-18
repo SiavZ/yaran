@@ -21,18 +21,29 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.SessionStore
+ * ├── io.github.siavz.yaran.machineview.AdmissionRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.AuthTabRegistryRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.CookieInjector (inferred)
+ * ├── io.github.siavz.yaran.machineview.CoreAdaptersTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectFlow (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectWindowRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.HandoffFailureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineWindowRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.NativeCookieIsolationRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClient (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * ├── io.github.siavz.yaran.machineview.RenewalCoordinator (inferred)
  * ├── io.github.siavz.yaran.machineview.RenewalCoordinatorTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.SessionGenerationRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
- * └── io.github.siavz.yaran.machineview.StoresTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.StaleOpenRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.StoresTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.UpgradeRequiredRobolectricTest (inferred)
+ * └── io.github.siavz.yaran.machineview.WindowRepairRobolectricTest (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
@@ -59,7 +70,6 @@ internal data class Session(
 
 internal class SessionStore(
     private val vault: SecretVault,
-    private val appLock: AppLockState,
     private val diagnostics: DiagnosticsSink,
     private val cleaner: WebDataCleaner,
 ) {
@@ -72,8 +82,8 @@ internal class SessionStore(
         val o = JSONObject().put("org_id", orgId).put("jwt", payload.jwt).put("exp", exp).put("iat", payload.iat)
             .put("email", payload.email).put("credential_kind", Fallbacks.CREDENTIAL_RUNG.wire)
         payload.cookie?.let { o.put("cookie", it) }
-        val cls = if (appLock.lockEnabled()) ProtectionClass.LOCKED else ProtectionClass.STANDARD
-        vault.write(ns(payload.host), o.toString().toByteArray(Charsets.UTF_8), cls)
+        // Locked class from creation: enabling App Lock later must not leave this bearer readable.
+        vault.write(ns(payload.host), o.toString().toByteArray(Charsets.UTF_8), ProtectionClass.LOCKED)
     }
 
     fun get(host: String): Session? {
@@ -88,12 +98,19 @@ internal class SessionStore(
 
     fun status(host: String, now: Long): Session? = get(host)?.takeIf { it.exp > now }
 
+    /**
+     * Every host holding a session of [orgId]. A listing or a record that cannot be read throws:
+     * an unreadable record may be this org's, so "none" would be a guess that leaves it behind.
+     */
     fun hostsFor(orgId: String): List<String> =
-        vault.list(PREFIX).map { it.removePrefix(PREFIX) }.filter { host -> runCatching { get(host)?.orgId == orgId }.getOrDefault(false) }
+        vault.list(PREFIX).map { it.removePrefix(PREFIX) }.filter { host -> get(host)?.orgId == orgId }
 
-    /** Deletes [hosts] plus every other session of [orgId], then clears their web data. */
+    /**
+     * Deletes [hosts] plus every other session of [orgId], then clears their web data. Throws, with
+     * nothing deleted, when the org's sessions cannot all be found: never a partial cleanup called done.
+     */
     fun signOut(orgId: String, hosts: List<String>): List<String> {
-        val all = (hosts + runCatching { hostsFor(orgId) }.getOrDefault(emptyList())).distinct()
+        val all = (hosts + hostsFor(orgId)).distinct()
         all.forEach { vault.delete(ns(it)) }
         cleaner.clear(all)
         return all

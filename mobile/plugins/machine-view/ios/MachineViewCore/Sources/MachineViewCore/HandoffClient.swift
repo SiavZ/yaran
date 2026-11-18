@@ -19,6 +19,7 @@
 /// ├── MachineViewCore/CallbackUrl (inferred)
 /// ├── MachineViewCore/CookieSpec (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
+/// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/HandoffSignature (inferred)
 /// ├── MachineViewCore/HandoffUrl (inferred)
 /// ├── MachineViewCore/Outcomes (inferred)
@@ -33,6 +34,8 @@
 /// ├── MachineView/AppServices (inferred)
 /// ├── MachineView/AuthSessionLauncher (inferred)
 /// ├── MachineView/SessionPlugin (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/HandoffClientTests (inferred)
 /// └── MachineViewCoreTests/LockTests (inferred)
@@ -109,6 +112,8 @@ public final class HandoffClient {
             (target, host) = (.controlPlane(orgUrl: orgUrl), urlHost)
         case .machine(let machineHost):
             guard Pattern.hostname.matches(machineHost) else { return completion(.refused(code: "host_invalid")) }
+            // One host never holds both an org and a direct credential (the direct side refuses with org_host).
+            if DirectSessionStore(vault: vault).has(machineHost) { return completion(.refused(code: "direct_host")) }
             (target, host) = (.machine(host: machineHost), machineHost)
         }
         let url: URL
@@ -122,13 +127,17 @@ public final class HandoffClient {
             let dsig = try deviceKeys.sign(orgId, HandoffSignature.canonical(host: host, pk: recipientKey, state: state, dts: now))
             let params = HandoffParams(pk: recipientKey, state: state, device: deviceLabel, dk: identity.publicKey, dts: now, dsig: dsig)
             url = URL(string: HandoffUrl.build(target: target, mode: mode, fragment: fragment, params: params))!
-            pending?.completion(.cancelled)
+            if let replaced = pending {
+                appLock?.releaseExternalFlow() // its hold ends with it; this sign-in takes its own below
+                replaced.completion(.cancelled)
+            }
             pending = Pending(orgId: orgId, state: state, host: host, kind: target.kind, createdAt: now, key: key, completion: completion)
         } catch VaultError.locked {
             return completion(.vaultLocked)
         } catch {
+            // A key store or vault failure while unlocked ends this sign-in truthfully.
             diagnostics?.append(diagLine("handoff start failed", [("error", String(describing: type(of: error)))]))
-            return completion(.vaultLocked)
+            return completion(.secureStorageFailed)
         }
         diagnostics?.append(diagLine("handoff started", [("host", host), ("target", target.kind)]))
         // Leaving for the browser (or Mail, for a one-time PIN) must not relock before the callback is stored.
@@ -137,7 +146,14 @@ public final class HandoffClient {
         launcher.launch(url: url, mode: mode) { [weak self] result in self?.launcherFinished(result, state: state) }
     }
 
+    /// The launcher's ending for the sign-in that started it (`state`). One for a sign-in a newer
+    /// one replaced is ignored whatever it is, a redirect included: it must never take the newer
+    /// sign-in's pending state, end it, or release its hold.
     func launcherFinished(_ result: LauncherResult, state: String) {
+        guard pending?.state == state else {
+            diagnostics?.append(diagLine("handoff launcher ending for a replaced sign-in ignored"))
+            return
+        }
         switch result {
         case .redirect(let url):
             complete(callback: url)
@@ -197,8 +213,11 @@ public final class HandoffClient {
             do {
                 let stored = try sessions.put(orgId: signIn.orgId, payload: payload, kind: rung)
                 return .signedIn(host: payload.host, email: payload.email, expiresAt: stored.exp)
-            } catch {
+            } catch VaultError.locked {
                 return .vaultLocked
+            } catch {
+                diagnostics?.append(diagLine("handoff session save failed", [("error", String(describing: type(of: error)))]))
+                return .secureStorageFailed
             }
         }
     }

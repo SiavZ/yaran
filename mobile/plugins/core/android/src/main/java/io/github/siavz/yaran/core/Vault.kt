@@ -16,7 +16,8 @@
  * <module-headers:begin>
  * Uses:
  * io.github.siavz.yaran.core.Vault
- * └── io.github.siavz.yaran.core.KeyProvider (inferred)
+ * ├── io.github.siavz.yaran.core.KeyProvider (inferred)
+ * └── io.github.siavz.yaran.core.VaultFiles (inferred)
  * External: android.content, java.io, java.security, javax.crypto, javax.crypto.spec
  *
  * Used by:
@@ -25,9 +26,11 @@
  * ├── io.github.siavz.yaran.core.AppLock (inferred)
  * ├── io.github.siavz.yaran.core.KeyProvider (inferred)
  * ├── io.github.siavz.yaran.core.SoftwareKeyProvider (inferred)
+ * ├── io.github.siavz.yaran.core.VaultFiles (inferred)
  * ├── io.github.siavz.yaran.core.VaultTest (inferred)
  * ├── io.github.siavz.yaran.machineview.CoreAdapters
  * ├── io.github.siavz.yaran.machineview.CoreAdaptersTest
+ * ├── io.github.siavz.yaran.machineview.HandoffFailureTest
  * ├── io.github.siavz.yaran.securestore.BuildInfoPlugin
  * ├── io.github.siavz.yaran.securestore.DiagnosticsPlugin
  * ├── io.github.siavz.yaran.securestore.SecureStorePlugin
@@ -116,7 +119,13 @@ class Vault(
         checkNames(namespace, key)
         val entry = read(namespace)[key] ?: return null
         return when (entry.protection) {
-            Protection.STANDARD -> entry.bytes.decodeToString()
+            // A session secret an older build left standard is as locked as the class it belongs in.
+            Protection.STANDARD ->
+                if (isLegacySessionSecret(namespace, key) && !isUnlocked()) {
+                    throw CoreError.Locked("the app lock is engaged")
+                } else {
+                    entry.bytes.decodeToString()
+                }
             Protection.LOCKED -> unseal(requireDataKey(), entry.bytes, lockedAad(namespace, key)).decodeToString()
         }
     }
@@ -156,12 +165,11 @@ class Vault(
         return read(namespace).keys.sorted()
     }
 
-    /** Deletes every namespace, the wrapped data key and every keystore key. */
+    /** Deletes every namespace, the wrapped data key and every keystore key; see [eraseVault]. */
     @Synchronized
     fun eraseAll() {
         dataKey = null
-        dir.listFiles()?.forEach { it.delete() }
-        keys.deleteAll()
+        eraseVault(dir, keys)
     }
 
     /** True while the app-lock key wraps the locked class, i.e. the lock is enabled. */
@@ -205,11 +213,25 @@ class Vault(
                 authenticated.doFinal(blob, IV_BYTES, blob.size - IV_BYTES)
             }
         dataKey = SecretKeySpec(raw, "AES")
+        // A lock enabled by an older build never promoted its standard session entries; do it at
+        // the first unlock, before any session is read. A failure keeps them standard, still
+        // refused while locked by get(), and the unlock stands.
+        try {
+            promoteSessions()
+        } catch (_: CoreError) {
+            // Tampered or unwritable: get() keeps refusing those entries behind the lock.
+        }
     }
 
-    /** Re-wraps the data key with an authenticated cipher from [lockCipherForEnable]. */
+    /**
+     * Re-wraps the data key with an authenticated cipher from [lockCipherForEnable]. Any
+     * legacy standard-class session secret is moved into the locked class first, each namespace
+     * in one atomic write; a failure throws before the lock is on, and leaves every entry where
+     * it was.
+     */
     @Synchronized
     fun wrapUnderLock(authenticated: Cipher) {
+        promoteSessions()
         val key = requireDataKey()
         val sealed =
             guardedSeal {
@@ -235,21 +257,44 @@ class Vault(
         if (isLockWrapped()) dataKey = null
     }
 
-    /** Deletes every locked-class entry, the wrapped data key and the lock key. */
+    /**
+     * Deletes every locked-class entry, the wrapped data key and the lock key. The wrapped key
+     * (what makes the lock enabled) goes last: if a namespace cannot be rewritten the wipe throws
+     * with it still in place, so a restart still sees the lock, refuses what is left, and wipes again.
+     */
     @Synchronized
     fun wipeLocked() {
         dataKey = null
-        File(dir, DATA_KEY_FILE).delete()
-        keys.deleteLockKey()
+        var failure: CoreError? = null
         namespaceFiles().forEach { file ->
             val namespace = file.name.removeSuffix(BLOB_SUFFIX)
             try {
                 val entries = read(namespace)
-                val kept = entries.filterValues { it.protection == Protection.STANDARD }
+                // A session secret an older build left standard goes too: its lock is what was just lost.
+                val kept = entries.filter { (k, e) -> e.protection == Protection.STANDARD && !isLegacySessionSecret(namespace, k) }
                 if (kept.size != entries.size) write(namespace, kept)
             } catch (_: CoreError.Tampered) {
-                // A tampered namespace stays tampered; the wipe carries on with the others.
+                // A tampered namespace stays tampered (unreadable); the wipe carries on with the others.
+            } catch (e: CoreError) {
+                failure = failure ?: e
             }
+        }
+        failure?.let { throw it }
+        // The marker goes before the key, and only for real: a marker left behind keeps the lock on,
+        // so its key must stay too, for the next unlock to find it invalidated and wipe again.
+        val marker = File(dir, DATA_KEY_FILE)
+        if (marker.exists() && !marker.delete()) throw CoreError.Unavailable("cannot delete ${marker.name}")
+        keys.deleteLockKey()
+    }
+
+    /** Seals every standard-class session secret into the locked class, one atomic write per namespace. */
+    private fun promoteSessions() {
+        val key = requireDataKey()
+        for (namespace in SESSION_NAMESPACES) {
+            val entries = read(namespace)
+            val legacy = entries.filter { (k, e) -> e.protection == Protection.STANDARD && isLegacySessionSecret(namespace, k) }
+            if (legacy.isEmpty()) continue
+            write(namespace, entries + legacy.mapValues { (k, e) -> Entry(Protection.LOCKED, seal(key, e.bytes, lockedAad(namespace, k))) })
         }
     }
 
@@ -292,7 +337,8 @@ class Vault(
     ) {
         val file = File(dir, namespace + BLOB_SUFFIX)
         if (entries.isEmpty()) {
-            file.delete()
+            // An emptied namespace that stays on disk still holds what was removed from it.
+            if (file.exists() && !file.delete()) throw CoreError.Unavailable("cannot delete ${file.name}")
             return
         }
         val buffer = ByteArrayOutputStream()
@@ -394,19 +440,35 @@ class Vault(
         }
     }
 
-    private fun namespaceFiles(): List<File> = dir.listFiles { file -> file.name.endsWith(BLOB_SUFFIX) }?.toList().orEmpty()
-
-    private fun blobAad(namespace: String) = "yaran-vault:v1:$namespace".encodeToByteArray()
-
-    private fun lockedAad(
-        namespace: String,
-        key: String,
-    ) = "yaran-locked:v1:$namespace/$key".encodeToByteArray()
+    private fun namespaceFiles(): List<File> = listVault(dir) { file -> file.name.endsWith(BLOB_SUFFIX) }
 
     companion object {
         /** Namespace names; they become file names, so this check is the path-traversal guard. */
         val NAMESPACE_RE = Regex("[a-z0-9-]{1,32}")
         val KEY_RE = Regex("[A-Za-z0-9._-]{1,64}")
+
+        /**
+         * The native session namespaces (machine-view's org `session/<host>` and direct
+         * `session-direct/<host>` records). Their entries are bearer secrets: written in the
+         * locked class from creation, promoted there when the lock is enabled or (for a lock an
+         * older build enabled) at the first unlock, and refused while locked even if still
+         * standard. Their [SESSION_INDEX_KEY] entry lists host names, not secrets, and stays
+         * standard so it can be listed while locked.
+         */
+        val SESSION_NAMESPACES = listOf("session", "session-direct")
+        const val SESSION_INDEX_KEY = "names"
+
+        private fun isLegacySessionSecret(
+            namespace: String,
+            key: String,
+        ) = namespace in SESSION_NAMESPACES && key != SESSION_INDEX_KEY
+
+        private fun blobAad(namespace: String) = "yaran-vault:v1:$namespace".encodeToByteArray()
+
+        private fun lockedAad(
+            namespace: String,
+            key: String,
+        ) = "yaran-locked:v1:$namespace/$key".encodeToByteArray()
 
         private const val BLOB_SUFFIX = ".bin"
         private const val DATA_KEY_FILE = "locked.key"

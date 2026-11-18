@@ -16,6 +16,8 @@
  *
  * Used by:
  * src/dialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/DirectSection.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/InstanceChangedDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/RemoveMachineDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/orgs/SignOutOrgDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/settings/EraseDialog.tsx

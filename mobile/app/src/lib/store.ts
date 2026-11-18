@@ -11,11 +11,15 @@
  * Used by:
  * src/lib/store.ts
  * ├── src/App.tsx
+ * ├── src/lib/directStore.ts
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/orgStore.ts
  * ├── src/lib/settingsStore.ts
+ * ├── src/lib/share.ts
  * ├── src/push/pushDeps.ts
  * ├── src/screens/machines/MachineList.tsx
+ * ├── src/screens/machines/MachineRoutes.tsx
+ * ├── src/screens/machines/ShareTarget.tsx
  * ├── src/screens/orgs/OrgList.tsx
  * ├── src/screens/settings/LanguageSettings.tsx
  * ├── src/screens/settings/NotificationSettings.tsx

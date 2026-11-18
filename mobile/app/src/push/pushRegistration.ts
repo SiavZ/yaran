@@ -11,6 +11,7 @@
  *   key id moved, or when the local subscription or endpoint host disagrees; `failing` is only
  *   shown. Every path that meets `device_revoked` forgets the org's local push state.
  * - "Turn off" re-registers with `push: {kind: none}` and never calls W14; removing the org does.
+ * - Every step runs in the org's turn, owned by `MuteSync` (`muteSync.ts`).
  *
  * <module-headers:begin>
  * Uses:
@@ -18,20 +19,24 @@
  * ├── @yaran/protocol:src/index.ts
  * ├── @yaran/push:src/index.ts
  * ├── src/lib/native/machineView.ts
+ * ├── src/push/muteSync.ts
  * └── src/push/pushPermission.ts
  * External: none
  *
  * Used by:
  * src/push/pushRegistration.ts
+ * ├── src/push/muteIntent.test.ts
+ * ├── src/push/muteSync.ts
  * ├── src/push/pushDeps.ts
  * ├── src/push/pushRegistration.test.ts
  * ├── src/push/pushTestKit.ts
  * └── src/push/pushWiring.ts
  * <module-headers:end>
  */
-import type { Device, DevicePage, DevicePatch, Meta } from "@yaran/protocol";
+import type { Device, DevicePage, Meta } from "@yaran/protocol";
 import { findForbiddenField, type PushMutes, type PushPlugin, type RegisterDeviceResult } from "@yaran/push";
 import type { ApiResult, SessionPlugin } from "../lib/native/machineView.ts";
+import type { MuteSync } from "./muteSync.ts";
 import { assertNever, type OrgRowState } from "./pushPermission.ts";
 
 export type { ApiResult };
@@ -45,6 +50,18 @@ export interface SessionApi {
 export interface PushDeps {
   push: PushPlugin;
   session: SessionApi;
+  /**
+   * Whether the org this work is for is still the one on this phone (`scopedPushDeps`). Absent:
+   * always. Checked again after each await before any local state (the mute queue) changes.
+   */
+  live?: () => boolean;
+}
+
+/** A push step refused because the org it was for is gone, or erased and added again. */
+export class StalePushOrg extends Error {
+  constructor() {
+    super('the org this push work was for is no longer the one on this phone');
+  }
 }
 
 export interface PushOrg {
@@ -65,7 +82,7 @@ export type ReconcileResult =
   /** `403 device_revoked`: this phone was removed; local push state is already gone. */
   | { kind: "revoked" };
 
-const NO_MUTES: PushMutes = { mute_all: false, muted_until: null, muted_machine_ids: [] };
+export const NO_MUTES: PushMutes = { mute_all: false, muted_until: null, muted_machine_ids: [] };
 
 export function mutesOf(device: Device): PushMutes {
   return { mute_all: device.mute_all, muted_until: device.muted_until, muted_machine_ids: device.muted_machine_ids };
@@ -180,8 +197,20 @@ export async function registerOrg(deps: PushDeps, org: PushOrg, meta: Meta, mute
   return fromRegistration(deps, org.orgId, r);
 }
 
-/** Every foreground: compares the Worker's record with the native subscription. */
-export async function reconcileOrg(deps: PushDeps, org: PushOrg, mutes: MuteSync): Promise<ReconcileResult> {
+/** A reconcile's or registration's answer, recorded in the org's turn so a later turn's answer always lands after it. */
+export type Publish = (r: ReconcileResult) => Promise<void> | void;
+
+/**
+ * Every foreground: compares the Worker's record with the native subscription. The whole
+ * decision (listing the device, reading the local state, registering or settling) and its
+ * publication run in the org's one turn, so a Turn off or a mute queued meanwhile is never
+ * undone by a decision made from a snapshot taken before it.
+ */
+export function reconcileOrg(deps: PushDeps, org: PushOrg, mutes: MuteSync, publish?: Publish): Promise<ReconcileResult> {
+  return mutes.run(deps, org.orgId, () => decide(deps, org, mutes), publish);
+}
+
+async function decide(deps: PushDeps, org: PushOrg, mutes: MuteSync): Promise<ReconcileResult> {
   let meta: Meta;
   try {
     meta = await deps.session.meta({ orgUrl: org.orgUrl });
@@ -197,8 +226,14 @@ export async function reconcileOrg(deps: PushDeps, org: PushOrg, mutes: MuteSync
   if (listed !== null && "failure" in listed) {
     return { kind: "row", state: { kind: "registration_failed", reason: listed.failure }, device: null };
   }
-  const device = listed;
-  if (device?.push.kind === "none") return { kind: "row", state: { kind: "turned_off" }, device };
+  // Listed in this turn, so no answer can be newer: it is what is in force now, with what is
+  // still owed laid over it, before any registration below reads its mutes.
+  const device = listed && mutes.taken(deps, org.orgId, listed);
+  // A Turn on or Turn off the Worker has not confirmed yet is the user's latest word: it is retried.
+  const owed = mutes.owedToggle(org.orgId);
+  const register = () => mutes.registered(deps, org.orgId, device, (inForce, pushOff) => registerOrg(deps, org, meta, inForce, pushOff));
+  if (owed === true) return register();
+  if (device?.push.kind === "none" && owed === undefined) return { kind: "row", state: { kind: "turned_off" }, device };
   if ((await deps.push.checkPermission()).notifications !== "granted") {
     return { kind: "row", state: { kind: "needs_permission" }, device };
   }
@@ -206,6 +241,7 @@ export async function reconcileOrg(deps: PushDeps, org: PushOrg, mutes: MuteSync
   const vapid = meta.push.vapid_public_key;
   const stale =
     device === null ||
+    device.push.kind === "none" ||
     device.push_state === "gone" ||
     device.push_state === "auth_failed" ||
     device.push.vapid_public_key !== vapid ||
@@ -213,12 +249,10 @@ export async function reconcileOrg(deps: PushDeps, org: PushOrg, mutes: MuteSync
     local.vapidPublicKey !== vapid ||
     local.relayKeyCurrent === false ||
     (device.push.endpoint_host ?? null) !== local.endpointHost;
-  if (stale) return registerOrg(deps, org, meta, device ? mutesOf(device) : NO_MUTES);
+  if (stale) return register();
 
-  const flushed = await mutes.flush(deps, org.orgId, device);
-  if (flushed === "revoked") return forget(deps, org.orgId);
-  const current = flushed !== null && typeof flushed === "object" ? flushed : device;
-  await deps.push.setLocalMutes({ orgId: org.orgId, mutes: mutesOf(current) });
+  const current = await mutes.settled(deps, org.orgId, device);
+  if (current === "revoked") return forget(deps, org.orgId);
   return { kind: "row", state: rowFromDevice(current), device: current };
 }
 
@@ -235,68 +269,27 @@ export async function removeOrgPush(deps: PushDeps, orgId: string, deviceId: str
 }
 
 /** Endpoint changes queued natively while the WebView was not running. */
-export async function drainPending(deps: PushDeps, orgs: PushOrg[], mutes: MuteSync): Promise<Map<string, ReconcileResult>> {
+export async function drainPending(
+  deps: PushDeps,
+  orgs: PushOrg[],
+  mutes: MuteSync,
+  depsOf: (orgId: string) => PushDeps = () => deps,
+  publish?: (orgId: string, r: ReconcileResult) => Promise<void> | void,
+): Promise<Map<string, ReconcileResult>> {
   const { orgIds } = await deps.push.drainPendingRegistrations();
   const out = new Map<string, ReconcileResult>();
-  for (const org of orgs) if (orgIds.includes(org.orgId)) out.set(org.orgId, await reconcileOrg(deps, org, mutes));
+  // Each org in its own turn, side by side: one org's exchange never holds up another's.
+  await Promise.all(
+    orgs
+      .filter((org) => orgIds.includes(org.orgId))
+      .map(async (org) => {
+        try {
+          out.set(org.orgId, await reconcileOrg(depsOf(org.orgId), org, mutes, publish && ((r) => publish(org.orgId, r))));
+        } catch (err) {
+          // That org went stale mid-way (removed, or erased and added again): the others still run.
+          if (!(err instanceof StalePushOrg)) throw err;
+        }
+      }),
+  );
   return out;
-}
-
-export type MuteOutcome = "saved" | "offline" | "unchanged" | "revoked" | "failed" | "full";
-
-/**
- * W31 mutes with a local mirror: the mirror is applied first so the phone enforces the mute
- * even offline, and an offline patch is retried by the next reconcile.
- * shortcut: the pending patch lives in memory, so a process death before reconnecting drops it
- * and the next reconcile mirrors the Worker again; persist it in 14's store if that bites.
- */
-export class MuteSync {
-  private pending = new Map<string, DevicePatch>();
-
-  async apply(deps: PushDeps, orgId: string, device: Device, patch: DevicePatch): Promise<MuteOutcome | Device> {
-    const { mute_all, muted_until, muted_machine_ids } = { ...mutesOf(device), ...patch };
-    await deps.push.setLocalMutes({ orgId, mutes: { mute_all, muted_until, muted_machine_ids } });
-    const r = await deps.session.request({ orgId, method: "PATCH", path: `/v1/me/devices/${encodeURIComponent(device.id)}`, body: patch });
-    switch (r.kind) {
-      case "ok": {
-        this.pending.delete(orgId);
-        const updated = r.body as Device;
-        await deps.push.setLocalMutes({ orgId, mutes: mutesOf(updated) });
-        return updated;
-      }
-      case "offline":
-        this.pending.set(orgId, { ...this.pending.get(orgId), ...patch });
-        return "offline";
-      case "device_revoked":
-        this.pending.delete(orgId);
-        await deps.push.forgetOrg({ orgId });
-        return "revoked";
-      case "api_error":
-      case "session_expired":
-      case "tls_error":
-      case "refused":
-      case "protocol_unsupported":
-        return "failed";
-      default:
-        return assertNever(r);
-    }
-  }
-
-  /** Re-sends a patch saved offline; returns the updated device, or null when nothing was pending. */
-  async flush(deps: PushDeps, orgId: string, device: Device): Promise<MuteOutcome | Device | null> {
-    const patch = this.pending.get(orgId);
-    return patch ? this.apply(deps, orgId, device, patch) : null;
-  }
-
-  hasPending(orgId: string): boolean {
-    return this.pending.has(orgId);
-  }
-}
-
-/** The "Mute this machine" action. */
-export async function muteMachine(deps: PushDeps, sync: MuteSync, orgId: string, device: Device, machineId: string): Promise<MuteOutcome> {
-  if (device.muted_machine_ids.includes(machineId)) return "unchanged";
-  if (device.muted_machine_ids.length >= 100) return "full";
-  const r = await sync.apply(deps, orgId, device, { muted_machine_ids: [...device.muted_machine_ids, machineId] });
-  return typeof r === "object" ? "saved" : r;
 }

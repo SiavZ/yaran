@@ -20,12 +20,15 @@
 /// ├── MachineViewCore/OrgApiClient (inferred)
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
 /// ├── MachineViewCore/SecureEnclaveBackend (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/FormatTests (inferred)
 /// ├── MachineViewCoreTests/HandoffClientTests (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── MachineViewCoreTests/OrgApiClientTests (inferred)
-/// └── MachineViewCoreTests/RenewalCoordinatorTests (inferred)
+/// ├── MachineViewCoreTests/RenewalCoordinatorTests (inferred)
+/// └── MachineViewCoreTests/RouteTenureTests (inferred)
 /// <module-headers:end>
 import Foundation
 
@@ -49,6 +52,8 @@ public enum SignInOutcome: Equatable {
     case envelopeExpired
     case notOwner(email: String?)
     case offline, tlsError, vaultLocked
+    /// The key store or vault failed while unlocked; only `VaultError.locked` is `vaultLocked`.
+    case secureStorageFailed
 
     public var kind: String {
         switch self {
@@ -70,6 +75,7 @@ public enum SignInOutcome: Equatable {
         case .offline: return "offline"
         case .tlsError: return "tls_error"
         case .vaultLocked: return "vault_locked"
+        case .secureStorageFailed: return "secure_storage_failed"
         }
     }
 
@@ -85,7 +91,7 @@ public enum SignInOutcome: Equatable {
         case .refused(let code), .decryptFailed(let code): object["code"] = code
         case .notOwner(let email): object["email"] = email
         case .cancelled, .declined, .interrupted, .rateLimited, .noBrowser, .mismatch, .envelopeExpired, .offline,
-             .tlsError, .vaultLocked:
+             .tlsError, .vaultLocked, .secureStorageFailed:
             break
         }
         return object.compactMapValues { $0 }

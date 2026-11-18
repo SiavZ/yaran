@@ -12,6 +12,7 @@
 //! ```text
 //! Uses:
 //! cloud/protocol/machine.rs
+//! ├── cloud::protocol::links
 //! ├── cloud::protocol::machine::tests
 //! ├── cloud::protocol::meta
 //! └── cloud::protocol::rules
@@ -46,7 +47,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::meta::OrgRef;
-use super::rules::{self, Checked, Validate, check};
+use super::rules::{self, Checked, Validate, check, check_opt};
 
 /// Contains a secret (the tunnel token).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +246,10 @@ pub struct MachineConfig {
     pub events: MachineConfigEvents,
     /// The control plane's clock when it answered, RFC 3339.
     pub server_time: String,
+    /// Additive: the phone app's link domain from the Worker's `APP_CALLBACK_URLS`
+    /// (`links::publisher_domain_from_callbacks`); absent from an older Worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_domain: Option<String>,
 }
 
 impl Validate for MachineConfig {
@@ -263,7 +268,9 @@ impl Validate for MachineConfig {
             "events.max_batch",
         )?;
         check(self.events.min_interval_ms >= 0, "events.min_interval_ms")?;
-        check(rules::is_timestamp(&self.server_time), "server_time")
+        check(rules::is_timestamp(&self.server_time), "server_time")?;
+        let domain = |d: &String| super::links::is_public_host(d);
+        check_opt(&self.publisher_domain, domain, "publisher_domain")
     }
 }
 

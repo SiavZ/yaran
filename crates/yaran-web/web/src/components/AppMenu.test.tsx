@@ -126,11 +126,12 @@ describe("AppMenu", () => {
     await screen.findByRole("menu")
 
     // Drive the expectation from the model, never a hand-written list.
+    // A browser page offers Connect a phone, paired or not.
     const topLevel = appMenuModel({
       ghAvailable: true,
       githubIntegrationEnabled: true,
       nativeShell: false,
-      phonePairing: false,
+      phonePairing: true,
       canSignOut: false,
     }).filter((e) => e.kind !== "separator")
     const rendered = screen.getAllByRole("menuitem").map((e) => e.textContent)

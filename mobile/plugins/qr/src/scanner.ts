@@ -68,22 +68,29 @@ export function startScan(video: HTMLVideoElement): ScanHandle {
       'requestVideoFrameCallback' in video ? video.requestVideoFrameCallback(() => cb()) : requestAnimationFrame(cb);
 
     const tick = async () => {
-      if (stopped || !ctx) return;
-      if (video.videoWidth > 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0);
-        const [hit] = await readBarcodes(ctx.getImageData(0, 0, canvas.width, canvas.height), {
-          formats: ['QRCode'],
-          maxNumberOfSymbols: 1,
-        });
-        if (hit?.isValid && !stopped) {
-          teardown();
-          resolve(hit.text);
-          return;
+      if (stopped) return;
+      try {
+        if (!ctx) throw new ScanError('camera_failed');
+        if (video.videoWidth > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          const [hit] = await readBarcodes(ctx.getImageData(0, 0, canvas.width, canvas.height), {
+            formats: ['QRCode'],
+            maxNumberOfSymbols: 1,
+          });
+          if (hit?.isValid && !stopped) {
+            teardown();
+            resolve(hit.text);
+            return;
+          }
         }
+        if (!stopped) nextFrame(() => void tick());
+      } catch (err) {
+        if (stopped) return;
+        teardown();
+        reject(new ScanError(failureOf(err)));
       }
-      nextFrame(() => void tick());
     };
 
     navigator.mediaDevices

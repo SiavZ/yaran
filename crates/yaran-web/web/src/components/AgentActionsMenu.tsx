@@ -23,6 +23,7 @@ import {
   Variable,
 } from "lucide-react"
 
+import { CopyPhoneLinkItem } from "@/components/CopyPhoneLinkItem"
 import { ProjectMenuItems } from "@/components/ProjectMenuItems"
 import {
   DropdownMenuGroup,
@@ -341,6 +342,8 @@ function AgentIdentityItems({
         <Info />
         Agent info…
       </DropdownMenuItem>
+      {/* The agent's first tab: a link names a tab only when it is not that one. */}
+      <CopyPhoneLinkItem agentId={sessionId} />
     </>
   )
 }

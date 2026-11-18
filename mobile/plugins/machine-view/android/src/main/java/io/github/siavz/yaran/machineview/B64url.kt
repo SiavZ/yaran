@@ -15,6 +15,7 @@
  * io.github.siavz.yaran.machineview.B64url
  * ├── io.github.siavz.yaran.machineview.CryptoFixtureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
+ * ├── io.github.siavz.yaran.machineview.Direct (inferred)
  * ├── io.github.siavz.yaran.machineview.Fakes (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)

@@ -14,6 +14,7 @@
 /// Used by:
 /// MachineViewCore/RenewalPolicy
 /// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewController+Direct (inferred)
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
 /// └── MachineViewCoreTests/PolicyTests (inferred)
 /// <module-headers:end>

@@ -11,9 +11,18 @@
 ///
 /// Used by:
 /// MachineViewCoreTests/Fixtures
+/// ├── MachineViewCoreTests/AdmissionTests (inferred)
 /// ├── MachineViewCoreTests/CryptoTests (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/FormatTests (inferred)
-/// └── MachineViewCoreTests/PolicyTests (inferred)
+/// ├── MachineViewCoreTests/OrgWipeTests (inferred)
+/// ├── MachineViewCoreTests/PasswordSheetTests (inferred)
+/// ├── MachineViewCoreTests/PolicyTests (inferred)
+/// ├── MachineViewCoreTests/RouteTenureTests (inferred)
+/// ├── MachineViewCoreTests/ShareBatchTests (inferred)
+/// └── MachineViewCoreTests/WindowSlotTests (inferred)
 /// <module-headers:end>
 import Foundation
 

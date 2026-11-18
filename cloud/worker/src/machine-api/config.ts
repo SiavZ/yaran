@@ -8,6 +8,10 @@
  *   holds makes it call W7 with reason `sync`.
  * - `last_seen_at` and `reported_protocol` are stamped by 04's signature check on every
  *   machine route (at most once a minute), not here.
+ * - `publisher_domain` (additive, optional) is the one host of the https
+ *   `APP_CALLBACK_URLS` ending `/auth/callback`, so yaran can make phone links the org's
+ *   app verifies. Omitted when there is none or they disagree; an older yaran ignores it.
+ *   Twin of `yaran_core::cloud::protocol::links::publisher_domain_from_callbacks`.
  *
  * <module-headers:begin>
  * Uses:
@@ -15,16 +19,19 @@
  * ├── @yaran/protocol:src/index.ts
  * ├── src/http/responses.ts
  * ├── src/machines/machine-rows.ts
+ * ├── src/provisioning/context.ts
  * ├── src/routes/call.ts
  * └── src/shared/timestamp.ts
  * External: none
  *
  * Used by:
  * src/machine-api/config.ts
- * └── src/routes/pairing-and-sessions.ts
+ * ├── src/routes/pairing-and-sessions.ts
+ * └── test/machine-api/machine-routes.test.ts
  * <module-headers:end>
  */
-import type { MachineConfig } from "@yaran/protocol";
+import { isPublicHost, type MachineConfig } from "@yaran/protocol";
+import { appCallbackUrls } from "../provisioning/context.ts";
 import { getMachine } from "../machines/machine-rows.ts";
 import type { RouteCall, RouteRow } from "../routes/call.ts";
 import { HttpError } from "../http/responses.ts";
@@ -32,6 +39,23 @@ import { toTimestamp } from "../shared/timestamp.ts";
 
 /** Event batching the Worker asks of yaran (02 caps max_batch at 16). */
 export const EVENTS = { max_batch: 16, min_interval_ms: 1000 } as const;
+
+/**
+ * The phone app's link domain the callbacks imply: the host of every
+ * `https://<host>/auth/callback` among them when they all name one public host, else
+ * undefined (no such callback, or two apps the machine cannot choose between).
+ */
+export function publisherDomain(callbacks: readonly string[]): string | undefined {
+  let found: string | undefined;
+  for (const url of callbacks) {
+    if (!url.startsWith("https://") || !url.endsWith("/auth/callback")) continue;
+    const host = url.slice("https://".length, -"/auth/callback".length);
+    if (!isPublicHost(host)) continue;
+    if (found !== undefined && found !== host) return undefined;
+    found = host;
+  }
+  return found;
+}
 
 async function getConfig({ ctx, machine }: RouteCall): Promise<Response> {
   const m = await getMachine(ctx, machine!.id!);
@@ -41,6 +65,7 @@ async function getConfig({ ctx, machine }: RouteCall): Promise<Response> {
   const [settings, internal] = await Promise.all([ctx.settings.read(), ctx.settings.internal()]);
   const owner = await ctx.db.prepare("SELECT email FROM users WHERE id = ?").bind(m.owner_user_id).first<{ email: string }>();
   const now = ctx.now();
+  const domain = publisherDomain(appCallbackUrls(ctx.env.APP_CALLBACK_URLS));
   const config: MachineConfig = {
     machine_id: m.id,
     hostname: m.hostname,
@@ -52,6 +77,7 @@ async function getConfig({ ctx, machine }: RouteCall): Promise<Response> {
     push: { enabled: settings.push.enabled, detail: settings.push.detail },
     events: { ...EVENTS },
     server_time: toTimestamp(now),
+    ...(domain === undefined ? {} : { publisher_domain: domain }),
   };
   return Response.json(config, { headers: { "Cache-Control": "no-store" } });
 }

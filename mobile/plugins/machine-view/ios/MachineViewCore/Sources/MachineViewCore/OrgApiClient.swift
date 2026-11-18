@@ -26,6 +26,9 @@
 /// Used by:
 /// MachineViewCore/OrgApiClient
 /// ├── MachineView/AppServices (inferred)
+/// ├── MachineViewCore/DirectAuth (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// └── MachineViewCoreTests/OrgApiClientTests (inferred)
 /// <module-headers:end>
 import Foundation
@@ -94,7 +97,7 @@ public final class OrgApiClient {
             guard let record, fields["install_id"] as? String == record.installId else { return .refused(.bodyInstallId) }
             guard let key = deviceKeys.publicKey(orgId), fields["device_key"] as? String == key else { return .refused(.bodyDeviceKey) }
         }
-        guard let stored = try? sessions.get(controlHost), stored.exp > clock(),
+        guard let stored = try? sessions.get(controlHost, orgId: orgId), stored.exp > clock(), // never another org's, nor deleted
               let cookie = try? CookieSpec.make(kind: rung, jwt: stored.jwt, cookie: stored.cookie) else { return .sessionExpired }
         var req = baseRequest(url, method: method)
         req.setValue("\(CookieSpec.name)=\(cookie.value)", forHTTPHeaderField: "Cookie")

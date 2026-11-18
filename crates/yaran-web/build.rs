@@ -82,6 +82,8 @@ const STATE_ENV: &str = "YARAN_UI_BUILD_STATE";
 /// the success path as well as the two skip paths.
 fn mark_state(state: &str) {
     println!("cargo:rustc-env={STATE_ENV}={state}");
+    // Also $OUT_DIR/ui_build_state, which no env var can stand in for (auth/status_answer.rs).
+    std::fs::write(staged_dir().with_file_name("ui_build_state"), state).expect("OUT_DIR");
 }
 
 /// Sentinel embedded in `NOT_BUILT_PAGE` so a LATER build can tell "this dist is

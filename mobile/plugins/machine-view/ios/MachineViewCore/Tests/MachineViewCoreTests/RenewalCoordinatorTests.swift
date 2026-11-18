@@ -13,10 +13,13 @@
 /// ├── MachineViewCore/CallbackUrl (inferred)
 /// ├── MachineViewCore/Outcomes (inferred)
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
 /// └── MachineViewCoreTests/Fakes (inferred)
 /// External: Foundation, Testing
 ///
 /// Used by: entry point (Swift Testing, via bash ios/MachineViewCore/test.sh)
+/// MachineViewCoreTests/RenewalCoordinatorTests
+/// └── MachineViewCoreTests/RouteTenureTests (inferred)
 /// <module-headers:end>
 import Foundation
 import Testing

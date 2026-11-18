@@ -444,6 +444,8 @@ fn protected_routes() -> Vec<Req> {
         put("/api/v1/macros"),
         post("/api/v1/server/tailscale-mode"),
         post("/api/v1/file-drop"),
+        get("/api/v1/phone/machine-qr"),
+        get("/api/v1/phone/link-target"),
         post("/api/v1/auth/logout"),
         post("/api/v1/auth/cli-logout"),
         post("/api/v1/auth/password"),
@@ -3957,3 +3959,6 @@ async fn a_blocked_page_load_gets_html_and_everything_else_json() {
     let asset = yaran.get(NETWORK, "/favicon.png").await;
     assert_eq!(asset.error().as_deref(), Some("blocked"), "{}", asset.body);
 }
+
+#[path = "auth_router/phone.rs"]
+mod phone;

@@ -58,6 +58,8 @@ public final class RenewalCoordinator {
     private var overlayShown = false
     private var renewal = 0
     private var renewingSince: Int64?
+    /// Which route the scheduling belongs to; a callback of an earlier one is inert.
+    private var epoch = 0
 
     public init(clock: @escaping () -> Int64, scheduler: OneShotScheduler, session: @escaping () -> (iat: Int64?, exp: Int64)?,
                 ui renewalUi: RenewalUi, renew: @escaping (@escaping (SignInOutcome) -> Void) -> Void) {
@@ -76,6 +78,18 @@ public final class RenewalCoordinator {
         if visible { evaluate() } else { timer?.cancel(); timer = nil }
     }
 
+    /// The window switched routes: the old route's timer goes, a callback it already delivered or a
+    /// renewal it started acts on nothing, and its reauth overlay is no longer shown. Only the new
+    /// route's own `onOpen`/`evaluate` (an org route) arms anything again.
+    public func routeChanged() {
+        epoch += 1
+        timer?.cancel()
+        timer = nil
+        overlayShown = false
+        renewal += 1
+        renewingSince = nil
+    }
+
     /// Re-reads the session and applies the `view` decision; also the timer's callback.
     public func evaluate() {
         timer?.cancel()
@@ -87,7 +101,13 @@ public final class RenewalCoordinator {
         case .banner: renewalUi?.showBanner()
         case .overlay: renewalUi?.hideBanner(); showOverlay()
         }
-        if let nextCheck = decision.nextCheckAt { timer = scheduler.schedule(at: nextCheck) { [weak self] in self?.evaluate() } }
+        if let nextCheck = decision.nextCheckAt {
+            let mine = epoch
+            timer = scheduler.schedule(at: nextCheck) { [weak self] in
+                guard let self, self.epoch == mine else { return }
+                self.evaluate()
+            }
+        }
     }
 
     /// `yaranapp://reauth`, an Access redirect, or a refusal that asks to sign in again.
@@ -97,11 +117,13 @@ public final class RenewalCoordinator {
     /// A newer renewal replaces an older one; only the newest one's ending clears `renewing`.
     public func renewNow(completion: @escaping (SignInOutcome) -> Void) {
         renewal += 1
-        let mine = renewal
+        let mine = renewal, route = epoch
         renewingSince = clock()
         renew { [weak self] outcome in
             guard let self else { return }
             if self.renewal == mine { self.renewingSince = nil }
+            // A route the window switched away from: its ending reaches nobody, success or failure.
+            guard self.epoch == route else { return }
             if case .signedIn = outcome {
                 self.overlayShown = false
                 self.renewalUi?.hideOverlay()

@@ -64,7 +64,13 @@ const machine = [
     ["31-char slug", "pattern", m(claimRes, { user_slug: "a".repeat(31) })], ["protocol zero", "minimum", m(claimRes, { protocol: 0 })],
     ["bad email", "format", m(claimRes, { owner_email: "ada.example.org" })], ["tunnel without token", "required", m(claimRes, { "tunnel.token": DEL })],
   ]),
-  T("MachineConfig", M, [["config", config], ["minimal push", m(config, { push: { enabled: false, detail: "minimal" } })]], [
+  T("MachineConfig", M, [
+    ["config", config], ["minimal push", m(config, { push: { enabled: false, detail: "minimal" } })],
+    ["publisher domain", m(config, { publisher_domain: "app.example.org" })],
+  ], [
+    ["publisher domain with a port", "pattern", m(config, { publisher_domain: "app.example.org:443" })],
+    ["single-label publisher domain", "pattern", m(config, { publisher_domain: "localhost" })],
+    ["idn publisher domain", "not", m(config, { publisher_domain: "xn--yrn-1na.example.org" })],
     ["batch 17", "maximum", m(config, { "events.max_batch": 17 })], ["negative interval", "minimum", m(config, { "events.min_interval_ms": -1 })],
     ["unknown detail", "enum", m(config, { "push.detail": "full" })], ["fractional server time", "pattern", m(config, { server_time: "2026-11-14T12:00:00.5Z" })],
     ["token version zero", "minimum", m(config, { "tunnel.token_version": 0 })], ["missing server_time", "required", m(config, { server_time: DEL })],
