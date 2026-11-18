@@ -1,5 +1,6 @@
 /**
- * One machine row: name, status dot and word, last seen, and a `⋯` menu with Open and Remove….
+ * One machine row: a machine icon, name, status dot and word, last seen, and a `⋯` menu with Open
+ * and Remove…. Rows sit inside one grouped card (`.settings-group`), the way T3 Code lists them.
  *
  * Follows the web's row-menu idiom (one ellipsis trigger, leading icons, a trailing `…` on the
  * item that opens a confirmation) with the 40 px touch floor. Every `MachineStatus`, plus any
@@ -26,7 +27,7 @@ import { msg } from '@lingui/core/macro';
 import { useLingui } from '@lingui/react';
 import type { MachineStatus, MachineSummary } from '@yaran/protocol';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@yaran/ui-kit/dropdown-menu';
-import { EllipsisIcon, ExternalLinkIcon, Trash2Icon } from 'lucide-react';
+import { EllipsisIcon, ExternalLinkIcon, MonitorIcon, Trash2Icon } from 'lucide-react';
 import { useRef } from 'react';
 
 import { assertNever } from '../../lib/assertNever.ts';
@@ -65,13 +66,15 @@ export function MachineRow({ machine, onOpen, onRemove }: { machine: MachineSumm
   const dialogNext = useRef(false);
   return (
     // Padding and gap are capped by the screen width, so enlarged text keeps the room for the name.
-    <li className="flex min-h-14 items-center gap-[min(0.75rem,3vw)] rounded-xl border border-border bg-card py-3 ps-[min(1rem,4vw)] pe-1">
+    <li className="-me-2 flex min-h-14 items-center gap-[min(0.75rem,3vw)]">
+      <MonitorIcon aria-hidden className="mt-3.5 size-5 shrink-0 self-start" />
       <button type="button" className="flex min-h-12 min-w-0 flex-1 flex-col items-start gap-1 [overflow-wrap:anywhere] text-left disabled:opacity-60" disabled={!canOpen} onClick={onOpen}>
-        <span className="font-medium">{machine.name}</span>
+        <span className="text-base">{machine.name}</span>
         <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground">
           <span aria-hidden className={`inline-block size-2 shrink-0 rounded-full ${look.dot}`} />
           {i18n._(look.word)}
-          {lastSeen && <span>· {i18n._(msg`last seen ${lastSeen}`)}</span>}
+          {/* Its own line: beside the status word it wrapped anyway, behind a dangling dot. */}
+          {lastSeen && <span className="basis-full">{i18n._(msg`last seen ${lastSeen}`)}</span>}
         </span>
       </button>
       <DropdownMenu>
@@ -81,7 +84,7 @@ export function MachineRow({ machine, onOpen, onRemove }: { machine: MachineSumm
             <button
               type="button"
               aria-label={i18n._(msg`Actions for ${machine.name}`)}
-              className="phone-icon-button flex size-12 min-h-12 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="phone-icon-button flex size-12 min-h-12 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
             />
           }
         >

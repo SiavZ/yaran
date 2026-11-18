@@ -52,7 +52,7 @@ export function Diagnostics() {
           and machine names. Check it before you share it.
         </Trans>
       </p>
-      <pre aria-label="Diagnostics log" className="max-h-96 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs whitespace-pre-wrap">
+      <pre aria-label="Diagnostics log" className="max-h-96 overflow-auto rounded-2xl bg-muted p-4 font-mono text-xs whitespace-pre-wrap">
         {text === null ? '' : text === '' ? <Trans>The log is empty.</Trans> : text}
       </pre>
       <Button className="min-h-12" variant="outline" disabled={!text} onClick={() => void exportLog()}>

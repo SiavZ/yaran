@@ -27,8 +27,8 @@ module.exports = {
     // The list the caption counts, and the one row it says is waiting on you.
     await expectRows(page, SIDEBAR_ORDER)
     await expectStateWord(page, ATTENTION_AGENT, ATTENTION_WORD)
-    // Cut at the last agent row rather than at the viewport: below it is the
-    // hub's bottom bar, which the hub's own caption is not about.
-    return { x: 0, y: 0, width: 390, height: 529 }
+    // The whole screen: the title bar, the list's sheet and the launcher
+    // floating over its corner are one look.
+    return { x: 0, y: 0, width: 390, height: 844 }
   },
 }

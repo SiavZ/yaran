@@ -37,10 +37,10 @@ function Link({ page, children, icon }: { page: SettingsPage; children: ReactNod
   return (
     <button
       type="button"
-      className="flex min-h-12 w-full items-center justify-between rounded-md text-left font-medium hover:bg-muted"
+      className="-mx-3 flex min-h-14 w-[calc(100%+1.5rem)] items-center justify-between rounded-2xl px-3 text-left text-base hover:bg-accent"
       onClick={() => navigate({ name: 'settings-page', page })}
     >
-      <span className="flex min-w-0 flex-wrap items-center gap-3 [overflow-wrap:break-word]"><span className="text-muted-foreground">{icon}</span>{children}</span>
+      <span className="flex min-w-0 flex-wrap items-center gap-4 [overflow-wrap:break-word]"><span className="text-foreground">{icon}</span>{children}</span>
       <ChevronRightIcon aria-hidden className="size-4 text-muted-foreground" />
     </button>
   );
@@ -55,13 +55,13 @@ export function Settings() {
         <h2 className="settings-heading">
           <Trans>Notifications</Trans>
         </h2>
-        <div className="rounded-xl border border-border bg-card p-4"><NotificationSettings /></div>
+        <div className="rounded-[1.75rem] bg-muted p-4"><NotificationSettings /></div>
       </section>
       <section>
         <h2 className="settings-heading"><Trans>Preferences</Trans></h2>
         <div className="settings-group">
           <Link page="security" icon={<ShieldCheckIcon aria-hidden className="size-5" />}><Trans>Security</Trans></Link>
-          <div className="pl-8 max-[24rem]:pl-0"><SwitchRow label={<Trans>Reopen last machine on launch</Trans>} checked={reopenLastMachine} onChange={(on) => void updateSettings({ reopenLastMachine: on })} /></div>
+          <div className="pl-9 max-[24rem]:pl-0"><SwitchRow label={<Trans>Reopen last machine on launch</Trans>} checked={reopenLastMachine} onChange={(on) => void updateSettings({ reopenLastMachine: on })} /></div>
           <Link page="language" icon={<LanguagesIcon aria-hidden className="size-5" />}><Trans>Language</Trans></Link>
         </div>
       </section>
@@ -74,7 +74,7 @@ export function Settings() {
       </section>
       <section className="mt-3">
         <h2 className="settings-heading"><Trans>Local data</Trans></h2>
-        <p className="mb-3 text-sm text-muted-foreground"><Trans>Remove this phone's saved orgs, sign-ins and preferences.</Trans></p>
+        <p className="mb-3 px-4 text-sm text-muted-foreground"><Trans>Remove this phone's saved orgs, sign-ins and preferences.</Trans></p>
         <Button className="min-h-12 w-full text-destructive" variant="outline" onClick={() => setErasing(true)}><Trans>Erase everything on this phone…</Trans></Button>
       </section>
       <EraseDialog open={erasing} onClose={() => setErasing(false)} onErased={() => navigate({ name: 'welcome' }, { replace: true })} />
