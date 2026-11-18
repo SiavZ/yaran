@@ -964,3 +964,68 @@ fn broker_response_parsing_checks_status_and_json() {
     assert!(parse_broker_response("garbage").is_err());
     assert!(parse_broker_response("HTTP/1.1 200 OK\r\n\r\nnot json").is_err());
 }
+
+#[test]
+fn an_empty_yaran_session_id_names_no_agent() {
+    let env = |parts: &[&str]| parts.iter().map(OsString::from).collect::<Vec<_>>();
+    assert!(names_no_session(&env(&["YARAN_SESSION_ID="])));
+    assert!(!names_no_session(&env(&["YARAN_SESSION_ID=agent-7"])));
+    assert!(!names_no_session(&env(&["PATH=/bin"])));
+}
+
+#[test]
+fn jcode_targets_route_via_claude_peers_only_in_their_own_worktree() {
+    let dir = tempdir().unwrap();
+    let sender = SenderContext {
+        handle: "sender".to_string(),
+        session: Some(session("s1", "claude", "sender", dir.path())),
+    };
+    let mut target = PeerTarget {
+        handle: "target".to_string(),
+        session: Some(session("s2", "jcode", "target", dir.path())),
+    };
+    assert_eq!(
+        choose_transport(TransportPreference::Auto, &sender, &target).unwrap(),
+        ChosenTransport::ClaudePeers
+    );
+    target.session.as_mut().unwrap().shared_workspace = true;
+    assert_eq!(
+        choose_transport(TransportPreference::Auto, &sender, &target).unwrap(),
+        ChosenTransport::Amq
+    );
+}
+
+/// Older jcode ran one claude-peers server for the whole daemon and dropped
+/// every push, so only a registration jcode marks per session is reachable.
+#[test]
+fn a_jcode_target_takes_only_its_marked_registration() {
+    let dir = tempdir().unwrap();
+    let wt = dir.path().join("worktree");
+    fs::create_dir_all(&wt).unwrap();
+    let target = session("s1", "jcode", "feature", &wt);
+    let mut marked = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "peer::router::tests::env_probe_helper",
+            "--exact",
+            "--test-threads=1",
+        ])
+        .env("YARAN_ENV_PROBE_SLEEP", "1")
+        .env("YARAN_SESSION_ID", "")
+        .env("JCODE_MCP_CHANNEL_SESSION", "session_fox_1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let processes = ProcessTable::snapshot(None);
+    let legacy = peer("legacy", &wt, std::process::id(), "2026-11-18T10:00:00Z");
+    let current = peer("current", &wt, marked.id(), "2026-11-18T09:00:00Z");
+
+    let picked = reachable_claude_peer(&target, &[legacy.clone(), current], &processes);
+    let unmarked = reachable_claude_peer(&target, &[legacy], &processes);
+    let _ = marked.kill();
+    let _ = marked.wait();
+
+    assert_eq!(picked, Ok("current".to_string()));
+    assert_eq!(unmarked, Err(Unreachable::Unregistered));
+}

@@ -8,9 +8,13 @@
 //! - Either endpoint in a shared workspace for other provider combinations:
 //!   always AMQ. Claude Peers keys a registration by working directory, so it
 //!   cannot tell mixed-provider agents sharing one apart.
-//! - Otherwise `auto` sends to a Claude target over Claude Peers (the broker
-//!   is then required, not a best-effort preference) and to anything else
-//!   over AMQ. `--transport amq` is the manual override.
+//! - Otherwise `auto` sends to a Claude or jcode target over Claude Peers
+//!   (the broker is then required, not a best-effort preference) and to
+//!   anything else over AMQ. `--transport amq` is the manual override.
+//! - A jcode target's registration is the claude-peers server its jcode
+//!   session runs (`JCODE_MCP_CHANNEL_SESSION` in its environment), found by
+//!   directory. Older jcode shared one server across sessions and dropped
+//!   every push, so a registration without that marker is never used.
 //! - When a Claude target cannot take a Claude Peers push right now (the
 //!   broker is not answering, the target has no registration because its
 //!   claude-peers server died, or its Claude Code no longer loads the channel
@@ -92,7 +96,8 @@ yaran peer - route messages between Yaran agent sessions
 Subcommands:
   yaran peer send [--from <handle>] [--transport auto|amq|claude-peers] <target> <message...>
                        Send through the Yaran router. Claude-to-Claude routes
-                       always use Claude Peers; other shared routes use AMQ.
+                       always use Claude Peers, as do routes to jcode agents
+                       in their own worktree; other shared routes use AMQ.
   yaran peer list        List Yaran sessions and transport health.
   yaran peer sync-amq    Reconcile AMQ's agent registry from sessions.sqlite3.
 
@@ -231,7 +236,7 @@ fn run_peer_list(
     } else {
         for session in &sessions {
             let note = match (&peers, &processes) {
-                (Some(peers), Some(processes)) if session.is_claude() => {
+                (Some(peers), Some(processes)) if session.takes_claude_peers() => {
                     match reachable_claude_peer(session, peers, processes) {
                         Ok(_) => "",
                         Err(Unreachable::Unregistered) => {
@@ -551,7 +556,7 @@ fn choose_transport(
             Ok(ChosenTransport::ClaudePeers)
         }
         TransportPreference::Auto => {
-            if is_claude_session(target.session.as_ref()) {
+            if takes_claude_peers(target.session.as_ref()) {
                 Ok(ChosenTransport::ClaudePeers)
             } else {
                 Ok(ChosenTransport::Amq)
@@ -561,7 +566,7 @@ fn choose_transport(
 }
 
 fn ensure_claude_peers_target(target: &PeerTarget) -> Result<()> {
-    if !is_claude_session(target.session.as_ref()) {
+    if !takes_claude_peers(target.session.as_ref()) {
         let provider = target
             .session
             .as_ref()
@@ -573,6 +578,10 @@ fn ensure_claude_peers_target(target: &PeerTarget) -> Result<()> {
 
 fn is_claude_session(session: Option<&PeerSession>) -> bool {
     session.is_some_and(PeerSession::is_claude)
+}
+
+fn takes_claude_peers(session: Option<&PeerSession>) -> bool {
+    session.is_some_and(PeerSession::takes_claude_peers)
 }
 
 fn amq_send(root: &Path, from: &str, target: &str, message: &str) -> Result<()> {
@@ -631,7 +640,7 @@ fn claude_peers_sender(
 ) -> (String, String) {
     // A sender whose channel is off would never see the reply pushed back.
     if let Some(session) = sender.session.as_ref()
-        && session.is_claude()
+        && session.takes_claude_peers()
         && let Ok(id) = reachable_claude_peer(session, peers, processes)
     {
         return (id, message.to_string());
@@ -778,6 +787,23 @@ fn reachable_claude_peer(
     peers: &[ClaudePeer],
     processes: &ProcessTable,
 ) -> std::result::Result<String, Unreachable> {
+    if session.provider == "jcode" {
+        let delivering: Vec<ClaudePeer> = peers
+            .iter()
+            .filter(|peer| {
+                peer.pid
+                    .is_some_and(|pid| processes.delivers_jcode_channel(pid))
+            })
+            .cloned()
+            .collect();
+        return select_claude_peer_id(
+            session,
+            &delivering,
+            |pid| processes.host_of(pid),
+            |pid| processes.yaran_session_of(pid),
+        )
+        .ok_or(Unreachable::Unregistered);
+    }
     let id = select_claude_peer_id(
         session,
         peers,
@@ -888,9 +914,29 @@ impl ProcessTable {
             if let Some(id) = session_id_in_environ(proc.environ()) {
                 return Some(id);
             }
+            // Set but empty names no agent, and stops the walk: jcode marks
+            // its session MCP servers so the daemon's inherited id is skipped.
+            if names_no_session(proc.environ()) {
+                return None;
+            }
             current = proc.parent()?;
         }
         None
+    }
+
+    /// Whether the registration's process is a claude-peers server jcode runs
+    /// for one session and delivers channel pushes from.
+    fn delivers_jcode_channel(&self, pid: u32) -> bool {
+        self.system
+            .process(sysinfo::Pid::from_u32(pid))
+            .is_some_and(|proc| {
+                proc.environ().iter().any(|entry| {
+                    entry
+                        .to_str()
+                        .and_then(|entry| entry.strip_prefix("JCODE_MCP_CHANNEL_SESSION="))
+                        .is_some_and(|value| !value.is_empty())
+                })
+            })
     }
 
     /// Whether a daemon spare, a daemon session host, or the yaran TUI is
@@ -952,6 +998,13 @@ fn session_id_in_environ(environ: &[OsString]) -> Option<String> {
     value_of("YARAN_SESSION_ID")
         .or_else(|| value_of("DUX_SESSION_ID"))
         .filter(|id| !id.is_empty())
+}
+
+/// Whether an environment sets `YARAN_SESSION_ID` to empty on purpose.
+fn names_no_session(environ: &[OsString]) -> bool {
+    environ
+        .iter()
+        .any(|entry| entry.to_str() == Some("YARAN_SESSION_ID="))
 }
 
 /// Claude Code only pushes `server:` channel messages it was started with
