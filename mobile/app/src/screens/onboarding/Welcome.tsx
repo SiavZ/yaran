@@ -29,7 +29,7 @@ import { Page } from '../Page.tsx';
 
 export function Welcome() {
   return (
-    <Page title={<Trans>Welcome</Trans>} className="welcome-page">
+    <Page brand title={<Trans>Welcome</Trans>} className="welcome-page">
       <p className="max-w-sm text-xl leading-relaxed text-muted-foreground"><Trans>Your coding agents, within reach. Open the machines you work on from this phone.</Trans></p>
       <div className="mt-auto flex flex-col gap-3 pt-10">
         <p className="mb-1 text-sm font-medium"><Trans>Start by connecting your org.</Trans></p>
@@ -41,7 +41,7 @@ export function Welcome() {
           <KeyboardIcon aria-hidden />
           <Trans>Type the org address</Trans>
         </Button>
-        <aside className="mt-3 rounded-xl border border-border bg-card p-4 text-sm leading-relaxed text-muted-foreground">
+        <aside className="mt-3 rounded-[1.75rem] bg-muted p-5 text-sm leading-relaxed text-muted-foreground">
           <p className="mb-2 font-medium text-foreground"><Trans>Need a QR code?</Trans></p>
           <p><Trans>On your computer, run <InlineCode>yaran cloud pair-phone</InlineCode>, or ask your admin for your org's code or address.</Trans></p>
         </aside>

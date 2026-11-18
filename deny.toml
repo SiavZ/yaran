@@ -40,12 +40,11 @@ ignore = [
   # Drop when testcontainers/testcontainers-rs#1006 ships (migration to tar).
   # Reviewed: 2026-11-17. Next review: 2026-12-01.
   { id = "RUSTSEC-2026-0440", reason = "Linux test-only via testcontainers; no released replacement; review 2026-12-01" },
-  # RUSTSEC-2026-0543 — `chrono` is unmaintained (informational, no
-  # vulnerability; no patched version). Used directly by yaran-core,
-  # yaran-tui, yaran-web and yaran, and through rusqlite's `chrono`
-  # feature. Migrating to `jiff` or `time` is its own change.
-  # Reviewed: 2026-11-18. Next review: 2026-12-15.
-  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no patched version; migration to jiff/time tracked separately; review 2026-12-15" },
+  # RUSTSEC-2026-0543 — `chrono` 0.4.44 is unmaintained (no vulnerability,
+  # no patched version). yaran-core, yaran-tui and yaran-web use it directly
+  # and rusqlite pulls it in; replacing it is a migration of its own.
+  # Reviewed: 2026-11-18. Next review: 2026-12-18.
+  { id = "RUSTSEC-2026-0543", reason = "direct dependency and via rusqlite; no patched version; migration tracked separately; review 2026-12-18" },
 ]
 
 # ---------------------------------------------------------------------------

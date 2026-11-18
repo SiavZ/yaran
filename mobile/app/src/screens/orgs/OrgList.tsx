@@ -23,7 +23,7 @@ import { useLingui } from '@lingui/react';
 import { Trans } from '@lingui/react/macro';
 import { Button } from '@yaran/ui-kit/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@yaran/ui-kit/dropdown-menu';
-import { EllipsisIcon, LogOutIcon, PlusIcon } from 'lucide-react';
+import { EllipsisIcon, LogOutIcon, PlusIcon, UsersIcon } from 'lucide-react';
 import { useRef, useState } from 'react';
 
 import { orgStore, type OrgRecord } from '../../lib/orgStore.ts';
@@ -45,11 +45,12 @@ export function OrgList() {
           <Trans>No org added yet.</Trans>
         </p>
       )}
-      <ul className="flex flex-col gap-2">
+      {orgs.length > 0 && <ul className="settings-group flex flex-col">
         {orgs.map((org) => (
-          <li key={org.id} className="flex min-h-14 items-center gap-3 rounded-xl border border-border bg-card p-4">
+          <li key={org.id} className="-me-2 flex min-h-14 items-center gap-[min(0.75rem,3vw)]">
+            <UsersIcon aria-hidden className="mt-3.5 size-5 shrink-0 self-start" />
             <div className="flex min-w-0 flex-1 flex-col gap-1 [overflow-wrap:anywhere]">
-              <span className="font-medium">{org.name}</span>
+              <span className="text-base">{org.name}</span>
               <span className="text-sm text-muted-foreground">{new URL(org.id).hostname}</span>
             </div>
             <DropdownMenu>
@@ -59,7 +60,7 @@ export function OrgList() {
                   <button
                     type="button"
                     aria-label={i18n._(msg`Actions for ${org.name}`)}
-                    className="phone-icon-button flex size-12 min-h-12 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="phone-icon-button flex size-12 min-h-12 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
                   />
                 }
               >
@@ -79,7 +80,7 @@ export function OrgList() {
             </DropdownMenu>
           </li>
         ))}
-      </ul>
+      </ul>}
       <Button className="min-h-12" variant="outline" onClick={() => navigate({ name: 'welcome' })}>
         <PlusIcon aria-hidden />
         <Trans>Add an org</Trans>

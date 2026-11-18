@@ -14,7 +14,7 @@ import { Trans } from '@lingui/react/macro';
 
 export function ProtocolMismatch({ update }: { update: 'app' | 'control_plane' }) {
   return (
-    <div role="alert" className="rounded-lg border border-border p-4">
+    <div role="alert" className="state-card">
       {update === 'app' ? (
         <p>
           <Trans>This org's control plane is newer than this app. Update yaran from your app store, then try again.</Trans>
