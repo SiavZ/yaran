@@ -34,7 +34,7 @@
 //! ├── wire
 //! ├── worker
 //! └── working_copy
-//! External: chrono, serde, serde_json, std, tempfile
+//! External: jiff, serde, serde_json, std, tempfile
 //!
 //! Used by:
 //! viewmodel.rs
@@ -62,6 +62,7 @@ use std::collections::BTreeMap;
 use crate::engine::Engine;
 use crate::ids::TabIdRef;
 use crate::model::{AgentSession, Project, ProjectBranchStatus, ProviderKind};
+use crate::timefmt::Rfc3339;
 use crate::worker::{ResourceKind, ResourceStats};
 
 /// The projects/sessions/sidebar "spine" a web client reads via
@@ -1455,7 +1456,7 @@ impl PrView {
         own: crate::engine::pull_requests::OwnRepository<'_>,
         pr: &crate::model::AgentPr,
     ) -> Self {
-        let time = |at: Option<chrono::DateTime<chrono::Utc>>| at.map(|at| at.to_rfc3339());
+        let time = |at: Option<jiff::Timestamp>| at.map(|at| at.to_rfc3339());
         Self {
             overridden: pr.attached,
             number: pr.number,
@@ -2074,7 +2075,7 @@ mod tests {
                     url: "https://github.com/fork/r/pull/12".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -2312,9 +2313,7 @@ mod tests {
         // A project with a known leading branch and a stored created_at.
         let mut with = sample_project("p1", "/repo");
         with.leading_branch = Some("trunk".to_string());
-        let added = chrono::DateTime::parse_from_rfc3339("2026-02-03T04:05:06+00:00")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let added = crate::timefmt::parse_rfc3339("2026-02-03T04:05:06+00:00").unwrap();
         with.created_at = Some(added);
         engine.projects.push(with);
 
@@ -2365,7 +2364,7 @@ mod tests {
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -2462,8 +2461,9 @@ mod tests {
             owner_repo: owner_repo.to_string(),
             ..Default::default()
         };
-        let found = crate::model::AgentPr::found(&info(42, "owner/repo"), chrono::Utc::now());
-        let mut attached = crate::model::AgentPr::found(&info(7, "acme/infra"), chrono::Utc::now());
+        let found = crate::model::AgentPr::found(&info(42, "owner/repo"), jiff::Timestamp::now());
+        let mut attached =
+            crate::model::AgentPr::found(&info(7, "acme/infra"), jiff::Timestamp::now());
         attached.found = false;
         attached.attached = true;
         engine
@@ -2497,12 +2497,8 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/repo"));
         let mut session = sample_session("s1", "p1", "feature");
-        let created = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05+00:00")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let updated = chrono::DateTime::parse_from_rfc3339("2026-03-04T05:06:07+00:00")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let created = crate::timefmt::parse_rfc3339("2026-01-02T03:04:05+00:00").unwrap();
+        let updated = crate::timefmt::parse_rfc3339("2026-03-04T05:06:07+00:00").unwrap();
         session.created_at = created;
         session.updated_at = updated;
         engine.sessions.push(session);
@@ -2634,15 +2630,15 @@ mod tests {
         engine.pty_activity.insert(tid.clone(), Instant::now());
         engine.terminal_activity_at.insert(
             tid.clone(),
-            chrono::Utc::now() + chrono::Duration::seconds(1),
+            jiff::Timestamp::now() + jiff::SignedDuration::from_secs(1),
         );
         let after = engine.spine().terminals[0].clone();
         assert_ne!(
             after.updated_at, after.created_at,
             "fresh PTY activity moves updated_at off created_at"
         );
-        let created = chrono::DateTime::parse_from_rfc3339(&after.created_at).unwrap();
-        let updated = chrono::DateTime::parse_from_rfc3339(&after.updated_at).unwrap();
+        let created = crate::timefmt::parse_rfc3339(&after.created_at).unwrap();
+        let updated = crate::timefmt::parse_rfc3339(&after.updated_at).unwrap();
         assert!(
             updated >= created,
             "updated_at ({updated}) must be at or after created_at ({created})"
@@ -2662,7 +2658,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(600));
         engine.poll_pty_activity();
         engine.terminal_activity_at.remove(&tid);
-        let before = chrono::Utc::now();
+        let before = jiff::Timestamp::now();
         engine.companion_terminals[&tid]
             .client
             .write_bytes(b"hello\n")
@@ -2673,9 +2669,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
             engine.poll_pty_activity();
         }
-        let after = chrono::Utc::now();
+        let after = jiff::Timestamp::now();
         let first = engine.spine().terminals[0].updated_at.clone();
-        let stamped = chrono::DateTime::parse_from_rfc3339(&first).unwrap();
+        let stamped = crate::timefmt::parse_rfc3339(&first).unwrap();
         assert!(
             before <= stamped && stamped <= after,
             "{before} {stamped} {after}"
@@ -2735,7 +2731,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: crate::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         // Only the extra tab is streaming; the session-slot tab (s1) is idle.
@@ -2794,7 +2790,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
 
@@ -2815,8 +2811,8 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/repo"));
         engine.sessions.push(sample_session("s1", "p1", "feature"));
-        let early = chrono::Utc::now();
-        let late = early + chrono::Duration::seconds(5);
+        let early = jiff::Timestamp::now();
+        let late = early + jiff::SignedDuration::from_secs(5);
         for (id, sort_order, created_at) in [
             ("tab-late", 1, late),
             ("tab-early", 1, early),
@@ -2863,7 +2859,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             };
             engine.session_store.insert_agent_tab(&tab).unwrap();
             engine.agent_tabs.insert(TabId::new(id), tab);
@@ -2899,7 +2895,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: order,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             };
             engine.session_store.insert_agent_tab(&tab).unwrap();
             engine.agent_tabs.insert(TabId::new(id), tab);
@@ -3610,7 +3606,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         (engine, tmp)

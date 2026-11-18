@@ -42,7 +42,7 @@ fn shared_agent(id: &str, project_id: &str, provider: &str, status: SessionStatu
 }
 
 fn test_app_session(id: &str, project_id: &str) -> AgentSession {
-    let now = Utc::now();
+    let now = jiff::Timestamp::now();
     AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),

@@ -40,7 +40,7 @@
 //! quietly leaves the shipped one untested. They are the first public release
 //! (`agent_sessions` alone) and the commit that introduced `projects`.
 
-use chrono::Utc;
+use jiff::Timestamp;
 use rusqlite::Connection;
 use yaran_core::model::{
     AgentPr, AgentSession, AgentTab, AgentWorkspace, FolderWorkspace, PrInfo, PrPrefs,
@@ -48,6 +48,7 @@ use yaran_core::model::{
 };
 use yaran_core::pr_list::PrSortMode;
 use yaran_core::storage::SessionStore;
+use yaran_core::timefmt::Rfc3339;
 
 /// `sessions.sqlite3` exactly as the FIRST public yaran created it (`ed917a4`,
 /// "First upload"): ONE table, and it already carried `title` and `project_path`.
@@ -556,7 +557,7 @@ fn tables_added_since_are_created_empty_and_immediately_usable() {
             session_id: "sess-1".to_string(),
             provider: ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         })
         .expect("insert tab");
     let extras = store.load_extra_agent_tabs().expect("load extras");
@@ -579,7 +580,7 @@ fn tables_added_since_are_created_empty_and_immediately_usable() {
             url: "https://github.com/ada/widget/pull/42".to_string(),
             ..PrInfo::default()
         },
-        Utc::now(),
+        Timestamp::now(),
     );
     store.upsert_agent_pr("sess-1", &found).expect("upsert pr");
     let prs = store.load_agent_prs().expect("load prs");
@@ -735,8 +736,8 @@ fn old_state_survives_a_write_a_close_and_a_reopen() {
                 desired_running: false,
                 auto_reopen_enabled: true,
                 status: SessionStatus::Detached,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
+                created_at: Timestamp::now(),
+                updated_at: Timestamp::now(),
                 last_focused_tab: None,
                 workspace: AgentWorkspace::Folder(FolderWorkspace {
                     folder_path: "/home/someone/My Notes".to_string(),
@@ -799,7 +800,7 @@ fn a_migrated_title_is_not_re_frozen_when_a_later_agent_leaves_it_null() {
     // would stop tracking its branch.
     let (_tmp, path) = old_database();
     let store = SessionStore::open(&path).expect("first open");
-    let now = Utc::now();
+    let now = Timestamp::now();
     store
         .upsert_session(&AgentSession {
             id: "sess-new".to_string(),
@@ -956,7 +957,7 @@ fn opening_a_database_this_build_created_is_a_no_op_the_second_time() {
     // must also be stable across opens, or "nothing changed" would prove nothing.
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("sessions.sqlite3");
-    let now = Utc::now();
+    let now = Timestamp::now();
     {
         let store = SessionStore::open(&path).expect("create");
         store

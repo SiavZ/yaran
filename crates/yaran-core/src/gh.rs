@@ -26,7 +26,7 @@ use crate::worker::{
 #[derive(Clone, Debug)]
 pub(crate) struct RateLimitInfo {
     pub remaining: i64,
-    pub(crate) reset_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) reset_at: Option<jiff::Timestamp>,
     /// What this one query cost, in GraphQL points. Already asked for, and what
     /// the cycle summary reports: the widened discovery window is a cost
     /// question, so the log has to be able to answer it.
@@ -105,7 +105,7 @@ const HEAD_NAME_WINDOW: usize = 5;
 /// its own clock and yaran stamps the branch with this machine's, so an exact
 /// comparison would refuse the agent's own pull request on a machine whose
 /// clock runs a little fast.
-const HEAD_NAME_CLOCK_SLACK: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+const HEAD_NAME_CLOCK_SLACK: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
 
 /// What every pull-request node in a sync query asks for.
 const PR_NODE_FIELDS: &str = "number state isDraft title url createdAt updatedAt closedAt \
@@ -165,7 +165,7 @@ pub(crate) fn run_pr_sync_scoped(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     let entries = entries_for_scope(snapshot, scope);
-    run_entries(&entries, backoff, policy, trigger, chrono::Utc::now())
+    run_entries(&entries, backoff, policy, trigger, jiff::Timestamp::now())
 }
 
 /// The entries a cycle of the given [`SyncScope`] asks GitHub about. Pure, so
@@ -223,7 +223,7 @@ pub(crate) fn check_pr_for_entry(
         backoff,
         policy,
         trigger,
-        chrono::Utc::now(),
+        jiff::Timestamp::now(),
     );
     let result = results.pop().unwrap_or_else(|| PrStatusResult {
         session_id: entry.session_id.clone(),
@@ -252,7 +252,7 @@ enum Ask {
         branch: String,
         name: String,
         /// See [`PrSyncBranch::identity_at`].
-        identity_at: Option<chrono::DateTime<chrono::Utc>>,
+        identity_at: Option<jiff::Timestamp>,
         /// Also look the pull requests up by head name, which still answers
         /// once a merge has deleted the branch. Used only when the ref is gone.
         head: Option<HeadEvidence>,
@@ -333,7 +333,7 @@ fn merged_only(known: &[crate::model::AgentPr], branch: &PrSyncBranch) -> bool {
 fn due_history_branches(
     entry: &PrSyncEntry,
     trigger: SyncTrigger,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> Vec<&PrSyncBranch> {
     let dormant = entry.agent_exited && trigger != SyncTrigger::OneShot;
     let mut due: Vec<&PrSyncBranch> = entry
@@ -344,7 +344,7 @@ fn due_history_branches(
                 || branch
                     .last_ask
                     .as_ref()
-                    .is_none_or(|ask| now - ask.at >= entry.settled_recheck)
+                    .is_none_or(|ask| now.duration_since(ask.at) >= entry.settled_recheck)
         })
         .collect();
     due.sort_by_key(|branch| branch.last_ask.as_ref().map(|ask| ask.at));
@@ -365,7 +365,7 @@ fn refresh_due(
     row: &crate::model::AgentPr,
     entry: &PrSyncEntry,
     trigger: SyncTrigger,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> bool {
     let Some(refreshed_at) = row.last_refreshed_at else {
         return true;
@@ -376,7 +376,7 @@ fn refresh_due(
         PrState::Closed => {
             !entry.agent_exited
                 || trigger == SyncTrigger::OneShot
-                || now - refreshed_at >= entry.settled_recheck
+                || now.duration_since(refreshed_at) >= entry.settled_recheck
         }
     }
 }
@@ -388,7 +388,7 @@ fn run_entries(
     backoff: &BackoffSnapshot,
     policy: &GithubHostPolicy,
     trigger: SyncTrigger,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> PrSyncReport {
     let shared = shared_checkout_plan(entries, &|path| git::current_branch_opt(path));
     let (mut results, signals) = run_entries_with(
@@ -539,7 +539,7 @@ fn run_entries_with(
     backoff: &BackoffSnapshot,
     policy: &GithubHostPolicy,
     trigger: SyncTrigger,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
     resolve_remote: &dyn Fn(&Path) -> git::RemoteResolution,
     call_gh: &dyn Fn(&[&str]) -> GhCallOutcome,
 ) -> PrSyncReport {
@@ -642,7 +642,7 @@ fn assemble_results(
     entries: &[PrSyncEntry],
     questions: &[Question],
     answers: Vec<(usize, QuestionAnswer)>,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> Vec<PrStatusResult> {
     let mut results: Vec<PrStatusResult> = entries
         .iter()
@@ -730,7 +730,7 @@ fn plan_entries(
     resolve_remote: &dyn Fn(&Path) -> git::RemoteResolution,
     policy: &GithubHostPolicy,
     trigger: SyncTrigger,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> Vec<Question> {
     let mut questions = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
@@ -754,7 +754,7 @@ fn plan_entry(
     remote: git::RemoteResolution,
     policy: &GithubHostPolicy,
     trigger: SyncTrigger,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
     questions: &mut Vec<Question>,
 ) {
     // Discovery needs the repository the agent pushes to. A remote yaran cannot
@@ -776,7 +776,7 @@ fn plan_entry(
     let mut discovered: Vec<&PrSyncBranch> = Vec::new();
     if let Some((host, owner, repo)) = &target {
         let mut ask = |branch: &PrSyncBranch,
-                       identity_at: Option<chrono::DateTime<chrono::Utc>>,
+                       identity_at: Option<jiff::Timestamp>,
                        head: &dyn Fn() -> Option<HeadEvidence>| {
             for name in branch.names() {
                 questions.push(Question {
@@ -1887,7 +1887,7 @@ fn parse_chunk_response(
 /// is taken, so a branch name reused many times never floods the list.
 fn keep_discovered(
     nodes: Vec<PrInfo>,
-    identity_at: Option<chrono::DateTime<chrono::Utc>>,
+    identity_at: Option<jiff::Timestamp>,
     known: &[crate::model::AgentPr],
 ) -> Vec<PrInfo> {
     let is_known = |info: &PrInfo| known.iter().any(|row| row.is(&answer_key(info)));
@@ -2013,7 +2013,7 @@ fn select_discovered_pr(nodes: Vec<PrInfo>) -> Option<PrInfo> {
 fn select_head_name_matches(
     question: &Question,
     name: &str,
-    identity_at: Option<chrono::DateTime<chrono::Utc>>,
+    identity_at: Option<jiff::Timestamp>,
     evidence: &HeadEvidence,
     nodes: &[serde_json::Value],
     head_commit_is_the_branchs: &dyn Fn(&HeadEvidence, &str) -> bool,
@@ -2072,8 +2072,7 @@ fn parse_rate_limit(data: &serde_json::Value) -> Option<RateLimitInfo> {
     let reset_at = rl
         .get("resetAt")
         .and_then(|v| v.as_str())
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&chrono::Utc));
+        .and_then(|s| crate::timefmt::parse_rfc3339(s).ok());
     Some(RateLimitInfo {
         remaining,
         reset_at,
@@ -2150,8 +2149,7 @@ fn parse_pr_json_value(obj: &serde_json::Value, host: &str, owner_repo: &str) ->
     let time = |key: &str| {
         obj.get(key)
             .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|at| at.with_timezone(&chrono::Utc))
+            .and_then(|s| crate::timefmt::parse_rfc3339(s).ok())
     };
 
     Some(PrInfo {
@@ -4677,7 +4675,7 @@ mod tests {
 
     // ── The pull-request sync: questions, rotation, refresh, answers ────────
 
-    fn at(text: &str) -> chrono::DateTime<chrono::Utc> {
+    fn at(text: &str) -> jiff::Timestamp {
         text.parse().expect("an RFC 3339 time")
     }
 
@@ -4735,7 +4733,7 @@ mod tests {
             inactive: false,
             shared_workspace: false,
             history_per_cycle: 8,
-            settled_recheck: chrono::TimeDelta::hours(12),
+            settled_recheck: jiff::SignedDuration::from_hours(12),
         }
     }
 
@@ -4885,7 +4883,7 @@ headRefOid repository { nameWithOwner } headRepository { nameWithOwner } } }"
                 seen.dedup();
                 assert_eq!(seen.len(), 8, "four cycles of two cannot cover nine");
             }
-            now += chrono::TimeDelta::minutes(3);
+            now += jiff::SignedDuration::from_mins(3);
         }
         asked.sort();
         asked.dedup();

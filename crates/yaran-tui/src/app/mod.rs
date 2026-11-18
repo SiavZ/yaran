@@ -132,7 +132,7 @@
 //! ├── yaran-core::worker
 //! ├── yaran-core::working_copy
 //! └── yaran-core::worktree_manager
-//! External: anyhow, chrono, crossterm, libc, ratatui, signal_hook, std, tempfile
+//! External: anyhow, crossterm, jiff, libc, ratatui, signal_hook, std, tempfile
 //!
 //! Used by:
 //! app/mod.rs
@@ -242,7 +242,7 @@ use components::FocusStep;
 #[cfg(test)]
 use crate::model::SessionStatus;
 #[cfg(test)]
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::pty::PtyClient;
 use crate::pty::TerminalSnapshot;
@@ -2422,7 +2422,7 @@ pub(crate) fn agent_info_lines(
     lines.push((
         format!(
             "Created:      {}",
-            session.created_at.format("%Y-%m-%d %H:%M")
+            session.created_at.strftime("%Y-%m-%d %H:%M")
         ),
         AgentInfoTone::Neutral,
     ));
@@ -8901,8 +8901,8 @@ impl App {
                         .get(id)
                         .map_or(terminal.created_at, |last| {
                             let ago =
-                                chrono::Duration::from_std(last.elapsed()).unwrap_or_default();
-                            chrono::Utc::now() - ago
+                                jiff::SignedDuration::try_from(last.elapsed()).unwrap_or_default();
+                            jiff::Timestamp::now() - ago
                         });
                 Some(yaran_core::flat_list::TerminalRowFacts {
                     name: &terminal.label,
@@ -11401,7 +11401,7 @@ mod tests {
     }
 
     fn test_session(id: &str, project_id: &str, created_offset: i64) -> AgentSession {
-        let now = Utc::now() + chrono::Duration::seconds(created_offset);
+        let now = Timestamp::now() + jiff::SignedDuration::from_secs(created_offset);
         AgentSession {
             id: id.to_string(),
             agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -11613,7 +11613,7 @@ mod tests {
                 url: "https://github.com/o/r/pull/42".to_string(),
                 ..Default::default()
             },
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         );
         let mut attached = crate::model::AgentPr::found(
             &crate::model::PrInfo {
@@ -11625,7 +11625,7 @@ mod tests {
                 url: "https://github.com/acme/infra/pull/77".to_string(),
                 ..Default::default()
             },
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         );
         attached.found = false;
         attached.attached = true;
@@ -12128,11 +12128,11 @@ mod tests {
         // Three active agents (indices 0,1,2) and two inactive (3,4). Only index 2
         // is hot. Active mode floats it above the non-hot actives while keeping
         // their incoming order; the inactive tail sorts most-recently-updated.
-        let t0 = Utc::now();
+        let t0 = Timestamp::now();
         let mk = |id: &str, status: SessionStatus, updated_offset: i64| {
             let mut s = test_session(id, "p", 0);
             s.status = status;
-            s.updated_at = t0 + chrono::Duration::seconds(updated_offset);
+            s.updated_at = t0 + jiff::SignedDuration::from_secs(updated_offset);
             s
         };
         let sessions = vec![
@@ -12299,11 +12299,11 @@ mod tests {
     fn build_left_items_active_mode_orders_inactive_tail_by_recency() {
         // Under Active mode (the ONLY mode that sorts the tail) the inactive
         // bucket orders most-recently-updated first, regardless of incoming order.
-        let t0 = Utc::now();
+        let t0 = Timestamp::now();
         let mk = |id: &str, status: SessionStatus, off: i64| {
             let mut s = test_session(id, "p", 0);
             s.status = status;
-            s.updated_at = t0 + chrono::Duration::seconds(off);
+            s.updated_at = t0 + jiff::SignedDuration::from_secs(off);
             s
         };
         let sessions = vec![
@@ -12380,7 +12380,7 @@ mod tests {
         // Two active agents with identical updated_at/created_at AND identical
         // names must keep incoming order under every comparator mode (the sorts
         // are stable), so a tie never reshuffles the list.
-        let t = Utc::now();
+        let t = Timestamp::now();
         let mk = |id: &str| {
             let mut s = test_session(id, "p", 0);
             s.status = SessionStatus::Active;

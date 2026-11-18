@@ -1724,7 +1724,7 @@ mod tests {
                 foreground_cmd: None,
                 client,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );

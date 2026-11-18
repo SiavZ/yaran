@@ -71,8 +71,8 @@
 //! #     desired_running: false,
 //! #     auto_reopen_enabled: false,
 //! #     status: yaran_core::model::SessionStatus::Detached,
-//! #     created_at: chrono::Utc::now(),
-//! #     updated_at: chrono::Utc::now(),
+//! #     created_at: jiff::Timestamp::now(),
+//! #     updated_at: jiff::Timestamp::now(),
 //! #     last_focused_tab: None,
 //! # };
 //! wants_a_tab(session.slot_tab_id());

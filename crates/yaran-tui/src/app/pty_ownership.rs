@@ -1407,7 +1407,7 @@ mod tests {
                 session_id: session_id.clone(),
                 provider: yaran_core::model::ProviderKind::new("claude"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         let browser = seat.owners.next_conn_id();
@@ -1841,7 +1841,7 @@ mod tests {
                     url: "https://github.com/owner/repo/pull/42".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -1952,7 +1952,7 @@ mod tests {
                 session_id,
                 provider: yaran_core::model::ProviderKind::new("claude"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL))
@@ -2752,7 +2752,7 @@ mod tests {
                 session_id: session_id.clone(),
                 provider: yaran_core::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         app.set_focused_tab(&session_id, "dormant-tab");
@@ -3152,7 +3152,7 @@ mod tests {
                 )
                 .expect("spawn pty"),
                 sort_order: 0,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -3238,7 +3238,7 @@ mod tests {
                 )
                 .expect("spawn pty"),
                 sort_order: 0,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -3697,7 +3697,7 @@ mod tests {
                 foreground_cmd: None,
                 client: spawn_sleeper(),
                 sort_order: 0,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -3719,7 +3719,7 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider: yaran_core::model::ProviderKind::new("claude"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         app.engine

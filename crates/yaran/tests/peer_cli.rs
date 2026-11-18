@@ -54,8 +54,8 @@ fn session(id: &str, provider: &str, folder: &Path, status: SessionStatus) -> Ag
         desired_running: false,
         auto_reopen_enabled: false,
         status,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: jiff::Timestamp::now(),
+        updated_at: jiff::Timestamp::now(),
         last_focused_tab: None,
     }
 }

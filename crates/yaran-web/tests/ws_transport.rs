@@ -22,7 +22,7 @@ fn sample_session(
     branch: &str,
     worktree: &str,
 ) -> yaran_core::model::AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),

@@ -60,7 +60,7 @@
 //! ├── yaran-core::working_copy
 //! ├── yaran-core::worktree_manager
 //! └── yaran-core::worktree_ops
-//! External: anyhow, chrono, serde_json, std, tempfile, tokio
+//! External: anyhow, jiff, serde_json, std, tempfile, tokio
 //!
 //! Used by:
 //! engine_actor.rs
@@ -6452,7 +6452,7 @@ mod tests {
                     url: "https://example".into(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )],
         );
 
@@ -6972,7 +6972,7 @@ mod tests {
         branch: &str,
         worktree: &str,
     ) -> yaran_core::model::AgentSession {
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         yaran_core::model::AgentSession {
             id: id.to_string(),
             agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -7437,7 +7437,7 @@ mod tests {
                     session_id: "s1".to_string(),
                     provider: yaran_core::model::ProviderKind::new("codex"),
                     sort_order: 1,
-                    created_at: chrono::Utc::now(),
+                    created_at: jiff::Timestamp::now(),
                 })
                 .unwrap();
         }
@@ -10662,7 +10662,7 @@ mod tests {
         let mut statuses = handle.subscribe_status();
 
         let worktree = tempfile::tempdir().expect("worktree");
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         engine.sessions.push(yaran_core::model::AgentSession {
             id: "s1".to_string(),
             agent_handle: yaran_core::model::normalize_agent_handle("s1"),

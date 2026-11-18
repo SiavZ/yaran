@@ -5,7 +5,7 @@
 //! (audit03 Phase 01). The fork kept settings on `AgentSession`; here they are
 //! a side map read with `SessionStore::load_session_settings`.
 
-use chrono::Utc;
+use jiff::Timestamp;
 use rusqlite::Connection;
 use yaran_core::model::{
     AgentSession, AgentWorkspace, BranchProvenance, ManagedWorkspace, ProviderKind, SessionStatus,
@@ -14,7 +14,7 @@ use yaran_core::session_settings::{ContextMode, SessionSettings};
 use yaran_core::storage::SessionStore;
 
 fn fixture_session(id: &str) -> AgentSession {
-    let now = Utc::now();
+    let now = Timestamp::now();
     AgentSession {
         id: id.to_string(),
         agent_handle: id.to_string(),

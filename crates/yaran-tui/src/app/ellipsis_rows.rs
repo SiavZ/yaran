@@ -519,7 +519,7 @@ fn the_pr_banner_cuts_a_wide_title_before_its_right_cap() {
                 url: "https://github.com/owner/repo/pull/42".to_string(),
                 ..Default::default()
             },
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         )],
     );
     for (w, h) in [(120, 40), (80, 24)] {

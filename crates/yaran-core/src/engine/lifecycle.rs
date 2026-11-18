@@ -2501,7 +2501,7 @@ impl Engine {
                             foreground_cmd: None,
                             client,
                             sort_order: terminal.sort_order,
-                            created_at: chrono::Utc::now(),
+                            created_at: jiff::Timestamp::now(),
                             // The reload handoff does not carry where the
                             // terminal sat among the agents; it rejoins the
                             // Terminals section.
@@ -3606,7 +3606,7 @@ mod recreate_tests {
                     session_id: "s1".to_string(),
                     provider: crate::model::ProviderKind::new(extra),
                     sort_order: 1,
-                    created_at: chrono::Utc::now(),
+                    created_at: jiff::Timestamp::now(),
                 },
             );
             engine.mark_in_flight(crate::engine::InFlightKey::AgentLaunch(
@@ -8306,7 +8306,7 @@ mod tests {
         engine.pty_activity.insert(tid.clone(), Instant::now());
         engine
             .terminal_activity_at
-            .insert(tid.clone(), chrono::Utc::now());
+            .insert(tid.clone(), jiff::Timestamp::now());
         engine.pty_input.insert(tid.clone(), Instant::now());
         engine.note_pty_pointer(&tid, crate::pty::PointerReport::Wheel);
         engine.pty_used.insert(tid.clone());
@@ -9703,7 +9703,7 @@ mod tests {
                 foreground_cmd: None,
                 client,
                 sort_order: 7,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -9799,7 +9799,7 @@ mod tests {
                 foreground_cmd: None,
                 client: bad,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -9909,7 +9909,7 @@ mod tests {
                 foreground_cmd: None,
                 client: bad,
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
                 list_after: None,
             },
         );
@@ -10064,7 +10064,7 @@ mod tests {
                     foreground_cmd: None,
                     client,
                     sort_order: order,
-                    created_at: chrono::Utc::now(),
+                    created_at: jiff::Timestamp::now(),
                     list_after: None,
                 },
             );

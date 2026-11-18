@@ -6,6 +6,7 @@
 //! ```text
 //! Uses:
 //! bootstrap.rs
+//! ├── yaran-core
 //! ├── yaran-core::attachments
 //! ├── yaran-core::auto_resume
 //! ├── yaran-core::changes_status
@@ -397,6 +398,7 @@ pub fn bootstrap_engine(paths: &YaranPaths) -> Result<Engine> {
 mod tests {
     use super::*;
     use yaran_core::config::ProjectConfig;
+    use yaran_core::timefmt::Rfc3339;
 
     fn temp_paths() -> (tempfile::TempDir, YaranPaths) {
         let tmp = tempfile::tempdir().expect("tempdir");

@@ -269,7 +269,7 @@ impl PeerStore for SqlitePeerStore {
             );
             return Ok(());
         }
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         let row = AgentSession {
             id: session.id.clone(),
             agent_handle: session.agent_handle.clone(),
@@ -371,7 +371,7 @@ fn write_private_atomic(path: &Path, body: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::{AgentWorkspace, FolderWorkspace, ProviderKind};
-    use chrono::Utc;
+    use jiff::Timestamp;
     use tempfile::tempdir;
 
     pub(crate) fn folder_session(id: &str, provider: &str, dir: &Path) -> AgentSession {
@@ -390,8 +390,8 @@ mod tests {
             desired_running: true,
             auto_reopen_enabled: true,
             status: SessionStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
         }
     }

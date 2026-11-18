@@ -24,8 +24,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1260 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +76 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Filesystem layer of the AMQ inject-queue drainer"
   },
   "crates/yaran-core/src/attachments.rs": {
-    "lines": 1826,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/attachments.rs (1826 lines; 1826 after rebrand 0956be7ac); module: Who is attached to what: the one registry every destructive change asks before it cuts somebody's terminal off"
+    "lines": 1827,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/attachments.rs (1826 lines; 1826 after rebrand 0956be7ac); module: Who is attached to what: the one registry every destructive change asks before it cuts somebody's terminal off; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/attention.rs": {
     "lines": 1041,
@@ -92,12 +92,12 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 474 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +98 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The signed machine API bodies (W4–W8, W32): claim, config, events, rotate, teardown and origin update, as yaran sends and receives them"
   },
   "crates/yaran-core/src/cloud/push_queue.rs": {
-    "lines": 501,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 486 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +15 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The emitter's pending events: per-topic net-change coalescing, a hard bound and a TTL"
+    "lines": 504,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 486 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +15 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The emitter's pending events: per-topic net-change coalescing, a hard bound and a TTL; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/cloud/push_runner.rs": {
-    "lines": 514,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 499 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+7); +8 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The `cloud-push` thread body: queue, machine-config cache, delivery and its outcomes"
+    "lines": 515,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 499 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+7); +8 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The `cloud-push` thread body: queue, machine-config cache, delivery and its outcomes; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/config.rs": {
     "lines": 11625,
@@ -196,8 +196,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1140 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+10); +40 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Resume by provider session id, and throttled startup relaunch (fork a38187f3, eb2d2eee, 478c9e3c, 07d9b0ba, 8eb821e6)"
   },
   "crates/yaran-core/src/engine/pull_requests.rs": {
-    "lines": 839,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/engine/pull_requests.rs (839 lines; 839 after rebrand 0956be7ac); module: The changes a user makes to an agent's pull requests (detach, hide, show again, the sort mode and the manual order) and the branch list..."
+    "lines": 840,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/engine/pull_requests.rs (839 lines; 839 after rebrand 0956be7ac); module: The changes a user makes to an agent's pull requests (detach, hide, show again, the sort mode and the manual order) and the branch list...; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/engine/races_review3_tests.rs": {
     "lines": 557,
@@ -284,24 +284,24 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/git/folding.rs (3654 lines; 3654 after rebrand 0956be7ac), 3655 lines at merge 7e4a9c0f1; module: Folding whole folders into one changed-files row"
   },
   "crates/yaran-core/src/human_board/cli.rs": {
-    "lines": 1372,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1343 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+11); +22 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: `yaran board`: how agents put cards on the human board, and take them off"
+    "lines": 1382,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1343 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+11); +22 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: `yaran board`: how agents put cards on the human board, and take them off; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/human_board/markdown.rs": {
     "lines": 903,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 878 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +25 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: One card as one Markdown note: what a folder board keeps on disk"
   },
   "crates/yaran-core/src/human_board/mod.rs": {
-    "lines": 1217,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1139 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +78 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The human board: cards agents post for the people running yaran"
+    "lines": 1227,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1139 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +78 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The human board: cards agents post for the people running yaran; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/human_board/relay.rs": {
     "lines": 534,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 503 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+8); +24 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Passing a card's conversation from people to agents (`[board] relay`)"
   },
   "crates/yaran-core/src/human_board/store.rs": {
-    "lines": 659,
-    "reason": "baseline 2026-11-14"
+    "lines": 660,
+    "reason": "baseline 2026-11-14; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/human_board/sync.rs": {
     "lines": 752,
@@ -392,12 +392,12 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/pty_owners.rs (2344 lines after rebrand 0956be7ac) with the fork's 1492-line copy at c626621cd into 2344 lines at 7e4a9c0f1; module: The input-ownership registry: who currently holds the right to type into a PTY and to decide its grid"
   },
   "crates/yaran-core/src/purge.rs": {
-    "lines": 1477,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1424 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+1); +52 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Honest GDPR hard purge (Art. 17 right to erasure) for one agent, or all"
+    "lines": 1478,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1424 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+1); +52 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Honest GDPR hard purge (Art. 17 right to erasure) for one agent, or all; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/release_notes.rs": {
-    "lines": 1810,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/release_notes.rs (1762 lines after rebrand 0956be7ac) with the fork's 1782-line copy at c626621cd into 1806 lines at 7e4a9c0f1; +4 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Release notes: parsing a GitHub release body into the shape the what's-new screen renders, fetching a release, and caching it on disk"
+    "lines": 1811,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/release_notes.rs (1762 lines after rebrand 0956be7ac) with the fork's 1782-line copy at c626621cd into 1806 lines at 7e4a9c0f1; +4 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Release notes: parsing a GitHub release body into the shape the what's-new screen renders, fetching a release, and caching it on disk; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/resource_stats.rs": {
     "lines": 1491,
@@ -412,8 +412,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/serve_log.rs (788 lines; 788 after rebrand 0956be7ac); module: The one line model behind the web server's console, shared by every surface that shows it"
   },
   "crates/yaran-core/src/startup.rs": {
-    "lines": 2024,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/startup.rs (2007 lines after rebrand 0956be7ac) with the fork's 745-line copy at c626621cd into 2024 lines at 7e4a9c0f1; module: Runs a project's startup command in a new worktree and keeps, lists and reads the logs those runs write"
+    "lines": 2025,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/startup.rs (2007 lines after rebrand 0956be7ac) with the fork's 745-line copy at c626621cd into 2024 lines at 7e4a9c0f1; module: Runs a project's startup command in a new worktree and keeps, lists and reads the logs those runs write; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/status_text.rs": {
     "lines": 531,
@@ -424,8 +424,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/statusline.rs (3951 lines after rebrand 0956be7ac) with the fork's 3693-line copy at c626621cd into 4087 lines at 7e4a9c0f1; module: The keyed status controller: the one source of the engine's busy, info, warning and error messages, which the terminal UI shows as its..."
   },
   "crates/yaran-core/src/storage.rs": {
-    "lines": 8996,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/storage.rs (7322 lines after rebrand 0956be7ac) with the fork's 6239-line copy at c626621cd into 8883 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The SQLite session database (sessions.sqlite3): projects, agent sessions, tabs and pull-request associations, with its migrations; steering port: wire the separate comment-storage module, appended migration and three existing session deletion paths"
+    "lines": 9027,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/storage.rs (7322 lines after rebrand 0956be7ac) with the fork's 6239-line copy at c626621cd into 8883 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The SQLite session database (sessions.sqlite3): projects, agent sessions, tabs and pull-request associations, with its migrations; steering port: wire the separate comment-storage module, appended migration and three existing session deletion paths; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/tab_verdict.rs": {
     "lines": 510,
@@ -456,16 +456,16 @@
     "reason": "baseline 2026-11-14; phase 10: the SetCloudMode wire command arms; phase 10: the generated module-headers block required now that this file is in optIn; phase 12: module header (now opted in) plus the push emitter's one-line Engine wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/wire.rs (18191 lines after rebrand 0956be7ac) with the fork's 13827-line copy at c626621cd into 18390 lines at 7e4a9c0f1; +43 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Transport-agnostic command intake"
   },
   "crates/yaran-core/src/worker.rs": {
-    "lines": 1693,
-    "reason": "baseline 2026-11-14; phase 10: the CloudModeApplied worker event; phase 10: the generated module-headers block required now that this file is in optIn; phase 12: push wiring stacked on the phase 09 to 11 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/worker.rs (1495 lines after rebrand 0956be7ac) with the fork's 962-line copy at c626621cd into 1650 lines at 7e4a9c0f1; +43 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Background-worker events and their domain payloads"
+    "lines": 1696,
+    "reason": "baseline 2026-11-14; phase 10: the CloudModeApplied worker event; phase 10: the generated module-headers block required now that this file is in optIn; phase 12: push wiring stacked on the phase 09 to 11 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/worker.rs (1495 lines after rebrand 0956be7ac) with the fork's 962-line copy at c626621cd into 1650 lines at 7e4a9c0f1; +43 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Background-worker events and their domain payloads; replace chrono with jiff (RUSTSEC-2026-0543): jiff's larger Timestamp in Project needs a reasoned large_enum_variant expect"
   },
   "crates/yaran-core/src/working_copy.rs": {
     "lines": 1452,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/working_copy.rs (1452 lines after rebrand 0956be7ac) with the fork's 922-line copy at c626621cd into 1452 lines at 7e4a9c0f1; module: The sentences both surfaces say about a working copy that is gone from disk, and about putting one back"
   },
   "crates/yaran-core/src/worktree_file.rs": {
-    "lines": 3712,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/worktree_file.rs (3712 lines after rebrand 0956be7ac) with the fork's 2519-line copy at c626621cd into 3712 lines at 7e4a9c0f1; module: Safe working-copy file read/write for client-supplied worktree paths, used by the web editor"
+    "lines": 3717,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/worktree_file.rs (3712 lines after rebrand 0956be7ac) with the fork's 2519-line copy at c626621cd into 3712 lines at 7e4a9c0f1; module: Safe working-copy file read/write for client-supplied worktree paths, used by the web editor; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-core/src/worktree_manager.rs": {
     "lines": 1040,
@@ -492,8 +492,8 @@
     "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/tests/upgrade_config.rs (462 lines after rebrand 0956be7ac) with the fork's 561-line copy at c626621cd into 572 lines at 7e4a9c0f1; +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Upgrade survival for `config.toml`: an install that predates the current release must load with every value the user set still in effect"
   },
   "crates/yaran-core/tests/upgrade_database.rs": {
-    "lines": 1246,
-    "reason": "baseline 2026-11-14; steering port: schema-policy-required upgrade regression for comments, persistence and unchanged older sessions"
+    "lines": 1247,
+    "reason": "baseline 2026-11-14; steering port: schema-policy-required upgrade regression for comments, persistence and unchanged older sessions; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-journeys/src/image.rs": {
     "lines": 590,
@@ -764,8 +764,8 @@
     "reason": "baseline 2026-11-14; phase 10: set_cloud_mode and the cloud lane accessor for the companion; phase 10: the generated module-headers block required now that this file is in optIn; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/background.rs (1195 lines after rebrand 0956be7ac) with the fork's 597-line copy at c626621cd into 1249 lines at 7e4a9c0f1; +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The web server, serving in the background of a live terminal UI, which keeps the engine and lends it to this type once per run-loop..."
   },
   "crates/yaran-web/src/bootstrap.rs": {
-    "lines": 619,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/bootstrap.rs (550 lines after rebrand 0956be7ac) with the fork's 363-line copy at c626621cd into 617 lines at 7e4a9c0f1; +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Headless `Engine` bootstrap for the web server: the TUI's field-by-field assembly with a read-only `load_config` (defaults on a missing..."
+    "lines": 621,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/bootstrap.rs (550 lines after rebrand 0956be7ac) with the fork's 363-line copy at c626621cd into 617 lines at 7e4a9c0f1; +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Headless `Engine` bootstrap for the web server: the TUI's field-by-field assembly with a read-only `load_config` (defaults on a missing...; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-web/src/browse_routes.rs": {
     "lines": 620,
@@ -780,8 +780,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 491 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+31); +30 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The cloud ingress: the live tunnel-hostname rule and the Cloudflare Access check in front of every request that arrives through it (Phase..."
   },
   "crates/yaran-web/src/cloud_loop.rs": {
-    "lines": 513,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 493 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +24 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The serve loop's cloud arm: owns the one `CloudLeg`, plans every input, and is the only writer of the ingress cell and the shared view"
+    "lines": 515,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 493 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +24 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The serve loop's cloud arm: owns the one `CloudLeg`, plans every input, and is the only writer of the ingress cell and the shared view; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-web/src/cloud_test_support.rs": {
     "lines": 556,
@@ -792,8 +792,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/config_routes.rs (2286 lines after rebrand 0956be7ac) with the fork's 1499-line copy at c626621cd into 2287 lines at 7e4a9c0f1; module: REST write verbs for the config-mutating operations"
   },
   "crates/yaran-web/src/console.rs": {
-    "lines": 1614,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/console.rs (1607 lines after rebrand 0956be7ac) with the fork's 1252-line copy at c626621cd into 1614 lines at 7e4a9c0f1; module: The web server's console: the timestamped log of the server's life, the one producer behind both places it is shown"
+    "lines": 1615,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/console.rs (1607 lines after rebrand 0956be7ac) with the fork's 1252-line copy at c626621cd into 1614 lines at 7e4a9c0f1; module: The web server's console: the timestamped log of the server's life, the one producer behind both places it is shown; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-web/src/engine_actor.rs": {
     "lines": 11040,
@@ -848,8 +848,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/session_actions.rs (3115 lines after rebrand 0956be7ac) with the fork's 1726-line copy at c626621cd into 3144 lines at 7e4a9c0f1; module: REST write verbs for sessions/agents"
   },
   "crates/yaran-web/src/startup_logs.rs": {
-    "lines": 639,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/startup_logs.rs (639 lines after rebrand 0956be7ac) with the fork's 637-line copy at c626621cd into 639 lines at 7e4a9c0f1; module: REST reads for startup-command logs"
+    "lines": 640,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/startup_logs.rs (639 lines after rebrand 0956be7ac) with the fork's 637-line copy at c626621cd into 639 lines at 7e4a9c0f1; module: REST reads for startup-command logs; replace chrono with jiff (RUSTSEC-2026-0543): the Rfc3339 trait import, serde helpers and rustfmt rewrapping the longer jiff names"
   },
   "crates/yaran-web/src/web_assets.rs": {
     "lines": 643,

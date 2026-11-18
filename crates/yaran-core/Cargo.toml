@@ -21,7 +21,7 @@ tracing.workspace = true
 notify.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 compact_str = "0.9"
 content_inspector.workspace = true
 # Decodes and encodes the web editor's non-UTF-8 files (yaran_core::text_encoding):
@@ -32,7 +32,7 @@ home.workspace = true
 indexmap.workspace = true
 petname = { version = "3.0.0", default-features = false, features = ["default-rng", "default-words"] }
 portable-pty = "0.9"
-rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "backup"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 libc.workspace = true
 rustix.workspace = true
 socket2.workspace = true

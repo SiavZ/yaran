@@ -19,8 +19,8 @@ use yaran_web::engine_actor::spawn_engine_thread;
 use yaran_web::event_bus::Event;
 use yaran_web::server::{AppState, RouterParams, build_app};
 
-fn now() -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc::now()
+fn now() -> jiff::Timestamp {
+    jiff::Timestamp::now()
 }
 
 fn sample_session(id: &str, worktree: &str) -> yaran_core::model::AgentSession {

@@ -44,7 +44,7 @@
 //! ├── viewmodel
 //! ├── worker
 //! └── worktree_ops
-//! External: anyhow, chrono, rusqlite, serde, serde_json, sha2, std, tempfile, toml, uuid
+//! External: anyhow, jiff, rusqlite, serde, serde_json, sha2, std, tempfile, toml, uuid
 //!
 //! Used by:
 //! wire.rs
@@ -4828,7 +4828,7 @@ impl Engine {
             current_branch: current_branch.to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
-            created_at: Some(chrono::Utc::now()),
+            created_at: Some(jiff::Timestamp::now()),
         };
         // The add is INLINE: the handler writes config.toml, with SQLite
         // rollback on failure, and returns the real outcome now. A
@@ -5545,7 +5545,7 @@ impl Engine {
             current_branch: branch.unwrap_or_default(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
-            created_at: Some(chrono::Utc::now()),
+            created_at: Some(jiff::Timestamp::now()),
         };
         let status_message =
             crate::status_text!["Added project ", q(display_name), " to the workspace."];
@@ -8468,7 +8468,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new("t2"), tab);
@@ -8506,7 +8506,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new("t2"), tab);
@@ -8553,7 +8553,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new("t2"), tab);
@@ -8830,7 +8830,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);
@@ -13949,7 +13949,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: crate::model::ProviderKind::new("codex"),
             sort_order: 1,
-            created_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
         };
         engine.session_store.insert_agent_tab(&tab).unwrap();
         engine.agent_tabs.insert(TabId::new(tab.id.clone()), tab);

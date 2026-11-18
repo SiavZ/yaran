@@ -1708,7 +1708,7 @@ mod tests {
         )
         .unwrap();
         let store = yaran_core::storage::SessionStore::open(&paths.sessions_db_path).unwrap();
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         store
             .create_session(&yaran_core::model::AgentSession {
                 id: "s1".to_string(),

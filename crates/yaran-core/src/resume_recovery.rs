@@ -22,7 +22,6 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use chrono::DateTime;
 use notify::{RecursiveMode, Watcher};
 use rustix::fs::{CWD, RenameFlags, renameat_with};
 use serde_json::Value;
@@ -1227,8 +1226,8 @@ fn json_timestamp_ms(value: &Value) -> Option<i64> {
                 .and_then(|payload| payload.get("timestamp"))
                 .and_then(Value::as_str)
         })
-        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
-        .map(|timestamp| timestamp.timestamp_millis())
+        .and_then(|timestamp| crate::timefmt::parse_rfc3339(timestamp).ok())
+        .map(jiff::Timestamp::as_millisecond)
 }
 
 fn recursive_files(root: &Path, keep: impl Fn(&Path) -> bool) -> Result<Vec<PathBuf>> {
@@ -1688,7 +1687,7 @@ mod tests {
         project_path: &Path,
         worktree: &Path,
     ) -> AgentSession {
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         AgentSession {
             id: id.to_string(),
             slot_tab_id: format!("{id}-slot"),

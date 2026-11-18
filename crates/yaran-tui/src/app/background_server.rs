@@ -41,7 +41,7 @@
 //! ├── yaran-core::tailscale
 //! ├── yaran-core::wire
 //! └── yaran-core::worker
-//! External: anyhow, chrono, crossterm, ratatui, std, tempfile
+//! External: anyhow, crossterm, jiff, ratatui, std, tempfile
 //!
 //! Used by:
 //! app/background_server.rs
@@ -1913,8 +1913,8 @@ pub(crate) mod tests {
             desired_running: false,
             auto_reopen_enabled: true,
             status: yaran_core::model::SessionStatus::Detached,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: jiff::Timestamp::now(),
+            updated_at: jiff::Timestamp::now(),
             last_focused_tab: None,
             workspace: yaran_core::model::AgentWorkspace::Managed(
                 yaran_core::model::ManagedWorkspace {

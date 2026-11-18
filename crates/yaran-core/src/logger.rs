@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use chrono::Utc;
+use jiff::Timestamp;
 
 use crate::config::{LoggingConfig, ServerConfig, YaranPaths};
 // The level type and its parser belong to `[logging] level`, so they live with
 // the setting: `config_effective::effective_log_level` is the one rule for what
 // a value means.
 use crate::config_effective::LogLevel;
+use crate::timefmt::Rfc3339;
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
@@ -203,7 +204,7 @@ fn json_line(
     fields: serde_json::Map<String, serde_json::Value>,
 ) -> String {
     let record = serde_json::json!({
-        "timestamp": Utc::now().to_rfc3339(),
+        "timestamp": Timestamp::now().to_rfc3339(),
         "level": level.label(),
         "target": target,
         "fields": serde_json::Value::Object(fields),
@@ -1161,9 +1162,7 @@ mod tests {
         assert!(message.contains("\\x1b]0;evil\\x07"), "got {message:?}");
         assert_eq!(parsed["target"], LEGACY_TARGET);
         assert_eq!(parsed["level"], "ERROR");
-        assert!(
-            chrono::DateTime::parse_from_rfc3339(parsed["timestamp"].as_str().unwrap()).is_ok()
-        );
+        assert!(crate::timefmt::parse_rfc3339(parsed["timestamp"].as_str().unwrap()).is_ok());
     }
 
     fn fake_paths(root: &str) -> YaranPaths {

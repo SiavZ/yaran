@@ -3915,7 +3915,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.0",
- "chrono",
  "fallible-iterator",
  "fallible-streaming-iterator",
  "hashlink",
@@ -6129,8 +6128,8 @@ name = "yaran"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
+ "jiff",
  "serde",
  "serde_json",
  "tempfile",
@@ -6149,7 +6148,6 @@ dependencies = [
  "anyhow",
  "argon2",
  "base64",
- "chrono",
  "compact_str",
  "content_inspector",
  "encoding_rs",
@@ -6158,6 +6156,7 @@ dependencies = [
  "getrandom 0.3.4",
  "home",
  "indexmap 2.14.0",
+ "jiff",
  "libc",
  "notify",
  "opaline",
@@ -6217,12 +6216,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
- "chrono",
  "clap",
  "crokey",
  "crossterm",
  "home",
  "indexmap 2.14.0",
+ "jiff",
  "libc",
  "memchr",
  "opaline",
@@ -6253,9 +6252,9 @@ dependencies = [
  "anyhow",
  "axum",
  "brotli",
- "chrono",
  "flate2",
  "futures-util",
+ "jiff",
  "reqwest",
  "ring",
  "rusqlite",

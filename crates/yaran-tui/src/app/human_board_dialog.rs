@@ -163,7 +163,7 @@ impl App {
         let text_width = content_width.saturating_sub(2 * TEXT_INSET).max(1);
         let text = Style::default().fg(self.theme.text_fg);
         let label = Style::default().fg(self.theme.hint_desc_fg);
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
 
         // ── The card's text, as logical lines ──────────────────────────────
         let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(

@@ -33,7 +33,7 @@
 //! ├── cloud::protocol::meta
 //! ├── cloud::protocol::pairing
 //! └── cloud::protocol::rules
-//! External: chrono, std, tracing, url
+//! External: jiff, std, tracing, url
 //!
 //! Used by:
 //! cloud/login.rs
@@ -307,7 +307,9 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
     };
     // Server text crossed a trust boundary; it is shown on every surface (T53).
     claim.org.name = server_text(&claim.org.name);
-    let paired_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let paired_at = jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
     let mut superseded = false;
     let stored = credentials::update(&params.paths, |previous| {
         let unchanged = match (&started_from, &previous) {

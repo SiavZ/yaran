@@ -43,7 +43,7 @@
 //! ├── yaran-core::test_git
 //! ├── yaran-core::test_provider
 //! └── yaran-core::watch::runtime
-//! External: chrono, std, tempfile
+//! External: jiff, std, tempfile
 //!
 //! Used by:
 //! app/test_support.rs
@@ -109,7 +109,7 @@ use crate::statusline::LiveStatusKeys;
 use crate::statusline::StatusScope;
 use crate::storage::SessionStore;
 use crate::theme::Theme;
-use chrono::Utc;
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -192,7 +192,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
     };
     std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
     let session_store = SessionStore::open(&paths.sessions_db_path).expect("session store");
-    let now = Utc::now();
+    let now = Timestamp::now();
     let project = Project {
         id: "project-1".to_string(),
         name: "demo".to_string(),
@@ -1002,7 +1002,7 @@ pub(crate) fn found_pr(
             url: format!("https://github.com/{owner_repo}/pull/{number}"),
             ..Default::default()
         },
-        Utc::now(),
+        Timestamp::now(),
     )
 }
 
@@ -1069,7 +1069,7 @@ pub(crate) fn add_terminal(app: &mut App, id: &str, owner: yaran_core::model::Te
             foreground_cmd: None,
             client,
             sort_order,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             list_after: None,
         },
     );

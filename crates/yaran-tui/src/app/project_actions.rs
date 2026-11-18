@@ -492,7 +492,7 @@ impl App {
                 "Added",
                 project.created_at.map_or_else(
                     || "Unknown".to_string(),
-                    |at| at.format("%b %-d, %Y").to_string(),
+                    |at| at.strftime("%b %-d, %Y").to_string(),
                 ),
             ),
             name("Default provider", provider),

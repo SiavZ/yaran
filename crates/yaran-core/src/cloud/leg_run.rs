@@ -24,8 +24,9 @@
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_start
 //! ├── cloud::leg_state
+//! ├── crate
 //! └── sanitize
-//! External: chrono, rand, std, tracing
+//! External: jiff, rand, std, tracing
 //!
 //! Used by:
 //! cloud/leg_run.rs
@@ -53,6 +54,8 @@ use super::cloudflared::supervisor::{self, RunningChild};
 use super::leg::{CloudLegEvent, LegParams, LegSink, LegStop, sleep_unless_stopped};
 use super::leg_identity::{CloudIdentity, LegState, MachineApiError, PairedMachine, RotateReason};
 use super::leg_start::{Prepared, acquire_binary, ensure_origin, load_machine};
+
+use crate::timefmt::Rfc3339;
 
 const TICK: Duration = Duration::from_millis(100);
 
@@ -208,7 +211,7 @@ impl Run<'_> {
             binary: self.binary.display().to_string(),
             metrics_addr: format!("127.0.0.1:{port}"),
             state: state.to_string(),
-            since: chrono::Utc::now().to_rfc3339(),
+            since: jiff::Timestamp::now().to_rfc3339(),
             child_start_time: process_identity(pid).map_or(0, |(_, t)| t),
         };
         if let Err(err) = self.identity.write_leg_state(&record) {
@@ -346,8 +349,8 @@ impl Run<'_> {
 pub(super) fn clock_warning(server_time: Option<&str>) -> String {
     let offset = server_time
         .ok_or(())
-        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).map_err(|_| ()))
-        .map(|server| (chrono::Utc::now() - server.with_timezone(&chrono::Utc)).num_seconds());
+        .and_then(|t| crate::timefmt::parse_rfc3339(t).map_err(|_| ()))
+        .map(|server| jiff::Timestamp::now().duration_since(server).as_secs());
     match offset {
         Ok(seconds) => format!(
             "Yaran Cloud refused this machine's signed request because its clock is off by {}s; \

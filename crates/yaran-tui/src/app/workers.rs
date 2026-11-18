@@ -50,7 +50,7 @@
 //! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! └── yaran-core::worktree_manager
-//! External: anyhow, chrono, crossterm, ratatui, std, tempfile
+//! External: anyhow, crossterm, jiff, ratatui, std, tempfile
 //!
 //! Used by:
 //! app/workers.rs
@@ -2737,7 +2737,7 @@ mod tests {
     }
     use std::sync::mpsc;
 
-    use chrono::Utc;
+    use jiff::Timestamp;
     use tempfile::tempdir;
 
     use super::*;
@@ -2978,8 +2978,8 @@ mod tests {
             desired_running: true,
             auto_reopen_enabled: true,
             status: SessionStatus::Active,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
             workspace: yaran_core::model::AgentWorkspace::Managed(
                 yaran_core::model::ManagedWorkspace {
@@ -3149,7 +3149,7 @@ mod tests {
                 session_id: session_id.clone(),
                 provider: ProviderKind::from_str("claude"),
                 sort_order: 1,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             },
         );
         let client = crate::pty::PtyClient::spawn(
@@ -4388,7 +4388,7 @@ mod tests {
             path_missing: false,
             created_at: None,
         };
-        let now = Utc::now();
+        let now = Timestamp::now();
         let source_session = AgentSession {
             id: "session-1".to_string(),
             agent_handle: "session-1".to_string(),

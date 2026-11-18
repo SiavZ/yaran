@@ -8,7 +8,8 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, Zoned};
 use regex::Regex;
 
 use super::rule::WaitFormat;
@@ -24,24 +25,23 @@ pub fn parse(
     format: WaitFormat,
     captured: &str,
     now_instant: Instant,
-    now_wall: DateTime<Utc>,
+    now_wall: Timestamp,
 ) -> Option<Instant> {
     let captured = captured.trim();
     match format {
         WaitFormat::UnixSeconds => {
             let secs: i64 = captured.parse().ok()?;
-            let target = DateTime::<Utc>::from_timestamp(secs, 0)?;
+            let target = Timestamp::from_second(secs).ok()?;
             offset_into_instant(target, now_wall, now_instant)
         }
         WaitFormat::UnixMillis => {
             let ms: i64 = captured.parse().ok()?;
-            let target = DateTime::<Utc>::from_timestamp_millis(ms)?;
+            let target = Timestamp::from_millisecond(ms).ok()?;
             offset_into_instant(target, now_wall, now_instant)
         }
         WaitFormat::ClockLocal => {
-            let target = parse_clock_local(captured, Local::now())?;
-            let target_utc = target.with_timezone(&Utc);
-            offset_into_instant(target_utc, now_wall, now_instant)
+            let target = parse_clock_local(captured, &Zoned::now())?;
+            offset_into_instant(target.timestamp(), now_wall, now_instant)
         }
         WaitFormat::InSeconds => {
             let n: f64 = captured.parse().ok()?;
@@ -61,12 +61,12 @@ pub fn parse(
 /// Turn a wall-clock target (UTC) into an `Instant` derived from
 /// `now_instant`, clamping past times to fire immediately.
 fn offset_into_instant(
-    target: DateTime<Utc>,
-    now_wall: DateTime<Utc>,
+    target: Timestamp,
+    now_wall: Timestamp,
     now_instant: Instant,
 ) -> Option<Instant> {
-    let delta = target.signed_duration_since(now_wall);
-    let secs = delta.num_seconds();
+    let delta = target.duration_since(now_wall);
+    let secs = delta.as_secs();
     if secs <= 0 {
         return Some(now_instant);
     }
@@ -97,18 +97,18 @@ fn clock_regex() -> &'static Regex {
     })
 }
 
-/// Parse a time-of-day string into a `DateTime<Local>` for today, rolled
+/// Parse a time-of-day string into a `Zoned` for today, rolled
 /// to tomorrow if it would already be past `now_local`. Optional trailing
 /// `(Timezone)` suffix is stripped and ignored.
-fn parse_clock_local(s: &str, now_local: DateTime<Local>) -> Option<DateTime<Local>> {
+fn parse_clock_local(s: &str, now_local: &Zoned) -> Option<Zoned> {
     // Strip "(...)" suffix.
     let s = match s.find('(') {
         Some(idx) => s[..idx].trim(),
         None => s.trim(),
     };
     let caps = clock_regex().captures(s)?;
-    let hour: u32 = caps.get(1)?.as_str().parse().ok()?;
-    let minute: u32 = caps
+    let hour: i8 = caps.get(1)?.as_str().parse().ok()?;
+    let minute: i8 = caps
         .get(2)
         .and_then(|m| m.as_str().parse().ok())
         .unwrap_or(0);
@@ -139,30 +139,29 @@ fn parse_clock_local(s: &str, now_local: DateTime<Local>) -> Option<DateTime<Loc
         return None;
     }
 
-    let today: NaiveDate = now_local.date_naive();
-    let target_naive = today.and_hms_opt(hour24, minute, 0)?;
-    let target = Local
-        .from_local_datetime(&target_naive)
-        .single()
-        .or_else(|| Local.from_local_datetime(&target_naive).earliest())?;
+    let tz: &TimeZone = now_local.time_zone();
+    let today = now_local.date();
+    let target = crate::timefmt::earliest(tz, today.at(hour24, minute, 0, 0))?;
 
-    if target <= now_local {
+    if target <= now_local.timestamp() {
         // Already past today, roll to tomorrow.
-        let tomorrow = today.succ_opt()?;
-        let tomorrow_naive = tomorrow.and_hms_opt(hour24, minute, 0)?;
-        Local
-            .from_local_datetime(&tomorrow_naive)
-            .single()
-            .or_else(|| Local.from_local_datetime(&tomorrow_naive).earliest())
+        let tomorrow = today.tomorrow().ok()?;
+        crate::timefmt::earliest(tz, tomorrow.at(hour24, minute, 0, 0))
+            .map(|at| at.to_zoned(tz.clone()))
     } else {
-        Some(target)
+        Some(target.to_zoned(tz.clone()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Datelike, TimeZone, Timelike};
+
+    fn local(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Zoned {
+        jiff::civil::datetime(year, month, day, hour, minute, second, 0)
+            .to_zoned(TimeZone::system())
+            .unwrap()
+    }
 
     fn instant_offset_secs(target: Instant, base: Instant) -> i64 {
         if target >= base {
@@ -175,8 +174,8 @@ mod tests {
     #[test]
     fn unix_seconds_future_offset() {
         let now_instant = Instant::now();
-        let now_wall = Utc.with_ymd_and_hms(2026, 5, 4, 12, 0, 0).unwrap();
-        let target_ts = now_wall.timestamp() + 3600; // +1h
+        let now_wall = crate::timefmt::utc(2026, 5, 4, 12, 0, 0);
+        let target_ts = now_wall.as_second() + 3600; // +1h
         let parsed = parse(
             WaitFormat::UnixSeconds,
             &target_ts.to_string(),
@@ -191,8 +190,8 @@ mod tests {
     #[test]
     fn unix_seconds_past_clamps_to_now() {
         let now_instant = Instant::now();
-        let now_wall = Utc.with_ymd_and_hms(2026, 5, 4, 12, 0, 0).unwrap();
-        let target_ts = now_wall.timestamp() - 3600; // 1h ago
+        let now_wall = crate::timefmt::utc(2026, 5, 4, 12, 0, 0);
+        let target_ts = now_wall.as_second() - 3600; // 1h ago
         let parsed = parse(
             WaitFormat::UnixSeconds,
             &target_ts.to_string(),
@@ -206,8 +205,8 @@ mod tests {
     #[test]
     fn unix_millis_future_offset() {
         let now_instant = Instant::now();
-        let now_wall = Utc.with_ymd_and_hms(2026, 5, 4, 12, 0, 0).unwrap();
-        let target_ms = now_wall.timestamp_millis() + 60_000;
+        let now_wall = crate::timefmt::utc(2026, 5, 4, 12, 0, 0);
+        let target_ms = now_wall.as_millisecond() + 60_000;
         let parsed = parse(
             WaitFormat::UnixMillis,
             &target_ms.to_string(),
@@ -222,7 +221,7 @@ mod tests {
     #[test]
     fn in_hours_simple_case() {
         let now_instant = Instant::now();
-        let now_wall = Utc::now();
+        let now_wall = Timestamp::now();
         let parsed =
             parse(WaitFormat::InHours, "5", now_instant, now_wall).expect("in_hours parse");
         let off = instant_offset_secs(parsed, now_instant);
@@ -232,7 +231,7 @@ mod tests {
     #[test]
     fn in_minutes_fractional() {
         let now_instant = Instant::now();
-        let now_wall = Utc::now();
+        let now_wall = Timestamp::now();
         let parsed = parse(WaitFormat::InMinutes, "2.5", now_instant, now_wall).expect("parse");
         let off = instant_offset_secs(parsed, now_instant);
         assert!((150 - 2..=150 + 2).contains(&off));
@@ -241,14 +240,14 @@ mod tests {
     #[test]
     fn in_seconds_negative_rejected() {
         let now_instant = Instant::now();
-        let now_wall = Utc::now();
+        let now_wall = Timestamp::now();
         assert!(parse(WaitFormat::InSeconds, "-5", now_instant, now_wall).is_none());
     }
 
     #[test]
     fn malformed_input_returns_none() {
         let now_instant = Instant::now();
-        let now_wall = Utc::now();
+        let now_wall = Timestamp::now();
         assert!(
             parse(
                 WaitFormat::UnixSeconds,
@@ -265,7 +264,7 @@ mod tests {
     #[test]
     fn unrepresentable_values_return_none_for_every_wait_format() {
         let now_instant = Instant::now();
-        let now_wall = Utc::now();
+        let now_wall = Timestamp::now();
         for (format, captured) in [
             (WaitFormat::UnixSeconds, i64::MAX.to_string()),
             (WaitFormat::UnixMillis, i64::MAX.to_string()),
@@ -283,11 +282,8 @@ mod tests {
 
     #[test]
     fn clock_local_pm_format() {
-        let now = Local
-            .with_ymd_and_hms(2026, 5, 4, 13, 0, 0)
-            .single()
-            .unwrap();
-        let parsed = parse_clock_local("3pm", now).expect("3pm parses");
+        let now = local(2026, 5, 4, 13, 0, 0);
+        let parsed = parse_clock_local("3pm", &now).expect("3pm parses");
         assert_eq!(parsed.hour(), 15);
         assert_eq!(parsed.minute(), 0);
         assert_eq!(parsed.day(), 4);
@@ -295,33 +291,24 @@ mod tests {
 
     #[test]
     fn clock_local_with_minutes() {
-        let now = Local
-            .with_ymd_and_hms(2026, 5, 4, 13, 0, 0)
-            .single()
-            .unwrap();
-        let parsed = parse_clock_local("3:30 pm", now).expect("3:30pm parses");
+        let now = local(2026, 5, 4, 13, 0, 0);
+        let parsed = parse_clock_local("3:30 pm", &now).expect("3:30pm parses");
         assert_eq!(parsed.hour(), 15);
         assert_eq!(parsed.minute(), 30);
     }
 
     #[test]
     fn clock_local_24_hour() {
-        let now = Local
-            .with_ymd_and_hms(2026, 5, 4, 13, 0, 0)
-            .single()
-            .unwrap();
-        let parsed = parse_clock_local("16:45", now).expect("16:45 parses");
+        let now = local(2026, 5, 4, 13, 0, 0);
+        let parsed = parse_clock_local("16:45", &now).expect("16:45 parses");
         assert_eq!(parsed.hour(), 16);
         assert_eq!(parsed.minute(), 45);
     }
 
     #[test]
     fn clock_local_past_rolls_to_tomorrow() {
-        let now = Local
-            .with_ymd_and_hms(2026, 5, 4, 16, 0, 0)
-            .single()
-            .unwrap();
-        let parsed = parse_clock_local("3pm", now).expect("3pm parses");
+        let now = local(2026, 5, 4, 16, 0, 0);
+        let parsed = parse_clock_local("3pm", &now).expect("3pm parses");
         // 3pm has already passed (now is 4pm), should roll to May 5.
         assert_eq!(parsed.day(), 5);
         assert_eq!(parsed.hour(), 15);
@@ -329,12 +316,9 @@ mod tests {
 
     #[test]
     fn clock_local_strips_timezone_suffix() {
-        let now = Local
-            .with_ymd_and_hms(2026, 5, 4, 12, 0, 0)
-            .single()
-            .unwrap();
-        let parsed_tz = parse_clock_local("3pm (America/New_York)", now).expect("with TZ parses");
-        let parsed_no_tz = parse_clock_local("3pm", now).expect("without TZ parses");
+        let now = local(2026, 5, 4, 12, 0, 0);
+        let parsed_tz = parse_clock_local("3pm (America/New_York)", &now).expect("with TZ parses");
+        let parsed_no_tz = parse_clock_local("3pm", &now).expect("without TZ parses");
         // Same hour/minute regardless of suffix (we ignore it).
         assert_eq!(parsed_tz.hour(), parsed_no_tz.hour());
         assert_eq!(parsed_tz.minute(), parsed_no_tz.minute());
@@ -342,33 +326,27 @@ mod tests {
 
     #[test]
     fn clock_local_12am_is_midnight() {
-        let now = Local
-            .with_ymd_and_hms(2026, 5, 4, 6, 0, 0)
-            .single()
-            .unwrap();
+        let now = local(2026, 5, 4, 6, 0, 0);
         // 12am today = midnight today, which is in the past relative to
         // 6am, should roll to tomorrow's midnight.
-        let parsed = parse_clock_local("12am", now).expect("12am parses");
+        let parsed = parse_clock_local("12am", &now).expect("12am parses");
         assert_eq!(parsed.hour(), 0);
         assert_eq!(parsed.day(), 5);
     }
 
     #[test]
     fn clock_local_12pm_is_noon() {
-        let now = Local
-            .with_ymd_and_hms(2026, 5, 4, 6, 0, 0)
-            .single()
-            .unwrap();
-        let parsed = parse_clock_local("12pm", now).expect("12pm parses");
+        let now = local(2026, 5, 4, 6, 0, 0);
+        let parsed = parse_clock_local("12pm", &now).expect("12pm parses");
         assert_eq!(parsed.hour(), 12);
         assert_eq!(parsed.day(), 4);
     }
 
     #[test]
     fn clock_local_invalid_hour_returns_none() {
-        let now = Local::now();
-        assert!(parse_clock_local("25:00", now).is_none());
-        assert!(parse_clock_local("13pm", now).is_none()); // pm only valid for 1-12
-        assert!(parse_clock_local("0am", now).is_none()); // am only valid for 1-12
+        let now = Zoned::now();
+        assert!(parse_clock_local("25:00", &now).is_none());
+        assert!(parse_clock_local("13pm", &now).is_none()); // pm only valid for 1-12
+        assert!(parse_clock_local("0am", &now).is_none()); // am only valid for 1-12
     }
 }

@@ -20,6 +20,7 @@
 //! ├── cloud_mode
 //! ├── console
 //! ├── engine_actor
+//! ├── yaran-core
 //! ├── yaran-core::cloud::cloudflared::child_registry
 //! ├── yaran-core::cloud::cloudflared::command
 //! ├── yaran-core::cloud::cloudflared::ready
@@ -32,7 +33,7 @@
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
 //! └── yaran-core::statusline
-//! External: chrono, std, tokio
+//! External: jiff, std, tokio
 //!
 //! Used by:
 //! cloud_loop.rs
@@ -56,6 +57,7 @@ use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 
 use yaran_core::engine::StatusUpdate;
 use yaran_core::statusline::StatusTone;
+use yaran_core::timefmt::Rfc3339;
 
 use crate::cloud_ingress::{CloudBindingInput, CloudIngress, JwksOutcome};
 use crate::cloud_mode::{CloudInput, CloudModeControl, CredentialsSnapshot};
@@ -424,7 +426,7 @@ impl CloudLoop {
             hostname: machine.map(|m| m.hostname.clone()),
             org_url: machine.map(|m| m.org_url.clone()),
             org_name: machine.map(|m| m.org_name.clone()),
-            since: Some(chrono::Utc::now().to_rfc3339()),
+            since: Some(jiff::Timestamp::now().to_rfc3339()),
             detail,
         };
         if self.control.shared_view().replace(view) {

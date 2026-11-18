@@ -106,7 +106,7 @@ fn real_jcode_mouse_scroll_in_yaran() {
     fs::write(home.join("config.toml"), toml::to_string(&cfg).unwrap()).unwrap();
 
     let store = SessionStore::open(&home.join("sessions.sqlite3")).unwrap();
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     store
         .create_session(&AgentSession {
             id: "acceptance-session".into(),

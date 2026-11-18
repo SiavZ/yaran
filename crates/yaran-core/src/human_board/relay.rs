@@ -26,7 +26,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use super::{
     Board, BoardSettings, BoardStore, Card, CardId, MAX_DETAIL_CHARS, Message, clean_line,
@@ -55,7 +55,7 @@ pub struct RelayJob {
     /// The card itself is being handed over (see [`Card::relayed_at`]).
     pub card_itself: bool,
     /// The messages it carries, by [`Message::key`], owned.
-    pub messages: Vec<(DateTime<Utc>, String, String)>,
+    pub messages: Vec<(Timestamp, String, String)>,
 }
 
 impl RelayJob {
@@ -65,7 +65,7 @@ impl RelayJob {
         let newest = self
             .messages
             .last()
-            .map_or_default(|(at, from, _)| format!("{}|{from}", at.timestamp_millis()));
+            .map_or_default(|(at, from, _)| format!("{}|{from}", at.as_millisecond()));
         format!("{}|{}|{newest}", self.card, self.card_itself)
     }
 }
@@ -113,7 +113,7 @@ pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) 
             return Err(anyhow!("could not run {label}: {why}"));
         }
     }
-    record(job, store, Utc::now())
+    record(job, store, Timestamp::now())
 }
 
 /// Mark what `job` carried as relayed on its card.
@@ -121,7 +121,7 @@ pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) 
 /// # Errors
 ///
 /// Fails when the board cannot be read or written.
-pub fn record(job: &RelayJob, store: &BoardStore, now: DateTime<Utc>) -> Result<()> {
+pub fn record(job: &RelayJob, store: &BoardStore, now: Timestamp) -> Result<()> {
     store.update(|board| {
         if job.card_itself {
             board.mark_card_relayed(&job.card, now)?;
@@ -272,13 +272,12 @@ fn card_text(card: &Card, person: &str, me: &str, messages: &[&Message]) -> Stri
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use super::*;
     use crate::human_board::{BoardStore, CardKind, NewCard, NewMessage, sync::SyncMode};
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 15, 9, minute, 0).unwrap()
+    fn at(minute: i8) -> Timestamp {
+        crate::timefmt::utc(2026, 10, 15, 9, minute, 0)
     }
 
     fn settings(me: &str, relay_to: Option<&str>) -> BoardSettings {

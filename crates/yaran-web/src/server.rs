@@ -81,7 +81,7 @@
 //! ├── yaran-core::test_scratch
 //! ├── yaran-core::urls
 //! └── yaran-core::wire
-//! External: axum, chrono, futures_util, rusqlite, serde, serde_json, std, tempfile, tokio, tower, uuid
+//! External: axum, futures_util, jiff, rusqlite, serde, serde_json, std, tempfile, tokio, tower, uuid
 //!
 //! Used by:
 //! server.rs
@@ -5481,7 +5481,7 @@ mod tests {
                     workspace_mode: None,
                 })
                 .unwrap();
-            let now = chrono::Utc::now();
+            let now = jiff::Timestamp::now();
             store
                 .create_session(&yaran_core::model::AgentSession {
                     id: "s1".to_string(),
@@ -8623,7 +8623,7 @@ mod tests {
                     workspace_mode: None,
                 })
                 .unwrap();
-            let now = chrono::Utc::now();
+            let now = jiff::Timestamp::now();
             for sid in ["s1", "s2"] {
                 store
                     .create_session(&yaran_core::model::AgentSession {

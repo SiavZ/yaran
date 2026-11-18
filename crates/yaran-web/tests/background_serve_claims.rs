@@ -28,7 +28,7 @@ type ClientWs =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 fn sample_session(id: &str, worktree: &str) -> yaran_core::model::AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         slot_tab_id: format!("{id}-slot"),

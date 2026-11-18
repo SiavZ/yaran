@@ -2365,7 +2365,7 @@ mod tests {
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         let store = yaran_core::storage::SessionStore::open(&paths.sessions_db_path).unwrap();
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         store
             .create_session(&yaran_core::model::AgentSession {
                 id: id.to_string(),
@@ -2518,7 +2518,7 @@ mod tests {
         )
         .unwrap();
         let store = yaran_core::storage::SessionStore::open(&paths.sessions_db_path).unwrap();
-        let now = chrono::Utc::now();
+        let now = jiff::Timestamp::now();
         store
             .create_session(&yaran_core::model::AgentSession {
                 id: id.to_string(),
@@ -2694,7 +2694,7 @@ mod tests {
                     title: "Found".to_string(),
                     ..Default::default()
                 },
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             );
             found.attached = true;
             found.head_branch = Some("feat".to_string());

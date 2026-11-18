@@ -29,6 +29,7 @@
 //! ├── keybindings
 //! ├── raw_input
 //! ├── theme
+//! ├── yaran-core
 //! ├── yaran-core::add_project_plan
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::attachments
@@ -72,7 +73,7 @@
 //! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! └── yaran-core::working_copy
-//! External: anyhow, chrono, crossterm, ratatui, std, tempfile, uuid
+//! External: anyhow, crossterm, jiff, ratatui, std, tempfile, uuid
 //!
 //! Used by:
 //! app/sessions.rs
@@ -474,7 +475,7 @@ impl App {
             current_branch: branch,
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
-            created_at: Some(chrono::Utc::now()),
+            created_at: Some(jiff::Timestamp::now()),
         };
         logger::info(&format!("registered project {}", path_buf.display()));
         let reaction = self.engine.apply(Command::PersistProject {
@@ -5840,8 +5841,8 @@ mod tests {
     use crate::statusline::StatusScope;
     use crate::storage::SessionStore;
     use crate::theme::Theme;
-    use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use jiff::Timestamp;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, mpsc};
@@ -6234,7 +6235,7 @@ mod tests {
     }
 
     fn make_session(id: &str, provider: &str, worktree: &str) -> AgentSession {
-        let now = Utc::now();
+        let now = Timestamp::now();
         AgentSession {
             id: id.to_string(),
             agent_handle: yaran_core::model::normalize_agent_handle(id),
@@ -6499,7 +6500,7 @@ mod tests {
                 session_id: session_id.to_string(),
                 provider: ProviderKind::from_str(provider),
                 sort_order: order,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             },
         );
     }
@@ -7762,7 +7763,7 @@ mod tests {
                 session_id: id.clone(),
                 provider: yaran_core::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: chrono::Utc::now(),
+                created_at: jiff::Timestamp::now(),
             },
         );
         app.engine
@@ -8520,8 +8521,7 @@ mod tests {
     /// holding the newest agent first, then the rest by the date they were added.
     #[test]
     fn project_chooser_entries_come_out_in_recency_order() {
-        use chrono::TimeZone;
-        let at = |day: u32| chrono::Utc.with_ymd_and_hms(2026, 7, day, 9, 0, 0).unwrap();
+        let at = |day: i8| yaran_core::timefmt::utc(2026, 7, day, 9, 0, 0);
 
         let mut oldest = make_project("oldest", "codex");
         oldest.created_at = Some(at(1));
@@ -8556,8 +8556,7 @@ mod tests {
     /// chooser, and the survivors keep the recency order.
     #[test]
     fn a_narrowed_project_chooser_keeps_the_recency_order() {
-        use chrono::TimeZone;
-        let at = |day: u32| chrono::Utc.with_ymd_and_hms(2026, 7, day, 9, 0, 0).unwrap();
+        let at = |day: i8| yaran_core::timefmt::utc(2026, 7, day, 9, 0, 0);
 
         let mut oldest = make_project("oldest", "codex");
         oldest.created_at = Some(at(1));
@@ -8583,8 +8582,7 @@ mod tests {
     /// a project action lists the same recency order the new-agent one does.
     #[test]
     fn the_manage_project_chooser_comes_out_in_recency_order() {
-        use chrono::TimeZone;
-        let at = |day: u32| chrono::Utc.with_ymd_and_hms(2026, 7, day, 9, 0, 0).unwrap();
+        let at = |day: i8| yaran_core::timefmt::utc(2026, 7, day, 9, 0, 0);
 
         let mut oldest = make_project("oldest", "codex");
         oldest.created_at = Some(at(1));
@@ -9785,7 +9783,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: yaran_core::model::ProviderKind::new("codex"),
                 sort_order: 1,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             },
         );
         let now = std::time::Instant::now();
@@ -10047,7 +10045,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::from_str("codex"),
             sort_order: 0,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         };
         app.engine
             .agent_tabs
@@ -10128,7 +10126,7 @@ mod tests {
         app: &mut App,
         id: &str,
         sort_order: u64,
-        created_at: chrono::DateTime<Utc>,
+        created_at: jiff::Timestamp,
         label: &str,
         foreground_cmd: Option<&str>,
     ) {
@@ -10174,7 +10172,7 @@ mod tests {
     #[test]
     fn opening_an_existing_terminal_announces_nothing() {
         let mut app = app_with_one_session();
-        insert_test_terminal(&mut app, "term-a", 0, Utc::now(), "Terminal 1", None);
+        insert_test_terminal(&mut app, "term-a", 0, Timestamp::now(), "Terminal 1", None);
         let before = app.status.most_recent_tui().map(|(_, text)| text);
 
         app.rebuild_left_items();
@@ -10194,7 +10192,7 @@ mod tests {
     #[test]
     fn reopening_an_agents_first_terminal_announces_nothing() {
         let mut app = app_with_one_session();
-        insert_test_terminal(&mut app, "term-a", 0, Utc::now(), "Terminal 1", None);
+        insert_test_terminal(&mut app, "term-a", 0, Timestamp::now(), "Terminal 1", None);
         app.engine
             .companion_terminals
             .get_mut("term-a")
@@ -10283,7 +10281,7 @@ mod tests {
     fn terminal_rows_in_manual_order_follow_sort_order() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "manual".to_string();
-        let now = Utc::now();
+        let now = Timestamp::now();
         // Insert out of order; sort_order is the sole tiebreaker.
         insert_test_terminal(&mut app, "term-c", 2, now, "zzz", None);
         insert_test_terminal(&mut app, "term-a", 0, now, "mmm", None);
@@ -10296,13 +10294,13 @@ mod tests {
     fn terminal_rows_in_created_order_put_the_newest_first() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "created".to_string();
-        let t0 = Utc::now();
+        let t0 = Timestamp::now();
         insert_test_terminal(&mut app, "term-a", 0, t0, "a", None);
         insert_test_terminal(
             &mut app,
             "term-b",
             1,
-            t0 + chrono::Duration::seconds(10),
+            t0 + jiff::SignedDuration::from_secs(10),
             "b",
             None,
         );
@@ -10310,7 +10308,7 @@ mod tests {
             &mut app,
             "term-c",
             2,
-            t0 + chrono::Duration::seconds(20),
+            t0 + jiff::SignedDuration::from_secs(20),
             "c",
             None,
         );
@@ -10323,7 +10321,7 @@ mod tests {
     fn terminal_rows_in_updated_order_follow_recent_pty_activity() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "updated".to_string();
-        let now = Utc::now();
+        let now = Timestamp::now();
         // Identical created_at so ONLY pty_activity distinguishes them.
         insert_test_terminal(&mut app, "term-a", 0, now, "a", None);
         insert_test_terminal(&mut app, "term-b", 1, now, "b", None);
@@ -10352,7 +10350,7 @@ mod tests {
     #[test]
     fn terminal_rows_sort_by_the_name_they_were_opened_with_and_reverse() {
         let mut app = app_with_one_session();
-        let now = Utc::now();
+        let now = Timestamp::now();
         // The foreground programs sort the other way round, and the sort_order is
         // anti-alphabetical too: only the opened-with label can produce this
         // order, so a program renaming its window never moves the row.
@@ -10377,7 +10375,7 @@ mod tests {
     fn terminal_rows_in_active_order_float_working_or_typing_to_the_top() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "active".to_string();
-        let now = Utc::now();
+        let now = Timestamp::now();
         insert_test_terminal(&mut app, "term-a", 0, now, "a", None);
         insert_test_terminal(&mut app, "term-b", 1, now, "b", None);
         insert_test_terminal(&mut app, "term-c", 2, now, "c", None);
@@ -10416,7 +10414,7 @@ mod tests {
             session_id: "s1".to_string(),
             provider: ProviderKind::from_str("codex"),
             sort_order: 1,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         };
         app.engine.session_store.insert_agent_tab(&tab).unwrap();
         app.engine
@@ -10462,7 +10460,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 provider: ProviderKind::from_str(provider),
                 sort_order: if id == "t2" { 1 } else { 2 },
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             };
             app.engine.session_store.insert_agent_tab(&tab).unwrap();
             app.engine

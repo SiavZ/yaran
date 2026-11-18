@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
-use chrono::Utc;
+use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::config::{Config, YaranPaths, check_provider_available, provider_config};
@@ -3680,8 +3680,8 @@ fn new_agent_session(
         desired_running: true,
         auto_reopen_enabled: true,
         status: SessionStatus::Active,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+        created_at: Timestamp::now(),
+        updated_at: Timestamp::now(),
         last_focused_tab: None,
     }
 }
@@ -4460,8 +4460,8 @@ mod tests {
             desired_running: false,
             auto_reopen_enabled: true,
             status: SessionStatus::Detached,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
             last_focused_tab: None,
             workspace: crate::model::AgentWorkspace::Managed(crate::model::ManagedWorkspace {
                 project_id: "proj-1".to_string(),

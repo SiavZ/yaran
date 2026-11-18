@@ -19,11 +19,12 @@
 //! ```text
 //! Uses:
 //! human_board/store.rs
+//! ├── crate
 //! ├── human_board
 //! ├── human_board::id
 //! ├── human_board::markdown
 //! └── private_file
-//! External: anyhow, chrono, serde_json, std, tempfile
+//! External: anyhow, jiff, serde_json, std, tempfile
 //!
 //! Used by:
 //! human_board/store.rs
@@ -43,7 +44,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use super::id::CardId;
 use super::{BOARD_FILE, BOARD_LOCK, BOARD_VERSION, Board, markdown};
@@ -277,7 +278,9 @@ fn load_folder(dir: &Path) -> Result<Board> {
         };
         let modified = meta
             .modified()
-            .map_or_else(|_| Utc::now(), DateTime::<Utc>::from);
+            .ok()
+            .and_then(|at| Timestamp::try_from(at).ok())
+            .unwrap_or_else(Timestamp::now);
         match markdown::parse(&text, stem, modified) {
             Ok(None) => {}
             Ok(Some(card)) => {
@@ -474,13 +477,11 @@ impl Drop for BoardWatcher {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    use chrono::TimeZone;
-
     use super::*;
     use crate::human_board::{CardKind, NewCard};
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 14, 20, minute, 0).unwrap()
+    fn at(minute: i8) -> Timestamp {
+        crate::timefmt::utc(2026, 10, 14, 20, minute, 0)
     }
 
     fn task(title: &str) -> NewCard {
@@ -607,7 +608,7 @@ mod tests {
             store
                 .update(|b| {
                     let id = b.post(&task(&format!("r{n}")), at(0))?.id();
-                    b.resolve(id, None, None, at(u32::try_from(n % 60).unwrap()))
+                    b.resolve(id, None, None, at(i8::try_from(n % 60).unwrap()))
                 })
                 .unwrap();
         }

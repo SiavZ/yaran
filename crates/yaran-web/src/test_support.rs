@@ -86,7 +86,7 @@ pub(crate) async fn boot_plain_test_server() -> (ScratchDir, SocketAddr) {
 /// A managed agent of project `p1`, for a test that puts it in an engine by
 /// hand before the actor starts. Its worktree path does not exist.
 pub(crate) fn sample_agent(id: &str) -> yaran_core::model::AgentSession {
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
     yaran_core::model::AgentSession {
         id: id.to_string(),
         agent_handle: yaran_core::model::normalize_agent_handle(id),
