@@ -34,7 +34,8 @@ async fn the_get_shows_a_consent_page_and_never_an_envelope() {
     let r = get(&h, &ask(&h, &device(), STATE), HOST, None).await;
     assert_eq!(r.status(), StatusCode::OK);
     let headers = format!("{:?}", r.headers());
-    assert!(!headers.contains("jwe"), "{headers}");
+    // `jwe=` is how an envelope travels; a bare "jwe" also matches random base64url tokens.
+    assert!(!headers.contains("jwe="), "{headers}");
     let csp = r.headers()["content-security-policy"]
         .to_str()
         .unwrap()
@@ -47,7 +48,7 @@ async fn the_get_shows_a_consent_page_and_never_an_envelope() {
     assert_eq!(r.headers()["referrer-policy"], "same-origin");
     assert_eq!(r.headers()["cache-control"], "no-store");
     let page = text(r).await;
-    assert!(!page.contains("jwe") && !page.contains("development build"));
+    assert!(!page.contains("jwe=") && !page.contains("development build"));
     for chip in [
         "Ada&#39;s &lt;Pixel&gt; 9",
         HOST,
