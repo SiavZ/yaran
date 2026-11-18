@@ -326,12 +326,15 @@ jobs:
         # by 2026-08-01 and drop each ignore once its parent crate migrates.
         # astral-tokio-tar is Linux test-only via testcontainers; drop when
         # testcontainers/testcontainers-rs#1006 ships. Reviewed 2026-11-17;
-        # review again by 2026-12-01. The exception rationale is in deny.toml.
+        # review again by 2026-12-01. chrono is unmaintained (direct dependency and via
+        # rusqlite); reviewed 2026-11-18, review again by 2026-12-18. The exception
+        # rationale is in deny.toml.
         run: |
           cargo audit --deny warnings \
             --ignore RUSTSEC-2025-0141 \
             --ignore RUSTSEC-2024-0384 \
-            --ignore RUSTSEC-2026-0440
+            --ignore RUSTSEC-2026-0440 \
+            --ignore RUSTSEC-2026-0543
 
       - name: cargo deny check
         run: cargo deny --all-features check

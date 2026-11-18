@@ -14,7 +14,7 @@ import { Trans } from '@lingui/react/macro';
 
 export function SetupIncomplete() {
   return (
-    <p role="alert" className="rounded-lg border border-border p-4">
+    <p role="alert" className="state-card">
       <Trans>This control plane hasn't finished setup yet. Ask your admin to finish the setup page, then try again.</Trans>
     </p>
   );

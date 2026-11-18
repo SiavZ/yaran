@@ -29,15 +29,17 @@ export function LanguageSettings() {
   const current: Locale = isLocale(locale) ? locale : 'en';
   return (
     <Page title={<Trans>Language</Trans>} back={{ name: 'settings' }}>
-      <RadioGroup<Locale>
-        legend={<Trans>App language</Trans>}
-        value={current}
-        options={(Object.keys(LOCALES) as Locale[]).map((l) => ({ value: l, label: LOCALES[l] }))}
-        onChange={(l) => {
-          activate(l);
-          void updateSettings({ locale: l });
-        }}
-      />
+      <div className="settings-group">
+        <RadioGroup<Locale>
+          legend={<Trans>App language</Trans>}
+          value={current}
+          options={(Object.keys(LOCALES) as Locale[]).map((l) => ({ value: l, label: LOCALES[l] }))}
+          onChange={(l) => {
+            activate(l);
+            void updateSettings({ locale: l });
+          }}
+        />
+      </div>
     </Page>
   );
 }

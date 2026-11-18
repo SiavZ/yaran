@@ -171,9 +171,9 @@ export function ConfirmOrg({ url }: { url: string }) {
       {meta.kind === 'ready' && meta.meta.setup === 'closed' && verdict && !verdict.ok && <ProtocolMismatch update={verdict.update} />}
       {meta.kind === 'ready' && meta.meta.setup === 'closed' && verdict?.ok && (
         <>
-          <section className="rounded-xl border border-border bg-card p-5 [overflow-wrap:anywhere]">
-            <ShieldCheckIcon aria-hidden className="mb-4 size-6 text-muted-foreground" />
-            <h2 className="mb-3 text-2xl font-semibold tracking-tight">{meta.meta.org?.name ?? host}</h2>
+          <section className="rounded-[1.75rem] bg-muted p-5 [overflow-wrap:anywhere]">
+            <ShieldCheckIcon aria-hidden className="mb-4 size-6" />
+            <h2 className="mb-3 text-2xl font-normal tracking-tight">{meta.meta.org?.name ?? host}</h2>
               {meta.meta.access && (
                 <dl className="flex flex-col gap-1 text-sm">
                   <dt className="text-muted-foreground"><Trans>Sign-in team</Trans></dt>

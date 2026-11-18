@@ -75,40 +75,46 @@ export function SecuritySettings() {
   const noBiometry = lock !== null && lock.biometry !== 'available';
   return (
     <Page title={<Trans>Security</Trans>} back={{ name: 'settings' }}>
-      <SwitchRow
-        label={<Trans>App lock</Trans>}
-        description={
-          noBiometry ? <Trans>Set up a fingerprint or face in the phone's settings to use app lock.</Trans> : <Trans>Ask for biometrics before showing yaran.</Trans>
-        }
-        checked={lock?.enabled ?? false}
-        disabled={lock === null || (noBiometry && !lock.enabled)}
-        onChange={(on) => void toggleLock(on)}
-      />
-      <SwitchRow
-        label={<Trans>Allow device passcode</Trans>}
-        description={<Trans>Unlock with the phone's passcode when biometrics fail.</Trans>}
-        checked={lock?.allowPasscode ?? false}
-        disabled={lock === null}
-        onChange={(on) => void setOptions({ allowPasscode: on })}
-      />
-      <RadioGroup<LockGrace>
-        legend={<Trans>Lock after</Trans>}
-        value={lock?.grace ?? '1min'}
-        disabled={!lock?.enabled}
-        options={[
-          { value: 'immediately', label: <Trans>Immediately</Trans> },
-          { value: '1min', label: <Trans>1 minute in the background</Trans> },
-          { value: '5min', label: <Trans>5 minutes in the background</Trans> },
-          { value: '15min', label: <Trans>15 minutes in the background</Trans> },
-        ]}
-        onChange={(grace) => void setOptions({ grace })}
-      />
-      <SwitchRow
-        label={<Trans>Hide screen content</Trans>}
-        description={<Trans>Block screenshots and blank yaran in the app switcher.</Trans>}
-        checked={privacy}
-        onChange={(on) => void togglePrivacy(on)}
-      />
+      <div className="settings-group">
+        <SwitchRow
+          label={<Trans>App lock</Trans>}
+          description={
+            noBiometry ? <Trans>Set up a fingerprint or face in the phone's settings to use app lock.</Trans> : <Trans>Ask for biometrics before showing yaran.</Trans>
+          }
+          checked={lock?.enabled ?? false}
+          disabled={lock === null || (noBiometry && !lock.enabled)}
+          onChange={(on) => void toggleLock(on)}
+        />
+        <SwitchRow
+          label={<Trans>Allow device passcode</Trans>}
+          description={<Trans>Unlock with the phone's passcode when biometrics fail.</Trans>}
+          checked={lock?.allowPasscode ?? false}
+          disabled={lock === null}
+          onChange={(on) => void setOptions({ allowPasscode: on })}
+        />
+      </div>
+      <div className="settings-group">
+        <RadioGroup<LockGrace>
+          legend={<Trans>Lock after</Trans>}
+          value={lock?.grace ?? '1min'}
+          disabled={!lock?.enabled}
+          options={[
+            { value: 'immediately', label: <Trans>Immediately</Trans> },
+            { value: '1min', label: <Trans>1 minute in the background</Trans> },
+            { value: '5min', label: <Trans>5 minutes in the background</Trans> },
+            { value: '15min', label: <Trans>15 minutes in the background</Trans> },
+          ]}
+          onChange={(grace) => void setOptions({ grace })}
+        />
+      </div>
+      <div className="settings-group">
+        <SwitchRow
+          label={<Trans>Hide screen content</Trans>}
+          description={<Trans>Block screenshots and blank yaran in the app switcher.</Trans>}
+          checked={privacy}
+          onChange={(on) => void togglePrivacy(on)}
+        />
+      </div>
     </Page>
   );
 }

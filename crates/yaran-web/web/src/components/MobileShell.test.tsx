@@ -530,12 +530,11 @@ describe("MobileShell attention dot", () => {
 })
 
 describe("MobileShell drawer header", () => {
-  it("renders the configured instance title above the 'agent sessions' subtitle", () => {
+  it("renders the configured instance title as the hub's plain title", () => {
     mockState = makeState()
     render(<MobileShell />)
     expect(screen.getByText("yaran #1")).toBeTruthy()
-    // The subtitle is unchanged, proving the title replaced only the wordmark.
-    expect(screen.getByText("agent sessions")).toBeTruthy()
+    expect(screen.queryByText("agent sessions")).toBeNull()
   })
 
   it("falls back to 'yaran' when no title is configured", () => {
@@ -935,7 +934,7 @@ describe("MobileShell not-found screen", () => {
     render(<MobileShell />)
     expect(screen.getByText("Agent not found")).toBeTruthy()
     expect(screen.getByText("s9")).toBeTruthy()
-    expect(screen.queryByText("agent sessions")).toBeNull()
+    expect(screen.queryByRole("navigation", { name: "Agents and terminals" })).toBeNull()
   })
 })
 
@@ -1861,9 +1860,9 @@ describe("MobileShell agent header lanes", () => {
   })
 })
 
-// The hub's bottom bar renders the SAME launcher corner as the desktop sidebar
-// footer: the split button's two halves and nothing beside them.
-describe("MobileShell hub bottom bar", () => {
+// The hub floats the SAME launcher corner as the desktop sidebar footer: the
+// split button's two halves and nothing beside them, as one pill.
+describe("MobileShell hub launcher corner", () => {
   it("carries the launcher corner's split button", () => {
     mockState = makeState({ spine: makeSessionSpine(1) })
     render(<MobileShell />)
@@ -1874,6 +1873,7 @@ describe("MobileShell hub bottom bar", () => {
         (b) => b.getAttribute("aria-label") ?? b.textContent,
       ),
     ).toEqual(["New agent…", "More ways to start"])
+    expect(corner.className).toContain("absolute")
   })
 })
 

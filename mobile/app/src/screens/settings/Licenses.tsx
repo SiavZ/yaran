@@ -50,9 +50,9 @@ interface LicenseList {
 
 function List({ title, list }: { title: ReactNode; list: LicenseList }) {
   return (
-    <section className="flex flex-col gap-1">
-      <h2 className="font-semibold">{title}</h2>
-      <ul className="text-sm">
+    <section>
+      <h2 className="settings-heading">{title}</h2>
+      <ul className="rounded-[1.75rem] bg-muted px-4 py-4 text-sm">
         {list.entries.map((e) => (
           <li key={`${e.name}@${e.version}`} className="flex justify-between gap-2 py-0.5">
             <span>
