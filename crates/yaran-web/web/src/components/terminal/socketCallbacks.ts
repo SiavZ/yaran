@@ -3,7 +3,7 @@ import { terminalSocketGone } from "@/lib/terminals"
 import type { Heartbeat } from "@/lib/heartbeat"
 import type { HandshakeOwner } from "@/lib/ptyOwnership"
 import type { PtySocket } from "@/lib/ptySocket"
-import { handleTabGone, noteOwnPtyConnection } from "@/lib/store"
+import { handleTabGone } from "@/lib/store"
 import type { ConnState } from "@/lib/types"
 
 import type { AttachReplay } from "./attachReplay"
@@ -25,30 +25,15 @@ type TerminalSocketCallbackOptions = {
     myConnId: string,
     owner: HandshakeOwner,
     ownerEpoch?: number,
-    ownerDevice?: string,
   ) => void
   noteRemotePtyGrid: (
     grid: { rows: number; cols: number } | null,
     fromHandshake: boolean,
   ) => void
-  noteSocketOpen: () => void
   noteAttachEpoch: (epoch: number) => void
   notePtyConn: (state: ConnState) => void
   setReconnecting: (value: boolean) => void
   resetReplayWait: () => void
-}
-
-// `holder` is the socket the id was registered for: two panes of one page on
-// one row share an id, and retiring it for one must leave the other's.
-export function retireConnectionIdentity(
-  connectionIdentity: ConnectionIdentity,
-  holder: unknown,
-): boolean {
-  const connectionId = connectionIdentity.read()
-  if (connectionId === null) return false
-  noteOwnPtyConnection(connectionId, false, holder)
-  connectionIdentity.write(null)
-  return true
 }
 
 export function registerTerminalSocketCallbacks(
@@ -66,22 +51,20 @@ export function registerTerminalSocketCallbacks(
     beat,
     seedOwnershipFromConnected,
     noteRemotePtyGrid,
-    noteSocketOpen,
     noteAttachEpoch,
     notePtyConn,
     setReconnecting,
     resetReplayWait,
   } = options
 
-  pty.onConnected = (connectionId, owner, ownerEpoch, ownerDevice) => {
+  pty.onConnected = (connectionId, owner, ownerEpoch) => {
     connId.write(connectionId)
-    noteOwnPtyConnection(connectionId, true, pty)
-    seedOwnershipFromConnected(connectionId, owner, ownerEpoch, ownerDevice)
+    seedOwnershipFromConnected(connectionId, owner, ownerEpoch)
   }
 
   pty.onPtyGrid = (grid, fromHandshake) => {
-    // Adopt before notifying: a heal replay must parse at the PTY's own grid, and
-    // the handshake's replay was drawn for it, which the owner honours too.
+    // Adopt before notifying: the handshake's replay was drawn for the PTY's
+    // own grid, which the holder honours too.
     resize.noteRemoteGrid(grid, fromHandshake)
     noteRemotePtyGrid(grid, fromHandshake)
   }
@@ -89,9 +72,8 @@ export function registerTerminalSocketCallbacks(
   pty.onOpen = () => {
     // Each open gets a new server-side identity. The stale one must not answer
     // ownership questions while the next handshake is still in flight.
-    if (!retireConnectionIdentity(connId, pty)) connId.write(null)
+    connId.write(null)
     setReconnecting(false)
-    noteSocketOpen()
 
     const { firstOpen, epoch } = attach.noteOpen()
     resize.noteOpen(firstOpen)
@@ -103,7 +85,7 @@ export function registerTerminalSocketCallbacks(
 
   pty.onReconnecting = () => {
     setReconnecting(true)
-    retireConnectionIdentity(connId, pty)
+    connId.write(null)
   }
 
   pty.onConn = (connectionState) => {

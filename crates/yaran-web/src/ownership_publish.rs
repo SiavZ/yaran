@@ -45,11 +45,12 @@ impl OwnershipPublisher {
                     epoch,
                     device,
                 } => {
+                    // Empty for a promoted browser that presented no device.
                     self.bus.emit(crate::server::pty_owner_event(
                         pty_id,
                         *conn_id,
                         *epoch,
-                        Some(device.as_str()),
+                        (!device.is_empty()).then_some(device.as_str()),
                     ));
                 }
                 PtyOwnershipEvent::Released { pty_id, epoch } => {

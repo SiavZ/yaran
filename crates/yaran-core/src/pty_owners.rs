@@ -1,12 +1,16 @@
-//! The input-ownership registry: who currently holds the right to type into a
-//! PTY and to decide its grid.
+//! The size-holder registry: which participant's grid a PTY is sized for.
 //!
-//! The unit of ownership is a ROW of the agents list, never a single pty: an
+//! Every participant seated on a row may type into it. "Owner" in this module
+//! means SIZE HOLDER, never "the only one allowed to type": one PTY has one
+//! grid, and the participant that last TYPED into a row holds it (last active
+//! wins). Every participant records its DESIRED grid (its natural fitted
+//! viewport) with every resize, so a typing transfer and a holder leaving can
+//! apply the new holder's grid at once.
+//!
+//! The unit of holding is a ROW of the agents list, never a single pty: an
 //! agent with all its provider tabs and all its companion terminals, or one
-//! project or standalone terminal. One device drives a whole row or none of
-//! it, so a device never drives an agent while another drives its dev server.
-//! Grids, resize sequences and applied geometry stay per pty, because each pty
-//! has its own child.
+//! project or standalone terminal. Grids, resize sequences and applied geometry
+//! stay per pty, because each pty has its own child.
 //!
 //! It lives in core because both surfaces arbitrate through it: while the
 //! background server serves behind the terminal UI, that terminal UI is a
@@ -90,11 +94,21 @@ pub struct OwnersState {
     /// critical section (see [`PtySizeOwners::accept_grid_apply`]), so an
     /// overtaken apply site re-applies the winner's geometry from here.
     pub applied: std::collections::HashMap<String, AppliedGrid>,
+    /// (pty, participant) -> the grid that participant would size the pty to,
+    /// as its latest resize asked. See [`PtySizeOwners::note_desired_grid`].
+    pub desired: std::collections::HashMap<(String, u64), (u16, u16)>,
+    /// (row, participant) -> when it was last active on the row and the device
+    /// it presented: who a departing holder hands the row to.
+    pub participants: std::collections::HashMap<(RowKey, u64), Participant>,
+    /// The clock [`Participant::active`] is stamped from. Never decreases.
+    pub activity: u64,
 }
+
+pub use crate::pty_handover::{HolderChange, Participant, StampedGrid, WriteVerdict};
 
 impl OwnersState {
     /// The row `pty_id` belongs to, a row of its own when no surface placed it.
-    fn row_for(&self, pty_id: &str) -> RowKey {
+    pub(crate) fn row_for(&self, pty_id: &str) -> RowKey {
         self.row_of
             .get(pty_id)
             .cloned()
@@ -103,7 +117,7 @@ impl OwnersState {
 
     /// The row `pty_id` belongs to, remembering the pty as one of its members
     /// so an ownership change of the row is announced for it too.
-    fn row_noting(&mut self, pty_id: &str) -> RowKey {
+    pub(crate) fn row_noting(&mut self, pty_id: &str) -> RowKey {
         let row = self.row_for(pty_id);
         self.members
             .entry(row.clone())
@@ -113,7 +127,7 @@ impl OwnersState {
     }
 
     /// Record `conn_id` as the row's owner under a fresh epoch.
-    fn record_owner(&mut self, row: RowKey, conn_id: u64, device: Option<&str>) -> u64 {
+    pub(crate) fn record_owner(&mut self, row: RowKey, conn_id: u64, device: Option<&str>) -> u64 {
         self.map.insert(
             row,
             OwnerRecord {
@@ -144,7 +158,7 @@ impl OwnersState {
     }
 
     /// Every pty known to be in `row`, sorted.
-    fn members_of(&self, row: &RowKey) -> Vec<String> {
+    pub(crate) fn members_of(&self, row: &RowKey) -> Vec<String> {
         self.members
             .get(row)
             .map_or_default(|members| members.iter().cloned().collect())
@@ -204,7 +218,9 @@ pub struct Seat {
     id: u64,
     pty_id: String,
     key: Option<(PageId, RowKey)>,
-    left: std::sync::atomic::AtomicBool,
+    /// Whether the socket has left. Locked around every frame
+    /// ([`Self::hold`]) and the leave itself, always before the owners lock.
+    left: std::sync::Mutex<bool>,
 }
 
 impl Seat {
@@ -216,6 +232,18 @@ impl Seat {
     /// The pty the socket is attached to.
     pub fn pty_id(&self) -> &str {
         &self.pty_id
+    }
+
+    /// Hold the seat for one client frame, or `None` once the socket has left:
+    /// a frame the quiet watchdog outran records and writes nothing, and a
+    /// leave waits for a held frame, then forgets what it recorded.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the seat lock is poisoned by an earlier panic while it was held.
+    pub fn hold(&self) -> Option<std::sync::MutexGuard<'_, bool>> {
+        let left = self.left.lock().expect("the seat lock is not poisoned");
+        (!*left).then_some(left)
     }
 }
 
@@ -248,11 +276,13 @@ pub enum GridApplyOutcome<T> {
 /// moment it joins. A surface places each pty in its row with
 /// [`Self::join_row`] before it asks anything about it.
 ///
-/// Attaching never steals. A plain resize claims only an UNOWNED row; against
-/// one another connection holds it is refused whole, resize included (see
-/// [`Self::claim_for_resize`]). Only a resize carrying the take-over flag
-/// transfers ownership, and a non-owner's stdin is dropped by
-/// [`Self::write_if_owner`] and [`Self::may_write`].
+/// Attaching never moves the size. A plain resize claims only an UNOWNED row;
+/// from a non-holder it is recorded as that participant's desired grid
+/// ([`Self::note_desired_grid`]) and not applied (see
+/// [`Self::claim_for_resize`]). TYPING is what moves the size: a non-holder's
+/// keystroke makes it the holder and applies its desired grid
+/// ([`Self::note_write`]). A resize carrying the take-over flag is still
+/// honoured as "make me holder now", though no client needs to send it.
 #[derive(Default, Debug)]
 pub struct PtySizeOwners {
     /// The owner map and its counters, under one lock.
@@ -356,26 +386,33 @@ impl PtySizeOwners {
             id,
             pty_id: pty_id.to_string(),
             key,
-            left: std::sync::atomic::AtomicBool::new(false),
+            left: std::sync::Mutex::new(false),
         }
     }
 
     /// The socket behind `seat` has ended. Once per seat however often it is
     /// asked, because the quiet watchdog and the socket's own guard both ask.
     ///
-    /// The row is let go of only when this was the page's last open socket on
-    /// it, in the same critical section that counts the socket out, so a
-    /// sibling opening at that moment either shares the seat and keeps the row
-    /// or arrives after the release on a fresh one. `Some(epoch)` means an
-    /// owner really was cleared, exactly as [`Self::release`] reports it.
+    /// The page leaves the row only when this was its last open socket on it,
+    /// in the same critical section that counts the socket out, so a sibling
+    /// opening at that moment either shares the seat or arrives after the leave
+    /// on a fresh one. Leaving forgets the page's desired grids. When the page
+    /// held the row's size, the most recently active participant still seated
+    /// becomes holder and its grids are stamped and handed to `apply` under
+    /// this lock; with nobody left the row is free. `None` means the leave
+    /// changed no holder.
     ///
     /// # Panics
     ///
     /// Panics when the owners lock is poisoned by an earlier panic while it was held.
-    pub fn leave_seat(&self, seat: &Seat) -> Option<u64> {
-        if seat.left.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            return None;
-        }
+    pub fn leave_seat(
+        &self,
+        seat: &Seat,
+        mut apply: impl FnMut(&StampedGrid),
+    ) -> Option<HolderChange> {
+        // Held to the end, so a frame in flight finishes before the leave.
+        let mut left = seat.hold()?;
+        *left = true;
         let mut owners = self
             .owners
             .lock()
@@ -391,7 +428,9 @@ impl PtySizeOwners {
             owners.seats.remove(key);
         }
         let row = owners.row_noting(&seat.pty_id);
-        owners.release_row(row, seat.id)
+        owners.forget_participant(&row, seat.id);
+        let epoch = owners.release_row(row.clone(), seat.id)?;
+        Some(owners.promote_after_release(&row, epoch, &mut apply))
     }
 
     /// Place `pty_id` in `row`. Idempotent, and first placement wins, because
@@ -482,16 +521,17 @@ impl PtySizeOwners {
     ///   - unowned              -> claims it, resize applies
     ///   - owned by `conn_id`   -> resize applies, no handover
     ///   - owned by another AND a take-over -> ownership transfers, resize applies
-    ///   - owned by another, plain resize  -> REFUSED: nothing applied, nothing
-    ///     broadcast
+    ///   - owned by another, plain resize  -> not applied, nothing broadcast:
+    ///     the caller records it as the sender's desired grid
+    ///     ([`Self::note_desired_grid`]), applied once the sender types
     ///   - a take-over whose `expected_owner` names anyone but the current
     ///     owner -> REFUSED exactly as a plain resize is; against an unowned
     ///     row it claims, as a plain resize does, only when the named owner
     ///     was the last to hold the row, and is REFUSED otherwise
     ///
     /// `expected_owner` is a compare-and-swap on a flagged claim, which only a
-    /// take-over carries. `None` takes from whoever holds it,
-    /// which is what a pressed Take over sends; `Some(id)` narrows the claim to
+    /// take-over carries. `None` takes from whoever holds it ("make me holder
+    /// now", kept for compatibility); `Some(id)` narrows the claim to
     /// one predecessor, for the press-less re-claim of a returning owner
     /// succeeding its own ghost. The comparison runs in the same critical
     /// section as the claim, so a frame delayed on a mobile radio cannot steal a
@@ -597,9 +637,8 @@ impl PtySizeOwners {
 
     /// Whether `conn_id` is the current owner of `pty_id`'s row; an unowned row is
     /// false. Read-only, unlike [`Self::claim`]. Never use it to gate a write or
-    /// a resize: those go through [`Self::write_if_owner`], [`Self::may_write`]
-    /// and [`Self::claim_for_resize`], which decide and act under one lock, and a
-    /// check here followed by an action leaves a TOCTOU window open.
+    /// a resize: those go through [`Self::note_write`] and
+    /// [`Self::claim_for_resize`], which decide and act under one lock.
     ///
     /// # Panics
     ///
@@ -615,45 +654,19 @@ impl PtySizeOwners {
             .is_some_and(|record| record.conn_id == conn_id)
     }
 
-    /// Whether a connection other than `conn_id` drives `pty_id`'s row. An
-    /// unowned row is not held by anybody, so a first writer is not told off.
-    /// A read for courtesy checks only, with the same TOCTOU caveat as
-    /// [`Self::is_owner`].
+    /// Claim `pty_id`'s row for `conn_id` when nobody holds it, as a launch
+    /// claims the child it started.
     ///
-    /// # Panics
+    /// `enqueue` runs under the owners lock exactly when the answer is
+    /// "allowed"; a caller with nothing to enqueue passes an empty closure.
     ///
-    /// Panics when the owners lock is poisoned by an earlier panic while it was held.
-    pub fn held_by_another(&self, pty_id: &str, conn_id: u64) -> bool {
-        let owners = self
-            .owners
-            .lock()
-            .expect("the pty owners lock is not poisoned");
-        owners
-            .map
-            .get(&owners.row_for(pty_id))
-            .is_some_and(|record| record.conn_id != conn_id)
-    }
-
-    /// May `conn_id` write stdin to `pty_id`, and does writing claim it?
+    ///   - no current holder -> `conn_id` claims the pty's whole row, reported
+    ///     via `claimed_new` so the caller announces it for every pty of the row
+    ///   - holder == `conn_id` -> allowed, no handover
+    ///   - a different holder -> not allowed, nothing changes
     ///
-    /// `enqueue` runs under the owners lock, exactly when the answer is
-    /// "allowed", so a take-over cannot land between the verdict and the bytes
-    /// the way it can when a caller writes after this returns. It carries the
-    /// same contract [`Self::write_if_owner`] states: a cheap enqueue that never
-    /// blocks and never panics. A caller with nothing to enqueue here (a launch
-    /// claiming its own child, a test) passes an empty closure and this is the
-    /// decision alone.
-    ///
-    ///   - no current owner -> `conn_id` claims the pty's whole row, as an
-    ///     uncontested first writer, reported via `claimed_new` so the caller
-    ///     announces the handover for every pty of the row
-    ///   - owner == `conn_id` -> allowed, no handover
-    ///   - a different owner -> denied, the stdin is dropped
-    ///
-    /// Writing never steals from another owner, and neither does a plain resize:
-    /// the one frame that transfers ownership is a resize flagged as a take-over
-    /// (see [`Self::claim_for_resize`]). `device` is the writing connection's
-    /// captured `User-Agent`, recorded only on the claim.
+    /// It never moves the size from another holder; typing does that, through
+    /// [`Self::note_write`]. `device` is recorded only on the claim.
     ///
     /// # Panics
     ///
@@ -693,36 +706,82 @@ impl PtySizeOwners {
         claim
     }
 
-    /// Write into `pty_id` as `conn_id`, deciding and enqueuing in ONE critical
-    /// section, and report whether the bytes were handed over.
+    /// Decide what one write of `kind` from `conn_id` into `pty_id` does.
     ///
-    /// It is allowed only for the connection that already owns the pty: it never
-    /// claims and never transfers, so an unowned pty is refused here and claimed
-    /// only through [`Self::may_write`] or [`Self::claim_for_resize`].
+    /// Every participant may type. From the holder everything is forwarded.
+    /// From anybody else:
     ///
-    /// `write` runs with the owners lock held, so it must be the cheap enqueue a
-    /// keystroke already is (a channel send), never blocking I/O, and it must not
-    /// panic: this mutex guards every pty in the process, and a panic through it
-    /// poisons ownership for all of them. That is what closes the window a
-    /// separate check leaves open, in which a take-over lands between the verdict
-    /// and the write and one keystroke reaches a pty the writer no longer owns.
+    ///   - typing -> forwarded, and the writer becomes the row's holder: the
+    ///     handover gets an epoch, and the writer's desired grids are stamped
+    ///     and handed to `apply` under this lock, BEFORE the caller writes, so
+    ///     the child is resized for the writer before its keystroke lands
+    ///   - a pointer report -> forwarded with no handover: every viewer renders
+    ///     the true grid, so its cell coordinates are valid
+    ///   - a terminal query reply -> forwarded only on a free row; from a
+    ///     non-holder it is dropped so the child gets one answer, not one per
+    ///     attached terminal
+    ///   - an ignored write (a focus report, an empty frame) -> dropped
+    ///
+    /// The verdict is advisory to the caller, which writes after this returns:
+    /// no write is ever refused for who holds the size, so there is no window
+    /// to close by writing under the lock.
     ///
     /// # Panics
     ///
     /// Panics when the owners lock is poisoned by an earlier panic while it was held.
-    pub fn write_if_owner(&self, pty_id: &str, conn_id: u64, write: impl FnOnce()) -> bool {
-        let owners = self
+    pub fn note_write(
+        &self,
+        pty_id: &str,
+        conn_id: u64,
+        kind: crate::pty::PtyWriteKind,
+        device: Option<&str>,
+        mut apply: impl FnMut(&StampedGrid),
+    ) -> WriteVerdict {
+        use crate::pty::PtyWriteKind;
+        let mut owners = self
             .owners
             .lock()
             .expect("the pty owners lock is not poisoned");
-        let allowed = owners
-            .map
-            .get(&owners.row_for(pty_id))
-            .is_some_and(|record| record.conn_id == conn_id);
-        if allowed {
-            write();
+        let row = owners.row_noting(pty_id);
+        let holder = owners.map.get(&row).map(|record| record.conn_id);
+        if holder == Some(conn_id) {
+            if matches!(kind, PtyWriteKind::Typing) {
+                owners.activity += 1;
+                let active = owners.activity;
+                if let Some(participant) = owners.participants.get_mut(&(row, conn_id)) {
+                    participant.active = active;
+                }
+            }
+            return WriteVerdict {
+                forward: true,
+                ..WriteVerdict::default()
+            };
         }
-        allowed
+        match kind {
+            PtyWriteKind::Typing => {
+                owners.activity += 1;
+                let active = owners.activity;
+                if let Some(participant) = owners.participants.get_mut(&(row.clone(), conn_id)) {
+                    participant.active = active;
+                }
+                let epoch = owners.record_owner(row.clone(), conn_id, device);
+                let grids = owners.stamp_desired(&row, conn_id, &mut apply);
+                WriteVerdict {
+                    forward: true,
+                    epoch: Some(epoch),
+                    grids,
+                }
+            }
+            PtyWriteKind::Pointer(_) => WriteVerdict {
+                forward: true,
+                ..WriteVerdict::default()
+            },
+            PtyWriteKind::QueryReply => WriteVerdict {
+                forward: holder.is_none(),
+                ..WriteVerdict::default()
+            },
+            PtyWriteKind::Ignored => WriteVerdict::default(),
+        }
     }
 
     /// Release ownership of `pty_id`'s whole row if `conn_id` still holds it
@@ -730,11 +789,11 @@ impl PtySizeOwners {
     /// has since claimed it, so a later attach is never clobbered. The caller
     /// announces the release for every pty of the row ([`Self::row_members`]).
     ///
-    /// `Some(epoch)` means an owner really was cleared and the caller must
-    /// broadcast an owner-cleared `pty.owner`: it is a viewer's only way to
-    /// learn the driving device has gone, so without it the take-over card is a
-    /// permanent lie. The release takes an epoch because a client discards a
-    /// `pty.owner` that is not newer than what it has applied.
+    /// `Some(epoch)` means a holder really was cleared and the caller must
+    /// broadcast an owner-cleared `pty.owner`. The release takes an epoch
+    /// because a client discards a `pty.owner` that is not newer than what it
+    /// has applied. It promotes nobody: departures that should hand the row on
+    /// go through [`Self::leave_seat`] and [`Self::release_all`].
     ///
     /// # Panics
     ///
@@ -748,23 +807,31 @@ impl PtySizeOwners {
         owners.release_row(row, conn_id)
     }
 
-    /// Release every row `conn_id` still owns, each of its ptys paired with the
-    /// epoch its row's release was stamped with, in the order the announcements
-    /// must be published in. The ptys of one row share one epoch.
+    /// `conn_id` stops participating: forget its desired grids everywhere and
+    /// let go of every row it holds, each handed to the most recently active
+    /// participant still seated on it (its grids stamped and handed to `apply`
+    /// under this lock) or left free. One entry per row it held, with the
+    /// row's members, in row order.
     ///
-    /// The terminal UI can be driving several ptys at once and lets go of all of
-    /// them at one moment. One critical section rather than a loop of
-    /// [`Self::release`] calls keeps the epochs consecutive and stops a browser
-    /// claiming one mid-sweep only to have that claim released underneath it.
+    /// The terminal UI can be holding several rows at once and lets go of all of
+    /// them at one moment. One critical section keeps the epochs consecutive
+    /// and stops a browser claiming one mid-sweep only to have that claim
+    /// released underneath it.
     ///
     /// # Panics
     ///
     /// Panics when the owners lock is poisoned by an earlier panic while it was held.
-    pub fn release_all(&self, conn_id: u64) -> Vec<(String, u64)> {
+    pub fn release_all(
+        &self,
+        conn_id: u64,
+        mut apply: impl FnMut(&StampedGrid),
+    ) -> Vec<(Vec<String>, HolderChange)> {
         let mut owners = self
             .owners
             .lock()
             .expect("the pty owners lock is not poisoned");
+        owners.participants.retain(|key, _| key.1 != conn_id);
+        owners.desired.retain(|key, _| key.1 != conn_id);
         let mut held: Vec<RowKey> = owners
             .map
             .iter()
@@ -774,17 +841,12 @@ impl PtySizeOwners {
         held.sort_unstable();
         let mut released = Vec::new();
         for row in held {
-            owners.map.remove(&row);
-            owners.last_holder.insert(row.clone(), conn_id);
-            owners.epoch += 1;
-            owners.generation += 1;
-            let epoch = owners.epoch;
-            released.extend(
-                owners
-                    .members_of(&row)
-                    .into_iter()
-                    .map(|pty_id| (pty_id, epoch)),
-            );
+            let Some(epoch) = owners.release_row(row.clone(), conn_id) else {
+                continue;
+            };
+            let members = owners.members_of(&row);
+            let change = owners.promote_after_release(&row, epoch, &mut apply);
+            released.push((members, change));
         }
         released
     }
@@ -1048,12 +1110,14 @@ mod tests {
         }
         let released_together = {
             assert!(owners.claim("s1-slot", a).is_some());
-            owners.release_all(a)
+            owners.release_all(a, |_| {})
         };
-        let epochs: std::collections::BTreeSet<u64> =
-            released_together.iter().map(|(_, epoch)| *epoch).collect();
-        assert_eq!(released_together.len(), 3, "{released_together:?}");
-        assert_eq!(epochs.len(), 1, "one row, one release epoch");
+        assert_eq!(released_together.len(), 1, "one row, one release epoch");
+        assert_eq!(released_together[0].0, vec!["s1-slot", "s1-tab2", "term-1"]);
+        assert!(matches!(
+            released_together[0].1,
+            HolderChange::Cleared { .. }
+        ));
     }
 
     /// A terminal opened in a row another device drives is that device's the
@@ -1171,9 +1235,16 @@ mod tests {
         let driver = agent.id();
         assert!(owners.claim("s1-slot", driver).is_some());
 
-        assert_eq!(owners.leave_seat(&agent), None, "the dock still holds it");
+        assert_eq!(
+            owners.leave_seat(&agent, |_| {}),
+            None,
+            "the dock still holds it"
+        );
         assert!(owners.is_owner("s1-tab2", driver));
-        let released = owners.leave_seat(&dock).expect("the last socket frees it");
+        let Some(HolderChange::Cleared { epoch: released }) = owners.leave_seat(&dock, |_| {})
+        else {
+            panic!("the last socket frees it, with nobody else seated");
+        };
         assert_eq!(owners.current_owner("s1-slot"), (None, released, None));
 
         let succession = ResizeIntent::TakeOver {
@@ -1198,13 +1269,13 @@ mod tests {
         let one = owners.take_seat(Some(&page(PAGE_A)), "s1-slot");
         let two = owners.take_seat(Some(&page(PAGE_A)), "s1-tab2");
         assert!(owners.claim("s1-slot", one.id()).is_some());
-        assert_eq!(owners.leave_seat(&one), None);
-        assert_eq!(owners.leave_seat(&one), None);
+        assert_eq!(owners.leave_seat(&one, |_| {}), None);
+        assert_eq!(owners.leave_seat(&one, |_| {}), None);
         assert!(
             owners.is_owner("s1-slot", two.id()),
             "the sibling still drives"
         );
-        assert!(owners.leave_seat(&two).is_some());
+        assert!(owners.leave_seat(&two, |_| {}).is_some());
     }
 
     /// A page's seats are per row: leaving the last socket on one row frees
@@ -1219,7 +1290,7 @@ mod tests {
         assert_ne!(first.id(), second.id());
         assert!(owners.claim("s1-slot", first.id()).is_some());
         assert!(owners.claim("s2-slot", second.id()).is_some());
-        assert!(owners.leave_seat(&first).is_some());
+        assert!(owners.leave_seat(&first, |_| {}).is_some());
         assert!(owners.is_owner("s2-slot", second.id()));
     }
 
@@ -1235,7 +1306,7 @@ mod tests {
         assert!(owners.claim("s1-slot", one.id()).is_some());
         let (out, _) = claim_resize(&owners, "term-1", two.id(), ResizeIntent::Plain);
         assert!(!out.apply);
-        assert!(owners.leave_seat(&one).is_some());
+        assert!(owners.leave_seat(&one, |_| {}).is_some());
     }
 
     /// The race the seat exists to survive: a page's sockets on one row come
@@ -1259,7 +1330,7 @@ mod tests {
                         let seat = owners.take_seat(Some(&page(PAGE_A)), pty);
                         let (out, _) = claim_resize(&owners, pty, seat.id(), ResizeIntent::Plain);
                         assert!(out.apply && out.epoch.is_none());
-                        assert!(owners.leave_seat(&seat).is_none());
+                        assert!(owners.leave_seat(&seat, |_| {}).is_none());
                         let (out, _) = claim_resize(&owners, pty, intruder, ResizeIntent::Plain);
                         assert!(!out.apply);
                     }
@@ -1270,7 +1341,7 @@ mod tests {
             thread.join().expect("no thread panicked");
         }
         assert!(owners.is_owner("term-1", anchor.id()));
-        assert!(owners.leave_seat(&anchor).is_some());
+        assert!(owners.leave_seat(&anchor, |_| {}).is_some());
     }
 
     /// The page id is a capability, so only a long random-looking token is
@@ -1847,16 +1918,24 @@ mod tests {
         owners.claim("agent-two", tui).expect("claimed");
         owners.claim("agent-three", browser).expect("claimed");
 
-        let released = owners.release_all(tui);
+        let released = owners.release_all(tui, |_| {});
         assert_eq!(
             released.len(),
             2,
             "both of this seat's ptys let go: {released:?}"
         );
-        let mut names: Vec<&str> = released.iter().map(|(id, _)| id.as_str()).collect();
+        let mut names: Vec<&str> = released
+            .iter()
+            .flat_map(|(members, _)| members.iter().map(String::as_str))
+            .collect();
         names.sort_unstable();
         assert_eq!(names, vec!["agent-one", "agent-two"]);
-        let epochs: Vec<u64> = released.iter().map(|(_, epoch)| *epoch).collect();
+        let epochs: Vec<u64> = released
+            .iter()
+            .map(|(_, change)| match change {
+                HolderChange::Cleared { epoch } | HolderChange::Promoted { epoch, .. } => *epoch,
+            })
+            .collect();
         assert!(
             epochs.windows(2).all(|pair| pair[1] > pair[0]),
             "each release needs its own strictly newer epoch, or the client's \
@@ -1868,7 +1947,7 @@ mod tests {
         );
 
         assert!(
-            owners.release_all(tui).is_empty(),
+            owners.release_all(tui, |_| {}).is_empty(),
             "a second sweep has nothing to release and must announce nothing"
         );
     }
@@ -2206,56 +2285,6 @@ mod tests {
         assert!(owners.current_owner("s1-slot").0.is_none());
     }
 
-    /// The owner's write must be decided and enqueued under one lock, or a
-    /// take-over landing in the gap lets one keystroke through to a pty the
-    /// writer no longer holds.
-    #[test]
-    fn a_takeover_cannot_land_between_the_verdict_and_the_owners_write() {
-        let owners = std::sync::Arc::new(PtySizeOwners::default());
-        let driver = owners.next_conn_id();
-        let taker = owners.next_conn_id();
-        owners.claim("p", driver);
-
-        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let racer = {
-            let owners = std::sync::Arc::clone(&owners);
-            let order = std::sync::Arc::clone(&order);
-            let gate = std::sync::Arc::clone(&gate);
-            std::thread::spawn(move || {
-                gate.wait();
-                owners.claim_for_resize(
-                    "p",
-                    taker,
-                    ResizeIntent::TakeOver {
-                        expected_owner: None,
-                    },
-                    None,
-                    |_| {},
-                );
-                order.lock().unwrap().push("takeover");
-            })
-        };
-
-        let wrote = owners.write_if_owner("p", driver, || {
-            // The racing take-over is running by now, and the pause hands it
-            // every chance to record itself first: only the lock this closure
-            // runs under can keep it behind the write.
-            gate.wait();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            order.lock().unwrap().push("write");
-        });
-        racer.join().expect("racing take-over thread");
-
-        assert!(wrote, "the recorded owner's write is delivered");
-        assert_eq!(
-            *order.lock().unwrap(),
-            ["write", "takeover"],
-            "the take-over must serialize after the write it raced"
-        );
-        assert!(owners.is_owner("p", taker), "the take-over still lands");
-    }
-
     /// The first writer's claim has the same seam: the bytes that earned the
     /// claim must be enqueued under the lock that granted it, or a take-over
     /// racing the claim leaves them travelling to a pty already handed on.
@@ -2300,45 +2329,5 @@ mod tests {
             "the take-over must serialize after the enqueue its claim raced"
         );
         assert!(owners.is_owner("p", taker));
-    }
-
-    /// A take-over that lands BEFORE the next keystroke drops it: the write is
-    /// refused with no bytes handed over, which is the point of coupling them.
-    #[test]
-    fn a_write_after_a_takeover_hands_over_nothing() {
-        let owners = PtySizeOwners::default();
-        let driver = owners.next_conn_id();
-        let taker = owners.next_conn_id();
-        owners.claim("p", driver);
-
-        let first = std::cell::Cell::new(false);
-        assert!(owners.write_if_owner("p", driver, || first.set(true)));
-        assert!(first.get(), "the first keystroke reaches the child");
-
-        owners.claim("p", taker);
-
-        let second = std::cell::Cell::new(false);
-        assert!(!owners.write_if_owner("p", driver, || second.set(true)));
-        assert!(
-            !second.get(),
-            "the second keystroke must not reach a pty the writer lost"
-        );
-    }
-
-    /// Writing through this operation claims nothing, so an unowned pty stays
-    /// unowned and the bytes go nowhere.
-    #[test]
-    fn writing_to_an_unowned_pty_is_refused_and_claims_it_for_nobody() {
-        let owners = PtySizeOwners::default();
-        let conn = owners.next_conn_id();
-
-        let wrote = std::cell::Cell::new(false);
-        assert!(!owners.write_if_owner("p", conn, || wrote.set(true)));
-        assert!(!wrote.get());
-        assert_eq!(
-            owners.current_owner("p").0,
-            None,
-            "an unowned pty is claimed by a deliberate act, never by a write"
-        );
     }
 }

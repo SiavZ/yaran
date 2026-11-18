@@ -6,7 +6,7 @@ import type { Terminal } from "@xterm/xterm"
 
 import type { PtySocket } from "@/lib/ptySocket"
 
-import type { ConnectionIdentity, OwnershipVerdict } from "./channels"
+import type { ConnectionIdentity } from "./channels"
 import type { LiveSettings, TerminalLiveSettings } from "./liveValues"
 import { useUploadPipeline } from "./uploadPipeline"
 
@@ -62,7 +62,6 @@ function file(name: string): File {
 function setup(
   opts: {
     kind?: "agent" | "terminal"
-    owner?: boolean
     open?: boolean
     composeActive?: boolean
   } = {},
@@ -71,13 +70,6 @@ function setup(
   const pty = { isOpen: opts.open ?? true }
   const drafted: string[] = []
   const compose = document.createElement("textarea")
-  let owner = opts.owner ?? true
-  const ownership: OwnershipVerdict = {
-    read: () => owner,
-    write: (v) => {
-      owner = v
-    },
-  }
   const connId: ConnectionIdentity = {
     read: () => "conn-1",
     write: () => {},
@@ -102,14 +94,12 @@ function setup(
       id: "p1",
       kind: opts.kind ?? "agent",
       live,
-      ownership,
       connId,
       termRef: { current: term as unknown as Terminal },
       ptyRef: { current: pty as unknown as PtySocket },
       composeInputRef,
       insertComposeText: (t) => drafted.push(t),
       openFilePicker: async () => [],
-      isOwner: opts.owner ?? true,
       isMobile: false,
       fileDropEnabled: true,
     }),
@@ -121,9 +111,6 @@ function setup(
     drafted,
     live,
     composeInputRef,
-    setOwner: (v: boolean) => {
-      owner = v
-    },
   }
 }
 
@@ -213,24 +200,6 @@ describe("the sequential batch", () => {
 })
 
 describe("availability, re-asked immediately before each delivery", () => {
-  it("strands the rest of a batch when ownership moves mid-upload", async () => {
-    const { view, term, setOwner } = setup()
-    const sink = view.result.current.activeUploadSink()
-    const guarded = {
-      ...sink,
-      unavailable: () => {
-        // Ownership moves after the first file has been delivered.
-        if (term.pasted.length >= 1) setOwner(false)
-        return sink.unavailable()
-      },
-    }
-    await act(async () => {
-      await view.result.current.runUpload([file("a.txt"), file("b.txt")], guarded)
-    })
-    // Both were SAVED; only the first was sent.
-    expect(uploads).toHaveLength(2)
-    expect(term.pasted).toHaveLength(1)
-  })
 
   it("does not claim a paste when the socket has closed", async () => {
     const { view, term } = setup({ open: false })
@@ -282,7 +251,7 @@ describe("the drag gate", () => {
     expect(view.result.current.paneAcceptsFileDrag(e)).toBe(false)
   })
 
-  it("accepts a file drag for the input owner", () => {
+  it("accepts a file drag", () => {
     const { view } = setup()
     const e = { dataTransfer: { types: ["Files"] } } as unknown as React.DragEvent
     expect(view.result.current.paneAcceptsFileDrag(e)).toBe(true)

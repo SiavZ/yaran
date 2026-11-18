@@ -22,7 +22,7 @@ export type TheaterRow =
   | { kind: "terminal"; terminalId: string }
 
 /** The key a row's theater memory lives at. */
-export function theaterRowKey(row: TheaterRow): string {
+function theaterRowKey(row: TheaterRow): string {
   return row.kind === "agent"
     ? `${THEATER_STORAGE_PREFIX}agent:${row.sessionId}`
     : `${THEATER_STORAGE_PREFIX}terminal:${row.terminalId}`
@@ -83,14 +83,6 @@ export function writeTheaterMemory(key: string | null, on: boolean): void {
     // Storage refused. The live mode still works for the life of the page; only
     // the memory is lost, which is the cheap half.
   }
-}
-
-/**
- * Forget a row's theater memory outright. Losing input ownership calls this:
- * after another device takes over, re-entering theater is a fresh choice.
- */
-export function clearTheaterMemory(key: string | null): void {
-  writeTheaterMemory(key, false)
 }
 
 // How theater rides the address (`?view=theater` after the position) is the
@@ -159,31 +151,6 @@ export function theaterEscapeAction(ev: TheaterEscEvent): TheaterEscapeAction {
   if (ev.isComposing || ev.keyCode === 229) return "none"
   if (ev.inTypingSurface) return "none"
   return "exit"
-}
-
-/**
- * Watching a pane's input ownership for the one transition theater cares about.
- * `isOwner` is a foreground guess until the server answers, so the first real
- * verdict is never a transition however far it differs from that guess.
- */
-export interface TheaterOwnershipWatch {
-  verdictSeen: boolean
-  wasOwner: boolean
-}
-
-export const theaterOwnershipWatchStart: TheaterOwnershipWatch = {
-  verdictSeen: false,
-  wasOwner: false,
-}
-
-export function theaterOwnershipStep(
-  prev: TheaterOwnershipWatch,
-  next: { handshakeSeen: boolean; isOwner: boolean },
-): { state: TheaterOwnershipWatch; lost: boolean } {
-  if (!next.handshakeSeen) return { state: prev, lost: false }
-  const state = { verdictSeen: true, wasOwner: next.isOwner }
-  if (!prev.verdictSeen) return { state, lost: false }
-  return { state, lost: prev.wasOwner && !next.isOwner }
 }
 
 /**

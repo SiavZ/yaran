@@ -240,7 +240,6 @@
  * ├── src/components/projectDialogNames.test.tsx
  * ├── src/components/startupLogsCopy.ts
  * ├── src/components/terminal/inputSurface.ts
- * ├── src/components/terminal/ownership.ts
  * ├── src/components/terminal/partSetup.tsx
  * ├── src/components/terminal/socketCallbacks.ts
  * ├── src/components/terminal/useTerminalLifecycle.ts
@@ -286,7 +285,6 @@
  * ├── src/lib/storeMobileBars.test.ts
  * ├── src/lib/storeOffline.test.ts
  * ├── src/lib/storePrReference.test.ts
- * ├── src/lib/storePtyOwnership.test.ts
  * ├── src/lib/storeReconnectDeepLink.test.ts
  * ├── src/lib/storeRename.test.ts
  * ├── src/lib/storeRouting.test.ts
@@ -496,10 +494,8 @@ import { agentStackModel } from "@/components/agentStackModel"
 import { holdLayoutForGesture } from "./layoutGesture"
 import { closeModals, onModalsChange, openModals, spendModals } from "@yaran/ui-kit/modalHistory"
 import {
-  clearTheaterMemory,
   readTheaterMemory,
   theaterMemoryKey,
-  theaterRowKey,
   theaterSerializable,
   writeTheaterMemory,
 } from "./theater"
@@ -770,8 +766,7 @@ export interface YaranState {
   // THEATER MODE: the focused pane fills the surface and every piece of yaran's
   // own chrome around it leaves. A property of the POSITION, not of the app: it
   // rides the address as a modifier, it is restored per pane from the browser's
-  // local storage on selection, and losing input ownership of the pane takes it
-  // away (see `noteTheaterOwnershipLost`). Never true with nothing focused.
+  // local storage on selection. Never true with nothing focused.
   theater: boolean
   // The desktop layout theater is temporarily overriding, captured on the way
   // in and put back on the way out. `null` whenever theater is off, and also
@@ -1240,19 +1235,6 @@ export interface YaranState {
   // against the next bootstrap exactly like `changesPaneOverride` above, and
   // rolled back (with a toast) when the settings PATCH fails.
   mobileAccessoryBarOverride: boolean | null
-  // Per-PTY ownership verdicts from mounted TerminalPanes, keyed by pty id.
-  // The pane is the freshest source, learning handovers from `pty.owner` ahead
-  // of the next spine refetch, so it overrides the spine in both directions.
-  // "mine" is the pane's live belief, not a server receipt: it starts as the
-  // pane's optimistic foreground guess. An entry lives only as long as the
-  // pane's socket; without one, `AgentTabView.input_owner` takes over.
-  ptyOwnership: Record<string, "mine" | "elsewhere">
-  // This client's own live PTY-socket connection ids, one per mounted pane with
-  // an open socket. A spine tab whose `input_owner` is not in this set is owned
-  // by some other connection. Deliberately the PTY-socket id space, not the
-  // events-socket `X-Connection-Id`: ownership is recorded per PTY socket
-  // server-side and the `pty.owner` frames already speak this id space.
-  ownPtyConnIds: Record<string, true>
   // The session whose code-editor overlay is open, the file to auto-open on
   // launch (null = none preselected), and the view it opens in: "file" (editable
   // Monaco buffer) or "diff" (read-only Monaco DiffEditor, HEAD vs working copy).
@@ -1599,8 +1581,6 @@ let state: YaranState = {
   changesPaneOverride: null,
   changesPanePercent: changesPaneMountPercent(),
   mobileAccessoryBarOverride: null,
-  ptyOwnership: {},
-  ownPtyConnIds: {},
   editorTarget: null,
   editorRoute: null,
   standaloneEditor: bootIsStandaloneEditor(),
@@ -1842,7 +1822,7 @@ function routeEvent(event: EventsServerMessage): void {
       return
     case "pty.owner":
       if (typeof event.id === "string") {
-        notifyPtyOwner(event.id, event.owner, event.epoch, event.device)
+        notifyPtyOwner(event.id, event.owner, event.epoch)
       }
       return
     case "session.changes":
@@ -2074,9 +2054,8 @@ async function reloadIfServerChanged(owner: number | null = null): Promise<void>
   }
   if (serverChanged(serverIdentityBaseline, current)) {
     // Published BEFORE the reload, because the reload is not instantaneous and
-    // the memories keyed to the old run's counters (a pane's ghost connection
-    // ids, the applied replay generation) can be read in the meantime. See
-    // `serverRun.ts`.
+    // the memory keyed to the old run's counters (the applied replay
+    // generation) can be read in the meantime. See `serverRun.ts`.
     noteServerRunProbe("changed")
     settleHeldOpen(owner, false)
     reloadLeavingNoModalEntry()
@@ -9337,11 +9316,6 @@ export type MacroDestination = "compose" | "pty" | "none"
 // caret, because the Send path owns the newline to keystroke transform.
 // Otherwise `macroPayloadBytes` applies that transform and the pane writes it
 // down its own socket. Neither path appends a submit: the user presses Enter.
-//
-// A pane this tab does not drive is refused here as well as by its disabled
-// control, because a write to a pty nobody drives would claim it: a macro must
-// never be how a terminal changes hands. The refusal says so rather than doing
-// nothing.
 export function runMacro(name: string, target: SelectedTarget): MacroDestination {
   const macro = (state.bootstrap?.macros ?? []).find((m) => m.name === name)
   if (!macro) return "none"
@@ -9351,12 +9325,6 @@ export function runMacro(name: string, target: SelectedTarget): MacroDestination
   if (pane === null) {
     notifyWarning(
       "The macro was not sent: this terminal is not open on this page. Open it, then pick the macro again.",
-    )
-    return "none"
-  }
-  if (pane.send === null) {
-    notifyWarning(
-      "The macro was not sent: this page is not driving this terminal. Take over to send macros.",
     )
     return "none"
   }
@@ -9597,48 +9565,6 @@ export function exitTheater(): void {
 export function toggleTheater(): void {
   if (state.theater) exitTheater()
   else enterTheater()
-}
-
-/**
- * A mounted pane lost input ownership of its PTY, so the take-over card is
- * about to cover it. Theater leaves and so does the pane's memory of it:
- * deciding what to do about a take-over wants the chrome in view, and
- * re-entering is then a fresh press. Losing ownership itself stays sticky.
- *
- * Keyed on the PTY's row, not the selection, so an unfocused row forgets too.
- * Within the row on screen only the part shown counts, as for the cover that
- * brings the top bar back: a take-over moves the whole row, so the shown part
- * loses too, and a part off screen losing on its own is not what anybody is
- * looking at.
- */
-export function noteTheaterOwnershipLost(
-  kind: "agent" | "terminal",
-  id: string,
-): void {
-  const key = theaterRowKeyForPty(kind, id)
-  if (key === null) return
-  const shown = state.selectedTarget
-  const shownPty = shown === null ? null : shown.kind === "agent" ? shown.tabId : shown.terminalId
-  if (theaterMemoryKey(shown) === key && shownPty !== id) return
-  clearTheaterMemory(key)
-  if (!state.theater) return
-  if (theaterMemoryKey(state.selectedTarget) !== key) return
-  setState(withTheaterLayout({ theater: false }))
-  syncUrl("replace")
-}
-
-// The theater memory of the row a pty belongs to: an agent tab's agent, a dock
-// terminal's agent, or a project or standalone terminal's own row. Null when the
-// workspace no longer carries the pty, which leaves nothing to forget.
-function theaterRowKeyForPty(kind: "agent" | "terminal", id: string): string | null {
-  const spine = state.spine
-  if (kind === "agent") {
-    const session = spine?.sessions.find((s) => s.id === id || s.tabs.some((t) => t.id === id))
-    return session ? theaterRowKey({ kind: "agent", sessionId: session.id }) : null
-  }
-  const terminal = spine?.terminals.find((t) => t.id === id)
-  if (!terminal) return null
-  return theaterMemoryKey({ kind: "terminal", terminalId: id, owner: ownerRefFromWire(terminal.owner) })
 }
 
 // Open the mobile changes screen over the focused agent. It is a position of its
@@ -9989,80 +9915,6 @@ export function setAccessoryBarVisibility(next: boolean): Promise<boolean> {
       )
       return false
     })
-}
-
-// ── Per-PTY input ownership (the `ptyOwnership` ledger) ─────────────────────
-
-// TerminalPane's reporter: record this pane's live ownership verdict for the
-// AGENT PTY it renders ("mine" while it holds input, "elsewhere" while another
-// connection does), or retire the verdict ("unknown", from the unmount
-// cleanup; with the pane gone this client has no live verdict and the
-// server-published spine field takes over). Idempotent so the per-render
-// effect churn never re-publishes an unchanged verdict.
-export function noteAgentPtyOwnership(
-  ptyId: string,
-  verdict: "mine" | "elsewhere" | "unknown",
-): void {
-  const current = state.ptyOwnership[ptyId]
-  const next = verdict === "unknown" ? undefined : verdict
-  if (current === next) return
-  const map = { ...state.ptyOwnership }
-  if (next === undefined) delete map[ptyId]
-  else map[ptyId] = next
-  setState({ ptyOwnership: map })
-}
-
-// Which of this page's sockets hold each id. Every terminal this page has open
-// on one row acts as one driver and is handed the SAME id, so an id leaves the
-// set only when the last socket holding it retires it, never when a sibling
-// that is still open does.
-const ownPtyConnHolders = new Map<string, Set<unknown>>()
-
-// TerminalPane's other reporter: register (live) or retire (dead) one of this
-// client's OWN PTY-socket connection ids, from the socket's `connected` frame
-// and its reconnect/close paths. See the `ownPtyConnIds` field doc. `holder`
-// names the socket holding it, and defaults to the id itself for a caller with
-// one socket per id.
-export function noteOwnPtyConnection(
-  connId: string,
-  live: boolean,
-  holder: unknown = connId,
-): void {
-  const holders = ownPtyConnHolders.get(connId) ?? new Set<unknown>()
-  if (live) holders.add(holder)
-  else holders.delete(holder)
-  if (holders.size > 0) ownPtyConnHolders.set(connId, holders)
-  else ownPtyConnHolders.delete(connId)
-  const held = holders.size > 0
-  if (Boolean(state.ownPtyConnIds[connId]) === held) return
-  const next = { ...state.ownPtyConnIds }
-  if (held) next[connId] = true
-  else delete next[connId]
-  setState({ ownPtyConnIds: next })
-}
-
-// True while any of the agent's tab PTYs is input-owned by another connection.
-// The agent menu disables its mutating entries on this; read-only ones stay.
-//
-// Per tab, freshest first: a mounted pane's `ptyOwnership` verdict, then the
-// spine's `AgentTabView.input_owner` compared against this client's own ids,
-// which is what gates an agent no pane on this device is attached to.
-// The optional chains are deliberate: unit-test states are partial mocks.
-export function sessionActiveElsewhere(
-  s: YaranState,
-  session: SessionView,
-): boolean {
-  // Belt-and-braces for states whose `tabs` is absent (partial test mocks, an
-  // older server): the session-slot tab's id IS the session id, so when tabs
-  // are present the loop below covers this entry too, with the full local
-  // -then-server precedence. Do not "optimize" the loop to skip the slot tab.
-  if (s.ptyOwnership?.[session.id] === "elsewhere") return true
-  return (session.tabs ?? []).some((t) => {
-    const local = s.ptyOwnership?.[t.id]
-    if (local === "elsewhere") return true
-    if (local === "mine") return false
-    return Boolean(t.input_owner) && !s.ownPtyConnIds?.[t.input_owner as string]
-  })
 }
 
 // The Task Manager (the app menu's "Task Manager…"). Open/close just flip the

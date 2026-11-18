@@ -11,7 +11,6 @@ const {
   freshen,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -23,7 +22,6 @@ module.exports = {
     // batches; five seconds is a session that just came up.
     await freshen(by["fix-login-redirect"].id, 5)
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
-    await takeOver(page)
     await sleep(2500)
     await clearToasts(page)
     // All three panes the caption names: the six rows on the left, a terminal

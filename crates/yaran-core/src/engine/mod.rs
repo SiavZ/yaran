@@ -2959,9 +2959,8 @@ impl Engine {
     /// Mark that a write reached this PTY on somebody's behalf during the run
     /// now in flight, which exempts the run from the rapid-exit failure. Every
     /// write a surface forwards counts (keys, pastes, macros, pointer reports)
-    /// except one nobody caused: an empty write, a focus report, or a mouse
-    /// report too malformed to read, all of which [`classify_pty_write`]
-    /// calls `Ignored`.
+    /// except one nobody caused: an empty write, a focus report or a mangled
+    /// mouse report (`Ignored` to [`classify_pty_write`]), or a `QueryReply`.
     ///
     /// [`classify_pty_write`]: crate::pty::classify_pty_write
     pub fn note_pty_used(&mut self, id: &str, bytes: &[u8]) {
@@ -2969,7 +2968,8 @@ impl Engine {
     }
 
     fn note_pty_used_kind(&mut self, id: &str, kind: crate::pty::PtyWriteKind) {
-        if !matches!(kind, crate::pty::PtyWriteKind::Ignored) {
+        use crate::pty::PtyWriteKind::{Ignored, QueryReply};
+        if !matches!(kind, Ignored | QueryReply) {
             self.pty_used.insert(id.to_string());
         }
     }
@@ -3017,7 +3017,7 @@ impl Engine {
         match kind {
             crate::pty::PtyWriteKind::Typing => self.note_pty_input(id),
             crate::pty::PtyWriteKind::Pointer(report) => self.note_pty_pointer(id, report),
-            crate::pty::PtyWriteKind::Ignored => {}
+            crate::pty::PtyWriteKind::Ignored | crate::pty::PtyWriteKind::QueryReply => {}
         }
         self.note_pty_used_kind(id, kind);
         kind

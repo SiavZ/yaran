@@ -107,3 +107,34 @@ export function viewerFontFit(input: ViewerFitInput): ViewerFitResult {
     height: Math.ceil(perFontHeight * fontSize * grid.rows),
   }
 }
+
+/// The grid FitAddon would give this window at `fontSize`, from one cell
+/// measured at `referenceFontSize`: the grid a page that does not hold the
+/// size would render if it did, computed while it renders somebody else's grid
+/// at a shrunk font. Exact when the two sizes match; scaled otherwise, which can
+/// be a column or two out, and the page's own fit corrects that the moment it
+/// holds the size. Null when nothing could be measured. The floors are
+/// FitAddon's own.
+export function naturalGridFor(input: {
+  available: { width: number; height: number }
+  cell: { width: number; height: number }
+  referenceFontSize: number
+  fontSize: number
+}): { rows: number; cols: number } | null {
+  const { available, cell, referenceFontSize, fontSize } = input
+  if (
+    !positive(available.width) ||
+    !positive(available.height) ||
+    !positive(cell.width) ||
+    !positive(cell.height) ||
+    !positive(referenceFontSize) ||
+    !positive(fontSize)
+  ) {
+    return null
+  }
+  const scale = fontSize / referenceFontSize
+  return {
+    rows: Math.max(1, Math.floor(available.height / (cell.height * scale))),
+    cols: Math.max(2, Math.floor(available.width / (cell.width * scale))),
+  }
+}

@@ -21,7 +21,6 @@
 //! ├── app::new_agent_settings
 //! ├── app::pr_clone
 //! ├── app::project_actions
-//! ├── app::pty_ownership
 //! ├── app::reorder
 //! ├── app::test_support
 //! ├── app::text_input
@@ -117,7 +116,6 @@ use super::confirm_dialog::{
 };
 use super::input::{configure_project_text_input, configure_project_text_input_mut};
 use super::pr_clone::{PrFolder, PrReviewQuestion, PullRequestClone};
-use super::pty_ownership::PtyTakeoverCard;
 use super::text_input::TextInput;
 use super::{
     AgentInfoTone, AgentRowCues, AgentTerminalContext, App, BranchHolder, BrowseProjectsFooterKeys,
@@ -454,50 +452,6 @@ fn tab_pill_borders(corners: &border::Set<'_>, ord_w: u16, label_w: u16) -> (Str
         corners.bottom_right
     );
     (top, bottom)
-}
-
-/// The take-over card's title and sentence for `card`, about the pane's
-/// `target` ("agent" or "terminal"), with the title fitted to `inner_w`.
-///
-/// The kind sits inside a different sentence in each arm, so each arm carries
-/// its whole prose rather than an opening a shared tail is glued to: the free
-/// card's sentence names what happened to the pty, and the word `agent` or
-/// `terminal` belongs inside that first clause.
-fn takeover_card_wording(
-    card: &crate::app::pty_ownership::PtyTakeoverCard,
-    target: &str,
-    inner_w: u16,
-) -> (String, String) {
-    // `Active on {device}` is ten characters of chrome plus the two padding
-    // spaces, so a pane with no room for a name falls back to the title that
-    // needs none rather than printing an ellipsis where the device goes.
-    const NAMED_TITLE_CHROME: u16 = 12;
-    match card {
-        crate::app::pty_ownership::PtyTakeoverCard::Elsewhere { device } => {
-            let title = match device.as_deref() {
-                Some(device) if inner_w > NAMED_TITLE_CHROME + 3 => format!(
-                    " Active on {} ",
-                    ellipsize_end(device, usize::from(inner_w - NAMED_TITLE_CHROME))
-                ),
-                _ => " Active on another device ".to_string(),
-            };
-            (
-                title,
-                format!(
-                    "Only one device can type at a time. Take over to drive this \
-                     {target} from here."
-                ),
-            )
-        }
-        crate::app::pty_ownership::PtyTakeoverCard::Free => (
-            " Running in the background ".to_string(),
-            format!(
-                "The device driving this {target} disconnected, so we kept the \
-                 {target} running in the background to avoid losing any progress. \
-                 Take over to drive it from here."
-            ),
-        ),
-    }
 }
 
 /// One file or folder row of the changes list, as the drawn window lays it out.
@@ -2198,15 +2152,6 @@ enum Caret {
     Hidden,
 }
 
-/// Whether the take-over card covers the terminal pane.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CardCover {
-    /// It does, so the hint names the take-over.
-    Covered,
-    /// It does not.
-    Clear,
-}
-
 /// Whether a card's text was cut to fit, which marks its last row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Truncation {
@@ -2634,12 +2579,7 @@ impl App {
         self.drawn_ptys.clear();
         self.reconcile_center_target();
         self.render_frame(frame);
-        let drawn: Vec<String> = self
-            .drawn_ptys
-            .iter()
-            .map(|target| target.id.clone())
-            .collect();
-        self.expire_stale_pty_takeover(&drawn);
+        self.forget_rows_no_longer_drawn();
         self.publish_drawn_attachments();
     }
 
@@ -4787,10 +4727,7 @@ impl App {
                     // "Start sess" and called it a button.
                     let width = pane_card_button_width(label);
                     // Integer centring, which leans LEFT by one cell when the
-                    // spare columns are odd. Deliberately the same expression
-                    // `render_takeover_card` uses for its own button, so the two
-                    // cards' buttons sit identically; a card that corrected the
-                    // lean would be the odd one out.
+                    // spare columns are odd.
                     let rect = Rect::new(
                         placed.area.x + (placed.area.width - width) / 2,
                         placed.area.y,
@@ -5526,237 +5463,6 @@ impl App {
         Line::from(spans)
     }
 
-    /// The hint line shown under the take-over card, replacing the usual hints
-    /// at the same rung the scroll-mode cue occupies and for the same reason:
-    /// while the card is up this keyboard is not reaching the child, so a line
-    /// listing the child's keys would be a lie.
-    ///
-    /// It names the key that presses the card's button first, because that is the
-    /// one gesture the card offers; then the pane chords, which the card leaves
-    /// alone; then, in fullscreen, the way back to the windowed layout.
-    ///
-    /// `width` is the inner width of the center pane, not the window's. Items are
-    /// appended only while they fit, so what a narrow pane gives up is the chords
-    /// rather than the way out.
-    pub(crate) fn takeover_hint_line(&self, width: u16) -> Line<'static> {
-        let desc_style = Style::default().fg(self.theme.hint_dim_desc_fg);
-        // Tab is yaran's again while the card is up, whatever `tab_reaches_agent`
-        // says, because the option hands it to an agent this keyboard cannot
-        // reach. So the pane chord named here is the real one, not the
-        // typeable-pane substitute.
-        let items: Vec<(String, &str)> = [
-            (self.bindings.label_for(Action::FocusAgent), "take over"),
-            (self.bindings.label_for(Action::FocusNext), "next pane"),
-            (
-                if self.fullscreen_overlay == FullscreenOverlay::None {
-                    String::new()
-                } else {
-                    self.bindings.label_for(Action::ToggleFullscreen)
-                },
-                "minimize",
-            ),
-        ]
-        .into_iter()
-        .filter(|(key, _)| !key.is_empty())
-        .collect();
-
-        let hints: Vec<Hint> = items
-            .into_iter()
-            .enumerate()
-            .map(|(index, (key, desc))| {
-                let hint = Hint::key(key, desc);
-                if index == 0 { hint.pinned() } else { hint }
-            })
-            .collect();
-        let fitted = fitted_hint_spans(&self.theme, HintTone::Pane, &hints, usize::from(width));
-        let mut spans = fitted.spans;
-        if fitted.shown == 0 {
-            // Every key that could press the button has been unbound, or the
-            // pane is narrower than the shortest item. The button is still
-            // there to click, so the line says that instead of nothing.
-            spans.clear();
-            let fallback = "Press Take over to type here";
-            if fallback.chars().count() <= usize::from(width) {
-                spans.push(Span::styled(fallback, desc_style));
-            }
-        }
-        Line::from(spans)
-    }
-
-    /// The take-over card: the web's card, painted over this pane's grid whenever
-    /// the child underneath it is not this surface's to type into.
-    ///
-    /// Word for word the same card a browser puts over its own terminal (see
-    /// `TerminalPane.tsx`). Built from the modal primitives but deliberately not
-    /// a modal: it must not block pane or tab navigation, so it has no
-    /// `PromptState`, no registry entry, and no click-outside rect.
-    ///
-    /// `card` carries which of the web's three truths this is. A driver that gave
-    /// yaran no name gets the title that needs none, and a pty nobody drives gets
-    /// the title that names the act, so neither prints a stand-in device name.
-    pub(crate) fn render_takeover_card(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        card: &crate::app::pty_ownership::PtyTakeoverCard,
-    ) {
-        // A comfortable measure for the sentence, capped by the pane. `-2` is
-        // the border ring the card is drawn with.
-        const PREFERRED_INNER: u16 = 46;
-        // One column of padding on each side, the way the web's card pads its
-        // body: prose that touches the border ring reads as clipped.
-        const SIDE_PADDING: u16 = 1;
-        // One blank row under the title border, matching the blank row above the
-        // button: the card's body sits inside a ring of space rather than
-        // starting hard against the line that names the device.
-        // One blank row under the title, the prose, one blank row, then the
-        // button sitting on the frame's bottom edge, the spacing the other
-        // modals use between their prose and their buttons.
-        const TOP_PADDING: u16 = 1;
-        const PROSE_GAP: u16 = 1;
-        // COVER THE WHOLE GRID first, exactly as the web's card is an
-        // `absolute inset-0` over its pane: the child keeps streaming
-        // underneath and none of it is on screen. Through
-        // `clear_overlay_bar_area` rather than `clear_overlay_area`, because
-        // this is not a modal: recording its rect would hand the click-outside
-        // engine a frame for a surface nothing can dismiss.
-        self.clear_overlay_bar_area(frame, area);
-        self.mouse_layout.takeover_button = None;
-        if area.width < 4 || area.height < 3 {
-            return;
-        }
-
-        // Over an agent's stack the card is about the agent's row, whichever
-        // part has focus; over one terminal shown alone (fullscreen, or a
-        // terminal's own row) it names what is shown.
-        let target = if self.drawing_agent_stack() && self.selected_terminal_row().is_none() {
-            "agent"
-        } else {
-            match self.focused_surface() {
-                SessionSurface::Agent => "agent",
-                SessionSurface::Terminal => "terminal",
-            }
-        };
-        let button_label = "Take over";
-        let button_h: u16 = 3;
-        // Sized to the label rather than `button_width_for`'s dialog minimum:
-        // one column of padding each side plus the borders leaves an odd inner
-        // width around the nine-character label, so it centres exactly instead
-        // of leaning one cell to the left the way a sixteen-column button does.
-        let button_w = u16::try_from(button_label.chars().count()).unwrap_or(u16::MAX) + 6;
-        // A pane with no room for the card's border ring AND the button inside
-        // it drops the ring: two columns of chrome are worth more as label than
-        // as outline, and the button is the whole point of the card. The cleared
-        // pane is then the card's surface.
-        if area.width < button_w + 2 || area.height < button_h + 2 {
-            if area.height < button_h {
-                return;
-            }
-            let bare_w = button_w.min(area.width);
-            self.render_takeover_button(
-                frame,
-                Rect::new(
-                    area.x + (area.width - bare_w) / 2,
-                    area.y + (area.height - button_h) / 2,
-                    bare_w,
-                    button_h,
-                ),
-                button_label,
-            );
-            return;
-        }
-
-        let inner_w = PREFERRED_INNER.min(area.width.saturating_sub(2)).max(1);
-
-        let (title, prose) = takeover_card_wording(card, target, inner_w);
-
-        let prose_w = inner_w.saturating_sub(SIDE_PADDING * 2).max(1);
-        let prose_lines = wrap_styled_lines(
-            &[Line::from(Span::styled(
-                prose,
-                Style::default().fg(self.theme.hint_desc_fg),
-            ))],
-            usize::from(prose_w),
-        );
-        let prose_rows = u16::try_from(prose_lines.len()).unwrap_or(u16::MAX);
-
-        let available_h = area.height.saturating_sub(2);
-        let (show_prose, inner_h) =
-            if available_h >= prose_rows.saturating_add(TOP_PADDING + PROSE_GAP + button_h) {
-                (true, TOP_PADDING + prose_rows + PROSE_GAP + button_h)
-            } else if available_h >= button_h {
-                // The BUTTON is the way out, so it is the half that survives a pane
-                // too short to carry the sentence as well.
-                (false, button_h)
-            } else {
-                return;
-            };
-
-        let card = Rect::new(
-            area.x + (area.width - (inner_w + 2)) / 2,
-            area.y + (area.height - (inner_h + 2)) / 2,
-            inner_w + 2,
-            inner_h + 2,
-        );
-        // The one-shot refusal blink `themed_overlay_block` can flash is
-        // unreachable here: it is armed only by an outside click on a modal that
-        // refuses to be dismissed, and this card is neither a modal nor
-        // dismissible.
-        // The title is centred, unlike a dialog's: the card names a state of
-        // the pane rather than the dialog it is not.
-        let block = self
-            .themed_overlay_block(&title)
-            .title_alignment(ratatui::layout::Alignment::Center);
-        let inner = block.inner(card);
-        block.render(card, frame.buffer_mut());
-
-        let mut y = inner.y;
-        if show_prose {
-            y += TOP_PADDING;
-            render_centered_lines(
-                frame.buffer_mut(),
-                Rect::new(inner.x + SIDE_PADDING, y, prose_w, prose_rows),
-                &prose_lines,
-                Style::default(),
-            );
-            y += prose_rows + PROSE_GAP;
-        }
-        let button_w = button_w.min(inner.width);
-        self.render_takeover_button(
-            frame,
-            Rect::new(
-                inner.x + (inner.width - button_w) / 2,
-                y,
-                button_w,
-                button_h,
-            ),
-            button_label,
-        );
-    }
-
-    /// The card's one button, wherever the card ended up putting it, and the
-    /// publication of its rect for the mouse. Shared by the boxed card and the
-    /// bare-button degrade so the two can never disagree about where the button
-    /// is or what state it is in.
-    fn render_takeover_button(&mut self, frame: &mut Frame<'_>, area: Rect, label: &str) {
-        let state = button_state_for(
-            ButtonPressedTarget::TakeOverCard,
-            self.takeover_press,
-            if self.focus == FocusPane::Center {
-                ButtonState::Focused
-            } else {
-                ButtonState::Normal
-            },
-        );
-        Button::new(label)
-            .state(state)
-            .kind(ButtonKind::Confirm)
-            .render(frame, area, &self.theme);
-        // Published per frame and cleared by the caller before any of this, so a
-        // click can only ever land on a button that is on screen right now.
-        self.mouse_layout.takeover_button = Some(area);
-    }
-
     fn agent_terminal_context(&self, part: CenterPart) -> AgentTerminalContext {
         let active_surface = Self::part_surface(part);
         let terminal_status = self.selected_companion_terminal_status();
@@ -5820,14 +5526,6 @@ impl App {
             self.pty_sizes.insert(pty_id.clone(), new_size);
             self.part_targets.set(part, Some(pty_id));
         }
-    }
-
-    fn prepare_terminal_takeover(&mut self, part: CenterPart) -> Option<PtyTakeoverCard> {
-        let card = self.part_takeover_card(part);
-        if card.is_some() && self.part_scroll_mode_active(part) {
-            self.reset_part_scrollback(part);
-        }
-        card
     }
 
     fn render_terminal_client_content(
@@ -6169,14 +5867,12 @@ impl App {
         frame: &mut Frame<'_>,
         hint_area: Rect,
         context: &AgentTerminalContext,
-        cover: CardCover,
         scrollback_offset: usize,
     ) {
         if hint_area.height == 0 {
             return;
         }
-        let hint_line =
-            self.agent_terminal_hint_line(context, hint_area.width, cover, scrollback_offset);
+        let hint_line = self.agent_terminal_hint_line(context, hint_area.width, scrollback_offset);
         Paragraph::new(hint_line)
             .block(
                 Block::default()
@@ -6190,13 +5886,10 @@ impl App {
         &self,
         context: &AgentTerminalContext,
         width: u16,
-        cover: CardCover,
         scrollback_offset: usize,
     ) -> Line<'static> {
         if context.is_input && self.scroll_mode_active() {
             self.scroll_mode_cue_line(width)
-        } else if cover == CardCover::Covered {
-            self.takeover_hint_line(width)
         } else if context.is_input {
             self.interactive_terminal_hint_line(scrollback_offset, width)
         } else if scrollback_offset > 0 {
@@ -6364,15 +6057,7 @@ impl App {
 
         self.resize_part_terminal(part, term_area);
 
-        // Read ownership after sizing spends an armed claim, preventing a
-        // one-frame stale take-over card after a successful claim.
-        let takeover_card = self.prepare_terminal_takeover(part);
-        let cover = if takeover_card.is_some() {
-            CardCover::Covered
-        } else {
-            CardCover::Clear
-        };
-        let caret = if receives_keys && cover == CardCover::Clear {
+        let caret = if receives_keys {
             Caret::Shown
         } else {
             Caret::Hidden
@@ -6386,14 +6071,11 @@ impl App {
             caret,
         );
 
-        // Keys are reaching this terminal right now: not while a take-over card
-        // holds them, while scroll mode swallows them, or while scrolled back
-        // (typing is paused there). The block is repainted over the plain one;
-        // it draws only the frame, so the grid inside is untouched.
-        let engaged = receives_keys
-            && cover == CardCover::Clear
-            && scrollback_offset == 0
-            && !self.scroll_mode_active();
+        // Keys are reaching this terminal right now: not while scroll mode
+        // swallows them, or while scrolled back (typing is paused there). The
+        // block is repainted over the plain one; it draws only the frame, so the
+        // grid inside is untouched.
+        let engaged = receives_keys && scrollback_offset == 0 && !self.scroll_mode_active();
         if engaged {
             self.engaged_pane_block(title)
                 .render(area, frame.buffer_mut());
@@ -6406,25 +6088,13 @@ impl App {
             self.render_terminal_empty_state(frame, term_area, &context);
         }
 
-        // Paint the card last over the grid only; tab, PR, and hint lanes remain
-        // visible siblings, matching the web pane geometry. Inside an agent's
-        // stack the row has one driver, so the stack paints one card over all
-        // of it instead (see `render_agent_stack`).
-        if !self.drawing_agent_stack() {
-            if let Some(card) = takeover_card {
-                self.render_takeover_card(frame, term_area, &card);
-            } else {
-                self.mouse_layout.takeover_button = None;
-            }
-        }
-
         // Macro bar overlays the hint area when active.
         if self.macro_bar.is_some() {
             self.render_macro_bar(frame, inner);
             return;
         }
 
-        self.render_agent_terminal_hint(frame, hint_area, &context, cover, scrollback_offset);
+        self.render_agent_terminal_hint(frame, hint_area, &context, scrollback_offset);
     }
 
     fn render_files(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -7638,15 +7308,14 @@ impl App {
                 InputTarget::Agent | InputTarget::Terminal
             ))
             && !self.scroll_mode_active()
-            && self.focused_pty_takeover_card().is_none()
             && self
                 .selected_terminal_surface_client()
                 .is_some_and(|pty| pty.scrollback_offset() == 0)
     }
 
     /// Only chords that remain available at a live terminal, including while
-    /// typing is paused by scrollback or a take-over card. Fullscreen keeps its
-    /// own toggle; the pane's hint line names its scroll and take-over actions.
+    /// typing is paused by scrollback. Fullscreen keeps its own toggle; the
+    /// pane's hint line names its scroll actions.
     fn footer_input_hints(&self) -> Vec<(String, &'static str)> {
         if matches!(
             self.input_target,
@@ -21764,36 +21433,16 @@ mod tests {
         );
     }
 
-    /// Guard: pane cards moving off the modal surface leaves real modals and the
-    /// take-over cover on it. A dialog keeps `overlay_bg` across its ring, and
-    /// the take-over card (a full-pane cover, not a card in the pane) still
-    /// covers every cell of the pane in it.
+    /// Guard: pane cards moving off the modal surface leaves real modals on it.
+    /// A dialog keeps `overlay_bg` across its ring.
     #[test]
-    fn modals_and_the_takeover_cover_keep_the_modal_surface() {
+    fn modals_keep_the_modal_surface() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
         let mut app = test_app(default_bindings());
         with_distinct_surfaces(&mut app);
         let (width, height) = (60u16, 16u16);
-
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                app.render_takeover_card(
-                    frame,
-                    area,
-                    &crate::app::pty_ownership::PtyTakeoverCard::Free,
-                );
-            })
-            .expect("render frame");
-        let buf = terminal.backend().buffer();
-        let off = cells_off_surface(buf, buf.area, app.theme.overlay_bg);
-        assert!(
-            off.is_empty(),
-            "the take-over cover paints the whole pane in the modal surface; off: {off:?}"
-        );
 
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
@@ -24021,23 +23670,6 @@ mod tests {
         );
         let clipped = header_row(&mut app, 40);
         assert!(clipped.trim_end().ends_with('…'), "{clipped}");
-    }
-
-    #[test]
-    fn a_covered_pty_does_not_advertise_input_in_the_footer() {
-        let mut app = app_with_parked_agent_cursor();
-        let (companion, _, _) =
-            crate::app::background_server::tests::FakeCompanion::serving_with_ownership();
-        app.companion = Some(companion);
-        app.focus = FocusPane::Center;
-        assert!(app.center_typeable());
-        assert!(app.focused_pty_takeover_card().is_some());
-
-        let (terminal, _) = draw_caret_frame(&mut app);
-        let (_, title) = center_title_row(&app, &terminal);
-        let rows = buffer_rows(terminal.backend().buffer());
-        assert!(!title.contains("INPUT"), "{title}");
-        assert!(rows[rows.len() - 2].starts_with(" Agent  "), "{rows:?}");
     }
 
     #[test]

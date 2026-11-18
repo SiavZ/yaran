@@ -344,68 +344,6 @@ impl App {
                 self.render_dock_part(frame, rest, dock_focus, &dock);
             }
         }
-        self.render_stack_takeover_card(frame);
-    }
-
-    /// Whether the frame is drawing an agent's stack in the center pane, where
-    /// one take-over card covers every part at once.
-    pub(super) fn drawing_agent_stack(&self) -> bool {
-        self.mouse_layout.center_stack.is_some()
-            && matches!(self.fullscreen_overlay, FullscreenOverlay::None)
-    }
-
-    /// Whether a take-over card is over the center pane: over the one part a
-    /// fullscreen view or a terminal's row shows, or over any part of an
-    /// agent's stack, which all belong to one row with one driver.
-    pub(crate) fn card_covers_center(&self) -> bool {
-        self.covering_card().is_some()
-    }
-
-    /// The take-over card over the center pane and a pty of the row it
-    /// covers. Over an agent's stack that is any drawn part with a pty, so a
-    /// dormant tab in the focused part does not leave the row unclaimable.
-    pub(crate) fn covering_card(
-        &self,
-    ) -> Option<(crate::app::pty_ownership::PtyTakeoverCard, String)> {
-        let shows_stack = matches!(self.fullscreen_overlay, FullscreenOverlay::None)
-            && matches!(self.center_mode, super::CenterMode::Agent)
-            && self.selected_terminal_row().is_none()
-            && self.selected_session().is_some();
-        let parts = if shows_stack {
-            self.layout_parts()
-        } else {
-            vec![self.focused_part()]
-        };
-        parts.into_iter().find_map(|part| {
-            let card = self.part_takeover_card(part)?;
-            Some((card, self.part_pty_id(part)?))
-        })
-    }
-
-    /// The card over the stack, when the row is not this surface's: one card
-    /// across every grid the layout draws, the dock's strip between them
-    /// included, while the agent's strip above and the hint lanes stay visible
-    /// as they do over a single pane.
-    fn render_stack_takeover_card(&mut self, frame: &mut Frame<'_>) {
-        self.mouse_layout.takeover_button = None;
-        let grids = [self.mouse_layout.focused_term, self.mouse_layout.other_term];
-        let Some(area) = grids.into_iter().flatten().reduce(Rect::union) else {
-            return;
-        };
-        let card = self
-            .layout_parts()
-            .into_iter()
-            .find_map(|part| self.part_takeover_card(part));
-        if let Some(card) = card {
-            if self.part_scroll_mode_active(CenterPart::Main) {
-                self.reset_part_scrollback(CenterPart::Main);
-            }
-            if self.part_scroll_mode_active(CenterPart::Dock) {
-                self.reset_part_scrollback(CenterPart::Dock);
-            }
-            self.mouse_layout.card_cover = Some(area);
-            self.render_takeover_card(frame, area, &card);
-        }
     }
 
     /// How many rows the dock takes in the split of a center pane `height`

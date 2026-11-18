@@ -169,7 +169,7 @@ export interface SoftNewlineAction {
    * own CR. When false, nothing else here applies and the key is left to xterm.
    */
   handled: boolean
-  /** Bytes to write to the PTY, or `null` when nothing should be sent (a read-only viewer). */
+  /** Bytes to write to the PTY, or `null` when nothing should be sent. */
   send: string | null
   /** Whether consuming this keystroke should clear the one-shot Ctrl/Alt latch. */
   clearLatch: boolean
@@ -177,11 +177,10 @@ export interface SoftNewlineAction {
 
 /**
  * Resolves a keydown into the decisions a terminal key handler needs: the chord
- * match from `softNewline`, plus the ownership gate and the latch-clear rule.
+ * match from `softNewline`, plus the latch-clear rule.
  *
- * `send` carries the LF only for the input owner (a non-owner consumes the key
- * visually but injects nothing), and `clearLatch` is set when the owner had a
- * Ctrl/Alt latch armed, so it cannot leak onto the next keystroke.
+ * `clearLatch` is set when a Ctrl/Alt latch was armed, so it cannot leak onto
+ * the next keystroke.
  */
 export function softNewlineAction(
   e: {
@@ -194,14 +193,14 @@ export function softNewlineAction(
     isComposing: boolean
     keyCode: number
   },
-  ctx: { isOwner: boolean; ctrlLatched: boolean; altLatched: boolean },
+  ctx: { ctrlLatched: boolean; altLatched: boolean },
 ): SoftNewlineAction {
   const nl = softNewline(e)
   if (nl === null) return { handled: false, send: null, clearLatch: false }
   return {
     handled: true,
-    send: ctx.isOwner ? nl : null,
-    clearLatch: ctx.isOwner && (ctx.ctrlLatched || ctx.altLatched),
+    send: nl,
+    clearLatch: ctx.ctrlLatched || ctx.altLatched,
   }
 }
 

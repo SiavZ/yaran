@@ -8,7 +8,6 @@ const {
   expectNoCover,
   expectPanePainted,
   goto,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -17,7 +16,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["refactor-cache"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     await clickLabel(page, "Tab actions", 2)
     // The menu the caption names, over a terminal that is actually on.

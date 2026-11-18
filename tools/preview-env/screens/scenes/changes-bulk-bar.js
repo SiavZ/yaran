@@ -7,7 +7,6 @@ const {
   expectVisibleText,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -16,7 +15,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     // The row checkbox is a visually hidden input behind the status marker, so
     // it is clicked directly rather than through the pointer.

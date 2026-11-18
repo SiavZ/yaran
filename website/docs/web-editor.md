@@ -355,7 +355,7 @@ The receiving row is highlighted while you are still holding the files, and a to
 
 These are **ordinary files**: `git status` shows them, they appear in the agent's Changes pane straight away, and you can commit them. That is the difference between this and dropping a file onto an agent's pane, which is scratch that dies with the agent. See [Dropping and pasting files](/docs/dropping-files).
 
-A drop here pastes nothing into any terminal and needs no input ownership: it saves files and stops.
+A drop here pastes nothing into any terminal and needs no terminal connection: it saves files and stops.
 
 - **Nothing on disk is overwritten.** If a name is taken the file is saved under a new one, with a timestamp and a counter, and the toast tells you what it is called now. (**Move…** instead refuses an occupied destination outright, because a move names one exact destination while a drop names only a folder. Neither overwrites.)
 - **Your filenames are kept exactly as you had them**, accents and all. A name yaran cannot use is refused with the reason rather than rewritten.

@@ -18,17 +18,9 @@ export interface ComposeInsertSink {
 
 /// One pane's answer.
 export interface PaneMacroTarget {
-  /// The full-pane take-over card is up over this pane: somebody else drives
-  /// the pty, or nobody does and this pane has not claimed it. The Macros
-  /// control is disabled for exactly as long as this holds.
-  takeoverCard: boolean
-  /// Writes bytes down this pane's own socket, or null while this pane is not
-  /// the input owner. Null rather than a gated function, because a write from a
-  /// non-owner is either dropped by the server or, against a pty nobody drives,
-  /// claims it, and a macro must never be the thing that takes a terminal over.
-  /// Returns whether the bytes went on the wire: false while the socket is
-  /// reconnecting, when they are dropped.
-  send: ((bytes: Uint8Array) => boolean) | null
+  /// Writes bytes down this pane's own socket. Returns whether the bytes went
+  /// on the wire: false while the socket is reconnecting, when they are dropped.
+  send: (bytes: Uint8Array) => boolean
   /// The compose draft, or null while the compose bar is not the typing surface.
   compose: ComposeInsertSink | null
   /// This pane's typing surface, resolved at call time: the compose box while it

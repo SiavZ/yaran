@@ -26,8 +26,7 @@ image on your clipboard takes the same route.
   header's on a computer (the same menu the agent's or terminal's sidebar row opens), the
   floating pill's in theater mode. This is the phone entry point, since there is no drag
   gesture on a touch screen, and on a computer it gives a keyboard-only desktop one. The
-  entry appears while that session's terminal is open in front of you and you are the one
-  driving it; close the terminal and the entry goes. On an agent with terminals docked
+  entry appears while that session's terminal is open in front of you; close the terminal and the entry goes. On an agent with terminals docked
   under it, the file goes to whichever part you are typing into, the agent or a terminal.
 - The file tree's right-click menu in the editor, as **Upload here…**, which puts the file
   in the folder you right-clicked and pastes nothing anywhere.
@@ -425,21 +424,15 @@ file.
 
 ## Who can drop, and who can paste
 
-Only the device that currently holds input can drop or paste. Terminals in yaran are one-writer,
-many-watchers (see [The workspace in the browser](/docs/web-workspace)), and the drop target
-only appears for the writer. This applies to the two **pane** drops and to a file attached
-from the input or row menus. A drop on the editor's file tree pastes nothing, so it needs no
-input ownership, and a watcher can do it, **Upload here…** included.
-
-A watcher who pastes an image is told rather than ignored: nothing is uploaded, and a toast
-says the image was not saved and that taking over is the way to paste it here.
+Every device with the terminal open can drop, paste and attach, just as every device can type
+into it (see [The workspace in the browser](/docs/web-workspace)). The pasted path is typing
+like any other, so it also sizes the terminal for your screen.
 
 > [!IMPORTANT]
-> If you lose input to another device between the file being saved and its path being pasted,
-> yaran tells you plainly: the file **was** saved, here is its full path, and the path was not
-> sent.
+> If your connection drops between the file being saved and its path being pasted, yaran
+> tells you plainly: the file **was** saved, here is its full path, and the path was not sent.
 >
-> Take over input and paste it yourself. That message waits for you instead of clearing
+> Paste it yourself once the terminal is back. That message waits for you instead of clearing
 > itself, because it holds the only copy of that path on screen.
 
 The same applies on a phone: if the compose box goes away mid-upload (you rotated to a wide

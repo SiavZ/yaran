@@ -33,7 +33,7 @@ import {
 import type { ScrollDir } from "@/components/AccessoryBar"
 
 import type { LiveSettings } from "./liveValues"
-import type { ModifierLatch, OwnershipVerdict } from "./channels"
+import type { ModifierLatch } from "./channels"
 import { writeInputWithLandingEffects, writeSoftNewline } from "./constants"
 
 /// The three things "where does typing go" is answered from.
@@ -95,8 +95,6 @@ export function typingSurfaceHasFocusIn(refs: TypingSurfaceRefs): boolean {
 /// May an automatic focus move happen right now? Focusing summons the soft
 /// keyboard, so every condition waits for the pane to have reconciled:
 ///
-///   - `ownershipConfirmed` is the server's answer; `isOwner` alone is the
-///     foreground guess taken before the handshake.
 ///   - the replay for the current attach epoch must be on screen, or the
 ///     keyboard covers a placeholder.
 ///   - an IME composition in flight is never interrupted, or the half-typed
@@ -104,13 +102,9 @@ export function typingSurfaceHasFocusIn(refs: TypingSurfaceRefs): boolean {
 ///
 /// Automatic moves only: a user tapping the box focuses it themselves.
 export function typingFocusAllowed(ctx: {
-  isOwner: boolean
-  ownershipConfirmed: boolean
   replayApplied: boolean
   composing: boolean
 }): boolean {
-  if (!ctx.isOwner) return false
-  if (!ctx.ownershipConfirmed) return false
   if (!ctx.replayApplied) return false
   return !ctx.composing
 }
@@ -120,22 +114,18 @@ export function typingFocusAllowed(ctx: {
 /// `attach` names what a move is owed for (the target, plus which typing surface
 /// is up), so a reconnect onto the same one is silent.
 ///
-/// Two rules on top of that:
-///
-///   - Losing ownership forgets, so a take-over after a demotion still focuses.
-///   - A refusal is not a consumption: a move blocked by an in-flight IME
-///     composition leaves the memory alone, or the attach loses its one move.
+/// A refusal is not a consumption: a move blocked by an in-flight IME
+/// composition leaves the memory alone, or the attach loses its one move.
 export function nextTypingFocus(ctx: {
   /// `typingFocusAllowed` for this same commit.
   allowed: boolean
-  isOwner: boolean
   /// What a move would be owed FOR, as an opaque key.
   attach: string
   /// What the pane last moved the keyboard for, or null.
   focusedFor: string | null
 }): { focus: boolean; focusedFor: string | null } {
   if (!ctx.allowed) {
-    return { focus: false, focusedFor: ctx.isOwner ? ctx.focusedFor : null }
+    return { focus: false, focusedFor: ctx.focusedFor }
   }
   if (ctx.focusedFor === ctx.attach) {
     return { focus: false, focusedFor: ctx.focusedFor }
@@ -145,7 +135,6 @@ export function nextTypingFocus(ctx: {
 
 export type InputSurfaceDeps = TypingSurfaceRefs & {
   ptyRef: { current: PtySocket | null }
-  ownership: OwnershipVerdict
   /// The pane target this draft belongs to: an agent tab id or a terminal id.
   /// Drafts are keyed by it, so switching agents keeps each pane's own text.
   targetId: string
@@ -176,7 +165,7 @@ export type InputSurface = {
 }
 
 export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
-  const { live, composeInputRef, termRef, ptyRef, ownership, targetId } = deps
+  const { live, composeInputRef, termRef, ptyRef, targetId } = deps
   const refs: TypingSurfaceRefs = { live, composeInputRef, termRef }
   const focusTypingSurface = () => focusTypingSurfaceIn(refs)
   const typingSurfaceHasFocus = () => typingSurfaceHasFocusIn(refs)
@@ -212,14 +201,13 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
     composeInputRef.current?.setSelectionRange(caret, caret)
   }, [composeText, composeInputRef])
 
-  // Right-click pastes the browser clipboard, gated on ownership. `readText`
+  // Right-click pastes the browser clipboard. `readText`
   // needs a secure context; the shared reader toasts a hint when it is refused.
   //
   // The destination is the typing surface, not always the terminal: while the
   // message box is up a right-click joins the draft, or the clipboard goes on
   // the wire behind an unsent draft.
   function onRightClickPaste() {
-    if (!ownership.read()) return
     if (live.current.composeActive && composeInputRef.current !== null) {
       void pasteClipboardText(insertComposeText, focusTypingSurface)
       return
@@ -263,7 +251,7 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
   //
   // Returns whether the send happened; the bar clears its buffer only on true.
   // A composed message can be minutes of typing, so every refusal keeps the
-  // buffer and toasts the reason: not the owner, socket not open, or over
+  // buffer and toasts the reason: socket not open, or over
   // `MAX_COMPOSE_SEND_BYTES` (an oversized frame aborts the whole socket).
   //
   // It does not consume the one-shot Ctrl/Alt latches: a latch arms the next
@@ -273,12 +261,6 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
   // against a dead socket raises one toast and a changed reason replaces the
   // old one. The cost, accepted: each attempt restarts the error's countdown.
   function sendCompose(text: string): boolean {
-    if (!ownership.read()) {
-      notifyError("Another device is driving this terminal. Take over to send.", {
-        id: "compose-send",
-      })
-      return false
-    }
     if (!(ptyRef.current?.isOpen ?? false)) {
       notifyError("Not connected right now. Your message was kept.", {
         id: "compose-send",
@@ -317,8 +299,6 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
   function sendSeq(seq: string) {
     // Full sequences rather than single chars, so they bypass `applyModifiers`;
     // a latched Alt still prefixes ESC, and Ctrl on a non-char key is consumed.
-    // Owner-gated: a bar key is input like any other.
-    if (!ownership.read()) return
     // Captured before acting: the refocus below must run only when the typing
     // surface had focus at tap time.
     const keepFocus = typingSurfaceHasFocus()
@@ -337,11 +317,10 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
   }
 
   // The accessory bar's soft-newline key, since a soft keyboard cannot produce
-  // Shift-Enter. Owner-gated, and it consumes any armed latch because a raw
+  // Shift-Enter. It consumes any armed latch because a raw
   // newline does not combine with one. Shares `writeSoftNewline` with the
   // physical Shift-Enter handler so both land input identically.
   function sendNewline() {
-    if (!ownership.read()) return
     const keepFocus = typingSurfaceHasFocus()
     if (mods.read().ctrl || mods.read().alt) {
       mods.write({ ctrl: false, alt: false })
@@ -376,9 +355,7 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
     if (!term) return
     const up = dir === "pageUp"
     const altScreen = term.buffer.active.type !== "normal"
-    // Forwarding is input, so it is owner-gated; a watcher falls through to the
-    // local scroll, which is a no-op on the alt-screen.
-    if (altScreen && ownership.read()) {
+    if (altScreen) {
       forwardPageToApp(term, ptyRef.current, up)
     } else {
       term.scrollPages(up ? -1 : 1)
