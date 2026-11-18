@@ -203,39 +203,65 @@ impl Engine {
         let (requested, resume) = (requested.is_resume(), resume.is_resume());
         let config = crate::config::provider_config(&self.config, provider);
         let slot = self.is_slot_tab(session, tab_id);
-        if requested && slot && !self.tab_has_live_same_provider_sibling(session, tab_id, provider)
+        if requested
+            && slot
+            && !self.tab_has_live_same_provider_sibling(session, tab_id, provider)
+            && let Some(id) = self.previous_conversation_id(session, provider, &config)
         {
-            let stored = self
-                .session_store
-                .provider_session_id(&session.id, provider.as_str())
-                .ok()
-                .flatten();
-            let directory = Path::new(session.directory());
-            let input = ResumeIdInput {
-                provider: provider.as_str(),
-                config: &config,
-                stored_id: stored.as_deref(),
-                shared: resume_recovery::session_is_shared(session),
-                directory,
-                started: session.has_started_provider(provider),
-                directory_has_sibling: self.sessions.iter().any(|other| {
-                    other.id != session.id
-                        && other.provider == *provider
-                        && other.directory() == session.directory()
-                }),
-            };
-            if let Some(id) = resume_recovery::plan_resume_id(
-                &input,
-                resume_recovery::claude_resume_target_exists,
-                resume_recovery::resolve_latest_jcode_session_from_home,
-            ) {
-                return ProviderSessionLaunch::ResumeId(id);
-            }
+            return ProviderSessionLaunch::ResumeId(id);
         }
-        if resume || !slot {
+        if resume {
             return ProviderSessionLaunch::Plain;
         }
-        resume_recovery::fresh_capture_for(provider.as_str(), &config)
+        let fresh = if slot {
+            resume_recovery::fresh_capture_for(provider.as_str(), &config)
+        } else {
+            ProviderSessionLaunch::Plain
+        };
+        // A plain fresh start keeps the model the agent's last conversation used,
+        // when the provider can be told to (`model_from_session_args`). A capture
+        // is never traded away for it.
+        if fresh == ProviderSessionLaunch::Plain
+            && config.supports_model_from_session()
+            && let Some(id) = self.previous_conversation_id(session, provider, &config)
+        {
+            return ProviderSessionLaunch::FreshModelOf(id);
+        }
+        fresh
+    }
+
+    /// The id of the conversation this agent last had with `provider`, by the
+    /// rule targeted resume uses (`plan_resume_id`), or `None` when yaran
+    /// cannot name it unambiguously.
+    fn previous_conversation_id(
+        &self,
+        session: &AgentSession,
+        provider: &ProviderKind,
+        config: &crate::config::ProviderCommandConfig,
+    ) -> Option<String> {
+        let stored = self
+            .session_store
+            .provider_session_id(&session.id, provider.as_str())
+            .ok()
+            .flatten();
+        let input = ResumeIdInput {
+            provider: provider.as_str(),
+            config,
+            stored_id: stored.as_deref(),
+            shared: resume_recovery::session_is_shared(session),
+            directory: Path::new(session.directory()),
+            started: session.has_started_provider(provider),
+            directory_has_sibling: self.sessions.iter().any(|other| {
+                other.id != session.id
+                    && other.provider == *provider
+                    && other.directory() == session.directory()
+            }),
+        };
+        resume_recovery::plan_resume_id(
+            &input,
+            resume_recovery::claude_resume_target_exists,
+            resume_recovery::resolve_latest_jcode_session_from_home,
+        )
     }
 
     /// The warning owed when a shared agent starts fresh because its provider
@@ -699,6 +725,67 @@ mod tests {
         );
     }
 
+    /// A fresh jcode start (force restart, extra tab) carries the model of the
+    /// agent's last conversation once `model_from_session_args` is set, and
+    /// starts plain without it. A capturing provider keeps its capture.
+    #[test]
+    fn a_fresh_start_carries_the_last_conversations_model_when_configured() {
+        let (mut engine, tmp) = test_engine();
+        let mut session = session_in(tmp.path(), "s1", "jcode");
+        session.started_providers = vec!["jcode".to_string()];
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session.clone());
+        engine
+            .session_store
+            .set_provider_session_id("s1", "jcode", "session_cactus_1_ab")
+            .unwrap();
+        let slot = session.slot_tab_id().to_owned();
+        let fresh = |engine: &crate::engine::Engine, tab: &TabIdRef| {
+            engine.provider_session_launch(
+                &session,
+                tab,
+                &session.provider,
+                ConversationStart::Fresh,
+                ConversationStart::Fresh,
+            )
+        };
+        assert_eq!(fresh(&engine, &slot), ProviderSessionLaunch::Plain);
+
+        let from = Some(vec![
+            "--model-from-session".to_string(),
+            "{session_id}".to_string(),
+        ]);
+        engine
+            .config
+            .providers
+            .commands
+            .get_mut("jcode")
+            .unwrap()
+            .model_from_session_args = from.clone();
+        let carried = ProviderSessionLaunch::FreshModelOf("session_cactus_1_ab".to_string());
+        assert_eq!(fresh(&engine, &slot), carried);
+        assert_eq!(fresh(&engine, TabIdRef::new("extra-tab")), carried);
+
+        let claude = session_in(tmp.path(), "s2", "claude");
+        engine
+            .config
+            .providers
+            .commands
+            .get_mut("claude")
+            .unwrap()
+            .model_from_session_args = from;
+        assert_eq!(
+            engine.provider_session_launch(
+                &claude,
+                claude.slot_tab_id(),
+                &claude.provider,
+                ConversationStart::Fresh,
+                ConversationStart::Fresh,
+            ),
+            ProviderSessionLaunch::CaptureClaude
+        );
+    }
+
     /// A tab launched beside a live tab of the same provider must not resume by
     /// id: the conversation belongs to the live one.
     #[test]
@@ -932,6 +1019,7 @@ mod tests {
                 command: "/bin/sh".to_string(),
                 args: vec!["-c".to_string(), "sleep 5".to_string()],
                 resume_args: Some(vec!["-c".to_string(), "sleep 5".to_string()]),
+                model_from_session_args: None,
                 resume_by_id_args: Some(vec!["resume".to_string(), "{session_id}".to_string()]),
                 resume_wait_timeout_ms: Some(10),
                 ..Default::default()

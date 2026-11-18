@@ -501,6 +501,7 @@ fn retired_stock_gemini() -> ProviderCommandConfig {
         // The renderer writes `resume_wait_timeout_ms = 0` for a None timeout, so
         // the stock block yaran persisted parses back to `Some(0)`.
         resume_wait_timeout_ms: Some(0),
+        model_from_session_args: None,
         resume_by_id_args: None,
         install_hint: Some("brew install gemini-cli".to_string()),
         forward_scroll: None,

@@ -3001,6 +3001,18 @@ fn patch_providers(doc: &mut DocumentMut, providers: &ProvidersConfig) {
                 tbl.remove("resume_by_id_args");
             }
         }
+        match &config.model_from_session_args {
+            Some(args) => {
+                let mut from = Array::new();
+                for a in args {
+                    from.push(a.as_str());
+                }
+                tbl["model_from_session_args"] = toml_edit::value(from);
+            }
+            None => {
+                tbl.remove("model_from_session_args");
+            }
+        }
 
         // The AI commit-message feature was removed; drop the obsolete oneshot
         // keys from any existing provider block so saves stop carrying them.

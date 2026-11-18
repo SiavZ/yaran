@@ -3384,6 +3384,24 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
         }
         None => out.push_str("# resume_by_id_args = [\"--resume\", \"{session_id}\"]\n"),
     }
+    out.push_str(
+        "# Optional args appended to a FRESH launch (a force restart, an extra tab) so the\n\
+         # new conversation starts on the model the agent's previous one last used. yaran\n\
+         # replaces \"{session_id}\" with that conversation's id and passes nothing when it\n\
+         # does not know one. Only set it if your CLI has such a flag: jcode builds with\n\
+         # --model-from-session take [\"--model-from-session\", \"{session_id}\"].\n",
+    );
+    match &config.model_from_session_args {
+        Some(args) => {
+            let _ = writeln!(
+                out,
+                "model_from_session_args = {}",
+                render_string_list(args)
+            );
+        }
+        None => out
+            .push_str("# model_from_session_args = [\"--model-from-session\", \"{session_id}\"]\n"),
+    }
     if let Some(hint) = &config.install_hint {
         out.push_str("# Hint shown to the user when the provider command is not found on PATH.\n");
         let _ = writeln!(out, "install_hint = \"{}\"", escape_toml_string(hint));
@@ -5361,6 +5379,7 @@ agent_scrollback_lines = 10000
             args: vec!["--interactive".to_string()],
             resume_args: Some(vec!["--resume".to_string(), "--last".to_string()]),
             resume_wait_timeout_ms: Some(2_000),
+            model_from_session_args: None,
             resume_by_id_args: None,
             install_hint: None,
             forward_scroll: None,
@@ -5382,6 +5401,7 @@ agent_scrollback_lines = 10000
             args: vec!["--interactive".to_string()],
             resume_args: None,
             resume_wait_timeout_ms: None,
+            model_from_session_args: None,
             resume_by_id_args: None,
             install_hint: None,
             forward_scroll: None,
@@ -5406,6 +5426,7 @@ agent_scrollback_lines = 10000
                     args: Vec::new(),
                     resume_args: None,
                     resume_wait_timeout_ms: None,
+                    model_from_session_args: None,
                     resume_by_id_args: None,
                     install_hint: None,
                     forward_scroll: None,
@@ -5437,6 +5458,7 @@ agent_scrollback_lines = 10000
                     args: Vec::new(),
                     resume_args: Some(Vec::new()),
                     resume_wait_timeout_ms: None,
+                    model_from_session_args: None,
                     resume_by_id_args: None,
                     install_hint: None,
                     forward_scroll: None,
@@ -5473,6 +5495,7 @@ agent_scrollback_lines = 10000
             forward_scroll: None,
             web_dragdrop_paste: None,
             forward_mouse: None,
+            model_from_session_args: None,
             resume_by_id_args: None,
             watch: Vec::new(),
         };
@@ -5693,6 +5716,7 @@ oneshot_output = "stdout"
                     args: Vec::new(),
                     resume_args: Some(vec!["--continue".to_string()]),
                     resume_wait_timeout_ms: None,
+                    model_from_session_args: None,
                     resume_by_id_args: None,
                     install_hint: None,
                     forward_scroll: None,
@@ -6750,6 +6774,7 @@ args = [\"-l\"]
             args: Vec::new(),
             resume_args: Some(vec!["--resume".to_string()]),
             resume_wait_timeout_ms: None,
+            model_from_session_args: None,
             resume_by_id_args: None,
             install_hint: Some("brew install gemini-cli".to_string()),
             forward_scroll: None,

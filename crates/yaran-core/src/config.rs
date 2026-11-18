@@ -1675,6 +1675,12 @@ pub struct ProviderCommandConfig {
     /// This is distinct from `resume_args` which resumes the "most recent" or
     /// "last in CWD" session without needing an ID.
     pub resume_by_id_args: Option<Vec<String>>,
+    /// Arguments appended to a FRESH launch so the new conversation starts on the
+    /// model the agent's previous conversation last used. Uses the same
+    /// `{session_id}` placeholder as `resume_by_id_args`, and applies only when
+    /// yaran knows that previous conversation. `None` (the default everywhere)
+    /// passes nothing, because a CLI exits on a flag it does not know.
+    pub model_from_session_args: Option<Vec<String>>,
     /// What to tell the user to run when the command is not found on PATH.
     pub install_hint: Option<String>,
     /// Scroll-forwarding policy for the wheel and PgUp/PgDn over this
@@ -2768,21 +2774,20 @@ impl ProviderCommandConfig {
     /// Returns `None` if `resume_by_id_args` is not configured or doesn't contain
     /// the placeholder.
     pub fn resume_by_id_args(&self, session_id: &str) -> Option<Vec<String>> {
-        let args = self
-            .resume_by_id_args
+        with_session_id(self.resume_by_id_args.as_deref(), session_id)
+    }
+
+    /// Build the model-from-session args with `{session_id}` replaced, or `None`
+    /// when `model_from_session_args` is unset or lacks the placeholder.
+    pub fn model_from_session_args(&self, session_id: &str) -> Option<Vec<String>> {
+        with_session_id(self.model_from_session_args.as_deref(), session_id)
+    }
+
+    /// Whether a fresh launch can carry the previous conversation's model.
+    pub fn supports_model_from_session(&self) -> bool {
+        self.model_from_session_args
             .as_ref()
-            .filter(|args| args.iter().any(|arg| arg == "{session_id}"))?;
-        Some(
-            args.iter()
-                .map(|arg| {
-                    if arg == "{session_id}" {
-                        session_id.to_string()
-                    } else {
-                        arg.clone()
-                    }
-                })
-                .collect(),
-        )
+            .is_some_and(|args| args.iter().any(|arg| arg == "{session_id}"))
     }
 
     /// Whether this provider supports resuming a specific session by ID.
@@ -2791,6 +2796,23 @@ impl ProviderCommandConfig {
             .as_ref()
             .is_some_and(|args| args.iter().any(|arg| arg == "{session_id}"))
     }
+}
+
+/// `args` with every exact `{session_id}` token replaced, or `None` when there is
+/// no such token to replace.
+fn with_session_id(args: Option<&[String]>, session_id: &str) -> Option<Vec<String>> {
+    let args = args.filter(|args| args.iter().any(|arg| arg == "{session_id}"))?;
+    Some(
+        args.iter()
+            .map(|arg| {
+                if arg == "{session_id}" {
+                    session_id.to_string()
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect(),
+    )
 }
 
 impl Default for LoggingConfig {
@@ -3023,6 +3045,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 // yaran assigns each fresh Claude conversation its own UUID with
                 // `--session-id` and resumes exactly that one, so agents that
                 // share a directory never pick up each other's conversation.
+                model_from_session_args: None,
                 resume_by_id_args: Some(vec!["--resume".to_string(), "{session_id}".to_string()]),
                 install_hint: Some("curl -fsSL https://claude.ai/install.sh | bash".to_string()),
                 forward_scroll: None,
@@ -3049,6 +3072,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 // No cwd-scoped resume-latest.
                 resume_args: None,
                 resume_wait_timeout_ms: None,
+                model_from_session_args: None,
                 resume_by_id_args: None,
                 install_hint: Some("npm install -g cline".to_string()),
                 forward_scroll: Some(true),
@@ -3067,6 +3091,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 resume_wait_timeout_ms: None,
                 // yaran records the rollout id Codex writes for each fresh
                 // conversation and resumes exactly that one (plus `-C <dir>`).
+                model_from_session_args: None,
                 resume_by_id_args: Some(vec!["resume".to_string(), "{session_id}".to_string()]),
                 install_hint: Some("brew install --cask codex".to_string()),
                 forward_scroll: None,
@@ -3086,6 +3111,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 args: Vec::new(),
                 resume_args: Some(vec!["--continue".to_string()]),
                 resume_wait_timeout_ms: Some(3_000),
+                model_from_session_args: None,
                 resume_by_id_args: None,
                 install_hint: Some("curl -fsSL https://opencode.ai/install | bash".to_string()),
                 forward_scroll: None,
@@ -3107,6 +3133,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 // Like opencode (its upstream): a `--continue` with nothing to
                 // continue can come up empty, so fall back to fresh after 3s.
                 resume_wait_timeout_ms: Some(3_000),
+                model_from_session_args: None,
                 resume_by_id_args: None,
                 install_hint: Some("npm install -g @kilocode/cli".to_string()),
                 forward_scroll: Some(true),
@@ -3124,6 +3151,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 args: vec!["--agent".to_string()],
                 resume_args: None,
                 resume_wait_timeout_ms: None,
+                model_from_session_args: None,
                 resume_by_id_args: None,
                 install_hint: Some(
                     "curl -fsSL https://notokenlimit.com/install.sh | bash".to_string(),
@@ -3147,6 +3175,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 // to limit resume to the CWD, so we disable it.
                 resume_args: None,
                 resume_wait_timeout_ms: None,
+                model_from_session_args: None,
                 resume_by_id_args: None,
                 install_hint: Some("curl -fsSL https://gh.io/copilot-install | bash".to_string()),
                 forward_scroll: None,
@@ -3178,6 +3207,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 // `session_<name>_<epoch_ms>_<hex>` ids. `--no-update` must
                 // repeat here because resume args replace the base args and
                 // an unpinned resumed pane would self-update mid-session.
+                model_from_session_args: None,
                 resume_by_id_args: Some(vec![
                     "--no-update".to_string(),
                     "--resume".to_string(),
@@ -3209,6 +3239,7 @@ pub fn default_provider_commands() -> [(&'static str, ProviderCommandConfig); 9]
                 forward_mouse: None,
                 // No targeted resume is known for Grok; `--continue` above
                 // resumes the latest conversation in the directory.
+                model_from_session_args: None,
                 resume_by_id_args: None,
                 watch: Vec::new(),
                 // NOT measured: assumed to read a pasted path like the Claude
@@ -8071,6 +8102,7 @@ mod tests {
     #[test]
     fn targeted_resume_substitutes_only_the_exact_session_id_token() {
         let cfg = ProviderCommandConfig {
+            model_from_session_args: None,
             resume_by_id_args: Some(vec![
                 "resume".to_string(),
                 "{session_id}".to_string(),
