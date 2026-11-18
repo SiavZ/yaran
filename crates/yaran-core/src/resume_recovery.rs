@@ -64,6 +64,9 @@ pub enum ProviderSessionLaunch {
     Plain,
     /// Resume exactly this conversation through `resume_by_id_args`.
     ResumeId(String),
+    /// Start fresh on the model this earlier conversation last used, through
+    /// `model_from_session_args`.
+    FreshModelOf(String),
     /// Fresh Claude launch: the worker assigns a UUID with `--session-id` and
     /// reports it once the PTY is up, so the next launch can resume it.
     CaptureClaude,
@@ -205,9 +208,9 @@ pub fn prepare_fresh_capture(
         }
         ProviderSessionLaunch::CaptureCodex => Ok(CodexCapture::begin(cwd, &roots.codex_sessions)?
             .map_or(PreparedCapture::None, PreparedCapture::Codex)),
-        ProviderSessionLaunch::Plain | ProviderSessionLaunch::ResumeId(_) => {
-            Ok(PreparedCapture::None)
-        }
+        ProviderSessionLaunch::Plain
+        | ProviderSessionLaunch::ResumeId(_)
+        | ProviderSessionLaunch::FreshModelOf(_) => Ok(PreparedCapture::None),
     }
 }
 
@@ -238,6 +241,15 @@ pub fn launch_args(
             if provider == "codex" {
                 args.extend(["-C".to_string(), cwd.to_string_lossy().into_owned()]);
             }
+            Ok(args)
+        }
+        ProviderSessionLaunch::FreshModelOf(session_id) => {
+            let mut args = config.interactive_args(start);
+            args.extend(
+                config
+                    .model_from_session_args(session_id)
+                    .context("starting on a saved conversation's model is not configured")?,
+            );
             Ok(args)
         }
         ProviderSessionLaunch::Plain
@@ -2033,6 +2045,34 @@ mod tests {
             None
         );
         capture.abort();
+    }
+
+    #[test]
+    fn fresh_model_of_appends_the_configured_args_to_a_fresh_launch() {
+        let mut config = stock("jcode");
+        let launch = ProviderSessionLaunch::FreshModelOf("session_cactus_1_ab".to_string());
+        let args = |config: &ProviderCommandConfig| {
+            launch_args(
+                config,
+                "jcode",
+                &launch,
+                crate::model::ConversationStart::Fresh,
+                None,
+                Path::new("/w"),
+            )
+        };
+        assert!(
+            args(&config).is_err(),
+            "unconfigured is refused, not guessed"
+        );
+        config.model_from_session_args = Some(vec![
+            "--model-from-session".to_string(),
+            "{session_id}".to_string(),
+        ]);
+        assert_eq!(
+            args(&config).unwrap(),
+            ["--no-update", "--model-from-session", "session_cactus_1_ab"]
+        );
     }
 
     #[test]

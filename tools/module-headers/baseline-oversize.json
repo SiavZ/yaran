@@ -100,8 +100,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 499 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+7); +8 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The `cloud-push` thread body: queue, machine-config cache, delivery and its outcomes"
   },
   "crates/yaran-core/src/config.rs": {
-    "lines": 11625,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/config.rs (10331 lines after rebrand 0956be7ac) with the fork's 6668-line copy at c626621cd into 11503 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: yaran configuration data model: the serde structs persisted in `config.toml` and their defaults, plus `YaranPaths` and path resolution...; steering port: four documented configurable fields and their default/test literals, plus generated dependency headers"
+    "lines": 11657,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/config.rs (10331 lines after rebrand 0956be7ac) with the fork's 6668-line copy at c626621cd into 11503 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: yaran configuration data model: the serde structs persisted in `config.toml` and their defaults, plus `YaranPaths` and path resolution...; steering port: four documented configurable fields and their default/test literals, plus generated dependency headers; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
   },
   "crates/yaran-core/src/config_auth.rs": {
     "lines": 952,
@@ -116,8 +116,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/config_keys.rs (4463 lines; 4463 after rebrand 0956be7ac), 4467 lines at merge 7e4a9c0f1; module: The write-policy registry behind `yaran config get` and `yaran config set`"
   },
   "crates/yaran-core/src/config_migrate.rs": {
-    "lines": 710,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/config_migrate.rs (610 lines after rebrand 0956be7ac) with the fork's 526-line copy at c626621cd into 710 lines at 7e4a9c0f1; module: Load-time config migrations, applied by `config::load_config` in memory at every entrypoint (the TUI, `yaran server`, and the web..."
+    "lines": 711,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/config_migrate.rs (610 lines after rebrand 0956be7ac) with the fork's 526-line copy at c626621cd into 710 lines at 7e4a9c0f1; module: Load-time config migrations, applied by `config::load_config` in memory at every entrypoint (the TUI, `yaran server`, and the web...; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
   },
   "crates/yaran-core/src/config_queue.rs": {
     "lines": 1676,
@@ -136,8 +136,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/config_sync.rs (528 lines after rebrand 0956be7ac) with the fork's 407-line copy at c626621cd into 529 lines at 7e4a9c0f1; module: Config-to-SQLite project reconciliation, the core-owned application of the 'config wins for explicit project preferences' tenet"
   },
   "crates/yaran-core/src/config_write.rs": {
-    "lines": 6960,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/config_write.rs (6451 lines after rebrand 0956be7ac) with the fork's 3874-line copy at c626621cd into 6895 lines at 7e4a9c0f1; +40 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Shared `config.toml` writer built on `toml_edit`; steering port: persist the four new settings through the existing config patcher, plus generated dependency header"
+    "lines": 6972,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/config_write.rs (6451 lines after rebrand 0956be7ac) with the fork's 3874-line copy at c626621cd into 6895 lines at 7e4a9c0f1; +40 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Shared `config.toml` writer built on `toml_edit`; steering port: persist the four new settings through the existing config patcher, plus generated dependency header; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
   },
   "crates/yaran-core/src/diff.rs": {
     "lines": 1318,
@@ -192,8 +192,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/engine/pending_removals.rs (923 lines; 923 after rebrand 0956be7ac), 929 lines at merge 7e4a9c0f1; module: Worktree removals that must survive yaran quitting in the middle of them"
   },
   "crates/yaran-core/src/engine/provider_sessions.rs": {
-    "lines": 1190,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1140 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+10); +40 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Resume by provider session id, and throttled startup relaunch (fork a38187f3, eb2d2eee, 478c9e3c, 07d9b0ba, 8eb821e6)"
+    "lines": 1278,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1140 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+10); +40 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Resume by provider session id, and throttled startup relaunch (fork a38187f3, eb2d2eee, 478c9e3c, 07d9b0ba, 8eb821e6); provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
   },
   "crates/yaran-core/src/engine/pull_requests.rs": {
     "lines": 839,
@@ -404,8 +404,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/resource_stats.rs (1309 lines after rebrand 0956be7ac) with the fork's 1462-line copy at c626621cd into 1490 lines at 7e4a9c0f1; +1 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Resource statistics for the resource-monitor overlay"
   },
   "crates/yaran-core/src/resume_recovery.rs": {
-    "lines": 2411,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 2295 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+4); +112 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Each provider's own id for an agent's conversation: capturing it at launch, resolving it for jcode, and a one-time recovery of histories..."
+    "lines": 2451,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 2295 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+4); +112 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Each provider's own id for an agent's conversation: capturing it at launch, resolving it for jcode, and a one-time recovery of histories...; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
   },
   "crates/yaran-core/src/serve_log.rs": {
     "lines": 788,
@@ -440,8 +440,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/text_encoding.rs (1103 lines; 1103 after rebrand 0956be7ac); module: Text encodings for the web editor: turning a file's bytes into the text the editor shows, and the edited text back into bytes in the same..."
   },
   "crates/yaran-core/src/viewmodel.rs": {
-    "lines": 4220,
-    "reason": "baseline 2026-11-14; phase 10: the bootstrap cloud projection and its field pin; phase 10: the generated module-headers block required now that this file is in optIn; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/viewmodel.rs (4148 lines after rebrand 0956be7ac) with the fork's 3528-line copy at c626621cd into 4202 lines at 7e4a9c0f1; +18 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Serializable projection of `Engine` state for web clients"
+    "lines": 4222,
+    "reason": "baseline 2026-11-14; phase 10: the bootstrap cloud projection and its field pin; phase 10: the generated module-headers block required now that this file is in optIn; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/viewmodel.rs (4148 lines after rebrand 0956be7ac) with the fork's 3528-line copy at c626621cd into 4202 lines at 7e4a9c0f1; +18 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Serializable projection of `Engine` state for web clients; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
   },
   "crates/yaran-core/src/watch/engine.rs": {
     "lines": 1170,
@@ -684,8 +684,8 @@
     "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-tui/src/cli.rs (4642 lines after rebrand 0956be7ac) with the fork's 3063-line copy at c626621cd into 5730 lines at 7e4a9c0f1; +65 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The `yaran config` subcommands (path, diff, reset, regenerate) and their config-diff engine"
   },
   "crates/yaran-tui/src/config.rs": {
-    "lines": 7664,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-tui/src/config.rs (5835 lines after rebrand 0956be7ac) with the fork's 5865-line copy at c626621cd into 7537 lines at 7e4a9c0f1; +91 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The canonical, fully commented `config.toml` renderer and the TUI's config load/save orchestration; steering port: four canonical commented setting entries, plus generated dependency header"
+    "lines": 7689,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-tui/src/config.rs (5835 lines after rebrand 0956be7ac) with the fork's 5865-line copy at c626621cd into 7537 lines at 7e4a9c0f1; +91 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The canonical, fully commented `config.toml` renderer and the TUI's config load/save orchestration; steering port: four canonical commented setting entries, plus generated dependency header; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
   },
   "crates/yaran-tui/src/config_cli.rs": {
     "lines": 2382,
