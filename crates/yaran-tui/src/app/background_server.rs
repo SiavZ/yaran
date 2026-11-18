@@ -51,7 +51,6 @@
 //! ├── app::diff_comments::tests
 //! ├── app::presize
 //! ├── app::pty_ownership
-//! ├── app::redraw
 //! ├── app::render
 //! ├── app::sessions
 //! ├── app::test_support

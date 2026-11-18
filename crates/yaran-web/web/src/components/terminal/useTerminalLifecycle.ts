@@ -39,12 +39,10 @@ import type {
   ConnectionIdentity,
   ModifierLatch,
   OwnershipVerdict,
-  TakeoverIntent,
 } from "./channels"
-import { isForeground, type HandshakeOwner } from "@/lib/ptyOwnership"
+import type { HandshakeOwner } from "@/lib/ptyOwnership"
 import { createResizeCoordinator } from "./resizeCoordinator"
 import { createAttachReplay } from "./attachReplay"
-import { plainBounce } from "./plainBounce"
 import { registerTerminalInputWiring } from "./inputWiring"
 import { registerTerminalTouchWiring } from "./touchWiring"
 import { createTerminalSetup, openTerminal } from "./terminalSetup"
@@ -78,8 +76,6 @@ export type TerminalLifecyclePorts = {
   /// effect outside this hook.
   visibleSinceRef: RefObject<number | undefined>
   prevVisibleRef: RefObject<boolean | undefined>
-  /// The armed take-over, consumed by the ONE confirmed resize write below.
-  takeoverIntent: TakeoverIntent
   /// Installed here over this mount's coordinator: the pane calls it to
   /// re-assert the adopted grid, so a viewer re-grid stays a coordinator act.
   viewerRegridRef: RefObject<(() => void) | null>
@@ -89,26 +85,26 @@ export type TerminalLifecyclePorts = {
   /// Installed by the pane and read here: the coordinator's ResizeObserver calls
   /// it instead of fitting while a watcher renders faithfully.
   viewerRelayoutRef: RefObject<(() => void) | null>
+  /// Installed by the pane's relayout and read here: this page's natural grid
+  /// at the user's own font, which a page that does not hold the size reports
+  /// so the server can apply it the moment this page types.
+  naturalGridRef: RefObject<(() => { rows: number; cols: number } | null) | null>
   live: LiveSettings
   mods: ModifierLatch
   ownership: OwnershipVerdict
   connId: ConnectionIdentity
-  /// The PTY socket's connection state. Owns the LOST state and the take-over
-  /// intent's lifetime; see `ownership.ts`'s `notePtyConn`.
+  /// The PTY socket's connection state. Owns the LOST state; see
+  /// `ownership.ts`'s `notePtyConn`.
   notePtyConn: (state: ConnState) => void
   /// Re-seed the ownership verdict from the `connected` handshake. The frame
-  /// lands here; the decision lives in the ownership machine. `ownerDevice` is
-  /// the handshake's `owner_device`, a watcher's only source of a device name,
-  /// since a mere attach hears no `pty.owner` broadcast.
+  /// lands here; the decision lives in the ownership machine.
   seedOwnershipFromConnected: (
     myConnId: string,
     owner: HandshakeOwner,
     ownerEpoch?: number,
-    ownerDevice?: string,
   ) => void
   /// Record a grid the wire reported for this PTY (the `connected` handshake's
-  /// snapshot, then every applied change). The viewer-grid machine decides what
-  /// it means; the frames land here.
+  /// snapshot, then every applied change), for the relayout.
   noteRemotePtyGrid: (
     grid: { rows: number; cols: number } | null,
     fromHandshake: boolean,
@@ -116,8 +112,6 @@ export type TerminalLifecyclePorts = {
   /// Record THIS xterm's grid, so the pane can tell whether it is rendering at
   /// the geometry the child is drawing for.
   noteLocalGrid: (grid: { rows: number; cols: number }) => void
-  /// The socket opened, which retires any heal bounce that was in flight.
-  noteSocketOpen: () => void
   /// A new attach epoch was minted by this open. The pane resets its cover and
   /// its replay clock on it, and ignores any applied signal for an older one.
   noteAttachEpoch: (epoch: number) => void
@@ -178,10 +172,10 @@ export function useTerminalLifecycle(
     pointerTypeRef,
     visibleSinceRef,
     prevVisibleRef,
-    takeoverIntent,
     viewerRegridRef,
     ownerRefitRef,
     viewerRelayoutRef,
+    naturalGridRef,
     live,
     mods,
     ownership,
@@ -189,7 +183,6 @@ export function useTerminalLifecycle(
     seedOwnershipFromConnected,
     noteRemotePtyGrid,
     noteLocalGrid,
-    noteSocketOpen,
     noteAttachEpoch,
     noteReplayApplied,
     notePtyConn,
@@ -232,55 +225,15 @@ export function useTerminalLifecycle(
     term.loadAddon(fit)
     // The coordinator is the one owner of `fit.fit()` and of every frame that
     // tells the child its size (see its module doc for the font exception).
-    // This flag says whether the frame just written carried the take-over flag,
-    // and is read by the coordinator immediately after the call.
-    let lastSendFlagged = false
     const resize = createResizeCoordinator({
       term,
       fit,
-      // The one place a take-over intent is consumed: every resize frame passes
-      // through here, so whichever reaches the wire first carries the flag.
-      //
-      // Cleared only on a confirmed write, which is what `sendResize` answers:
-      // a CONNECTING or CLOSED socket discards the frame silently, and clearing
-      // on a discarded one spends the take-over on nothing.
-      sendResize: (rows, cols) => {
-        // A self-succession is a foreground act. A page hidden since it was
-        // armed (during the replay, say) drops it and stays a watcher, as its
-        // own handshake would have decided had it arrived hidden: the server
-        // would grant the frame on a free row, and a hidden page claims nothing.
-        if (
-          takeoverIntent.read() &&
-          takeoverIntent.expectedOwner() !== undefined &&
-          !isForeground()
-        ) {
-          takeoverIntent.clear()
-          ownership.write(false)
-          lastSendFlagged = false
-          return false
-        }
-        const takeover = takeoverIntent.read()
-        // A self-succession names the ghost it expects to displace; a pressed
-        // take-over names nobody, because a press may take from anyone. The
-        // server refuses the transfer when the named ghost no longer holds the
-        // pty, and this client then lands as a watcher with the card.
-        const sent = takeover
-          ? pty.sendResize(rows, cols, true, takeoverIntent.expectedOwner())
-          : pty.sendResize(rows, cols)
-        if (sent && takeover) takeoverIntent.clear()
-        // The coordinator books a plain send's geometry immediately and a
-        // flagged one's only once the pty reports it back: a claim can be
-        // refused whole.
-        lastSendFlagged = sent && takeover
-        return sent
-      },
-      lastSendWasFlagged: () => lastSendFlagged,
+      sendResize: (rows, cols) => pty.sendResize(rows, cols),
       isOwner: () => ownership.read(),
+      naturalGrid: () => naturalGridRef.current?.() ?? null,
       onViewerLayout: () => viewerRelayoutRef.current?.(),
       onScreen: () => live.current.onScreen !== false,
-      // An armed claim is how a pane off screen asks for its row back (a
-      // self-succession), so it counts as reason enough to send.
-      rowConfirmed: () => readRowConfirmed() || takeoverIntent.read(),
+      rowConfirmed: () => readRowConfirmed(),
     })
     // The pane's handle on this mount's grid adoption (see the port's doc).
     viewerRegridRef.current = () => resize.applyViewerGrid()
@@ -302,7 +255,6 @@ export function useTerminalLifecycle(
       isMac,
       live,
       mods,
-      ownership,
       pointerTypeRef,
       replayInFlight: () => attach.replayInFlight(),
       focusTypingSurface,
@@ -321,7 +273,6 @@ export function useTerminalLifecycle(
       container,
       composeInputRef,
       live,
-      ownership,
       resize,
       links,
     })
@@ -396,7 +347,6 @@ export function useTerminalLifecycle(
       beat,
       seedOwnershipFromConnected,
       noteRemotePtyGrid,
-      noteSocketOpen,
       noteAttachEpoch,
       notePtyConn,
       setReconnecting,
@@ -408,9 +358,7 @@ export function useTerminalLifecycle(
     // Unregistered below, so an unmounted pane is never revived by a page event.
     const unregisterLifecycle = registerPageLifecycle(pty)
 
-    // A mount attach is a plain attach, through the same helper every other
-    // non-take-over reopen uses.
-    plainBounce(pty, takeoverIntent)
+    pty.connect()
     beat.start()
 
     // Track the hidden-to-visible transition used by the attention grace. The
@@ -461,7 +409,6 @@ export function useTerminalLifecycle(
       unregisterLayoutGesture()
       disposeTerminalLifecycle({
         resize,
-        takeoverIntent,
         viewerRegridRef,
         ownerRefitRef,
         beat,

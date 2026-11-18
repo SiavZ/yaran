@@ -10,13 +10,11 @@
 use yaran_core::pty_owners::ResizeIntent;
 
 /// Why a resize frame was refused. A small enum rather than a free-text reason
-/// so a third refusal cannot be added without the formatter being taught about
-/// it: the match below is exhaustive.
+/// so another refusal cannot be added without the formatter being taught about
+/// it: the match below is exhaustive. A non-holder's plain resize is not one:
+/// it is recorded as that participant's desired grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeRefusal {
-    /// Somebody else owns the pty and the frame did not ask to take over.
-    /// Ordinary, expected traffic: a watcher's window really does change size.
-    NonOwnerPlainResize,
     /// The frame DID ask to take over, but named an expected predecessor that
     /// neither holds the row nor, with the row free, was the last to hold it.
     /// This is the delayed ghost-succession frame the compare-and-swap exists
@@ -85,6 +83,34 @@ pub fn describe_claim_granted(
     )
 }
 
+/// Why a row's size moved to a participant without a resize of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeHandover {
+    /// It typed into a row somebody else held.
+    Typed,
+    /// The holder left and it was the most recently active one still seated.
+    Promoted,
+}
+
+/// A row's size moved to `conn_id`, and its recorded grids were applied.
+pub fn describe_size_handover(
+    pty_id: &str,
+    conn_id: u64,
+    device: Option<&str>,
+    how: SizeHandover,
+) -> String {
+    let why = match how {
+        SizeHandover::Typed => "it typed into the row",
+        SizeHandover::Promoted => {
+            "the holder left and it was the most recently active participant still attached"
+        }
+    };
+    format!(
+        "PTY {pty_id}: the row's size now follows connection {conn_id} ({device}) because {why}",
+        device = device_label(device)
+    )
+}
+
 /// A resize frame was refused, naming who does own the pty and why the frame
 /// lost.
 pub fn describe_claim_refused(
@@ -98,9 +124,6 @@ pub fn describe_claim_refused(
         None => "nobody currently owns it".to_string(),
     };
     let why = match reason {
-        ResizeRefusal::NonOwnerPlainResize => {
-            "the frame did not ask to take over, and attaching never steals"
-        }
         ResizeRefusal::ExpectedOwnerMismatch => {
             "the take-over named a predecessor that neither holds the row nor was the \
              last to hold it, so it was superseded before it arrived"
@@ -207,13 +230,20 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_resize_names_the_current_owner_and_the_reason() {
+    fn a_size_handover_says_why_it_moved() {
         assert_eq!(
-            describe_claim_refused("s1", 9, Some(4), ResizeRefusal::NonOwnerPlainResize),
-            "PTY s1: resize from connection 9 refused whole, nothing applied and \
-             nothing broadcast; connection 4 currently owns it and the frame did not \
-             ask to take over, and attaching never steals"
+            describe_size_handover("s1", 7, None, SizeHandover::Typed),
+            "PTY s1: the row's size now follows connection 7 (no device label) because \
+             it typed into the row"
         );
+        assert!(
+            describe_size_handover("s1", 7, Some("UA"), SizeHandover::Promoted)
+                .contains("(UA) because the holder left")
+        );
+    }
+
+    #[test]
+    fn a_refused_resize_names_the_current_owner_and_the_reason() {
         assert_eq!(
             describe_claim_refused("s1", 9, Some(4), ResizeRefusal::ExpectedOwnerMismatch),
             "PTY s1: resize from connection 9 refused whole, nothing applied and \

@@ -938,14 +938,13 @@ describe("dropping several files", () => {
 
 describe("when a file cannot be pasted", () => {
   it("says it was saved but not sent, and gives its full path", async () => {
-    // Ownership moves to another device between the save and the paste. The
-    // file exists on the server, so the user has to be told where, by hand.
+    // The connection drops between the save and the paste. The file exists on
+    // the server, so the user has to be told where, by hand.
     uploadDroppedFile.mockImplementation(async (f: File) => {
-      act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
+      FakePtySocket.instances.at(-1)!.isOpen = false
       return saved(f.name)
     })
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
     await drop([file("shot.png")])
 
     expect(TermStub.pastes).toEqual([])
@@ -1320,16 +1319,17 @@ describe("the drop overlay", () => {
     expect(uploadDroppedFile).toHaveBeenCalledTimes(1)
   })
 
-  it("never appears for a viewer who does not hold input", async () => {
+  it("appears for a page that does not hold the terminal's size too", async () => {
+    uploadDroppedFile.mockResolvedValue(saved("shot.png"))
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
-    act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
+    act(() => notifyPtyOwner("s1", "someone-else", undefined))
     const pane = screen.getByTestId("terminal-container").closest(".group")!
     fireEvent.dragEnter(pane, { dataTransfer: fileTransfer([]) })
-    expect(screen.queryByTestId("file-drop-overlay")).toBeNull()
-    // And the drop itself is left entirely alone, so nothing is uploaded.
+    expect(screen.getByTestId("file-drop-overlay")).toBeTruthy()
+    fireEvent.dragLeave(pane, { dataTransfer: fileTransfer([]) })
     await drop([file("shot.png")])
-    expect(uploadDroppedFile).not.toHaveBeenCalled()
+    expect(uploadDroppedFile).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1423,15 +1423,11 @@ describe("attaching a file from the picker", () => {
     expect(await attach()).toBeNull()
   })
 
-  it("is not offered by a viewer's pane, whose files could never be pasted", async () => {
+  it("stays offered while another page holds the terminal's size", async () => {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(await attach()).not.toBeNull()
     act(() => FakePtySocket.instances.at(-1)!.onConnected("42"))
-    act(() => notifyPtyOwner("s1", "someone-else", undefined, undefined))
-    // A viewer's pane mounts completely (it renders the take-over card over a
-    // live terminal), so ownership has to be part of the registration or every
-    // file attached from here would strand as saved-but-not-sent.
-    expect(await attach()).toBeNull()
+    act(() => notifyPtyOwner("s1", "someone-else", undefined))
+    expect(await attach()).not.toBeNull()
   })
 
   it("retires the capability when the pane unmounts", async () => {

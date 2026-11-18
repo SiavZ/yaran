@@ -86,6 +86,16 @@ describe("LauncherCorner", () => {
     expect(calls).toEqual(["openNewAgentPicker(new)"])
   })
 
+  it("floats as one 56px pill whose halves share one height token", () => {
+    render(<LauncherCorner floating />)
+    const main = screen.getByRole("button", { name: "New agent…" })
+    const more = screen.getByRole("button", { name: "More ways to start" })
+    for (const half of [main, more]) expect(half.className).toContain("h-14")
+    expect(main.parentElement!.className).toContain("w-auto")
+    fireEvent.click(main)
+    expect(calls).toEqual(["openNewAgentPicker(new)"])
+  })
+
   it("names its menu half and says it opens a menu", () => {
     render(<LauncherCorner />)
     const more = screen.getByRole("button", { name: "More ways to start" })
@@ -145,7 +155,7 @@ describe("LauncherCorner", () => {
     await openMenu()
     expect(entry("New agent from PR…")).toBeUndefined()
   })
-  // The sidebar footer and the phone hub's bottom bar, whose menu is a sheet.
+  // The sidebar footer and the phone hub's floating corner, whose menu is a sheet.
   describe.each([
     ["a computer", 1024],
     ["a phone", 390],

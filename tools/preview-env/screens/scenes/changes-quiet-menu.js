@@ -12,7 +12,6 @@ const {
   goto,
   sleep,
   steadyBox,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -22,7 +21,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["design-notes"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     await clickLabel(page, "Changes actions")
     await sleep(900)

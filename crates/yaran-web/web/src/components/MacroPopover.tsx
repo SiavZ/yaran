@@ -121,9 +121,6 @@ export function MacroPopover({
   if (dormant) {
     return <DisabledTrigger variant={variant} hint="Start the tab to send macros" />
   }
-  if (pane?.takeoverCard) {
-    return <DisabledTrigger variant={variant} hint="Take over to send macros" />
-  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

@@ -307,18 +307,8 @@ impl std::fmt::Debug for AppState {
 }
 
 impl AppState {
-    /// Whether some OTHER connection currently holds input on `pty_id`, so the
-    /// file-drop route can refuse a read-only viewer's drop instead of saving a file
-    /// it cannot paste. A COURTESY, not the protection: only the websocket's own
-    /// [`PtySizeOwners::may_write`] enforces input authority.
-    ///
-    /// An unowned pty is not denied, matching `may_write`: the first write claims it.
-    pub(crate) fn input_held_by_someone_else(&self, pty_id: &str, conn_id: u64) -> bool {
-        self.pty_size_owners.held_by_another(pty_id, conn_id)
-    }
-
-    /// Hand input ownership of `pty_id` to `conn_id`, for tests that need the
-    /// courtesy check above to have something to say. Narrow on purpose: the
+    /// Hand the size of `pty_id` to `conn_id`, for route tests that need
+    /// somebody else holding it. Narrow on purpose: the
     /// alternative is widening `pty_size_owners` to the whole crate so a route test
     /// can reach into a lock. Ownership is otherwise only ever taken by a live
     /// terminal socket, which a `oneshot` router test cannot open.
@@ -1710,26 +1700,22 @@ impl PtyTarget {
 
 /// A resize control frame on a PTY socket: the Text frame
 /// `{"rows":R,"cols":C}`, optionally `{"rows":R,"cols":C,"takeover":true}`,
-/// distinct from the Binary stdin frames. Routed to `engine.resize_pty` for the
-/// socket's own PTY ONLY when [`PtySizeOwners::claim_for_resize`] grants it: the
-/// sender already owns sizing, the pty is unowned, or the frame explicitly asks
-/// to take over. A non-owner's plain resize applies nothing and transfers
-/// nothing, so two viewers of one PTY cannot thrash its size last-writer-wins
-/// and an ordinary attach cannot steal the prompt.
+/// distinct from the Binary stdin frames. Every frame records the sender's
+/// desired grid ([`PtySizeOwners::note_desired_grid`]); it is routed to
+/// `engine.resize_pty` only when [`PtySizeOwners::claim_for_resize`] grants it:
+/// the sender holds the row's size, the row is free, or the frame asks to take
+/// over. A non-holder's plain resize applies nothing, so two viewers of one PTY
+/// cannot thrash its size; the size moves when somebody types.
 ///
-/// `takeover` defaults to false, so a client too old to send it behaves exactly
-/// as it always did in the one case where its claim was granted anyway (an
-/// unowned pty). Its Take over button dies silently against a new server; the
-/// mitigation is the run-identity hard reload, which replaces a stale page as
-/// soon as the server run changes, so the window is one server run at most.
+/// `takeover` defaults to false. It is kept for compatibility ("make me holder
+/// now"); no client needs to send it.
 #[derive(serde::Deserialize)]
 struct PtyResizeFrame {
     rows: u16,
     cols: u16,
-    /// Set by a deliberate press of Take over, and by the one press-less
-    /// re-claim the design keeps: a returning owner succeeding its own dead
-    /// connection. The latter always carries `expected_owner`; the press never
-    /// does.
+    /// "Make me holder now". Older clients send it from a Take over press, and
+    /// with `expected_owner` when a returning page succeeds its own dead
+    /// connection.
     #[serde(default)]
     takeover: bool,
     /// The connection id this take-over believes currently owns the pty, sent
@@ -2396,7 +2382,8 @@ async fn handle_pty_socket(
     // the pty behind a client that can never see it. `PtyOwnershipGuard` also
     // broadcasts the owner-cleared `pty.owner`, without which every other
     // device's card keeps naming a browser tab that closed.
-    let _ownership_guard = PtyOwnershipGuard::new(&seat, &pty_size_owners, &bus);
+    let (row_announcer, _ownership_guard) =
+        PtyOwnershipGuard::new(&seat, &pty_size_owners, &bus, &engine, &pty_grid_bus);
     // Attached before the subscribe, which can launch the provider: a PTY that a
     // change has reserved turns the socket away instead of relaunching it.
     let heard = yaran_core::attachments::Heard::now();
@@ -2420,9 +2407,8 @@ async fn handle_pty_socket(
         deadline: PONG_DEADLINE,
         attachments: engine.attachments().clone(),
         token: attachment.token,
-        owners: Arc::clone(&pty_size_owners),
+        row: row_announcer,
         seat: Arc::clone(&seat),
-        bus: Arc::clone(&bus),
         expired: Arc::clone(&expired),
         live_limits: Arc::clone(&live_limits),
     };
@@ -2463,6 +2449,7 @@ async fn handle_pty_socket(
             engine: &engine,
             target: &target,
             conn_id,
+            seat: &seat,
             sink: &sink,
             owners: &pty_size_owners,
             grid_bus: &pty_grid_bus,
@@ -2736,6 +2723,9 @@ struct AttachedPtySocket<'a> {
     engine: &'a EngineHandle,
     target: &'a PtyTarget,
     conn_id: u64,
+    /// Held around each frame's registry bookkeeping and write, so a frame the
+    /// quiet watchdog outran leaves no ghost participant or holder behind.
+    seat: &'a yaran_core::pty_owners::Seat,
     sink: &'a SharedSink,
     owners: &'a PtySizeOwners,
     grid_bus: &'a crate::pty_sizes::PtyGridBus,
@@ -2939,37 +2929,29 @@ impl AttachedPtySocket<'_> {
     }
 
     fn handle_input(&self, bytes: &[u8]) {
+        let Some(_seated) = self.seat.hold() else {
+            return;
+        };
         let pty_id = self.target.pty_id();
-        // The owner's write decides and enqueues under one lock, so a take-over
-        // racing this frame cannot let one keystroke through after it landed.
-        let owned = self.owners.write_if_owner(pty_id, self.conn_id, || {
-            self.engine.write_pty(pty_id.to_string(), bytes.to_vec());
-        });
-        if owned {
-            return;
-        }
-        // The claiming path enqueues under the lock too, so a first writer's own
-        // bytes cannot be overtaken between the claim and the send.
-        let claim = self
-            .owners
-            .may_write(pty_id, self.conn_id, self.user_agent, || {
-                self.engine.write_pty(pty_id.to_string(), bytes.to_vec());
-            });
-        if !claim.allowed {
-            yaran_core::logger::debug(&format!(
-                "PTY stdin from non-owner conn {} dropped for pty {pty_id} \
-                 (another connection currently owns input)",
-                self.conn_id
-            ));
-            return;
-        }
-
-        if let Some(epoch) = claim.epoch {
-            yaran_core::logger::info(&crate::pty_log::describe_claim_granted(
+        // Every seated participant may type. A non-holder's keystroke moves the
+        // size to it and enqueues its desired grids under the owners lock, so
+        // the child is resized for the typist before the bytes below land.
+        let verdict = self.owners.note_write(
+            pty_id,
+            self.conn_id,
+            yaran_core::pty::classify_pty_write(bytes),
+            self.user_agent,
+            |grid| {
+                self.engine
+                    .resize_pty(grid.pty_id.clone(), grid.rows, grid.cols, grid.seq);
+            },
+        );
+        if let Some(epoch) = verdict.epoch {
+            yaran_core::logger::info(&crate::pty_log::describe_size_handover(
                 pty_id,
                 self.conn_id,
                 self.user_agent,
-                yaran_core::pty_owners::ResizeIntent::Plain,
+                crate::pty_log::SizeHandover::Typed,
             ));
             emit_row_owner(
                 self.event_bus,
@@ -2979,6 +2961,13 @@ impl AttachedPtySocket<'_> {
                 epoch,
                 self.user_agent,
             );
+            for grid in &verdict.grids {
+                self.grid_bus
+                    .publish(&grid.pty_id, grid.rows, grid.cols, grid.seq);
+            }
+        }
+        if verdict.forward {
+            self.engine.write_pty(pty_id.to_string(), bytes.to_vec());
         }
     }
 
@@ -2993,6 +2982,9 @@ impl AttachedPtySocket<'_> {
     }
 
     fn handle_resize_frame(&self, frame: &PtyResizeFrame) {
+        let Some(_seated) = self.seat.hold() else {
+            return;
+        };
         let pty_id = self.target.pty_id();
         // A grid no terminal can have is a client bug, never a window: refused
         // before the claim, so it neither resizes nor takes the pty, and
@@ -3006,6 +2998,15 @@ impl AttachedPtySocket<'_> {
             ));
             return;
         }
+        // Every resize is the sender's desired grid, applied now only when it
+        // holds the size (or the row is free) and otherwise once it types.
+        self.owners.note_desired_grid(
+            pty_id,
+            self.conn_id,
+            frame.rows,
+            frame.cols,
+            self.user_agent,
+        );
         let expected_owner = parse_expected_owner(frame.expected_owner.as_deref());
         let intent = if frame.takeover {
             yaran_core::pty_owners::ResizeIntent::TakeOver { expected_owner }
@@ -3038,19 +3039,16 @@ impl AttachedPtySocket<'_> {
             self.grid_bus.publish(pty_id, frame.rows, frame.cols, seq);
             return;
         }
-
-        let reason = if frame.takeover {
-            crate::pty_log::ResizeRefusal::ExpectedOwnerMismatch
-        } else {
-            crate::pty_log::ResizeRefusal::NonOwnerPlainResize
-        };
-        let (current_owner, _, _) = self.owners.current_owner(pty_id);
-        yaran_core::logger::info(&crate::pty_log::describe_claim_refused(
-            pty_id,
-            self.conn_id,
-            current_owner,
-            reason,
-        ));
+        // A non-holder's plain resize is recorded above and is not an error.
+        if frame.takeover {
+            let (current_owner, _, _) = self.owners.current_owner(pty_id);
+            yaran_core::logger::info(&crate::pty_log::describe_claim_refused(
+                pty_id,
+                self.conn_id,
+                current_owner,
+                crate::pty_log::ResizeRefusal::ExpectedOwnerMismatch,
+            ));
+        }
     }
 
     async fn handle_beat_frame(&self, frame: PtyBeatFrame) {
@@ -3070,25 +3068,24 @@ impl AttachedPtySocket<'_> {
     }
 }
 
-/// A `pty.owner` signal: the connection that owns a PTY's sizing+input changed (a
-/// new device pressed Take over, a client sized an UNOWNED pty, or an uncontested
-/// first writer claimed one). A plain resize against a pty somebody else owns
-/// emits nothing at all, because it changes nothing. `id` is the pty id (the session id for an agent PTY,
+/// A `pty.owner` signal: the connection whose grid a PTY is sized for changed
+/// (a participant typed into a row somebody else held, a client sized an
+/// UNOWNED pty, the holder left and another participant was promoted, or a
+/// flagged take-over). A plain resize from a non-holder emits nothing at all,
+/// because it changes nothing. `id` is the pty id (the session id for an agent PTY,
 /// the terminal id for a companion); `owner` is the claiming connection's id (the
 /// `PtySizeOwners` conn id). It carries no `rev`. Delivered on the coarse
 /// `sessions` topic (every client holds it), so any other client currently viewing
 /// that PTY compares `owner` against its own PTY-socket connection id: an equal id
-/// means this client is the owner; a different id flips it to the read-only
-/// take-over placeholder. The explicit id is definitive: without it, two devices
-/// claiming at once could both end up showing the placeholder while the server
-/// held a real owner. `epoch` is the
+/// means this client holds the size and renders at its natural grid; a different
+/// id means it renders at the PTY's true grid. `epoch` is the
 /// monotonic ownership epoch assigned under the owners lock (see [`OwnersState`]);
 /// it orders concurrent handovers so a client can ignore an out-of-order broadcast
 /// and keep only the latest claim, since this event is emitted AFTER the lock
 /// releases and the runtime may reorder two near-simultaneous broadcasts.
 /// `device` is the claimer's raw `User-Agent` (captured at its PTY upgrade), which
-/// the client parses into a human label ("Chrome on macOS") for the take-over
-/// placeholder; it is `None` when the claimer sent no `User-Agent`.
+/// the client parses into a human label ("Chrome on macOS"); it is `None` when
+/// the claimer sent no `User-Agent`.
 pub(crate) fn pty_owner_event(
     pty_id: &str,
     owner_conn_id: u64,
@@ -4652,63 +4649,107 @@ impl Drop for ConnectionGuard {
     }
 }
 
-/// Releases this PTY socket's sizing/input ownership on Drop, for the same reason
+/// Leaves this PTY socket's seat on Drop, for the same reason
 /// [`ConnectionGuard`] deregisters on Drop: a socket that leaves by any path
 /// other than the normal loop break (a panic unwinding through the handler, task
 /// cancellation at an `.await` during a runtime shutdown) would otherwise leave
-/// the pty recorded to a connection that no longer exists, wedging it behind a
-/// client that can never see it for the rest of the process's life.
+/// the row's size recorded to a connection that no longer exists.
 ///
-/// A release that really cleared an owner is BROADCAST as an owner-cleared
-/// `pty.owner`. Ownership no longer follows focus, so nothing else would ever
-/// tell the other devices that the driver has gone: their "Active on another
-/// device" card would stay up, naming a browser tab that closed, until somebody
-/// pressed Take over. Nobody claims the freed pty passively; the broadcast only
-/// re-titles the card.
+/// When the leaver held the row's size, the change is BROADCAST: the next
+/// holder's `pty.owner` and grids when somebody else is still seated, the
+/// owner-cleared `pty.owner` when nobody is.
 struct PtyOwnershipGuard {
     seat: Arc<yaran_core::pty_owners::Seat>,
+    row: RowAnnouncer,
+}
+
+/// What announcing a change of a row's size holder needs: the registry, the
+/// event bus, the engine the new holder's grids are applied through and the
+/// grid bus they are published on.
+#[derive(Clone)]
+struct RowAnnouncer {
     owners: Arc<PtySizeOwners>,
     bus: Arc<EventBus>,
+    engine: EngineHandle,
+    grid_bus: Arc<crate::pty_sizes::PtyGridBus>,
 }
 
 impl PtyOwnershipGuard {
+    /// The guard for `seat`, and the announcer the socket's quiet watchdog
+    /// leaves through too.
     fn new(
         seat: &Arc<yaran_core::pty_owners::Seat>,
         owners: &Arc<PtySizeOwners>,
         bus: &Arc<EventBus>,
-    ) -> Self {
-        Self {
-            seat: Arc::clone(seat),
+        engine: &EngineHandle,
+        grid_bus: &Arc<crate::pty_sizes::PtyGridBus>,
+    ) -> (RowAnnouncer, Self) {
+        let row = RowAnnouncer {
             owners: Arc::clone(owners),
             bus: Arc::clone(bus),
-        }
+            engine: engine.clone(),
+            grid_bus: Arc::clone(grid_bus),
+        };
+        let guard = Self {
+            seat: Arc::clone(seat),
+            row: row.clone(),
+        };
+        (row, guard)
     }
 }
 
 impl Drop for PtyOwnershipGuard {
     fn drop(&mut self) {
-        leave_seat_announcing(&self.owners, &self.bus, &self.seat);
+        leave_seat_announcing(&self.row, &self.seat);
     }
 }
 
 /// Count a terminal socket out of its page's seat and, when that let go of
-/// the row, log it and announce the owner-cleared `pty.owner` for every pty
-/// of the row. Once per socket, however many exit paths reach it.
-fn leave_seat_announcing(
-    owners: &Arc<PtySizeOwners>,
-    bus: &Arc<EventBus>,
-    seat: &yaran_core::pty_owners::Seat,
-) {
-    let Some(epoch) = owners.leave_seat(seat) else {
-        return;
-    };
+/// the row's size, log it and announce it for every pty of the row: the
+/// promoted holder with its applied grids, or the owner-cleared `pty.owner`.
+/// Once per socket, however many exit paths reach it.
+fn leave_seat_announcing(row: &RowAnnouncer, seat: &yaran_core::pty_owners::Seat) {
+    let change = row.owners.leave_seat(seat, |grid| {
+        row.engine
+            .resize_pty(grid.pty_id.clone(), grid.rows, grid.cols, grid.seq);
+    });
     let pty_id = seat.pty_id();
-    yaran_core::logger::info(&crate::pty_log::describe_ownership_released(
-        pty_id,
-        seat.id(),
-        epoch,
-    ));
-    emit_row_owner_cleared(bus, owners, pty_id, epoch);
+    match change {
+        None => {}
+        Some(yaran_core::pty_owners::HolderChange::Cleared { epoch }) => {
+            yaran_core::logger::info(&crate::pty_log::describe_ownership_released(
+                pty_id,
+                seat.id(),
+                epoch,
+            ));
+            emit_row_owner_cleared(&row.bus, &row.owners, pty_id, epoch);
+        }
+        Some(yaran_core::pty_owners::HolderChange::Promoted {
+            epoch,
+            conn_id,
+            device,
+            grids,
+        }) => {
+            yaran_core::logger::info(&crate::pty_log::describe_size_handover(
+                pty_id,
+                conn_id,
+                device.as_deref(),
+                crate::pty_log::SizeHandover::Promoted,
+            ));
+            emit_row_owner(
+                &row.bus,
+                &row.owners,
+                pty_id,
+                conn_id,
+                epoch,
+                device.as_deref(),
+            );
+            for grid in grids {
+                row.grid_bus
+                    .publish(&grid.pty_id, grid.rows, grid.cols, grid.seq);
+            }
+        }
+    }
 }
 
 /// A terminal socket's place in the attachment registry while it lives: part of the
@@ -4848,9 +4889,8 @@ struct QuietWatch {
     deadline: std::time::Duration,
     attachments: yaran_core::attachments::Attachments,
     token: u64,
-    owners: Arc<PtySizeOwners>,
+    row: RowAnnouncer,
     seat: Arc<yaran_core::pty_owners::Seat>,
-    bus: Arc<EventBus>,
     expired: Arc<tokio::sync::Notify>,
     live_limits: Arc<crate::engine_actor::LiveServerLimits>,
 }
@@ -4880,7 +4920,7 @@ impl QuietWatchdog {
                 std::time::Instant::now(),
                 watch.live_limits.presence_grace(),
             );
-            leave_seat_announcing(&watch.owners, &watch.bus, &watch.seat);
+            leave_seat_announcing(&watch.row, &watch.seat);
             watch.expired.notify_one();
         }))
     }
@@ -5848,42 +5888,6 @@ mod tests {
         );
     }
 
-    /// The file-drop route's courtesy check. It is NOT the protection (the
-    /// socket's own write gate is), so its only job is turning "your file was
-    /// saved and then silently not pasted" into a refusal a viewer can act on.
-    /// It must therefore match `may_write`'s answer exactly, including the case
-    /// that is easy to get backwards: an UNOWNED pty is not denied, because the
-    /// first write claims it.
-    #[test]
-    fn the_file_drop_courtesy_check_matches_the_real_write_gate() {
-        let owners = PtySizeOwners::default();
-        let pty = "term-1";
-        let driver = owners.next_conn_id();
-        let viewer = owners.next_conn_id();
-
-        let denied = |conn: u64| owners.held_by_another(pty, conn);
-
-        assert!(
-            !denied(viewer),
-            "an unowned pty must not be denied: the first write claims it, which \
-             is exactly what may_write does"
-        );
-
-        owners.claim(pty, driver);
-        assert!(!denied(driver), "the owner is never denied");
-        assert!(
-            denied(viewer),
-            "a viewer whose device is not driving must be told before a file is \
-             written, not after"
-        );
-
-        let _ = owners.release(pty, driver);
-        assert!(
-            !denied(viewer),
-            "once the driver disconnects the pty is unowned again"
-        );
-    }
-
     /// Two viewers of one PTY, both taking over EXPLICITLY (`claim` is the
     /// take-over spelling of `claim_for_resize`): the most recently claiming
     /// connection owns it, and after the owner drops the surviving connection can
@@ -6005,54 +6009,9 @@ mod tests {
         );
     }
 
-    /// Owner-only input, exercising the ACTUAL gate the handler applies
-    /// (`may_write`, not `is_owner`): with two connections attached to the same PTY,
-    /// only the current owner's stdin is forwarded; a non-owner's stdin is dropped.
-    /// A read-only secondary viewer can never disrupt the active device's typing,
-    /// and a non-owner's denied write never silently claims ownership.
-    #[test]
-    fn non_owner_stdin_is_dropped() {
-        let owners = PtySizeOwners::default();
-        let pty = "session-1";
-
-        let conn_a = owners.next_conn_id();
-        let conn_b = owners.next_conn_id();
-        // Both attach. A claims first (sends a size), then B claims (the most recent
-        // foreground device) and takes over.
-        owners.claim(pty, conn_a);
-        owners.claim(pty, conn_b);
-
-        // The handler forwards a stdin frame only when `may_write` allows it.
-        assert_eq!(
-            owners.may_write(pty, conn_b, None, || {}),
-            WriteClaim {
-                allowed: true,
-                claimed_new: false,
-                epoch: None,
-            },
-            "the owner B's stdin is forwarded without re-claiming"
-        );
-        assert_eq!(
-            owners.may_write(pty, conn_a, None, || {}),
-            WriteClaim {
-                allowed: false,
-                claimed_new: false,
-                epoch: None,
-            },
-            "the non-owner A's stdin is dropped and does not claim ownership"
-        );
-        // The denied write left ownership untouched: B still owns the PTY.
-        assert!(
-            owners.is_owner(pty, conn_b),
-            "a denied non-owner write must not change the owner"
-        );
-    }
-
-    /// `may_write` resolves the stdin gate atomically and shares `claim`'s
-    /// unowned-PTY semantics: the owner is allowed (no re-claim), a non-owner is
-    /// denied, and an UNOWNED PTY's first writer is allowed AND becomes the owner so
-    /// a solo/out-of-band client whose stdin arrives before any size frame is no
-    /// longer silently dropped.
+    /// `may_write` is the claim-if-free a launch uses: the holder is allowed (no
+    /// re-claim), somebody else holding leaves it alone, and an UNOWNED row is
+    /// claimed with the next epoch.
     #[test]
     fn may_write_allows_owner_denies_non_owner_and_claims_unowned() {
         let owners = PtySizeOwners::default();
@@ -6104,58 +6063,6 @@ mod tests {
         );
     }
 
-    /// The stdin ladder the socket handler runs: the owner's bytes are decided
-    /// and enqueued in one critical section, and only a pty that answers "not
-    /// yours" falls through to the claiming path, so a browser typing into a pty
-    /// nobody drives still becomes its driver.
-    #[test]
-    fn the_owners_stdin_is_enqueued_atomically_and_a_free_pty_is_still_claimed() {
-        let owners = PtySizeOwners::default();
-        let pty = "session-42";
-        let conn = owners.next_conn_id();
-        let other = owners.next_conn_id();
-
-        let enqueued = std::cell::Cell::new(0);
-        let enqueue = || enqueued.set(enqueued.get() + 1);
-
-        assert!(
-            !owners.write_if_owner(pty, conn, enqueue),
-            "an unowned pty is not the atomic path's to write"
-        );
-        assert_eq!(enqueued.get(), 0);
-        let claim = owners.may_write(pty, conn, None, enqueue);
-        assert!(
-            claim.claimed_new,
-            "the fallback still claims a free pty for its first writer"
-        );
-        assert_eq!(
-            enqueued.get(),
-            1,
-            "and enqueues that first writer's bytes under the claim's own lock"
-        );
-
-        assert!(
-            owners.write_if_owner(pty, conn, enqueue),
-            "the recorded owner's next keystroke takes the atomic path"
-        );
-        assert_eq!(enqueued.get(), 2);
-
-        owners.claim(pty, other);
-        assert!(
-            !owners.write_if_owner(pty, conn, enqueue),
-            "a take-over that landed first takes the keystroke with it"
-        );
-        assert!(
-            !owners.may_write(pty, conn, None, enqueue).allowed,
-            "and the fallback refuses it too, rather than re-claiming"
-        );
-        assert_eq!(
-            enqueued.get(),
-            2,
-            "a refusal on either path enqueues nothing at all"
-        );
-    }
-
     /// An attached-but-never-claimed connection (a backgrounded observer that sent
     /// neither a size nor a write) owns nothing, so its stdin is dropped: attaching
     /// alone does not grant input. This test covers the pure-observer case only --
@@ -6192,6 +6099,21 @@ mod tests {
             owners.is_owner(pty, conn_b),
             "B remains the owner after A's stale release"
         );
+    }
+
+    /// The announcer a seat's leave reports through, over `owners` and `bus`
+    /// and a headless engine nothing in these tests asks anything of.
+    fn test_row(
+        owners: &Arc<PtySizeOwners>,
+        bus: &Arc<EventBus>,
+        tmp: &std::path::Path,
+    ) -> RowAnnouncer {
+        RowAnnouncer {
+            owners: Arc::clone(owners),
+            bus: Arc::clone(bus),
+            engine: crate::test_support::test_engine_handle(tmp),
+            grid_bus: Arc::new(crate::pty_sizes::PtyGridBus::default()),
+        }
     }
 
     /// A terminal socket whose peer has gone quiet is revoked by its own
@@ -6235,14 +6157,14 @@ mod tests {
         let bus = Arc::new(EventBus::new());
         let mut events = bus.subscribe();
         let expired = Arc::new(tokio::sync::Notify::new());
+        let tmp = tempfile::tempdir().unwrap();
         let _watchdog = QuietWatchdog::spawn(QuietWatch {
             heard,
             deadline: std::time::Duration::from_millis(100),
             attachments: attachments.clone(),
             token,
-            owners: Arc::clone(&owners),
+            row: test_row(&owners, &bus, tmp.path()),
             seat,
-            bus: Arc::clone(&bus),
             expired: Arc::clone(&expired),
             live_limits: Arc::new(crate::engine_actor::LiveServerLimits::default()),
         });
@@ -6345,6 +6267,7 @@ mod tests {
     async fn the_quiet_clock_starts_with_the_receive_loop() {
         let attachments = yaran_core::attachments::Attachments::default();
         let expired = Arc::new(tokio::sync::Notify::new());
+        let tmp = tempfile::tempdir().unwrap();
         let opened_long_ago = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(80))
             .expect("a clock that has run for 80 seconds");
@@ -6354,8 +6277,11 @@ mod tests {
             attachments,
             token: 1,
             seat: Arc::new(PtySizeOwners::default().take_seat(None, "s1-slot")),
-            owners: Arc::new(PtySizeOwners::default()),
-            bus: Arc::new(EventBus::new()),
+            row: test_row(
+                &Arc::new(PtySizeOwners::default()),
+                &Arc::new(EventBus::new()),
+                tmp.path(),
+            ),
             expired: Arc::clone(&expired),
             live_limits: Arc::new(crate::engine_actor::LiveServerLimits::default()),
         });
@@ -7109,14 +7035,14 @@ mod tests {
         assert!(owners.claim("pty-1", conn_id).is_some());
         assert_eq!(owners.current_owner("pty-1").0, Some(conn_id));
 
-        let panicked = std::panic::catch_unwind({
-            let owners = Arc::clone(&owners);
-            let bus = Arc::clone(&bus);
+        let tmp = tempfile::tempdir().unwrap();
+        let row = test_row(&owners, &bus, tmp.path());
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
             move || {
-                let _guard = PtyOwnershipGuard { seat, owners, bus };
+                let _guard = PtyOwnershipGuard { seat, row };
                 panic!("the socket handler blew up");
             }
-        });
+        }));
         assert!(panicked.is_err(), "the test's own panic must have happened");
         assert_eq!(
             owners.current_owner("pty-1").0,

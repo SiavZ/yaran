@@ -412,7 +412,6 @@ fn every_surface(bindings: fn() -> RuntimeBindings, width: u16, height: u16) -> 
             app.typeable_hint_line(SessionSurface::Agent, 200),
             &[],
         ),
-        ("take-over", app.takeover_hint_line(200), &[]),
         (
             "interactive",
             app.interactive_terminal_hint_line(0, 200),
@@ -824,7 +823,6 @@ const DIALOG_WORDS: &[(&str, &[Action])] = &[
         &[Action::ReconnectAgent, Action::FocusAgent],
     ),
     ("focus and type", &[Action::FocusAgent]),
-    ("take over", &[Action::FocusAgent]),
     ("next pane", &[Action::FocusNext]),
     ("previous pane", &[Action::FocusPrev]),
     ("actions", &[Action::FocusNext, Action::FocusPrev]),

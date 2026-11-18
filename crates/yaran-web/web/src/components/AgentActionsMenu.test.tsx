@@ -140,15 +140,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe("AgentActionsMenu while the agent is active on another device", () => {
-  // Ownership reaches the menu two ways: a MOUNTED TerminalPane's live
-  // verdict in the `ptyOwnership` ledger, and the server-published
-  // `input_owner` field on the spine's tabs (compared against this client's
-  // own PTY-socket ids), which needs NO pane mounted at all. While any of the
-  // agent's tab PTYs is input-owned by another connection, the entries that
-  // MUTATE the agent disable; read-only entries (info, project submenu,
-  // editor, terminals) stay usable.
-  const disabledLabels = [
+describe("AgentActionsMenu while another device holds the terminal's size", () => {
+  // Every device types into a shared terminal, so another device having typed
+  // last disables nothing here. A change that would end somebody else's
+  // terminal is refused by the server, naming who, not greyed out in the menu.
+  const labels = [
     "New agent tab…",
     "Force recreate agent…",
     "Enable agent auto-reopen",
@@ -156,70 +152,8 @@ describe("AgentActionsMenu while the agent is active on another device", () => {
     "Change agent provider…",
     "Delete agent…",
   ]
-  const enabledLabels = [
-    "Project…",
-    "Fork agent…",
-    "Pull requests…",
-    "Agent info…",
-    "Configure startup command…",
-    "Configure environment variables…",
-    "Rerun startup command",
-    "Startup command logs…",
-    "Open editor in new tab",
-    "New terminal in the worktree",
-    "Copy local path",
-  ]
 
-  function itemFor(label: string | RegExp): Element {
-    const el = screen.getByText(label).closest('[role="menuitem"]')
-    if (!el) throw new Error(`no menuitem for ${label}`)
-    return el
-  }
-
-  it("disables the mutating entries and keeps the read-only ones enabled", async () => {
-    const session = makeSession({ id: "s1", pr: prPinned })
-    seed(session, true)
-    ;(mockState as unknown as { ptyOwnership: Record<string, string> }).ptyOwnership =
-      { s1: "elsewhere" }
-    await openMenu(session)
-    for (const label of disabledLabels) {
-      expect(
-        itemFor(label).getAttribute("aria-disabled"),
-        `expected disabled: ${label}`,
-      ).toBe("true")
-    }
-    for (const label of enabledLabels) {
-      expect(
-        itemFor(label).getAttribute("aria-disabled"),
-        `expected enabled: ${label}`,
-      ).not.toBe("true")
-    }
-    // The reason is stated inline (disabled items are pointer-events-none, so
-    // a hover tooltip could never fire, and touch has no hover at all).
-    expect(
-      screen.getByText(/active on another device/i),
-    ).toBeTruthy()
-  })
-
-  it("keeps every entry enabled and shows no hint when nothing is owned elsewhere", async () => {
-    const session = makeSession({ id: "s1", pr: prPinned })
-    seed(session, true)
-    ;(mockState as unknown as { ptyOwnership: Record<string, string> }).ptyOwnership =
-      {}
-    await openMenu(session)
-    for (const label of [...disabledLabels, ...enabledLabels]) {
-      expect(
-        itemFor(label).getAttribute("aria-disabled"),
-        `expected enabled: ${label}`,
-      ).not.toBe("true")
-    }
-    expect(screen.queryByText(/active on another device/i)).toBeNull()
-  })
-
-  it("disables from the server-published input_owner alone, with no pane mounted", async () => {
-    // The hub/sidebar row case: this client never attached to the agent, so
-    // the ledger is empty and there are no own connection ids; the spine's
-    // `input_owner` is the only signal, and it must be enough.
+  it("keeps every entry enabled and shows no hint", async () => {
     const session = makeSession({
       id: "s1",
       pr: prPinned,
@@ -229,43 +163,11 @@ describe("AgentActionsMenu while the agent is active on another device", () => {
     })
     seed(session, true)
     await openMenu(session)
-    expect(itemFor("Delete agent…").getAttribute("aria-disabled")).toBe("true")
-    expect(itemFor("Rename agent…").getAttribute("aria-disabled")).toBe("true")
-    expect(screen.getByText(/active on another device/i)).toBeTruthy()
-  })
-
-  it("stays enabled when the published owner is one of this client's own connections", async () => {
-    const session = makeSession({
-      id: "s1",
-      pr: prPinned,
-      tabs: [
-        { id: "s1", provider: "claude", order: 0, input_owner: "42" },
-      ] as unknown as SessionView["tabs"],
-    })
-    seed(session, true)
-    ;(mockState as unknown as { ownPtyConnIds: Record<string, true> }).ownPtyConnIds =
-      { "42": true }
-    await openMenu(session)
-    expect(itemFor("Delete agent…").getAttribute("aria-disabled")).not.toBe(
-      "true",
-    )
+    for (const label of labels) {
+      const item = screen.getByText(label).closest('[role="menuitem"]')
+      expect(item?.getAttribute("aria-disabled"), label).not.toBe("true")
+    }
     expect(screen.queryByText(/active on another device/i)).toBeNull()
-  })
-
-  it("reads ownership through the agent's EXTRA tab ids too, not just the session slot", async () => {
-    const session = makeSession({
-      id: "s1",
-      pr: prPinned,
-      tabs: [
-        { id: "s1", provider: "claude", order: 0 },
-        { id: "tab-2", provider: "claude", order: 1 },
-      ] as unknown as SessionView["tabs"],
-    })
-    seed(session, true)
-    ;(mockState as unknown as { ptyOwnership: Record<string, string> }).ptyOwnership =
-      { "tab-2": "elsewhere" }
-    await openMenu(session)
-    expect(itemFor("Delete agent…").getAttribute("aria-disabled")).toBe("true")
   })
 })
 
@@ -531,18 +433,6 @@ describe("AgentActionsMenu detach entry", () => {
     expect(openStopAgent).toHaveBeenCalledWith("s1")
   })
 
-  it("is disabled while the agent is driven from another device", async () => {
-    const session = makeSession({
-      id: "s1",
-      tabs: [
-        { ...liveTab("s1"), input_owner: "42" } as unknown as SessionView["tabs"][number],
-      ],
-    })
-    seed(session, true)
-    await openMenu(session)
-    const item = screen.getByText("Detach agent…").closest('[role="menuitem"]')
-    expect(item!.getAttribute("aria-disabled")).toBe("true")
-  })
 })
 
 // The way out of a working copy the agent deleted from under itself. The gating

@@ -42,13 +42,6 @@ export const HANDOFF_GRACE_MS = 1500
 /// time to finish collapsing.
 export const RESIZE_SEND_DEBOUNCE_MS = 200
 
-/// How long the PTY's grid must hold still before a diverged viewer bounces its
-/// socket to heal (see `viewerGrid.ts`). Longer than both things that make an
-/// applied grid arrive in bursts, the owner's send debounce above and the first
-/// open's width jiggle, so one desktop gesture cannot reconnect a watching phone
-/// several times.
-export const VIEWER_HEAL_DEBOUNCE_MS = 500
-
 /// The xterm scrollbar's width in CSS pixels, from the `--xterm-scrollbar-width`
 /// variable index.css also reserves the button overlay's gutter from. Read here
 /// rather than per call site so the scrollbar option and the watcher view's

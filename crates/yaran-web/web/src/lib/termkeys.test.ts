@@ -24,8 +24,8 @@ import {
   TAB,
 } from "./termkeys"
 
-// Default runtime context: the input owner with no latch armed.
-const OWNER = { isOwner: true, ctrlLatched: false, altLatched: false }
+// Default runtime context: no latch armed.
+const OWNER = { ctrlLatched: false, altLatched: false }
 
 // Builds the minimal shape `softNewline` reads, defaulting to a bare Enter
 // keydown (13, not composing) so each test only states the fields it cares about.
@@ -129,15 +129,6 @@ describe("softNewlineAction", () => {
     expect(a).toEqual({ handled: true, send: LF, clearLatch: false })
   })
 
-  it("a read-only viewer consumes the key but sends nothing", () => {
-    const a = softNewlineAction(shiftEnter, {
-      isOwner: false,
-      ctrlLatched: false,
-      altLatched: false,
-    })
-    expect(a).toEqual({ handled: true, send: null, clearLatch: false })
-  })
-
   it("clears an armed Ctrl or Alt latch when the owner sends the newline", () => {
     expect(
       softNewlineAction(shiftEnter, { ...OWNER, ctrlLatched: true }),
@@ -145,15 +136,6 @@ describe("softNewlineAction", () => {
     expect(
       softNewlineAction(shiftEnter, { ...OWNER, altLatched: true }),
     ).toEqual({ handled: true, send: LF, clearLatch: true })
-  })
-
-  it("does not clear a latch for a non-owner (nothing is consumed to send)", () => {
-    const a = softNewlineAction(shiftEnter, {
-      isOwner: false,
-      ctrlLatched: true,
-      altLatched: false,
-    })
-    expect(a.clearLatch).toBe(false)
   })
 
   it("never sends or clears mid-IME-composition", () => {

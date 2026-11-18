@@ -151,10 +151,8 @@ whole page (`fullPage: true`, or a `clip` with `captureBeyondViewport`) and crop
 the PNG afterwards; that path renders the canvas rather than reading back the
 compositor's surface.
 
-A capture opens a real connection to the PTY, so it can arrive as a watcher and
-come back with the full-pane take-over card over the terminal instead of the
-terminal itself. When that happens, press **Take over** in a journey script
-before capturing.
+A capture opens a real connection to the PTY as one more attached
+device, so there is nothing to claim before capturing.
 
 **To regenerate a screenshot the docs already use, do not write a throwaway:
 see [Regenerating the docs screenshots](#regenerating-the-docs-screenshots).**
@@ -299,7 +297,7 @@ has a PNG, and every PNG is shown by a docs page.
 A journey that drove itself into the wrong state still produces a perfectly
 valid PNG, and the tool used to report success for one: a pane stuck on
 "Attaching…", a sidebar that came back blank and a menu that had closed itself
-under a take-over card all shipped in one run. So a scene states its own
+under a cover all shipped in one run. So a scene states its own
 caption's promise immediately before the shutter:
 
 - A browser scene calls the guards in `screens/lib.js` (`expectNoCover`,

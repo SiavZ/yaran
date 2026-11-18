@@ -167,8 +167,8 @@ Yes, two ways:
 
 - **Serve behind the terminal UI.** Set `serve_while_tui = true` under `[server]`, or run
   the `start-background-server` palette command. One yaran process keeps the terminal UI in
-  front of you and serves the browser behind it. One device drives a given terminal at a
-  time and everybody else watches.
+  front of you and serves the browser behind it. Every device can type into a given
+  terminal; the one that typed last sets its size.
 - **Hand the terminal over.** The `start-web-server` palette command flips a running
   terminal UI into serving the browser, and pressing `q` there hands it back.
 

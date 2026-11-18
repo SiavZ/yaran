@@ -6106,8 +6106,6 @@ mod tests {
             macro_editor_version: None,
             pending_new_agent_settings: None,
             armed_new_agent_settings: None,
-            pending_pty_takeover: None,
-            last_refused_pty_resize: None,
             presize: crate::app::presize::PresizeState::default(),
             scroll_mode: std::collections::HashSet::new(),
             last_diff_height: 0,
@@ -6131,7 +6129,6 @@ mod tests {
             center_mouse_forward: None,
             last_mouse_click: None,
             pressed_button: None,
-            takeover_press: None,
             dormant_tab_press: None,
             interactive_patterns: crate::keybindings::InteractiveBytePatterns {
                 bindings: Vec::new(),

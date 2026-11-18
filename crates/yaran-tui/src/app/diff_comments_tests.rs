@@ -301,8 +301,10 @@ fn send_types_the_queue_into_the_agent_without_submitting_and_clears_it() {
     assert!(!seen.contains("^[[") && !seen.contains("^[O"), "{seen}");
 }
 
+/// Every device types into a shared agent, so a send while a browser holds
+/// the agent's size is delivered, and the size moves to this surface.
 #[test]
-fn send_is_refused_and_keeps_the_queue_when_another_device_drives_the_agent() {
+fn send_is_delivered_while_another_device_holds_the_agents_size() {
     let mut app = diff_app();
     queue_two(&mut app);
     let tab = app.focused_tab_id("session-1");
@@ -314,23 +316,15 @@ fn send_is_refused_and_keeps_the_queue_when_another_device_drives_the_agent() {
     let browser = seat.owners.next_conn_id();
     seat.owners
         .claim(&tab, browser)
-        .expect("the browser drives it");
+        .expect("the browser holds it");
 
     app.send_diff_comments();
 
-    let (tone, message) = last_status(&app);
-    assert_eq!(tone, StatusTone::Warning);
+    let (_, message) = last_status(&app);
+    assert!(!message.contains("Did not send"), "{message}");
     assert!(
-        message.contains("Did not send the 2 diff comments"),
-        "{message}"
-    );
-    assert_eq!(
-        app.engine.session_store.load_diff_comments().unwrap().len(),
-        2
-    );
-    assert!(
-        !app.engine.pty_run_was_used(&tab),
-        "nothing reached the child"
+        seat.owners.is_owner(&tab, seat.conn_id),
+        "typing the comments moved the agent's size here"
     );
 }
 

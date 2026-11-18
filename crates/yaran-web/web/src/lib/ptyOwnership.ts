@@ -1,10 +1,11 @@
-// Client half of the per-PTY owner model mirrored from the server's
-// `PtySizeOwners`: one owner drives a shared PTY's size and typing, everyone
-// else watches, and every handover arrives as a `pty.owner` broadcast carrying
-// the claimer's connection id.
+// Client half of the per-PTY size-holder model mirrored from the server's
+// `PtySizeOwners`. Every attached page may type; the "owner" is only the page
+// whose grid the PTY has, the one that typed last. Every other page renders
+// that grid scaled to fit, and every handover arrives as a `pty.owner`
+// broadcast carrying the holder's connection id.
 
-// A foregrounded tab claims on attach by sending its size; a backgrounded one
-// attaches silently. Read at call time, and foreground when there is no
+// A foregrounded tab on an unowned row claims the size on attach by sending
+// it; a backgrounded one attaches silently. Read at call time, and foreground when there is no
 // `document`, so a claim is never silently suppressed.
 export function isForeground(): boolean {
   return typeof document === "undefined"
@@ -12,27 +13,25 @@ export function isForeground(): boolean {
     : document.visibilityState === "visible"
 }
 
-/// What the `connected` handshake said about who drives this pty:
+/// What the `connected` handshake said about who holds this pty's size:
 /// a connection id, `null` for "nobody", or `undefined` for a server that does
 /// not answer the question (the key was absent).
 export type HandshakeOwner = string | null | undefined
 
-// Seed the ownership verdict from the server's `connected` answer. A refused
-// claim is silent, so the foreground guess alone would leave a watcher rendering
-// typing surfaces whose keystrokes are dropped; it survives only for an unowned
-// pty. The rule order is the contract:
-//   1. An armed take-over wins: its first resize frame carries the flag.
-//   2. A superseded handshake keeps the prior verdict. Handshake and `pty.owner`
+// Seed the size-holder verdict from the server's `connected` answer. A resize
+// from a page that does not hold the size is only recorded, so the foreground
+// guess alone would leave this page fitting a grid the pty never took; it
+// survives only for an unowned pty. The rule order is the contract:
+//   1. A superseded handshake keeps the prior verdict. Handshake and `pty.owner`
 //      ride different sockets with no ordering between them, and the stale-null
 //      direction emits no correcting event.
-//   3. An absent owner key is an old server that grants any claim: use foreground.
-//   4. `null` is nobody driving: foreground decides, and only here.
-//   5. Otherwise compare ids; anything but our own means we are a watcher.
+//   2. An absent owner key is an old server that grants any claim: use foreground.
+//   3. `null` is nobody holding the size: foreground decides, and only here.
+//   4. Otherwise compare ids; anything but our own renders the holder's grid.
 export function seedVerdictFromConnected(input: {
   owner: HandshakeOwner
   myConnId: string
   foreground: boolean
-  takeoverArmed: boolean
   /// The `owner_epoch` stamped on the `connected` frame; undefined on an old
   /// server (which then omitted `owner` too).
   handshakeEpoch?: number
@@ -43,7 +42,6 @@ export function seedVerdictFromConnected(input: {
   /// the handshake is superseded by a newer applied `pty.owner`.
   priorVerdict?: boolean
 }): boolean {
-  if (input.takeoverArmed) return true
   if (handshakeSuperseded(input.handshakeEpoch, input.appliedEpoch)) {
     return input.priorVerdict ?? false
   }
@@ -52,39 +50,11 @@ export function seedVerdictFromConnected(input: {
   return input.owner === input.myConnId
 }
 
-// The take-over device name the pane should store, seeded from the same
-// handshake as the verdict: an attach hears no `pty.owner`, so `owner_device`
-// (the owner's raw `User-Agent`) is a watcher's only word on who drives. The
-// rules mirror the verdict seed's:
-//   - This pane owns the pty: null, an owner never names another device.
-//   - Superseded handshake: keep the prior name, in either direction.
-//   - No owner id (absent key or unowned pty): null, so the card falls back to
-//     its generic title rather than a stale name.
-//   - A foreign owner: its device, or null when it sent no User-Agent.
-export function seedDeviceFromConnected(input: {
-  /// The verdict `seedVerdictFromConnected` returned for this same handshake.
-  mine: boolean
-  /// `handshakeSuperseded` for this same handshake, computed once by the caller
-  /// so the name and the verdict cannot disagree about staleness.
-  superseded: boolean
-  owner: HandshakeOwner
-  /// The handshake's `owner_device`; undefined when absent (an old server, an
-  /// unowned pty, or an owner that sent no User-Agent).
-  ownerDevice: string | undefined
-  /// The name standing when the handshake landed.
-  priorDevice: string | null
-}): string | null {
-  if (input.mine) return null
-  if (input.superseded) return input.priorDevice
-  if (typeof input.owner !== "string") return null
-  return input.ownerDevice ?? null
-}
-
 // Whether a `connected` handshake's owner snapshot was overtaken by an already
 // applied `pty.owner`: true only when both epochs are known and the applied one
 // is strictly newer, so equal epochs and a missing epoch on either side both
 // seed normally. The one implementation of the comparison, so the verdict seed
-// and the ownership machine's `ownerPresent` side effect cannot drift.
+// and the ownership machine's row confirmation cannot drift.
 export function handshakeSuperseded(
   handshakeEpoch: number | undefined,
   appliedEpoch: number | undefined,
@@ -110,11 +80,7 @@ export function isOwnerAfterHandover(
 // `pty.owner` fan-out: the store's `/ws/events` handler calls `notifyPtyOwner`
 // and each mounted terminal view listens for its own pty id. Kept out of the
 // store so the view depends on a leaf module, as `ptySocket.ts` does.
-type PtyOwnerListener = (
-  ptyId: string,
-  ownerId: string | undefined,
-  device?: string,
-) => void
+type PtyOwnerListener = (ptyId: string, ownerId: string | undefined) => void
 const ptyOwnerListeners = new Set<PtyOwnerListener>()
 
 export function onPtyOwner(cb: PtyOwnerListener): () => void {
@@ -151,7 +117,6 @@ export function notifyPtyOwner(
   ptyId: string,
   ownerId: string | undefined,
   epoch?: number,
-  device?: string,
 ): void {
   // An absent epoch (older server, or a non-`pty.owner` caller) is always
   // delivered and never recorded, so mixed versions degrade to last-arrival
@@ -163,30 +128,5 @@ export function notifyPtyOwner(
   }
   // Snapshot so a listener that unsubscribes during dispatch can't perturb the
   // live iteration.
-  for (const cb of [...ptyOwnerListeners]) cb(ptyId, ownerId, device)
-}
-
-// Every PTY connection id this page has held, each stamped with the server run
-// it was learned under. Page-wide rather than per pane because a device drives a
-// whole row of the agents list: the agent's tabs and its terminals change hands
-// together, so the owner a pane meets in its handshake can be a connection this
-// page opened on another pane of the same row (the tab it just switched away
-// from), and that connection is this device's ghost exactly as the pane's own
-// previous connection is. A pane only ever meets owners of its own row, so the
-// page-wide set answers nothing a per-row set would not.
-const heldConnIds = new Map<string, number>()
-
-export function rememberHeldConnId(id: string, runStamp: number): void {
-  heldConnIds.set(id, runStamp)
-}
-
-// The run stamp a held id was learned under, or undefined for an id this page
-// never held.
-export function heldConnIdStamp(id: string): number | undefined {
-  return heldConnIds.get(id)
-}
-
-// Ids do not survive a server restart, which mints them from zero again.
-export function forgetHeldConnIds(): void {
-  heldConnIds.clear()
+  for (const cb of [...ptyOwnerListeners]) cb(ptyId, ownerId)
 }

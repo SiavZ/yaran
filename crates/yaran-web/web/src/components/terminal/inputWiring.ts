@@ -13,7 +13,7 @@ import type { PtySocket } from "@/lib/ptySocket"
 import { latin1Bytes } from "@/lib/termmouse"
 
 import type { LiveSettings } from "./liveValues"
-import type { ModifierLatch, OwnershipVerdict } from "./channels"
+import type { ModifierLatch } from "./channels"
 import { DRAG_THRESHOLD_PX, writeSoftNewline } from "./constants"
 import {
   mouseCaptureHintShown,
@@ -27,7 +27,6 @@ type TerminalInputWiringOptions = {
   isMac: boolean
   live: LiveSettings
   mods: ModifierLatch
-  ownership: OwnershipVerdict
   pointerTypeRef: { current: string }
   replayInFlight: () => boolean
   focusTypingSurface: () => void
@@ -42,7 +41,6 @@ function registerTerminalStreams(
 ): Disposable {
   const encoder = new TextEncoder()
   const dataSub = options.term.onData((input) => {
-    if (!options.ownership.read()) return
     if (options.replayInFlight() && isFocusReport(input)) return
     const latch = options.mods.read()
     const modified =
@@ -53,7 +51,7 @@ function registerTerminalStreams(
     options.pty.sendInput(encoder.encode(modified))
   })
   const binarySub = options.term.onBinary((input) => {
-    if (options.ownership.read()) options.pty.sendInput(latin1Bytes(input))
+    options.pty.sendInput(latin1Bytes(input))
   })
   return {
     dispose: () => {
@@ -68,7 +66,6 @@ function terminalKeyAction(
   options: TerminalInputWiringOptions,
 ): boolean {
   const softNewline = softNewlineAction(event, {
-    isOwner: options.ownership.read(),
     ctrlLatched: options.mods.read().ctrl,
     altLatched: options.mods.read().alt,
   })

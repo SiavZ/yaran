@@ -133,7 +133,7 @@ export function App() {
   const current: Route = route ?? (orgs.length > 0 ? { name: 'machines' } : { name: 'welcome' });
   const home = current.name === 'machines' || current.name === 'orgs' || current.name === 'settings' ? current.name : null;
   return (
-    <div className="flex min-h-dvh flex-col bg-background pt-[env(safe-area-inset-top)] text-foreground">
+    <div className="flex min-h-dvh flex-col bg-card pt-[env(safe-area-inset-top)] text-foreground">
       {build?.callback.mode === 'dev' && <DevBuildBanner />}
       {locked ? <LockScreen onUnlocked={() => setLocked(false)} /> : <Screen route={current} />}
       {!locked && home && <Nav active={home} />}

@@ -106,18 +106,6 @@ function terminalProviderName(
   return records.session?.provider
 }
 
-function terminalSpineInputOwner(
-  kind: TerminalPartProps["kind"],
-  records: TerminalTargetRecords,
-): string | null | undefined {
-  if (kind === "agent") {
-    if (records.focusedTab === undefined) return undefined
-    return records.focusedTab.input_owner ?? null
-  }
-  if (records.spineTerminal === undefined) return undefined
-  return records.spineTerminal.input_owner ?? null
-}
-
 function terminalTargetView(
   props: TerminalPartProps,
   spine: YaranState["spine"],
@@ -129,7 +117,6 @@ function terminalTargetView(
     notifyTitle: terminalNotifyTitle(props, records),
     hasOutput: terminalHasOutput(props, records),
     providerName: terminalProviderName(props.kind, records),
-    spineInputOwner: terminalSpineInputOwner(props.kind, records),
     // Slot-ness comes from the session record, never an id comparison: the slot
     // tab's id is generated. Before the spine arrives the safe answer is false.
     isSessionSlotTab:
@@ -195,7 +182,6 @@ function terminalTouchSettings(
 }
 
 type TerminalInputLayoutInputs = {
-  isOwner: boolean
   composeMode: ReturnType<typeof composeBarMode>
   /// Do the terminal keys belong under this terminal at all on this device
   /// (see `terminalKeysApply`)? Independent of the message box.
@@ -207,15 +193,14 @@ type TerminalInputLayoutInputs = {
 export function terminalInputLayout(input: TerminalInputLayoutInputs) {
   // Two rows, two switches, four legal states: neither is the other's on-switch,
   // and keys with no box is a finger on a virtual Ctrl beside a real keyboard.
-  const accessoryBarShown =
-    input.isOwner && input.keysApply && input.accessoryBarVisible
-  const composeBarShown = input.isOwner && input.composeBarEnabled
-  // What the top menu's INPUT group carries for this pane. Always on offer to
-  // the owner whatever is up under the terminal, because the way back from direct
-  // typing and from hidden keys must not depend on a row that is itself gone.
+  const accessoryBarShown = input.keysApply && input.accessoryBarVisible
+  const composeBarShown = input.composeBarEnabled
+  // What the top menu's INPUT group carries for this pane. Always on offer
+  // whatever is up under the terminal, because the way back from direct typing
+  // and from hidden keys must not depend on a row that is itself gone.
   const topInputGates = {
-    surfaceSwitch: input.isOwner && inputMenuSurfaceSwitchOffered(input.composeMode),
-    keysToggle: input.isOwner && input.keysApply,
+    surfaceSwitch: inputMenuSurfaceSwitchOffered(input.composeMode),
+    keysToggle: input.keysApply,
     composeSurface: composeBarShown,
   }
   return {
@@ -294,7 +279,7 @@ export function useTerminalPaneSetup(props: TerminalPartProps) {
   const [dragActive, setDragActive] = useState(false)
   const dragDepthRef = useRef(0)
   const yaranState = useYaran()
-  const { spine, bootstrap, offline, conn } = yaranState
+  const { spine, bootstrap, offline } = yaranState
   const preferences = terminalPreferences(bootstrap)
   const touch = terminalTouchSettings(
     yaranState,
@@ -308,7 +293,8 @@ export function useTerminalPaneSetup(props: TerminalPartProps) {
     props.kind === "terminal" && spineListsTerminal(spine?.terminals, props.id)
   const terminalListed = { now: listedNow, ever: useLatched(listedNow) }
   // Built here and published in the component body: whether the message box is
-  // the typing surface depends on ownership, which resolves after this hook.
+  // the typing surface depends on the stack's typing target, which resolves
+  // after this hook.
   const liveSettingsFor = (composeActive: boolean, onScreen: boolean) => ({
     ...terminalLiveSettings(
       preferences,
@@ -333,7 +319,6 @@ export function useTerminalPaneSetup(props: TerminalPartProps) {
     setDragActive,
     dragDepthRef,
     offline,
-    conn,
     terminalFontFamilySetting: preferences.fontFamily,
     terminalFontSizeSetting: preferences.fontSize,
     fileDropEnabled: preferences.fileDropEnabled,
@@ -341,7 +326,6 @@ export function useTerminalPaneSetup(props: TerminalPartProps) {
     session: target.session,
     hasOutput: target.hasOutput,
     providerName: target.providerName,
-    spineInputOwner: target.spineInputOwner,
     composeInputRef,
     viewerOverflow,
     setViewerOverflow,

@@ -14,8 +14,7 @@
  *
  * Used by:
  * src/card.tsx
- * ├── web:src/components/ChangedFiles.tsx
- * └── web:src/components/terminal/partPieces.tsx
+ * └── web:src/components/ChangedFiles.tsx
  * <module-headers:end>
  */
 import * as React from "react"

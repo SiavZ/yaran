@@ -8,7 +8,6 @@ const {
   expectPanePainted,
   expectVisibleText,
   goto,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -17,7 +16,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     // The banner across the pane, not the sidebar row's chip, which carries the
     // same words and the same href at a fraction of the width.

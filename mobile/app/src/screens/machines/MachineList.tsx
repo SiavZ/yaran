@@ -94,7 +94,7 @@ function OrgSection({ org, list, grouped }: { org: OrgRecord; list: OrgMachines 
   const failure = list?.state === 'failed' ? list.failure : null;
   return (
     <section aria-label={org.name} className="flex flex-col gap-2">
-      {grouped && <h2 className="text-sm font-semibold text-muted-foreground">{org.name}</h2>}
+      {grouped && <h2 className="settings-heading mb-0">{org.name}</h2>}
       {failure?.kind === 'offline' && <Offline onRetry={refresh} />}
       {failure?.kind === 'session_expired' && (
         <div role="alert" className="state-card">
@@ -119,8 +119,8 @@ function OrgSection({ org, list, grouped }: { org: OrgRecord; list: OrgMachines 
         <p role="status" className="text-sm text-muted-foreground">
           <Trans>Loading machines…</Trans>
         </p>
-      ) : (
-        <ul className="flex flex-col gap-2">
+      ) : list.machines.length > 0 && (
+        <ul className="settings-group flex flex-col">
           {list.machines.map((m) => (
             <MachineRow key={m.id} machine={m} onOpen={() => void open(m)} onRemove={() => setRemoving(m)} />
           ))}
@@ -147,6 +147,7 @@ export function MachineList() {
 
   return (
     <Page
+      brand
       title={<Trans>Machines</Trans>}
       actions={
         orgs.length > 0 && (

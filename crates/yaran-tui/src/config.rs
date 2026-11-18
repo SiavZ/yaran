@@ -1623,12 +1623,9 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # who is asked for one). That is the same trust model as the rest of\n\
                  # this section; what changes is that it now applies whenever the TUI is\n\
                  # open.\n\
-                 # ONE DRIVER AT A TIME: the TUI and every browser take part in the same\n\
-                 # input-ownership model, so a terminal is driven by whichever device\n\
-                 # claimed it and the others watch. A watcher still sees the live output\n\
-                 # and can scroll and copy it; on both the terminal and the browser a\n\
-                 # card covers the terminal, names the device that has it, and offers a\n\
-                 # Take over button that moves it to this device.\n\
+                 # SHARED INPUT: the TUI and every browser type into the same terminals\n\
+                 # at once. A terminal has one size, and it follows whichever device\n\
+                 # typed into it last; every other device shows it at that size.\n\
                  # With this on, the terminal UI's status line calls out the listener\n\
                  # that came up at startup in the warning color, and holds it longer\n\
                  # than an ordinary note, so you are told rather than left to notice.\n\
@@ -4476,8 +4473,8 @@ mod tests {
             "keeps running",
             // the trust consequence
             "anyone who can reach it",
-            // what happens when two devices want the same terminal
-            "take over",
+            // what happens when two devices type into the same terminal
+            "typed into it last",
             // how to stop it
             "stop-background-server",
         ] {

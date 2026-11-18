@@ -190,7 +190,7 @@ function Dot({ className }: { className: string }) {
 // text baseline, since a mono label and a sans state word have different ascents.
 function RowLineTwo({ children }: { children: ReactNode }) {
   return (
-    <span className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
+    <span className="flex items-baseline gap-1.5 text-xs text-muted-foreground max-md:text-sm">
       {children}
     </span>
   )
@@ -226,7 +226,7 @@ function RowName({
   query: string
 } & ComponentProps<"span">) {
   return (
-    <span {...rest} className={cn("min-w-0 flex-1 truncate text-sm", className)}>
+    <span {...rest} className={cn("min-w-0 flex-1 truncate text-sm max-md:text-base max-md:font-medium", className)}>
       <HighlightedText text={text} query={query} />
     </span>
   )
@@ -308,7 +308,7 @@ function AgentFlatRow({
         className={cn(
           // The wrapper owns the highlight so it spans both lines and the trailing
           // ⋯; the button below is transparent and fills the row.
-          "group/flat-row relative flex items-stretch rounded-md pr-1 transition-colors",
+          "group/flat-row relative flex items-stretch rounded-md pr-1 transition-colors max-md:rounded-[1.25rem]",
           "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
           agentSelected && "bg-sidebar-accent text-sidebar-accent-foreground",
           picked && ACTIVE_ROW_RING,
@@ -333,7 +333,7 @@ function AgentFlatRow({
             aria-current={agentSelected ? "true" : undefined}
             id={pickId}
             onClick={() => handlers.onSelectSession(session.id)}
-            className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-11"
+            className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-11 max-md:gap-3 max-md:rounded-[1.25rem] max-md:py-2.5 max-md:pl-3"
           >
             <span
               aria-label={attention ? "Needs attention" : undefined}
@@ -356,7 +356,7 @@ function AgentFlatRow({
                     : "text-sidebar-accent-foreground"
                 }
                 frameRef={frameRef}
-                className="size-4.5"
+                className="size-4.5 max-md:size-5"
               />
             </span>
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -530,7 +530,7 @@ function TerminalFlatRow({
       style={style}
       data-sidebar-row={terminalRowKey(terminal.id)}
       className={cn(
-        "group/flat-term relative flex items-stretch rounded-md pr-1 transition-colors",
+        "group/flat-term relative flex items-stretch rounded-md pr-1 transition-colors max-md:rounded-[1.25rem]",
         "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         active && "bg-sidebar-accent text-sidebar-accent-foreground",
         picked && ACTIVE_ROW_RING,
@@ -544,14 +544,14 @@ function TerminalFlatRow({
         aria-current={active ? "true" : undefined}
         id={pickId}
         onClick={() => onSelect(terminal.id, owner)}
-        className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-10"
+        className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-10 max-md:gap-3 max-md:rounded-[1.25rem] max-md:py-2.5 max-md:pl-3"
       >
         <WorkingGlyph
           icon={SquareTerminal}
           working={working}
           frameRef={frameRef}
           frameClassName="mt-0.5"
-          className="size-4 text-muted-foreground"
+          className="size-4 text-muted-foreground max-md:size-5"
         />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex items-center gap-2">
@@ -626,7 +626,7 @@ function TerminalFlatRow({
 }
 
 // The Quiet tail: detached and exited agents, open only while the whole workspace
-// is dormant. Search auto-expand is derived, never a write to the collapse preference.
+// is dormant. A phone draws its label with a hairline to the edge, no top rule. Search auto-expand is derived, never a write to the collapse preference.
 function QuietTail({
   sessions,
   projectName,
@@ -652,12 +652,12 @@ function QuietTail({
 }) {
   if (sessions.length === 0) return null
   return (
-    <div className="mt-2 border-t border-border/50 pt-2">
+    <div className="mt-2 border-t border-border/50 pt-2 max-md:mt-3 max-md:border-t-0 max-md:pt-1">
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:min-h-10"
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:min-h-10 max-md:rounded-[1.25rem] max-md:px-3 max-md:text-sm max-md:font-normal"
       >
         <ChevronRight
           className={cn(
@@ -670,6 +670,7 @@ function QuietTail({
             divider deliberately gains NO button beside it: there is no such
             thing as creating a dormant agent. */}
         <span className={SECTION_COUNT_PILL}>{sessions.length}</span>
+        <span aria-hidden className="ml-1 h-px flex-1 bg-border md:hidden" />
       </button>
       {open ? (
         <div className="mt-1 flex flex-col gap-1">
@@ -765,26 +766,25 @@ function SortControl() {
         {/* The trigger reads "Sort" and never the mode name: the full label
             overflows a narrow sidebar and wraps, and a control that changes
             width when you use it is its own small annoyance. The mode lives in
-            the tooltip and the menu instead. It takes the 40px floor on a
-            phone through the shared header sizing token. */}
+            the tooltip and the menu instead; a phone shows a 44px ghost icon. */}
         <DropdownMenuTrigger
           render={
             <button
               type="button"
               className={cn(
-                "flex items-center gap-1.5 rounded-md border border-border/60 bg-input/30 px-2 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-input/60 hover:text-foreground data-[popup-open]:border-border data-[popup-open]:bg-input/60 data-[popup-open]:text-foreground",
+                "flex items-center gap-1.5 rounded-md border border-border/60 bg-input/30 px-2 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-input/60 hover:text-foreground data-[popup-open]:border-border data-[popup-open]:bg-input/60 data-[popup-open]:text-foreground max-md:size-11 max-md:justify-center max-md:rounded-full max-md:border-transparent max-md:bg-transparent max-md:px-0",
                 HEADER_CONTROL_SIZING,
               )}
               aria-label="Sort agents"
             />
           }
         >
-          <ArrowDownWideNarrow className="size-3 shrink-0" />
+          <ArrowDownWideNarrow className="size-3 shrink-0 max-md:size-5" />
           {/* At the narrowest sidebar the word goes and the glyphs stay, so the
               section title keeps its full width beside the trigger; the
               accessible name and the tooltip still say what it is. */}
-          <span className="text-foreground/90 @max-[15rem]/list-header:hidden">Sort</span>
-          <ChevronDown className="size-3 shrink-0 opacity-60" />
+          <span className="text-foreground/90 @max-[15rem]/list-header:hidden max-md:hidden">Sort</span>
+          <ChevronDown className="size-3 shrink-0 opacity-60 max-md:hidden" />
         </DropdownMenuTrigger>
       </SimpleTooltip>
       <DropdownMenuContent align="end">
@@ -1029,13 +1029,13 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
 
   return (
     <nav aria-label="Agents and terminals" className="flex min-h-0 flex-1 flex-col">
-      {/* Header: the section word on the left, the section's own controls
-          (sort) at the right edge, then search. px-2 matches the sidebar header
-          (the logo row's p-2) and the list below, so the search box and the
-          agent rows share one inset and none of it hugs the edge. */}
-      <div className="flex flex-col gap-2 px-2 pt-2 pb-3">
-        <div className="@container/list-header flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+      {/* Header: the section word, its sort control at the right edge, then
+          search, at the list's px-2 inset. On a phone the hub's title bar names
+          the screen: the word is sr-only, the row reverses to [search][sort], and
+          size containment is off (it would give the sort row no width). */}
+      <div className="flex flex-col gap-2 px-2 pt-2 pb-3 max-md:flex-row-reverse max-md:items-center max-md:px-4 max-md:pb-2">
+        <div className="@container/list-header flex items-center gap-2 max-md:shrink-0 max-md:[container-type:normal]">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold max-md:sr-only">
             Agents &amp; Terminals
           </span>
           {/* Sort rides the same gate as the list it sorts: with no row there
@@ -1048,7 +1048,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
             </div>
           ) : null}
         </div>
-        <div className="flex items-center gap-2 rounded-md border border-input bg-input/30 px-2.5 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50 max-md:min-h-10">
+        <div className="flex items-center gap-2 rounded-md border border-input bg-input/30 px-2.5 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50 max-md:min-h-11 max-md:flex-1 max-md:rounded-full max-md:border-transparent max-md:bg-muted max-md:px-4">
           <Search aria-hidden className="size-4 shrink-0 text-muted-foreground" />
           <input
             value={agentSearch}
@@ -1088,7 +1088,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
         ref={setListNode}
         data-more-above={moreAbove ? "" : undefined}
         data-more-below={moreBelow ? "" : undefined}
-        className="yaran-list-fade min-h-0 flex-1 overflow-y-auto px-2 pb-2 no-scrollbar"
+        className="yaran-list-fade min-h-0 flex-1 overflow-y-auto px-2 pb-2 no-scrollbar max-md:px-3 max-md:pb-24"
       >
         {!yaran.spine ? (
           <p role="status" className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">

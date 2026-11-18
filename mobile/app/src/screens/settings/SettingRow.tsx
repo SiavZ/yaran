@@ -36,7 +36,7 @@ export function SwitchRow({
   return (
     <div className="flex min-h-12 flex-wrap items-center justify-between gap-3">
       <div className="flex min-w-[min(100%,12rem)] flex-1 flex-col">
-        <label id={`${id}-label`} htmlFor={id} className="font-medium">
+        <label id={`${id}-label`} htmlFor={id} className="text-base">
           {label}
         </label>
         {description && <span className="text-sm text-muted-foreground">{description}</span>}

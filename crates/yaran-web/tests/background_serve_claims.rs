@@ -209,12 +209,15 @@ fn run_browser(
                     .providers
                     .get(TabIdRef::new("s1-slot"))
                     .expect("the agent is running");
-                assert!(
-                    seat.owners.write_if_owner("s1-slot", seat.conn_id, || {
-                        client.enqueue_bytes(bytes);
-                    }),
-                    "the terminal UI still drives its agent"
+                let verdict = seat.owners.note_write(
+                    "s1-slot",
+                    seat.conn_id,
+                    yaran_core::pty::classify_pty_write(bytes),
+                    Some(TUI_DEVICE_LABEL),
+                    |_| {},
                 );
+                assert!(verdict.forward, "the terminal UI types into its agent");
+                client.enqueue_bytes(bytes);
             }
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
@@ -264,50 +267,28 @@ async fn browser(
     let seen = accumulate_until(&mut pty, "yaran-tui-still-types", Duration::from_secs(8)).await;
     assert!(seen.contains("yaran-tui-still-types"), "{seen:?}");
 
-    // A plain attach resize and the browser's typing take nothing.
+    // A plain attach resize is recorded and moves nothing; the browser's
+    // typing reaches the agent and moves its size to the browser.
     pty.send(Message::Text(r#"{"rows":30,"cols":100}"#.into()))
         .await
         .expect("send the resize frame");
-    pty.send(Message::Binary(
-        b"yaran-plain-attach-marker\n".to_vec().into(),
-    ))
-    .await
-    .expect("send the typed bytes");
-    let stolen = accumulate_until(
-        &mut pty,
-        "yaran-plain-attach-marker",
-        Duration::from_secs(2),
-    )
-    .await;
-    assert!(
-        !stolen.contains("yaran-plain-attach-marker"),
-        "a plain attach must not take a pty the terminal UI claimed"
-    );
-
-    // Take over does.
-    pty.send(Message::Text(
-        r#"{"rows":30,"cols":100,"takeover":true}"#.into(),
-    ))
-    .await
-    .expect("send the take-over frame");
-    pty.send(Message::Binary(b"yaran-took-over-marker\n".to_vec().into()))
+    pty.send(Message::Binary(b"yaran-browser-types\n".to_vec().into()))
         .await
         .expect("send the typed bytes");
-    let after = accumulate_until(&mut pty, "yaran-took-over-marker", Duration::from_secs(8)).await;
+    let typed = accumulate_until(&mut pty, "yaran-browser-types", Duration::from_secs(8)).await;
     assert!(
-        after.contains("yaran-took-over-marker"),
-        "a flagged take-over must hand the browser the pty"
+        typed.contains("yaran-browser-types"),
+        "every attached device may type: {typed:?}"
     );
 }
 
 /// THE JOURNEY. The user has an agent and a terminal running in the terminal
 /// UI and switches serving on. Both are the terminal UI's the moment the serve
-/// is up, before any browser has connected, so no reconnecting tab can get in
-/// first. A browser that opens is told the terminal UI is driving both, sees the
-/// terminal UI's typing arrive, cannot take the agent by merely attaching, and
-/// can by pressing Take over.
+/// is up, before any browser has connected. A browser that opens is told the
+/// terminal UI holds both, sees the terminal UI's typing arrive, does not move
+/// the size by merely attaching, and does by typing.
 #[test]
-fn a_browser_finds_everything_running_driven_by_the_tui_until_it_takes_over() {
+fn a_browser_finds_everything_sized_by_the_tui_until_it_types() {
     let (mut engine, terminal, _tmp) = engine_with_an_agent_and_a_terminal_running();
     let (mut server, addr) = serve(
         &mut engine,
@@ -337,7 +318,7 @@ fn a_browser_finds_everything_running_driven_by_the_tui_until_it_takes_over() {
     let still_mine = seat.owners.is_owner("s1-slot", seat.conn_id);
     let terminal_mine = seat.owners.is_owner(&terminal, seat.conn_id);
     server.stop();
-    assert!(!still_mine, "the take-over moved the agent to the browser");
+    assert!(!still_mine, "typing moved the agent's size to the browser");
     assert!(
         terminal_mine,
         "and left the terminal it never touched with the TUI"

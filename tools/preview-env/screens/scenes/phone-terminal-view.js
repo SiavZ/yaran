@@ -11,7 +11,6 @@ const {
   get,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -25,7 +24,6 @@ module.exports = {
       .filter((t) => t.owner.kind === "session" && t.owner.session_id === id)
       .sort((a, b) => a.sort_order - b.sort_order)
     await goto(page, `#/agent/${id}/terminal/${own[0].id}`)
-    await takeOver(page)
     await sleep(2500)
     await clearToasts(page)
     await expectNoCover(page)

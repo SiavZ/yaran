@@ -361,13 +361,6 @@ impl App {
             ));
             return;
         }
-        if let Some(reason) = self.agent_tab_write_refusal(&tab_id) {
-            self.set_warning(format!(
-                "Did not send the {} to {label}: {reason} They stay queued.",
-                count_label(count)
-            ));
-            return;
-        }
         if self.engine.is_agent_streaming(&tab_id) {
             self.set_warning(format!(
                 "Did not send: {label} is still working. Send again once it is idle; the {} stay \

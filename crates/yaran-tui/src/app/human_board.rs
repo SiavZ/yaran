@@ -1474,13 +1474,6 @@ impl App {
             ));
             return;
         }
-        if let Some(reason) = self.agent_tab_write_refusal(&target.tab_id) {
-            self.set_warning(format!(
-                "Did not send your reply to {}: {reason} The reply is still in the box.",
-                target.label
-            ));
-            return;
-        }
         let writes = yaran_core::macros::compose_send_writes(prompt);
         let (body, has_submit) = match writes.as_slice() {
             [body, _submit] => (body.clone(), true),

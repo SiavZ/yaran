@@ -384,8 +384,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/prose.rs (643 lines after rebrand 0956be7ac) with the fork's 357-line copy at c626621cd into 643 lines at 7e4a9c0f1; module: A sentence that names things, kept as structure rather than as a finished string"
   },
   "crates/yaran-core/src/pty.rs": {
-    "lines": 10312,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/pty.rs (8557 lines after rebrand 0956be7ac) with the fork's 8935-line copy at c626621cd into 10229 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: PTY-based terminal client plus the surface-agnostic cell types for its terminal-grid snapshot"
+    "lines": 10318,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/pty.rs (8557 lines after rebrand 0956be7ac) with the fork's 8935-line copy at c626621cd into 10229 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: PTY-based terminal client plus the surface-agnostic cell types for its terminal-grid snapshot; shared input: the QueryReply write kind and its one classifier call; the classifier itself lives in pty_query_reply.rs"
   },
   "crates/yaran-core/src/pty_owners.rs": {
     "lines": 2344,

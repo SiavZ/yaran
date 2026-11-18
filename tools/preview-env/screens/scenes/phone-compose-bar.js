@@ -9,7 +9,6 @@ const {
   expectVisibleText,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -18,7 +17,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
-    await takeOver(page)
     await sleep(1500)
     await page.evaluate(() => document.querySelector("textarea")?.focus())
     await page.keyboard.type("Add a test for the redirect loop", { delay: 20 })

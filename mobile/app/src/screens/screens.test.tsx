@@ -64,6 +64,22 @@ describe('development-build banner', () => {
   });
 });
 
+describe('page frame', () => {
+  it('puts the brand mark beside the title on Machines only, and marks the active tab', async () => {
+    orgStore.set({ loaded: true, orgs: [{ id: 'https://org.example.com', name: 'Acme', teamDomain: null, addedAt: 'x' }] });
+    window.location.hash = buildRoute({ name: 'machines' });
+    renderShell(<App />);
+    await screen.findByRole('heading', { name: 'Machines' });
+    expect(document.querySelector('main header svg[viewBox="0 0 512 512"]')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Machines' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: 'Settings' }).getAttribute('aria-current')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await screen.findByRole('heading', { name: 'Settings' });
+    expect(document.querySelector('main header svg[viewBox="0 0 512 512"]')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Settings' }).getAttribute('aria-current')).toBe('page');
+  });
+});
+
 describe('routing', () => {
   it('announces destinations reached from the persistent home navigation', async () => {
     window.location.hash = buildRoute({ name: 'machines' });

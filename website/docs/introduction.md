@@ -207,8 +207,8 @@ the file's diff again drops it with a message saying so. Comments live only in t
 UI; the browser does not show them.
 
 > [!NOTE]
-> Sending is refused, and the comments stay queued, while the agent is not running, while it
-> is still working, or while another device is driving its terminal.
+> Sending is refused, and the comments stay queued, while the agent is not running or while
+> it is still working.
 
 ## Where yaran keeps its files
 

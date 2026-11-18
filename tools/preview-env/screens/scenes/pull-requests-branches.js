@@ -11,7 +11,6 @@ const {
   expectVisibleText,
   goto,
   sleep,
-  takeOver,
 } = require("../lib.js")
 
 module.exports = {
@@ -20,7 +19,6 @@ module.exports = {
   async shoot(page) {
     const by = await agents()
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
-    await takeOver(page)
     await clearToasts(page)
     await clickLabel(page, "All pull requests")
     await clickText(page, "^Pull requests…$", "[role=menuitem]")

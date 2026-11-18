@@ -253,44 +253,18 @@ deleting the agent, or closing the terminal, for that long.
 
 ![The terminal UI top bar carrying a serving crumb with the port, above the usual workspace with one agent working.](/screens/tui-serving-crumb.png)
 
-**One driver at a time.** The terminal UI is an ordinary participant in the same
-input-ownership model the browsers use. One device drives a terminal and everybody else
-watches, with live output, scrolling and copying. Nothing passive ever takes a terminal
-away, and nothing passive ever gives one back.
+**Everyone types, the last one to type sets the size.** The terminal UI is an ordinary
+participant in the same model the browsers use. Every device with a terminal open can type
+into it, the terminal UI included, and there is no card to press and nothing to take over.
 
-Whenever the terminal you are looking at is not yours to type into, a card covers it, in
-the terminal UI and in the browser alike.
-
-- **Another device is driving:** the card names it. It calls the terminal UI `the yaran TUI`
-  when that is what has the keyboard.
-- **Nobody is driving:** the card says **Running in the background**, because the terminal
-  kept going when its driver left.
-- **Either way** the card carries one button, **Take over**, and two ways to press it:
-  click it, or, with the pane focused, use the key that focuses an agent (Enter unless you
-  have rebound it). Typing does not claim a terminal, so keys pressed under the card go
-  nowhere.
-- **Taking over** also retargets the terminal's size to the device that took it, and
-  everyone watching adopts that geometry.
-- **An agent's tabs and terminals go together:** taking one over, or starting an agent from
-  the terminal UI, takes all of that agent's tabs and terminals at once.
-- **It is sticky in both directions:** losing a terminal does not silently give it back to
-  you.
-
-**What starts out as yours:**
-
-- **An agent you start yourself** is yours straight away, with no card over it.
-- **Switching the background server on while yaran is running**, with the palette command or
-  by turning `serve_while_tui` on in the config file, keeps everything you had running as
-  yours, with no card over it. A browser that wants one presses **Take over**.
-- **Agents yaran reopens for you at startup** wear the **Running in the background** card
-  until you press it.
-- **A startup with the setting already on** keeps nothing, so a browser can pick up any of
-  it.
-
-> [!NOTE]
-> The card covers the terminal only. The tabs above it, the pull-request banner and the
-> rest of the screen keep working, so you can move to another agent or another tab
-> without taking anything over.
+- **The device that typed last sets the terminal's size.** Type in the terminal UI and the
+  terminal is resized to fit its pane; type in a browser and it is resized for the browser.
+- **Everyone else sees the same screen.** A browser scales the text down to fit; the
+  terminal UI shows what fits in its pane and leaves the rest of the pane blank.
+- **An agent's tabs and terminals go together:** typing into any one of them sizes all of
+  that agent's tabs and terminals for your screen.
+- **Clicking and scrolling** in a program that uses the mouse reach it from any device and
+  never move the size.
 
 **Nobody's terminal is ended under them.** Deleting, stopping or restarting an agent,
 closing a tab or a terminal, and removing a project are refused while another device is
@@ -354,8 +328,8 @@ per tab. Each row shows:
 - **The address**, marked `(unverified)` when yaran could only see the connection's nearest
   hop, which a proxy in between may be.
 - **When it connected.**
-- **The agent tabs and terminals it is streaming**, marked `(driving)` where it is the one
-  typing.
+- **The agent tabs and terminals it is streaming**, marked `(driving)` where it typed last
+  and so sets the terminal's size.
 - **A `BROWSER` code.** Every tab of one browser shows the same short code, the one the
   counts elsewhere count once. A `-` there is the terminal UI, or a tab that did not say
   which browser it belongs to, which counts as a browser of its own.
@@ -774,7 +748,7 @@ You do not need shell access to the machine to change settings:
 ## Where to go next
 
 - [The workspace in the browser](/docs/web-workspace): the layout, the browser
-  terminals, ownership and take-over, clipboard, and the mobile experience.
+  terminals, typing from several devices at once, clipboard, and the mobile experience.
 - [The code editor](/docs/web-editor): open and edit any file in a worktree with a real
   editor, right in the page.
 - [Git without leaving the browser](/docs/web-git): stage, commit, push, pull, and

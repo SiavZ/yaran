@@ -1,30 +1,17 @@
 import { type ReactNode, type RefObject } from "react"
-import { MonitorSmartphone } from "lucide-react"
 import { AccessoryBar } from "@/components/AccessoryBar"
 import { AGENT_PLACEHOLDER, ComposeBar, TERMINAL_PLACEHOLDER } from "@/components/ComposeBar"
 import { Button } from "@yaran/ui-kit/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@yaran/ui-kit/card"
 import { ESC, TAB } from "@/lib/termkeys"
 import type { PtySocket } from "@/lib/ptySocket"
 import { type AttachCover } from "@/lib/attachCover"
 import { GlyphSpinner } from "@/components/GlyphSpinner"
-import { plainBounce } from "@/components/terminal/plainBounce"
 import { type InputSurface } from "@/components/terminal/inputSurface"
 import { type UploadPipeline } from "@/components/terminal/uploadPipeline"
-import type { TakeoverIntent } from "@/components/terminal/channels"
 import type { TerminalPartProps } from "@/components/TerminalStack"
 type TerminalPaneSurfaceProps = {
   /// The part's pty id, marked on its box so the stack can find it.
   partId: string
-  /// The stack paints this part's take-over card over every part, so the part
-  /// paints none of its own.
-  cardInStack: boolean
   /// Off screen, the part keeps a real box the size of the stack's and is
   /// hidden, never shrunk.
   onScreen: boolean
@@ -44,15 +31,10 @@ type TerminalPaneSurfaceProps = {
   input: InputSurface
   providerName?: string
   ptyRef: RefObject<PtySocket | null>
-  takeoverIntent: TakeoverIntent
-  takeoverLabel: string | null
-  ownerPresent: boolean
-  takeOver: () => void
 }
 
 export function TerminalPaneSurface({
   partId,
-  cardInStack,
   onScreen,
   onPress,
   kind,
@@ -69,10 +51,6 @@ export function TerminalPaneSurface({
   input,
   providerName,
   ptyRef,
-  takeoverIntent,
-  takeoverLabel,
-  ownerPresent,
-  takeOver,
 }: TerminalPaneSurfaceProps) {
   // The pane's box is not itself the clip: the terminal, its covers and the
   // drop overlay are clipped by an inner layer, while the stack's overlay
@@ -142,14 +120,10 @@ export function TerminalPaneSurface({
         </div>
         {pickerInput}
         <TerminalCover
-          cover={cardInStack && cover.kind === "card" ? { kind: "none" } : cover}
+          cover={cover}
           kind={kind}
           providerName={providerName}
           ptyRef={ptyRef}
-          takeoverIntent={takeoverIntent}
-          takeoverLabel={takeoverLabel}
-          ownerPresent={ownerPresent}
-          takeOver={takeOver}
         />
       </div>
     </div>
@@ -179,13 +153,9 @@ type TerminalCoverProps = {
   kind: TerminalPartProps["kind"]
   providerName?: string
   ptyRef: RefObject<PtySocket | null>
-  takeoverIntent: TakeoverIntent
-  takeoverLabel: string | null
-  ownerPresent: boolean
-  takeOver: () => void
 }
 
-export function TerminalCover(props: TerminalCoverProps) {
+function TerminalCover(props: TerminalCoverProps) {
   switch (props.cover.kind) {
     case "none":
       return null
@@ -201,9 +171,7 @@ export function TerminalCover(props: TerminalCoverProps) {
             <Button
               size="sm"
               variant="secondary"
-              onClick={() =>
-                plainBounce(props.ptyRef.current, props.takeoverIntent)
-              }
+              onClick={() => props.ptyRef.current?.connect()}
             >
               Reconnect
             </Button>
@@ -221,15 +189,6 @@ export function TerminalCover(props: TerminalCoverProps) {
           </div>
         </div>
       )
-    case "card":
-      return (
-        <TakeoverCard
-          kind={props.kind}
-          takeoverLabel={props.takeoverLabel}
-          ownerPresent={props.ownerPresent}
-          takeOver={props.takeOver}
-        />
-      )
   }
 }
 
@@ -243,56 +202,6 @@ function terminalCoverText(
   return kind === "agent"
     ? "Starting " + (providerName ?? "agent") + "…"
     : "Launching terminal…"
-}
-
-function TakeoverCard({
-  kind,
-  takeoverLabel,
-  ownerPresent,
-  takeOver,
-}: {
-  kind: TerminalPartProps["kind"]
-  takeoverLabel: string | null
-  ownerPresent: boolean
-  takeOver: () => void
-}) {
-  const title = takeoverLabel
-    ? "Active on " + takeoverLabel
-    : ownerPresent
-      ? "Active on another device"
-      : "Running in the background"
-  return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-sm text-center">
-        <CardHeader className="items-center gap-3">
-          <MonitorSmartphone className="size-8 text-muted-foreground" />
-          <CardTitle>{title}</CardTitle>
-          <CardDescription>
-            {ownerPresent ? (
-              <>
-                Only one device can type at a time. Take over to drive this{" "}
-                {kind === "agent" ? "agent" : "terminal"} from here.
-              </>
-            ) : (
-              <>
-                The device driving this {kind === "agent" ? "agent" : "terminal"}{" "}
-                disconnected, so we kept the{" "}
-                {kind === "agent" ? "agent" : "terminal"} running in the
-                background to avoid losing any progress. Take over to drive it
-                from here.
-              </>
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button onClick={takeOver} className="w-full max-md:min-h-11">
-            <MonitorSmartphone />
-            Take over
-          </Button>
-        </CardContent>
-      </Card>
-    </div>
-  )
 }
 
 type TerminalInputRowsProps = {
