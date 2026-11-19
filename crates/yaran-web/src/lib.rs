@@ -121,6 +121,7 @@
 
 pub mod auth;
 pub mod background;
+pub mod board_routes;
 pub mod bootstrap;
 pub mod bootstrap_routes;
 pub mod browse_routes;

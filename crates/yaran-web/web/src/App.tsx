@@ -69,7 +69,7 @@
  * ├── src/lib/store.ts
  * ├── src/lib/theater.ts
  * └── src/lib/viewport.ts
- * External: react
+ * External: @/components, react
  *
  * Used by:
  * src/App.tsx
@@ -109,6 +109,7 @@ import { ConfirmForceStopAgentDialog } from "@/components/ConfirmForceStopAgentD
 import { ConfirmRecreateWorkingCopyDialog } from "@/components/ConfirmRecreateWorkingCopyDialog"
 import { ConfirmUseExistingBranchDialog } from "@/components/ConfirmUseExistingBranchDialog"
 import { TaskManagerDialog } from "@/components/TaskManagerDialog"
+import { BoardDialog } from "@/components/BoardDialog"
 import { CloudDialog } from "@/components/cloud/CloudDialog"
 import { ConnectPhoneDialog } from "@/components/ConnectPhoneDialog"
 import { ConfirmDiscardFileDialog } from "@/components/ConfirmDiscardFileDialog"
@@ -197,6 +198,7 @@ function GlobalOverlays() {
       <ConfirmRecreateWorkingCopyDialog />
       <ConfirmUseExistingBranchDialog />
       <TaskManagerDialog />
+      <BoardDialog />
       <CloudDialog />
       <ConnectPhoneDialog />
       <ConfigEditorDialog />

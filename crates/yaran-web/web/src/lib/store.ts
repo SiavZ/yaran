@@ -1044,6 +1044,9 @@ export interface YaranState {
   // The rows are derived live from the spine joined to the polled stats, so the
   // dialog needs no state beyond this open flag.
   taskManagerOpen: boolean
+  // The human board (the app menu's "Tasks for Human…"). It reads the board
+  // itself while open, so the store holds only this gate.
+  boardOpen: boolean
   // The Yaran Cloud dialog (the app menu's "Yaran Cloud…"). It fetches its own
   // status while open, so the store holds only this gate.
   cloudDialogOpen: boolean
@@ -1535,6 +1538,7 @@ let state: YaranState = {
   createAgentNamePending: false,
   createAgentPrInput: "",
   taskManagerOpen: false,
+  boardOpen: false,
   cloudDialogOpen: false,
   connectPhoneOpen: false,
   stopAllOpen: false,
@@ -9932,6 +9936,15 @@ export function openTaskManager(): void {
 
 export function closeTaskManager(): void {
   setState({ taskManagerOpen: false, stopAllOpen: false })
+}
+
+// The human board ("Tasks for Human…"): open/close just flip the gate.
+export function openBoard(): void {
+  setState({ boardOpen: true })
+}
+
+export function closeBoard(): void {
+  setState({ boardOpen: false })
 }
 
 // The Yaran Cloud dialog: open/close just flip the gate.

@@ -42,6 +42,7 @@ import {
   PartyPopper,
   ArrowUpDown,
   CalendarPlus,
+  ClipboardList,
   Cloud,
   Clock,
   FileCode,
@@ -73,6 +74,7 @@ import {
   openCustomizeWebapp,
   openGlobalEnv,
   openTaskManager,
+  openBoard,
   openMacrosDialog,
   openCloudDialog,
   openConnectPhone,
@@ -330,6 +332,15 @@ export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
     },
     // Separates Configuration from the Task Manager.
     { kind: "separator", id: "sep-agents" },
+    // The human board: what agents posted for a person with `yaran board post`.
+    // Named as the terminal UI names it, so the two surfaces read alike.
+    {
+      kind: "item",
+      id: "human-board",
+      title: "Tasks for Human…",
+      icon: ClipboardList,
+      run: () => openBoard(),
+    },
     {
       kind: "item",
       id: "task-manager",

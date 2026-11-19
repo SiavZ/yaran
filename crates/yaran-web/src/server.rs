@@ -1176,6 +1176,7 @@ fn gated_routes(
         .merge(crate::cloud_mode_routes::routes())
         .merge(crate::build_routes::routes())
         .merge(crate::peer_routes::routes())
+        .merge(crate::board_routes::routes())
         .merge(crate::workspace_routes::routes())
         .merge(crate::session_actions::routes())
         .merge(crate::project_actions::routes())

@@ -121,6 +121,34 @@ On a board with people, an open task's **Assign…** opens the list of everyone 
 pick whose queue it goes to, or leave the list to go back to the card. Only tasks can be
 handed over; news, validations and confirmations stay with whoever they were posted for.
 
+## In the browser and on your phone
+
+The web UI shows the same board under **Tasks for Human…** in the app menu (the cog on a
+computer, the menu on the phone's agent list), whether or not `[ui] human_board` is on.
+The board opens on your own queue, with a button per person and **All** when the board has
+people, and the cards grouped as above. It reads the board again every few seconds while
+it is open.
+
+On a phone, the agent list's header also carries a **Tasks for Human** button showing how
+many cards wait on you. The count is read again every 15 seconds while the list is on
+screen.
+
+Open a card to read it and its conversation, then:
+
+- **Send** adds your reply to the card's conversation;
+- **Send & mark done** (it reads **Mark done** while the box is empty) adds it and closes
+  the card;
+- **Reopen** puts a done card back;
+- **Priority** changes how urgent an open card is;
+- **Assign**, on an open task of a board with people, hands it to someone's queue (or to
+  **Anyone**). As in the terminal UI, news, validations and confirmations stay where they
+  were posted.
+
+When the agent that posted the card is running in this yaran, your reply is also sent to it
+with `yaran peer send`, in the words of `human_board_reply_template`, and the card view
+names that agent before you send. If that send fails, nothing is added to the card and
+your reply stays in the box.
+
 ## Posting cards from an agent
 
 Agents use the `yaran board` command, which works from inside any agent yaran launched:

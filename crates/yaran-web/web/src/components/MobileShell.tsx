@@ -4,6 +4,7 @@ import { Suspense, useState, type ReactElement } from "react"
 import { RouteNotFoundScreen } from "@/components/RouteNotFoundScreen"
 import { LauncherCorner } from "@/components/LauncherCorner"
 import { AppMenuSheet } from "@/components/AppMenuSheet"
+import { BoardHubButton } from "@/components/BoardHubButton"
 import { ChangedFiles } from "@/components/ChangedFiles"
 import { ChunkBoundary } from "@/components/ChunkBoundary"
 import { LazyTerminalPane } from "@/components/LazyTerminalPane"
@@ -90,6 +91,7 @@ function HomeScreen() {
           {instanceTitle}
         </span>
         <ConnDot className="mr-auto" />
+        <BoardHubButton />
         {/* Ghost, as a quiet title-bar action; size-11 keeps the touch floor. */}
         <Button
           variant="ghost"

@@ -2601,6 +2601,39 @@ implemented yet.
 
 ---
 
+## T70 — The human board answered from a browser
+
+**Attack scenario.** Someone who reaches yaran's web listener reads the
+board, marks cards done, hands tasks to other people's queues or replies on
+a card so that the reply is relayed to the agent that posted it, steering
+that agent in the person's name. Card text written by agents or other
+people tries to inject markup into the page.
+
+**Mitigation in code.** Implemented. The routes in
+`crates/yaran-web/src/board_routes.rs` are behind the same auth layer,
+Host guard and same-origin check as every other route, so this is no wider
+than the workspace the web server already hands an authenticated client
+(single-tenant, trusted access). Every read and write goes through the
+board store, under its lock, with the sanitizing and length bounds of T21.
+An unknown card, an empty reply, a person not in `[board] people` and an
+unknown priority are refused; only an open task can be handed to another
+queue, as in the terminal UI. The agent a reply reaches is chosen on the
+server: the card's poster, only when the card was posted on this machine
+and that agent runs here. It is reached only through `yaran peer send`, the
+route the board relay already takes, never by typing into a terminal, and
+a send that fails adds nothing to the card. The browser renders card text
+and conversations as text, never as HTML. Tests: `board_routes.rs`,
+`BoardDialog.test.tsx`.
+
+**Residual risk.** Anyone signed in to the web UI can answer for the
+person running yaran, exactly as they could type into that agent's
+terminal.
+
+**Detection.** Every reply is kept in the card's conversation under the
+writer's name (`[board] me`, or `human`), and `yaran board show` prints it.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must
