@@ -23,6 +23,7 @@
 //! ├── auth
 //! ├── auth::provenance
 //! ├── background
+//! ├── board_routes
 //! ├── bootstrap
 //! ├── bootstrap_routes
 //! ├── browse_routes
@@ -121,6 +122,7 @@
 
 pub mod auth;
 pub mod background;
+pub mod board_routes;
 pub mod bootstrap;
 pub mod bootstrap_routes;
 pub mod browse_routes;

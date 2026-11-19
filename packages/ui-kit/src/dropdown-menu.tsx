@@ -25,6 +25,7 @@
  * ├── web:src/components/AgentActionsMenu.tsx
  * ├── web:src/components/AgentTabsStrip.tsx
  * ├── web:src/components/AppMenu.tsx
+ * ├── web:src/components/BoardDialog.tsx
  * ├── web:src/components/ChangedFiles.tsx
  * ├── web:src/components/CopyPhoneLinkItem.tsx
  * ├── web:src/components/DockStrip.tsx

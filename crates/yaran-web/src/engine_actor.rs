@@ -11,6 +11,7 @@
 //! engine_actor.rs
 //! ├── auth
 //! ├── auth::admission
+//! ├── board_routes
 //! ├── bootstrap
 //! ├── cloud_mode
 //! ├── cloud_routes
@@ -548,6 +549,10 @@ pub(crate) enum EngineRequest {
     /// live `[cloud]` section, the serving port and the status liveness set.
     /// Instant clones; the routes do their network and file work off-thread.
     CloudInputs(oneshot::Sender<crate::cloud_routes::CloudInputs>),
+    /// What the human board routes need from the engine: the live `[board]`
+    /// settings, the reply template and which agents run here. Instant clones;
+    /// the routes read and write the board off-thread.
+    BoardInputs(oneshot::Sender<crate::board_routes::BoardInputs>),
     /// Resolve the directory the add-project picker opens at from
     /// `defaults.start_directory` in the live config, so a reload changes the answer
     /// and a raw save that has not been reloaded does not. An instant clone; the
@@ -2341,6 +2346,16 @@ impl EngineHandle {
         rx.await.ok()
     }
 
+    /// What the human board routes need; `None` when the engine is gone.
+    pub async fn board_inputs(&self) -> Option<crate::board_routes::BoardInputs> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::BoardInputs(tx))
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
     /// The directory the add-project picker should open at, resolved from the
     /// live config. `None` if the engine is gone, in which case the browse handler falls
     /// back to `$HOME` on its own.
@@ -2845,6 +2860,7 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         | EngineRequest::ProjectStartupLogContext(..)
         | EngineRequest::EditorDefault(..)
         | EngineRequest::CloudInputs(..)
+        | EngineRequest::BoardInputs(..)
         | EngineRequest::BrowseStartDir(..)
 
         // Attach to an ALREADY-RUNNING PTY, or push bytes at one. Deliberately
@@ -5276,6 +5292,9 @@ fn handle_request(
         EngineRequest::EditorDefault(reply) => answer(reply, engine.config.editor.default.clone()),
         EngineRequest::CloudInputs(reply) => {
             answer(reply, crate::cloud_routes::CloudInputs::from_engine(engine));
+        }
+        EngineRequest::BoardInputs(reply) => {
+            answer(reply, crate::board_routes::BoardInputs::from_engine(engine));
         }
         EngineRequest::BrowseStartDir(reply) => answer(reply, browse_start_dir(engine)),
         // Spawn the off-thread refresh unconditionally. If this worktree is
@@ -10453,6 +10472,11 @@ mod tests {
                 false,
             ),
             (
+                "BoardInputs",
+                EngineRequest::BoardInputs(dead_reply()),
+                false,
+            ),
+            (
                 "BrowseStartDir",
                 EngineRequest::BrowseStartDir(dead_reply()),
                 false,
@@ -10642,7 +10666,7 @@ mod tests {
         // through with a copied-from-its-neighbour `false` that nothing reads.
         assert_eq!(
             request_kind_answers().len(),
-            51,
+            52,
             "every EngineRequest kind needs a row in request_kind_answers; \
              update the count deliberately when adding one"
         );

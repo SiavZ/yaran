@@ -33,6 +33,7 @@
  * ├── web:src/components/AgentTabsStrip.tsx
  * ├── web:src/components/AgentVitalsTooltip.tsx
  * ├── web:src/components/AttachPullRequestDialog.tsx
+ * ├── web:src/components/BoardDialog.tsx
  * ├── web:src/components/ChangeBaseBranchDialog.tsx
  * ├── web:src/components/ChangedFiles.tsx
  * ├── web:src/components/ConnDot.tsx

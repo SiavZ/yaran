@@ -107,6 +107,7 @@ describe("appMenuModel", () => {
       ["separator", "sep-agents"],
       // No top-level new-standalone-terminal: its one home is the New submenu
       // above (pinned as absent by the test below).
+      ["item", "human-board"],
       ["item", "task-manager"],
       ["item", "yaran-cloud"],
       ["separator", "sep-about"],
@@ -223,6 +224,7 @@ describe("appMenuModel", () => {
       "edit-config",
       "edit-macros",
       "global-env",
+      "human-board",
       "task-manager",
       "yaran-cloud",
       "projects",
@@ -423,7 +425,7 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows Connect a phone… on a paired machine in a browser", () => {
-    expect(top({ phonePairing: true }).slice(9, 13)).toEqual([
+    expect(top({ phonePairing: true }).slice(10, 14)).toEqual([
       "task-manager",
       "yaran-cloud",
       "sep-device",
@@ -433,7 +435,7 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows the native entries inside the app, in order", () => {
-    expect(top({ nativeShell: true }).slice(9, 15)).toEqual([
+    expect(top({ nativeShell: true }).slice(10, 16)).toEqual([
       "task-manager",
       "yaran-cloud",
       "sep-device",

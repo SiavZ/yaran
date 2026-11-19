@@ -22,6 +22,7 @@
 //! ├── auth::provenance
 //! ├── auth::routes
 //! ├── auth::socket
+//! ├── board_routes
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes
@@ -90,6 +91,7 @@
 //! ├── auth::routes
 //! ├── auth::socket
 //! ├── background
+//! ├── board_routes
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes
@@ -1176,6 +1178,7 @@ fn gated_routes(
         .merge(crate::cloud_mode_routes::routes())
         .merge(crate::build_routes::routes())
         .merge(crate::peer_routes::routes())
+        .merge(crate::board_routes::routes())
         .merge(crate::workspace_routes::routes())
         .merge(crate::session_actions::routes())
         .merge(crate::project_actions::routes())

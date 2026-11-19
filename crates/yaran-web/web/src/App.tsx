@@ -10,6 +10,7 @@
  * ├── src/components/AgentInfoDialog.tsx
  * ├── src/components/AgentStartupCommandDialog.tsx
  * ├── src/components/AttachPullRequestDialog.tsx
+ * ├── src/components/BoardDialog.tsx
  * ├── src/components/ChangeBaseBranchDialog.tsx
  * ├── src/components/ChangeProviderDialog.tsx
  * ├── src/components/ChangedFiles.tsx
@@ -109,6 +110,7 @@ import { ConfirmForceStopAgentDialog } from "@/components/ConfirmForceStopAgentD
 import { ConfirmRecreateWorkingCopyDialog } from "@/components/ConfirmRecreateWorkingCopyDialog"
 import { ConfirmUseExistingBranchDialog } from "@/components/ConfirmUseExistingBranchDialog"
 import { TaskManagerDialog } from "@/components/TaskManagerDialog"
+import { BoardDialog } from "@/components/BoardDialog"
 import { CloudDialog } from "@/components/cloud/CloudDialog"
 import { ConnectPhoneDialog } from "@/components/ConnectPhoneDialog"
 import { ConfirmDiscardFileDialog } from "@/components/ConfirmDiscardFileDialog"
@@ -197,6 +199,7 @@ function GlobalOverlays() {
       <ConfirmRecreateWorkingCopyDialog />
       <ConfirmUseExistingBranchDialog />
       <TaskManagerDialog />
+      <BoardDialog />
       <CloudDialog />
       <ConnectPhoneDialog />
       <ConfigEditorDialog />
