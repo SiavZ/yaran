@@ -11,6 +11,9 @@
  * - One pending handoff at a time; a new [begin] replaces the old one. Thread-safe.
  * - A launched handoff holds App Lock open for at most the callback TTL, released by every
  *   ending after the session is stored, so the browser trip cannot relock the vault first.
+ * - No ending throws. Only a locked vault is `vault_locked`; any other key store or vault
+ *   failure (StrongBox/TEE provider errors, a tampered or unwritable record) is
+ *   `secure_storage_failed`, and the hold is released all the same.
  *
  * <module-headers:begin>
  * Uses:
@@ -19,6 +22,7 @@
  * ├── io.github.siavz.yaran.machineview.CallbackUrl (inferred)
  * ├── io.github.siavz.yaran.machineview.CoreBindings (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
+ * ├── io.github.siavz.yaran.machineview.Direct (inferred)
  * ├── io.github.siavz.yaran.machineview.Fallbacks (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffSignature (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffUrl (inferred)
@@ -30,8 +34,10 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.HandoffClient
+ * ├── io.github.siavz.yaran.machineview.AuthTabRegistryRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.BrowserLauncher (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.HandoffFailureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * ├── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
@@ -49,7 +55,8 @@ internal sealed interface SignInTarget {
 }
 
 internal sealed interface Begin {
-    data class Launch(val url: String) : Begin
+    /** [state] is the launch's identity: every ending of it names it. */
+    data class Launch(val url: String, val state: String) : Begin
     data class Failed(val outcome: SignInOutcome) : Begin
 }
 
@@ -78,7 +85,15 @@ internal class HandoffClient(
     private var pending: Pending? = null
 
     @Synchronized
-    fun begin(orgId: String, target: SignInTarget): Begin {
+    fun begin(orgId: String, target: SignInTarget): Begin = try {
+        start(orgId, target)
+    } catch (e: Exception) {
+        // The org lookup and every check before the launch read the vault too: they end the sign-in, never the io thread.
+        if (e !is VaultLockedException) diagnostics.append("machine-view handoff start failed error=${e.javaClass.simpleName}")
+        Begin.Failed(if (e is VaultLockedException) SignInOutcome.VaultLocked else SignInOutcome.SecureStorageFailed)
+    }
+
+    private fun start(orgId: String, target: SignInTarget): Begin {
         val (handoffTarget, kind) = when (target) {
             SignInTarget.ControlPlane -> {
                 val orgUrl = orgs.orgUrl(orgId)?.takeIf { HostRules.ORG_URL.matches(it) }
@@ -92,6 +107,8 @@ internal class HandoffClient(
         }
         val host = HandoffUrl.signedHost(handoffTarget)
         return try {
+            // One host never holds both an org and a direct credential (the direct side refuses with org_host).
+            if (target is SignInTarget.Machine && DirectSessionStore(vault).has(target.host)) return Begin.Failed(SignInOutcome.Refused("direct_host"))
             val identity = deviceKeys.ensure(orgId)
             val recipient = SealedEnvelope.generateRecipient()
             val state = B64url.encode(ByteArray(32).also { random.nextBytes(it) })
@@ -99,25 +116,56 @@ internal class HandoffClient(
             val marker = JSONObject().put("state", state).put("host", host).put("target", kind).put("created_at", createdAt)
             vault.write(MARKER_NS, marker.toString().toByteArray(Charsets.UTF_8), ProtectionClass.STANDARD)
             val dsig = deviceKeys.sign(orgId, HandoffSignature.canonical(host, recipient.pk, state, createdAt))
+            val params = HandoffParams(recipient.pk, state, identity.publicKey, createdAt, dsig)
+            val url = HandoffUrl.build(handoffTarget, mode, Fallbacks.HANDOFF_MODE_FRAGMENT, deviceLabel, params)
+            // A replaced sign-in gives its hold back; this one takes its own.
+            if (pending != null) lock.releaseExternalFlow()
             pending = Pending(orgId, handoffTarget, host, kind, recipient, state, createdAt)
             lock.holdForExternalFlow(CallbackUrl.TTL_S * 1000)
             diagnostics.append("machine-view handoff start target=$kind host=$host")
-            val params = HandoffParams(recipient.pk, state, identity.publicKey, createdAt, dsig)
-            Begin.Launch(HandoffUrl.build(handoffTarget, mode, Fallbacks.HANDOFF_MODE_FRAGMENT, deviceLabel, params))
-        } catch (e: VaultLockedException) {
-            Begin.Failed(SignInOutcome.VaultLocked)
+            Begin.Launch(url, state)
+        } catch (e: Exception) {
+            // A key store or vault failure while unlocked ends this sign-in truthfully, never the app.
+            if (e !is VaultLockedException) diagnostics.append("machine-view handoff start failed error=${e.javaClass.simpleName}")
+            Begin.Failed(if (e is VaultLockedException) SignInOutcome.VaultLocked else SignInOutcome.SecureStorageFailed)
         }
     }
 
     @Synchronized
     fun hasPending() = pending != null
 
+    /**
+     * Never throws: a storage failure is an outcome, and the external-flow hold is released on every
+     * path. While a sign-in is pending, only a callback carrying its own `state` ends it: anything
+     * else (a replaced sign-in's late redirect, a malformed callback) is ignored, null, before it
+     * is parsed or anything is cleaned up, so it can neither end the pending sign-in nor release its hold.
+     * [launch] is the state of the Auth Tab launch whose result this is: one from a launch that is
+     * not the awaited one (the pending sign-in's, or after a restart the marker's) is ignored first,
+     * whatever state its URI claims. A redirect delivered as an intent (no launch) has only its URI.
+     */
     @Synchronized
-    fun onRedirect(uri: String): SignInOutcome {
+    fun onRedirect(uri: String, launch: String? = null): SignInOutcome? {
         val p = pending
+        if (launch != null && launch != (p?.state ?: readMarker()?.state)) {
+            diagnostics.append("machine-view handoff redirect from a replaced launch ignored")
+            return null
+        }
+        if (p != null && !CallbackUrl.carriesState(mode, uri, p.state)) {
+            diagnostics.append("machine-view handoff callback for another sign-in ignored")
+            return null
+        }
         pending = null
+        return try {
+            redirect(p, uri)
+        } catch (e: Exception) {
+            diagnostics.append("machine-view handoff callback failed error=${e.javaClass.simpleName}")
+            finish(if (e is VaultLockedException) SignInOutcome.VaultLocked else SignInOutcome.SecureStorageFailed, null)
+        }
+    }
+
+    private fun redirect(p: Pending?, uri: String): SignInOutcome {
         val marker = readMarker()
-        vault.delete(MARKER_NS)
+        deleteMarker()
         if (p == null) {
             val ref = marker ?: return finish(SignInOutcome.Mismatch, "no pending handoff")
             return when (CallbackUrl.parse(mode, uri, ref, now())) {
@@ -139,30 +187,57 @@ internal class HandoffClient(
                 )
                 is OpenResult.Opened -> try {
                     sessions.put(p.orgId, o.payload)
-                    finish(SignInOutcome.SignedIn(p.host, o.payload.email, sessions.get(p.host)?.exp ?: o.payload.exp), null)
+                    val exp = runCatching { sessions.get(p.host)?.exp }.getOrNull() ?: o.payload.exp
+                    finish(SignInOutcome.SignedIn(p.host, o.payload.email, exp), null)
                 } catch (e: VaultLockedException) {
                     finish(SignInOutcome.VaultLocked, null)
+                } catch (e: Exception) {
+                    diagnostics.append("machine-view handoff session save failed error=${e.javaClass.simpleName}")
+                    finish(SignInOutcome.SecureStorageFailed, null)
                 }
             }
         }
     }
 
+    /**
+     * The endings that carry no callback. With [state] (an Auth Tab result or a launch that
+     * failed, bound to the launch they came from) they end the pending sign-in only if it is that
+     * launch's; a replaced launch's ending is ignored. Without it (a plain Custom Tab, which
+     * returns no result) they end whatever is pending.
+     */
     @Synchronized
-    fun onCancelled(): SignInOutcome? = consume()?.let { finish(SignInOutcome.Cancelled, null) }
+    fun onCancelled(state: String? = null): SignInOutcome? = consume(state)?.let { finish(SignInOutcome.Cancelled, null) }
 
     @Synchronized
-    fun onVerificationFailed(): SignInOutcome? = consume()?.let {
+    fun onVerificationFailed(state: String? = null): SignInOutcome? = consume(state)?.let {
         finish(SignInOutcome.VerificationFailed((mode as? CallbackMode.Https)?.domain ?: ""), null)
     }
 
     @Synchronized
-    fun onNoBrowser(): SignInOutcome? = consume()?.let { finish(SignInOutcome.NoBrowser, null) }
+    fun onNoBrowser(state: String? = null): SignInOutcome? = consume(state)?.let { finish(SignInOutcome.NoBrowser, null) }
 
-    private fun consume(): Pending? {
+    /** The launch whose result may still arrive: the pending one, or after a restart the marker's. */
+    @Synchronized
+    fun awaitedState(): String? = pending?.state ?: readMarker()?.state
+
+    private fun consume(state: String?): Pending? {
         val p = pending ?: return null
+        if (state != null && state != p.state) {
+            diagnostics.append("machine-view handoff ending for a replaced launch ignored")
+            return null
+        }
         pending = null
-        vault.delete(MARKER_NS)
+        deleteMarker()
         return p
+    }
+
+    /** A marker that cannot be deleted only weakens interrupted-detection; it must not fail the ending. */
+    private fun deleteMarker() {
+        try {
+            vault.delete(MARKER_NS)
+        } catch (e: Exception) {
+            diagnostics.append("machine-view handoff marker delete failed error=${e.javaClass.simpleName}")
+        }
     }
 
     private fun errorOutcome(p: Pending, e: CallbackResult.Error): SignInOutcome = when (e.code) {

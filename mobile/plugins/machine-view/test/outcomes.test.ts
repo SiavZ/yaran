@@ -39,6 +39,7 @@ const samples: { [K in Failure["kind"]]: Extract<Failure, { kind: K }> } = {
   offline: { kind: "offline" },
   tls_error: { kind: "tls_error" },
   vault_locked: { kind: "vault_locked" },
+  secure_storage_failed: { kind: "secure_storage_failed" },
 };
 
 describe("signInFailure", () => {

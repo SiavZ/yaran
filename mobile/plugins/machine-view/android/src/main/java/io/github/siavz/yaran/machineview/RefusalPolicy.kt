@@ -17,7 +17,8 @@
  * io.github.siavz.yaran.machineview.RefusalPolicy
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineWebViewClient (inferred)
- * └── io.github.siavz.yaran.machineview.PolicyFixtureTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.PolicyFixtureTest (inferred)
+ * └── io.github.siavz.yaran.machineview.WindowEvents (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
@@ -35,6 +36,18 @@ internal object RefusalPolicy {
         "access-not-yet-valid", "access-not-app-token", "access-service-token", "access-not-owner",
         "access-keys-unavailable", "host-not-served", "host-missing",
     )
+
+    /** The window overlay row for an overlay that is just a sentence (REAUTH, OFFLINE and NONE act instead). */
+    fun overlayKey(o: RefusalOverlay): String = when (o) {
+        RefusalOverlay.NOT_OWNER -> "not_owner"
+        RefusalOverlay.KEYS_UNAVAILABLE -> "keys_unavailable"
+        RefusalOverlay.UNAVAILABLE -> "unavailable"
+        RefusalOverlay.HOST_DISCONNECTED -> "host_disconnected"
+        RefusalOverlay.CODE_OVERLAY -> "code_overlay"
+        RefusalOverlay.REAUTH -> "reauth"
+        RefusalOverlay.OFFLINE -> "offline"
+        RefusalOverlay.NONE -> "code_overlay"
+    }
 
     fun decide(status: Int, refusal: String?): RefusalDecision {
         if (status < 400) return RefusalDecision(RefusalOverlay.NONE, false)

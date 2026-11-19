@@ -23,6 +23,7 @@
  * ├── io.github.siavz.yaran.machineview.CryptoFixtureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.Fakes (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
+ * ├── io.github.siavz.yaran.machineview.NativeCookieIsolationRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.SessionStore (inferred)
  * └── io.github.siavz.yaran.machineview.StoresTest (inferred)

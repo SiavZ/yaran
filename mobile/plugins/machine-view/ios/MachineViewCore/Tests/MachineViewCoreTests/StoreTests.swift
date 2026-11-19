@@ -19,16 +19,21 @@
 /// ├── MachineViewCore/SealedEnvelope (inferred)
 /// ├── MachineViewCore/Seams (inferred)
 /// ├── MachineViewCore/SessionStore (inferred)
+/// ├── MachineViewCoreTests/DirectOwnershipTests (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
 /// └── MachineViewCoreTests/Fakes (inferred)
 /// External: CryptoKit, Foundation, Testing
 ///
 /// Used by: entry point (Swift Testing, via bash ios/MachineViewCore/test.sh)
 /// MachineViewCoreTests/StoreTests
 /// ├── MachineViewCoreTests/CryptoTests (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/HandoffClientTests (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
-/// └── MachineViewCoreTests/OrgApiClientTests (inferred)
+/// ├── MachineViewCoreTests/OrgApiClientTests (inferred)
+/// └── MachineViewCoreTests/OrgWipeTests (inferred)
 /// <module-headers:end>
 import CryptoKit
 import Foundation
@@ -40,7 +45,7 @@ struct StoreRig {
     var lock = false
     var installs: InstallIdStore { InstallIdStore(vault: vault) }
     var keys: DeviceKeyStore { DeviceKeyStore(backend: backend, installs: installs, diagnostics: diag) }
-    func sessions(lock: Bool = false) -> SessionStore { SessionStore(vault: vault, diagnostics: diag, lockEnabled: { lock }) }
+    func sessions() -> SessionStore { SessionStore(vault: vault, diagnostics: diag) }
 }
 
 func payload(host: String, exp: Int64, jwtExp: Int64? = nil, cookie: String? = nil, kind: String = "machine") -> HandoffPayload {
@@ -114,9 +119,9 @@ func payload(host: String, exp: Int64, jwtExp: Int64? = nil, cookie: String? = n
         #expect(rig.diag.lines.contains { $0.contains("jwt exp undecodable") })
     }
 
-    @Test func lockedClassWhenAppLockIsOn() throws {
+    @Test func lockedClassEvenWithAppLockOff() throws {
         let rig = StoreRig()
-        try rig.sessions(lock: true).put(orgId: "org-a", payload: payload(host: "m.example.com", exp: 5000), kind: .accessJwt)
+        try rig.sessions().put(orgId: "org-a", payload: payload(host: "m.example.com", exp: 5000), kind: .accessJwt)
         #expect(rig.vault.items["session/m.example.com"]?.1 == .locked)
         rig.vault.locked = true
         #expect(throws: VaultError.locked) { try rig.sessions().get("m.example.com") }

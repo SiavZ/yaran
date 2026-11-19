@@ -1,0 +1,255 @@
+{
+  "description": "Verified agent link: https://<publisher_domain>/open#o=<OrgUrl>&m=<machine Uuid>&a=<YaranId>[&t=<YaranId>] or #d=<host>&a=...[&t=...]. publisher_domain comes from build or runtime config (Session.callbackMode https domain), never from the link. STRICT: exact lowercase authority, path exactly /open, no query, exactly one target form, a required, t optional, no other, empty or duplicate parameter. The link opens only a machine this phone already has; it never adds one. build: link -> expect URL or null (throws). parse: expect is the link or uri_invalid.",
+  "publisher_domain": "apps.example.org",
+  "build": [
+    {
+      "link": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": "a1b2"
+      },
+      "expect": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2"
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": "a1b2",
+        "tabId": "t/9#x"
+      },
+      "expect": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2&t=t%2F9%23x"
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "direct",
+          "host": "laptop.tail1234.ts.net"
+        },
+        "agentId": "s-1"
+      },
+      "expect": "https://apps.example.org/open#d=laptop.tail1234.ts.net&a=s-1"
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "direct",
+          "host": "10.0.0.5"
+        },
+        "agentId": "s-1"
+      },
+      "expect": null
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "http://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": "s-1"
+      },
+      "expect": null
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "machine-1"
+        },
+        "agentId": "s-1"
+      },
+      "expect": null
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": "has space"
+      },
+      "expect": null
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": ""
+      },
+      "expect": null
+    },
+    {
+      "link": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expect": null
+    }
+  ],
+  "build_bad_domain": [
+    "",
+    "localhost",
+    "Apps.example.org",
+    "apps.example.org:443",
+    "https://apps.example.org"
+  ],
+  "parse": [
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": "a1b2"
+      }
+    },
+    {
+      "url": "https://apps.example.org/open#a=a1b2&t=t%2F9%23x&o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a",
+      "expect": {
+        "target": {
+          "kind": "org",
+          "orgUrl": "https://cp.example.com",
+          "machineId": "0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a"
+        },
+        "agentId": "a1b2",
+        "tabId": "t/9#x"
+      }
+    },
+    {
+      "url": "HTTPS://apps.example.org/open#d=laptop.tail1234.ts.net&a=s-1",
+      "expect": {
+        "target": {
+          "kind": "direct",
+          "host": "laptop.tail1234.ts.net"
+        },
+        "agentId": "s-1"
+      }
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2&x=1",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2&",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2&t=",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&d=laptop.tail1234.ts.net&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#d=laptop.tail1234.ts.net&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#d=10.0.0.5&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#d=laptop.tail1234.ts.net%3A8443&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=http%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=MACHINE&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=has%20space",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=%E0%A4%A",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open?o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open?x=1#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/open/#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org/Open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "http://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://evil.example.net/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org.evil.example.net/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://user@apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://apps.example.org:443/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "https://Apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    },
+    {
+      "url": "yaranapp://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+      "expect": "uri_invalid"
+    }
+  ],
+  "parse_without_domain": {
+    "url": "https://apps.example.org/open#o=https%3A%2F%2Fcp.example.com&m=0b5f9a8e-6d0e-4f43-9a51-1d6f7d9b1c2a&a=a1b2",
+    "domains": [
+      "",
+      "localhost",
+      "Apps.example.org"
+    ],
+    "expect": "uri_invalid"
+  }
+}

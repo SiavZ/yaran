@@ -23,6 +23,7 @@
 //! ├── cloud::cli::pair_phone
 //! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-tui::app::cloud_tests
+//! ├── yaran-web::cloud_phone_links
 //! └── yaran-web::cloud_phone_routes
 //! ```
 //! <module-headers:end>

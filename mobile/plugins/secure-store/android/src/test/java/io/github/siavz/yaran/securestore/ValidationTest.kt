@@ -43,6 +43,8 @@ class ValidationTest {
         listOf("session", "sessions", "handoff", "handoff-x", "install", "installs", "push", "push-keys").forEach {
             assertEquals(it, "reserved_namespace", code { Validation.namespace(it) })
         }
+        // The direct-machine tokens (machine-view's session-direct/<host>) must stay out of JS reach.
+        assertEquals("reserved_namespace", code { Validation.namespace("session-direct") })
         // Only a leading match is reserved: these merely contain a reserved word.
         assertEquals("my-session", Validation.namespace("my-session"))
         assertEquals("org-push", Validation.namespace("org-push"))

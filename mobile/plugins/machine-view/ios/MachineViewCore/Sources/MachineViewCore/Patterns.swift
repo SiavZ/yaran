@@ -18,6 +18,7 @@
 /// ├── MachineViewCore/CallbackUrl (inferred)
 /// ├── MachineViewCore/ControlUrl (inferred)
 /// ├── MachineViewCore/CookieSpec (inferred)
+/// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
 /// ├── MachineViewCore/RouteFragment (inferred)

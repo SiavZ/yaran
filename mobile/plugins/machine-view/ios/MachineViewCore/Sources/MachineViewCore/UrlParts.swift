@@ -14,6 +14,7 @@
 ///
 /// Used by:
 /// MachineViewCore/UrlParts
+/// ├── MachineViewCore/Direct (inferred)
 /// └── MachineViewCore/NavigationPolicy (inferred)
 /// <module-headers:end>
 import Foundation

@@ -13,7 +13,7 @@
 ///
 /// Used by:
 /// MachineViewCore/RefusalPolicy
-/// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewController+Overlays (inferred)
 /// ├── MachineViewCore/NavigationDelegate (inferred)
 /// └── MachineViewCoreTests/PolicyTests (inferred)
 /// <module-headers:end>

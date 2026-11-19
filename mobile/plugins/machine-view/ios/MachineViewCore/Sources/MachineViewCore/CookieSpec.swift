@@ -17,6 +17,7 @@
 /// MachineViewCore/CookieSpec
 /// ├── MachineView/MachineViewController (inferred)
 /// ├── MachineViewCore/CookieInjector (inferred)
+/// ├── MachineViewCore/DirectAuth (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
 /// ├── MachineViewCore/Seams (inferred)

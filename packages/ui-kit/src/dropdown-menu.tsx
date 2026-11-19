@@ -17,6 +17,7 @@
  *
  * Used by:
  * src/dropdown-menu.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/DirectSection.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/MachineRow.tsx
  * ├── @yaran/mobile-shell:src/screens/orgs/OrgList.tsx
  * ├── src/dropdown-menu.test.tsx
@@ -25,6 +26,7 @@
  * ├── web:src/components/AgentTabsStrip.tsx
  * ├── web:src/components/AppMenu.tsx
  * ├── web:src/components/ChangedFiles.tsx
+ * ├── web:src/components/CopyPhoneLinkItem.tsx
  * ├── web:src/components/DockStrip.tsx
  * ├── web:src/components/EditorBody.tsx
  * ├── web:src/components/EditorStatusBar.tsx

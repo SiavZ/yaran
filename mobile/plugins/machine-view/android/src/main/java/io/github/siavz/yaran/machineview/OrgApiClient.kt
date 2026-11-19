@@ -17,6 +17,7 @@
  * ├── io.github.siavz.yaran.machineview.CoreBindings (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
  * ├── io.github.siavz.yaran.machineview.InstallIdStore (inferred)
+ * ├── io.github.siavz.yaran.machineview.NativeHttp (inferred)
  * ├── io.github.siavz.yaran.machineview.Outcomes (inferred)
  * ├── io.github.siavz.yaran.machineview.SessionStore (inferred)
  * └── io.github.siavz.yaran.machineview.UrlParts (inferred)
@@ -24,6 +25,7 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.OrgApiClient
+ * ├── io.github.siavz.yaran.machineview.NativeCookieIsolationRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
  * └── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * <module-headers:end>
@@ -74,7 +76,7 @@ internal class OrgApiClient(
             sessions.status(orgUrl.removePrefix("https://"), now())
         } catch (e: VaultLockedException) {
             null
-        } ?: return ApiResult.SessionExpired
+        }?.takeIf { it.orgId == orgId } ?: return ApiResult.SessionExpired // another org's record is never sent, nor deleted
         val value = CookieSpec.value(session.jwt, session.cookie, session.credentialKind) ?: return ApiResult.SessionExpired
         val headers = linkedMapOf("Cookie" to "CF_Authorization=$value", "cf-access-token" to session.jwt)
         if (record != null && (registration || record.registered)) headers["Yaran-Install-Id"] = record.installId
@@ -83,8 +85,12 @@ internal class OrgApiClient(
         return result
     }
 
-    private fun send(url: URL, method: String, body: String?, headers: Map<String, String>, credentialed: Boolean, orgId: String?): ApiResult {
-        val conn = connect(url)
+    /** Only the headers given ever reach the org: never one of the WebView's cookies ([NativeHttp]). */
+    private fun send(url: URL, method: String, body: String?, headers: Map<String, String>, credentialed: Boolean, orgId: String?): ApiResult =
+        NativeHttp.isolated { exchange(url, method, body, headers, credentialed, orgId) }
+
+    private fun exchange(url: URL, method: String, body: String?, headers: Map<String, String>, credentialed: Boolean, orgId: String?): ApiResult {
+        val conn = NativeHttp.open { connect(url) }
         try {
             conn.instanceFollowRedirects = false
             conn.useCaches = false
@@ -131,7 +137,8 @@ internal class OrgApiClient(
         when (error.getString("code")) {
             "device_revoked" -> if (status == 403 && orgId != null) {
                 diagnostics.append("machine-view org api device_revoked: wiping this org's sessions and device identity")
-                wipeOrg(orgId)
+                // A wipe that could not finish keeps the identity for the next attempt; the device is revoked either way.
+                runCatching { wipeOrg(orgId) }.onFailure { diagnostics.append("machine-view org wipe did not finish error=${it.javaClass.simpleName}") }
                 return ApiResult.DeviceRevoked
             }
             "protocol_unsupported" -> {

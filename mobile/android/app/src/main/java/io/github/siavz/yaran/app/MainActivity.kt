@@ -15,8 +15,10 @@
  * Uses:
  * io.github.siavz.yaran.app.MainActivity
  * ├── io.github.siavz.yaran.core.AppLock
- * └── io.github.siavz.yaran.core.ScreenPrivacy
- * External: android.os, android.view, android.webkit, android.widget, androidx.activity, androidx.core.content, com.getcapacitor, kotlin.math
+ * ├── io.github.siavz.yaran.core.ScreenPrivacy
+ * ├── io.github.siavz.yaran.machineview.NativeHttp
+ * └── io.github.siavz.yaran.machineview.ShareHolder
+ * External: android.content, android.os, android.view, android.webkit, android.widget, androidx.activity, androidx.core.content, com.getcapacitor, kotlin.math
  *
  * Used by: entry point (launcher Activity, mobile/android/app/src/main/AndroidManifest.xml)
  * io.github.siavz.yaran.app.MainActivity
@@ -25,6 +27,7 @@
  */
 package io.github.siavz.yaran.app
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -39,6 +42,8 @@ import androidx.core.content.ContextCompat
 import com.getcapacitor.BridgeActivity
 import io.github.siavz.yaran.core.AppLock
 import io.github.siavz.yaran.core.ScreenPrivacy
+import io.github.siavz.yaran.machineview.NativeHttp
+import io.github.siavz.yaran.machineview.ShareHolder
 import kotlin.math.roundToInt
 
 /** The WebView text zoom (percent) for a system font scale, clamped to what stays usable. */
@@ -61,6 +66,7 @@ class MainActivity : BridgeActivity() {
         runOnUiThread {
             showCover(locked)
             promptPending = locked
+            if (!locked) ShareHolder.flush(false) // a share that arrived under the lock is told now
         }
     }
 
@@ -75,6 +81,22 @@ class MainActivity : BridgeActivity() {
         appLock.addListener(onLockChanged)
         showCover(appLock.locked)
         promptPending = appLock.locked
+        // A recreated activity carries the share it already handed over.
+        if (savedInstanceState == null) takeShare(intent)
+    }
+
+    // Capacitor installs its WebView-backed cookie handler process-wide at every bridge start;
+    // native requests must never open a connection between that and the guard wrapping it.
+    override fun load() = NativeHttp.frameworkStart { super.load() }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        takeShare(intent)
+    }
+
+    /** SEND / SEND_MULTIPLE (G5): held natively, announced to JS only once unlocked. */
+    private fun takeShare(intent: Intent?) {
+        if (ShareHolder.intake(intent)) ShareHolder.flush(appLock.locked)
     }
 
     override fun onResume() {

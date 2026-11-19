@@ -9,9 +9,13 @@
  * with the overlay and banner under the cover out of TalkBack's reach and inert; and a window
  * restored locked after process death reads no session and loads nothing until the unlock,
  * then starts exactly once; and a renderer crash under the cover attaches a page TalkBack cannot
- * reach and loads nothing until the unlock reloads it.
+ * reach and loads nothing until the unlock reloads it; and the page is paused, so it reports
+ * itself hidden and sends no viewed beat, while the window is paused or under the lock cover,
+ * a WebView recreated under the cover included, and is resumed only once the window is both
+ * resumed and unlocked (G4).
  *
  * - Robolectric's WebView is a shadow: settings and history are observable, rendering is not.
+ *   [PauseShadowWebView] keeps the paused flag that AwContents keeps, so the state is readable.
  *
  * <module-headers:begin>
  * Uses:
@@ -23,12 +27,21 @@
  * ├── io.github.siavz.yaran.machineview.MachineState (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineWebViewFactory (inferred)
- * ├── io.github.siavz.yaran.machineview.NavigationPolicy (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * └── io.github.siavz.yaran.machineview.SessionStore (inferred)
- * External: android.app, android.content, android.net, android.os, android.view, android.webkit, android.widget, androidx.test.core.app, org.json, org.junit, org.junit.Assert, org.junit.runner, org.robolectric, org.robolectric.Shadows, org.robolectric.annotation
+ * External: android.app, android.content, android.net, android.os, android.view, android.webkit, android.widget, androidx.test.core.app, org.json, org.junit, org.junit.Assert, org.junit.runner, org.robolectric, org.robolectric.Shadows, org.robolectric.annotation, org.robolectric.shadow.api, org.robolectric.shadows
  *
  * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
+ * io.github.siavz.yaran.machineview.MachineWindowRobolectricTest
+ * ├── io.github.siavz.yaran.machineview.AbandonedLoginRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.AdmissionRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectWindowRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.FreshSignInRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.SessionGenerationRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.StaleOpenRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.UpgradeRequiredRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.WindowRepairRobolectricTest (inferred)
+ * └── io.github.siavz.yaran.machineview.WindowRound12RobolectricTest (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
@@ -53,6 +66,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -60,9 +74,13 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowWebView
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
+@Config(sdk = [35], shadows = [PauseShadowWebView::class])
 class MachineWindowRobolectricTest {
     @Before
     fun bindings() {
@@ -82,22 +100,29 @@ class MachineWindowRobolectricTest {
             locked = false
         }
         CoreBindings.install(CoreBindings(vault, FakeDiagnostics(), { "https://cp.example.com" }, lock, { false }))
+        PluginRuntime.get(ApplicationProvider.getApplicationContext()).directAuth = yaran.auth // what admission probes
     }
+
+    private val yaran = FakeYaran()
+
+    @After
+    fun stopYaran() = yaran.close()
 
     // PluginRuntime is one per process and outlives a test, so every test drives this one lock and vault.
     private companion object {
-        val lock = FakeLock()
-        val vault = FakeVault()
+        val lock = TestBindings.lock
+        val vault = TestBindings.vault
         const val HOST = "laptop-ada.example.com"
+        const val ORG = "https://cp.example.com"
     }
 
     private fun machineIntent() = Intent(ApplicationProvider.getApplicationContext(), MachineViewActivity::class.java)
-        .putExtra("orgId", "org1").putExtra("machineId", "m1").putExtra("host", HOST)
+        .putExtra("orgId", ORG).putExtra("machineId", "m1").putExtra("host", HOST)
 
     /** A signed-in machine, so a start loads the page instead of renewing. */
     private fun storeSession() {
         val now = System.currentTimeMillis() / 1000
-        vault.data["${SessionStore.PREFIX}$HOST"] = JSONObject().put("org_id", "org1").put("jwt", TestSealer.jwt(now + 86_400))
+        vault.data["${SessionStore.PREFIX}$HOST"] = JSONObject().put("org_id", ORG).put("jwt", TestSealer.jwt(now + 86_400))
             .put("exp", now + 86_400).put("iat", now).put("email", "ada@example.org").toString().toByteArray()
     }
 
@@ -127,7 +152,7 @@ class MachineWindowRobolectricTest {
     @Test
     fun backCallbackFollowsCanGoBack() {
         val intent = Intent(ApplicationProvider.getApplicationContext(), MachineViewActivity::class.java)
-            .putExtra("orgId", "org1").putExtra("machineId", "m1").putExtra("host", "laptop-ada.example.com")
+            .putExtra("orgId", ORG).putExtra("machineId", "m1").putExtra("host", "laptop-ada.example.com")
         val activity = Robolectric.buildActivity(MachineViewActivity::class.java, intent).setup().get()
         val web = findWebView(activity.window.decorView as ViewGroup)!!
         assertFalse(activity.backCallback.isEnabled)
@@ -214,7 +239,8 @@ class MachineWindowRobolectricTest {
         unlock.performClick()
         unlock.performClick() // a second unlock before the first start lands must not start again
         drainIo()
-        assertEquals("started once", 1, vault.reads.count { it == "${SessionStore.PREFIX}$HOST" })
+        assertEquals("started once: one admission probe", 1, yaran.requests)
+        assertEquals("the session read by the refresh, then by that probe", 2, vault.reads.count { it == "${SessionStore.PREFIX}$HOST" })
         assertEquals("https://$HOST/", shadowOf(web).lastLoadedUrl)
         assertTrue(vault.reads.none { it.startsWith("install/") })
     }
@@ -236,6 +262,7 @@ class MachineWindowRobolectricTest {
         drainIo()
         val fresh = findWebView(decor)!!
         assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS, fresh.importantForAccessibility)
+        assertTrue("a page recreated under the cover starts hidden", paused(fresh))
         assertNull("no page or session behind the cover", shadowOf(fresh).lastLoadedUrl)
 
         lock.promptUnlocks = true
@@ -243,19 +270,54 @@ class MachineWindowRobolectricTest {
         drainIo()
         assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO, fresh.importantForAccessibility)
         assertEquals("the unlock reloads the page", "https://$HOST/", shadowOf(fresh).lastLoadedUrl)
+        assertFalse(paused(fresh))
+    }
+
+    @Test
+    fun theLockCoverHidesThePageUntilTheWindowIsResumedAndUnlocked() {
+        lock.enabled = true
+        storeSession()
+        val machine = Robolectric.buildActivity(MachineViewActivity::class.java, machineIntent()).create().start().resume()
+        drainIo()
+        val decor = machine.get().window.decorView as ViewGroup
+        val web = findWebView(decor)!!
+        assertFalse("an open, unlocked window shows its page", paused(web))
+
+        machine.pause()
+        assertTrue("a paused window hides its page", paused(web))
+        machine.resume()
+        assertFalse(paused(web))
+
+        lock.locked = true
+        lock.promptUnlocks = false
+        machine.pause().resume()
+        assertTrue(onScreen(findButton(decor, "Unlock")!!))
+        assertTrue("the page behind the lock cover is hidden", paused(web))
+        machine.pause().stop().start().resume()
+        assertTrue("coming back while still locked does not show the page", paused(web))
+
+        // The unlock lands while the window is paused (the credential screen covers it).
+        machine.pause()
+        lock.promptUnlocks = true
+        findButton(decor, "Unlock")!!.performClick()
+        assertFalse(lock.locked)
+        assertTrue("an unlock behind a paused window waits for the resume", paused(web))
+        machine.resume()
+        drainIo()
+        assertFalse("resumed and unlocked shows the page again", paused(web))
     }
 
     @Test
     fun badArgumentsCloseWithoutLoading() {
         val intent = Intent(ApplicationProvider.getApplicationContext(), MachineViewActivity::class.java)
-            .putExtra("orgId", "org1").putExtra("machineId", "m1").putExtra("host", "Bad_Host")
+            .putExtra("orgId", ORG).putExtra("machineId", "m1").putExtra("host", "Bad_Host")
         val activity = Robolectric.buildActivity(MachineViewActivity::class.java, intent).create().get()
         assertTrue(activity.isFinishing)
     }
 
     @Test
     fun savedStateRoundTrip() {
-        val s = MachineState.of("org1", "m1", "laptop-ada.example.com", "#/agent/a/tab/t")!!
+        val s = MachineState.of(ORG, "m1", "laptop-ada.example.com", "#/agent/a/tab/t")!!
         assertEquals("https://laptop-ada.example.com/#/agent/a/tab/t", s.url)
         val b = Bundle()
         s.copy(url = "https://laptop-ada.example.com/#/agent/b").toBundle(b)
@@ -264,7 +326,16 @@ class MachineWindowRobolectricTest {
         s.copy(url = "https://evil.example.net/").toBundle(foreign)
         assertNull(foreign.getString(MachineState.K_URL))
         assertEquals(MachineState.root("laptop-ada.example.com"), MachineState.fromBundle(foreign)!!.url)
-        assertNull(MachineState.of("org1", "m1", "laptop-ada.example.com", "#/agent/../x"))
+        assertNull(MachineState.of(ORG, "m1", "laptop-ada.example.com", "#/agent/../x"))
+    }
+
+    // Regression: the shell's orgId is the canonical OrgUrl; an id-shaped check refused every real open.
+    @Test
+    fun orgIdIsTheCanonicalOrgUrl() {
+        assertEquals(ORG, MachineState.of(ORG, "73fe733d-e4aa-4bdd-b2f3-2f3243fbf917", "laptop-ada.example.com", null)!!.orgId)
+        listOf("org1", "http://cp.example.com", "https://cp.example.com/", "https://CP.example.com", "https://cp.example.com/x").forEach {
+            assertNull(it, MachineState.of(it, "m1", "laptop-ada.example.com", null))
+        }
     }
 
     @Test
@@ -274,6 +345,8 @@ class MachineWindowRobolectricTest {
         assertNull(MachineChromeClient.contentOnly(arrayOf(Uri.parse("file:///x"))))
         assertNull(MachineChromeClient.contentOnly(null))
     }
+
+    private fun paused(w: WebView) = Shadow.extract<PauseShadowWebView>(w).paused
 
     /** The direct child of the window's content that holds [this] (the overlay or banner itself). */
     private fun View.rootUnder(decor: ViewGroup): View {
@@ -302,5 +375,32 @@ class MachineWindowRobolectricTest {
             }
         }
         return null
+    }
+}
+
+/** WebView.onPause/onResume as AwContents keeps them: one paused flag, which makes the page hidden. */
+@Implements(WebView::class)
+class PauseShadowWebView : ShadowWebView() {
+    var paused = false
+
+    /** Every main-frame navigation this WebView was asked for, in order. */
+    val loads = mutableListOf<String>()
+
+    @Implementation
+    override fun loadUrl(url: String) {
+        super.loadUrl(url)
+        loads += url
+    }
+
+    @Implementation
+    override fun onPause() {
+        super.onPause()
+        paused = true
+    }
+
+    @Implementation
+    override fun onResume() {
+        super.onResume()
+        paused = false
     }
 }

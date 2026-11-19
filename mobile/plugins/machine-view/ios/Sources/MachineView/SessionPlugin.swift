@@ -11,9 +11,12 @@
 /// Uses:
 /// MachineView/SessionPlugin
 /// ├── MachineView/AppServices (inferred)
+/// ├── MachineView/DirectFlow (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
+/// ├── MachineViewCore/Direct (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
-/// └── MachineViewCore/Patterns (inferred)
+/// ├── MachineViewCore/Patterns (inferred)
+/// └── MachineViewCore/Seams (inferred)
 /// External: Capacitor, UIKit
 ///
 /// Used by: entry point (Capacitor plugin (CAPBridgedPlugin), registered by the app's Capacitor bridge)
@@ -27,7 +30,8 @@ public class SessionPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "SessionPlugin"
     public let jsName = "Session"
     public let pluginMethods: [CAPPluginMethod] = ["meta", "signIn", "status", "request", "installId", "deviceKey",
-                                                   "callbackMode", "signOut"].map {
+                                                   "callbackMode", "signOut", "directStatus", "directSignIn",
+                                                   "directSignOut", "routeStatus"].map {
         CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)
     }
 
@@ -90,17 +94,51 @@ public class SessionPlugin: CAPPlugin, CAPBridgedPlugin {
             do {
                 try services.sessions.wipe(orgId: orgId, extraHosts: hosts, deviceKeys: services.deviceKeys, cleaner: services.cleaner)
                 call.resolve()
-            } catch {
+            } catch VaultError.locked {
                 call.reject("Unlock the app to sign out.", "vault_locked")
+            } catch {
+                // An unreadable listing or record: nothing was deleted, and the device identity stays.
+                call.reject("the sign-out did not finish", "native_error")
             }
         }
+    }
+
+    @objc func directStatus(_ call: CAPPluginCall) {
+        guard let host = call.getString("host") else { return call.reject("host is required", "invalid_argument") }
+        Task { @MainActor in call.resolve(await DirectFlow.status(host: host).jsObject) }
+    }
+
+    @objc func directSignIn(_ call: CAPPluginCall) {
+        guard let host = call.getString("host") else { return call.reject("host is required", "invalid_argument") }
+        DispatchQueue.main.async {
+            guard let presenter = self.bridge?.viewController else { return call.reject("no window to show the sign-in in", "unavailable") }
+            DirectFlow.signIn(from: presenter, host: host) { call.resolve($0.jsObject) }
+        }
+    }
+
+    @objc func directSignOut(_ call: CAPPluginCall) {
+        guard let host = call.getString("host") else { return call.reject("host is required", "invalid_argument") }
+        let signInId = call.getString("signInId")
+        if let signInId, signInId.range(of: #"^[A-Za-z0-9_-]{22}$"#, options: .regularExpression) == nil {
+            return call.reject("signInId is malformed", "invalid_argument")
+        }
+        Task { @MainActor in call.resolve(await DirectFlow.signOut(host: host, signInId: signInId).jsObject) }
+    }
+
+    @objc func routeStatus(_ call: CAPPluginCall) {
+        guard let object = call.getObject("route"), let route = MachineRoute(object) else {
+            return call.reject("route must be {kind:\"org\", orgId, machineId, host} or {kind:\"direct\", host}", "invalid_argument")
+        }
+        Task { @MainActor in call.resolve(await DirectFlow.routeStatus(route)) }
     }
 
     private func identity(_ call: CAPPluginCall, _ shape: @escaping (DeviceIdentity) -> [String: Any]) {
         guard let orgId = call.getString("orgId"), !orgId.isEmpty else { return call.reject("orgId is required", "invalid_argument") }
         DispatchQueue.main.async {
-            do { call.resolve(shape(try AppServices.shared.deviceKeys.ensure(orgId))) } catch {
+            do { call.resolve(shape(try AppServices.shared.deviceKeys.ensure(orgId))) } catch VaultError.locked {
                 call.reject("Unlock the app to read this phone's registration.", "vault_locked")
+            } catch {
+                call.reject("the native session call failed", "native_error") // Android's code for the same failure
             }
         }
     }

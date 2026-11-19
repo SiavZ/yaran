@@ -3,11 +3,13 @@
  *
  * Generates a `PURPOSE_SIGN` secp256r1 key with `DIGEST_SHA256` and no user authentication
  * (the consent page is the human check). StrongBox is requested on API 28+ and a
- * `StrongBoxUnavailableException` retries in the TEE. Where neither exists the platform falls
+ * `StrongBoxUnavailableException` or a StrongBox `ProviderException` retries in the TEE
+ * ([KeyGenFallback], unit-tested under Robolectric). Where neither exists the platform falls
  * back to a software-backed, still non-exportable Keystore key. Keystore keys are never backed
  * up and are deleted on uninstall.
  *
- * - Device only; the JVM tests use a software backend instead (Robolectric has no Keystore).
+ * - Device only; the JVM tests use a software backend instead (Robolectric has no Keystore),
+ *   and test the fallback rule through [KeyGenFallback].
  *
  * <module-headers:begin>
  * Uses:
@@ -19,6 +21,7 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.AndroidKeyStoreBackend
+ * ├── io.github.siavz.yaran.machineview.KeyGenFallbackRobolectricTest (inferred)
  * └── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * <module-headers:end>
  */
@@ -33,6 +36,7 @@ import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
+import java.security.ProviderException
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
@@ -43,15 +47,7 @@ internal class AndroidKeyStoreBackend : DeviceKeyBackend {
     override fun exists(alias: String) = store.containsAlias(alias)
 
     override fun generate(alias: String): SecurityLevel {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            try {
-                create(alias, strongBox = true)
-                return level(alias)
-            } catch (e: StrongBoxUnavailableException) {
-                // No StrongBox on this device: retry in the TEE.
-            }
-        }
-        create(alias, strongBox = false)
+        KeyGenFallback.generate(Build.VERSION.SDK_INT, { strongBox -> create(alias, strongBox) }, { delete(alias) })
         return level(alias)
     }
 
@@ -92,5 +88,27 @@ internal class AndroidKeyStoreBackend : DeviceKeyBackend {
 
     private companion object {
         const val PROVIDER = "AndroidKeyStore"
+    }
+}
+
+/**
+ * StrongBox first, then the TEE: a device without StrongBox says so with
+ * [StrongBoxUnavailableException], and some StrongBox implementations fail generation with a
+ * plain [ProviderException] instead (the half-made entry is removed before the retry). A TEE
+ * failure is not caught: the caller reports it as a storage failure, never as a locked vault.
+ */
+internal object KeyGenFallback {
+    fun generate(sdk: Int, create: (strongBox: Boolean) -> Unit, cleanup: () -> Unit) {
+        if (sdk >= Build.VERSION_CODES.P) {
+            try {
+                create(true)
+                return
+            } catch (e: StrongBoxUnavailableException) {
+                // No StrongBox on this device: retry in the TEE.
+            } catch (e: ProviderException) {
+                cleanup()
+            }
+        }
+        create(false)
     }
 }

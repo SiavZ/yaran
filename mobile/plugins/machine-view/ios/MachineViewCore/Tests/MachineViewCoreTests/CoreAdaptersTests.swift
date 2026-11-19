@@ -4,7 +4,10 @@
 /// Uses:
 /// MachineViewCoreTests/CoreAdaptersTests
 /// ├── MachineViewCore/CoreAdapters (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/Seams (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
+/// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/KeychainStore (inferred)
 /// └── YaranCore/Vault (inferred)
 /// External: Foundation, Testing
@@ -39,6 +42,43 @@ struct CoreAdaptersTests {
         try secrets.delete("session/m1.example.com")
         #expect(try secrets.list(prefix: "session/") == [])
         #expect(try core.list(namespace: "session") == [])
+    }
+
+    // Round 4: a replacement that throws replaced nothing, wherever the Keychain breaks (before
+    // the fix, one write in was after the record and before the index), so keep() revokes only
+    // the new token and the kept session is still the one stored.
+    @Test func aReplacementThatFailsPartWayKeepsTheOldSession() throws {
+        func session(_ token: String) -> DirectSession {
+            DirectSession(host: "a.example.com", token: token, cookieName: "yaran_session_443", instance: "i1", issuedAt: 1, signInId: token + "_id")
+        }
+        for writes in 0...2 {
+            let keychain = InMemoryKeychainStore()
+            let secrets = VaultSecrets(Vault(store: keychain, accessGroup: nil))
+            let store = DirectSessionStore(vault: secrets)
+            try store.put(session("tokA"))
+            keychain.writesBeforeFailure = writes
+            let replaced = (try? store.put(session("tokB"))) != nil
+            keychain.writesBeforeFailure = nil
+            #expect(try store.get("a.example.com")?.token == (replaced ? "tokB" : "tokA"), "after \(writes) writes")
+            #expect(try secrets.list(prefix: "session-direct/") == ["session-direct/a.example.com"])
+        }
+    }
+
+    // Over the real YaranCore vault and App Lock: a direct token is never readable once the lock
+    // is on, whether it was written after this fix (locked from creation) or by an older build.
+    @Test func directSessionsAreUnreadableOnceTheLockIsEnabled() throws {
+        let core = vault()
+        let secrets = VaultSecrets(core)
+        try DirectSessionStore(vault: secrets).put(DirectSession(host: "a.example.com", token: "tokA", cookieName: "yaran_session_443",
+                                                                  instance: "i1", issuedAt: 1))
+        let legacy = DirectSession(host: "b.example.com", token: "tokB", cookieName: "yaran_session_443", instance: "i1", issuedAt: 1)
+        try secrets.write("session-direct/b.example.com", JSONEncoder().encode(legacy), .standard)
+        let lock = AppLock(vault: core, biometry: { .available })
+        #expect(try lock.enable(allowPasscode: false) == .enabled)
+        lock.engage()
+        for host in ["a.example.com", "b.example.com"] {
+            #expect(throws: MachineViewCore.VaultError.locked) { try DirectSessionStore(vault: secrets).get(host) }
+        }
     }
 
     @Test func aValueThatIsNotUtf8IsRefusedAndNothingIsStored() throws {

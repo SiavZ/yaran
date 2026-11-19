@@ -2431,6 +2431,176 @@ failure leaves the comments queued and shows a warning instead of success.
 
 ---
 
+## T67 — Phone-held yaran session for a direct machine
+
+**Attack scenario.** A phone adds a machine by its HTTPS address, with no
+Cloud Connect, and signs in once with the machine's password. The session it
+keeps lives for weeks on a device that can be lost, and is presented as the
+web session cookie so the machine's own page works. Someone who takes the
+token, or a change that let it outlive a sign-out, reaches the workspace.
+
+**Mitigation in code.** Server side implemented. The phone uses the existing
+`POST /api/v1/auth/cli-login`, so the password check, admission, rate limits
+and Argon2 slot are the command line's. The answer gains an additive
+`cookie_name` (`yaran_session_<port>` of the listener the request arrived
+on; `null` over the control socket); the command line ignores it. The token
+is an ordinary `SessionKind::Cli` session: the session layer decides idleness
+by kind, never by transport, so as a cookie it keeps `cli_token_idle_days`
+and not the browser's minute. `cli-logout`, the web's Sign out sent with the
+cookie, and a password change all end it, and its open events and terminal
+sockets close with 4401. Tests: `a_cli_token_presented_as_the_session_cookie_is_a_session_everywhere`
+and `cli_login_names_the_cookie_of_the_port_it_arrived_on` in
+`crates/yaran-web/tests/auth_router.rs`, and
+`a_cli_token_in_the_cookie_idles_by_the_cli_limit` in
+`crates/yaran-web/src/auth/mod.rs`. Phone side implemented
+(`mobile/plugins/machine-view`, both platforms): the password is typed into a
+native sheet and posted with redirects off; the token is kept only in the
+native vault under `session-direct/<host>`, a namespace JavaScript's
+`SecureStore` refuses, always in the locked class from creation, so it is
+unreadable whenever App Lock is on. A standard-class session record written by
+an older build is moved into the locked class inside the lock-enable
+transition itself (`Vault.wrapUnderLock` on Android, `Vault.guardDataKey` on
+iOS), before the lock turns on; a failed move fails the enable and leaves every
+record where it was. The token is injected only as the host-only cookie of its
+own host, and only for the machine instance it was issued by: a record from
+another instance is deleted together with that host's cookies before the page
+loads or the password is asked, on every path (open, resume, document reselection). The token is sent only when the record is bound to the instance that answered and
+to the one the window expects, before any credentialed request; an older build's record
+with no instance is dropped, never reused. A lock enabled by an older build is covered: a
+standard-class session secret is refused while locked and promoted at the first unlock
+(both platforms), and on iOS enabling or disabling the lock keeps the old key until the
+setting is saved, rolls back a failed save, and repairs an interrupted transition at start.
+Each sign-in carries an opaque, non-secret `signInId` (random, never derived from the
+token): `directSignOut({host, signInId})` ends only that sign-in and answers `not_current`
+otherwise, and a sign-in that replaces another revokes it. Inside the app, the machine's own
+login page shows no password field: its Sign in navigates to the strict
+`yaranapp://reauth` URL, which a direct window answers with the native sheet (the app's user
+agent is only a presentation hint; the server still decides who is signed in).
+Sign-out sends `cli-logout` and clears the host's web data; a sign-out with no `signInId`
+deletes a record only after revoking every session it held, and leaves a sign-in that kept
+landing during three revocations current rather than deleting it unrevoked. On Android every
+native request runs isolated from Capacitor's process-wide, WebView-backed cookie handler, so a
+probe never carries the page's cookies and no response cookie reaches the page. A replacement
+writes the host index first, so a failed write replaces nothing; the iOS Keychain updates an
+item in place instead of deleting it first; losing the lock key drops standard-class session
+secrets as well as the locked class, and deletes the lock marker only after that cleanup is durable
+(a failed cleanup reports a failure, stays locked across a restart and retries); and work queued by a
+replaced or closed window, or by the route it switched away from (a session read, a password
+preflight, cookie changes, a renewal), checks that window and route before it acts (a queued cookie change checks right before it runs). On iOS a change
+of the passcode fallback stages the key behind the new guard before the setting is saved and
+rewrites the main copy only after, so no failure point loses the key, and no unguarded copy is
+written. On Android every native connection is created, guard included, under the same lock as the
+bridge start that installs Capacitor's cookie handler, so a bridge restart can never reach it. Tests:
+`enablingTheLockMovesLegacySessionEntriesIntoTheLockedClass` (core, both
+platforms), `directSessionsAreUnreadableOnceTheLockIsEnabled` (machine-view,
+both platforms), `aKeptReplacementInstanceGetsNoCookieOfTheOldOne`
+(Android window), `aCleanupEndsOnlyItsOwnSignInAndAReplacedOneIsRevoked` (both),
+`aSignInThatLandsDuringTheRevocationSurvives` (iOS),
+`aStoredTokenIsNeverSentBeforeTheExpectedInstanceIsSeen` (Android),
+`aLockEnabledByAnOlderBuildRefusesThenPromotesLegacySessions` (core, both) and the AuthGate
+"in the phone app" tests; round 4 adds `NativeCookieIsolationRobolectricTest`,
+`aReplacementThatFailsPartWayKeepsTheOldSession` (both), `KeychainWriteTests`,
+`anInvalidationBeforePromotionDropsLegacySessions` (core, both), `StaleOpenRobolectricTest`,
+`DirectOwnershipTests` and `anUnconditionalSignOutNeverDeletesASessionItDidNotRevoke`; round 5
+adds `aFailedInvalidationCleanupKeepsTheLockUntilARetryFinishesIt` (Android) and
+`LockTransitionTests` (iOS, through the production Keychain store over a synthetic Security
+backend), `aReadOfTheOldRouteNeverReachesTheNewOne`, `aReadFromBeforeASwitchBackIsStillStale` and
+`aBridgeRestartDuringANativeOpenNeverReachesThatConnection`. Not yet observed on a device.
+
+**Compatibility boundary.** Implemented. The status answer carries `native_auth_ui: true`
+from the build that serves the native-aware `AuthGate` (same change, same server). The phone
+admits no page of a machine without it: status, sign-in and route probes classify such a
+machine `upgrade_required`, and every page load in a window (direct, routed, org, reload)
+spends an admission from a probe of that route that found the flag, so a password-free or org
+page of an older build is never shown and its own password form cannot appear later. The flag
+is compatibility only: the same for every client, read by nothing on the server, and never
+authorization; it is `true` only when the binary's own build script built the frontend from
+this source (a state file in `$OUT_DIR`, never an environment variable), so a Rust-only build
+reusing an old frontend says `false`. Every document the page itself loads (a reload, a link, a
+form, a served reload after a build change, an in-place new window) is admitted the same way as
+the native load, through the platform's request or navigation callback, only for the route's own
+`https` origin on the default port (another host, port or scheme is blocked before any probe), and
+a probe that finds another instance at the route, or a build too old for the app, in its public or
+its authenticated answer, chooses again or closes rather than loading with the old instance's session.
+A late login answer is kept only if its window still owns it and nothing signed in or removed the
+machine meanwhile (its token is revoked otherwise), and a replaced browser sign-in's late result is
+ignored on both platforms: on Android each Auth Tab launch has its own result-registry entry, so a
+result is always its own launch's whatever order results arrive in. Losing the lock key wipes the
+lock marker before the key, and keeps both when the marker cannot be deleted. Older machines must be updated. On iOS, an unreadable App Lock setting keeps
+the lock engaged and recovers no key copy; a route switch ends every pending probe, sheet,
+sign-in, cookie change, load and renewal of the old route on both platforms; and a replaced
+handoff's late browser result is ignored. Tests: `the_status_tells_the_phone_its_page_signs_in_natively`,
+`UpgradeRequiredRobolectricTest`, `RouteTenureTests`, `LockTransitionTests` and
+`aReplacedSignInsLateRedirectLeavesTheNewOneAlone`.
+
+**Residual risk.** A stolen token works until it idles out, the phone signs
+out, the owner signs it out from the web, or the password changes. The
+machine cannot tell the phone's session from a command line's.
+
+**Detection.** `[server] the command line signed in as "<label>"` in the
+server log for every sign-in; a stolen token's requests look like the owner's.
+
+---
+
+## T68 — Spoofed or misdirected add-machine code
+
+**Attack scenario.** A QR code or link names a host. A person scans one that
+names a machine they did not mean, then types their machine password into
+it. Or yaran draws a code for an address the phone cannot reach safely
+(plain HTTP, an IP, a port, the Cloud Connect hostname).
+
+**Mitigation in code.** Server side implemented.
+`GET /api/v1/phone/machine-qr` (`crates/yaran-web/src/cloud_phone_links.rs`)
+answers only when the request arrived over a transport yaran itself knows is
+HTTPS (a confirmed `tailscale serve` HTTPS route or a Funnel); a client's
+`X-Forwarded-Proto` is never believed. The Host must be a public DNS name on
+the default port, and never the Cloud Connect hostname, which a phone reaches
+through its organisation. The route sits behind the auth layer like every
+other. The payload is built by the strict Rust twin of `addMachineUri`
+(`cloud::protocol::links`), held to `fixtures/uri/add-machine.json` with the
+TypeScript one. In the app, the code only pre-fills a confirm screen. Tests:
+`cloud_phone_links_tests.rs` and
+`the_machine_code_needs_a_transport_yaran_knows_is_https` in
+`crates/yaran-web/tests/auth_router.rs`.
+
+**Residual risk.** A hostile machine can draw its own code for its own host.
+The confirm screen and the password sheet name the host, as typing a URL
+would. The phone's confirm screen is not implemented yet.
+
+**Detection.** None on the machine: a code is drawn for whoever has the page.
+
+---
+
+## T69 — Verified agent links: crafted links and metadata in them
+
+**Attack scenario.** A "Copy phone link" URL is pasted into a chat, so the org
+URL, machine id and agent id travel with it. Someone crafts a link to an
+agent on a machine the phone does not know, or hopes a link carries a session
+or adds a machine.
+
+**Mitigation in code.** Producer implemented. Links carry ids only, in the
+fragment, so the publisher's web server never logs them, and never a
+credential. The publisher domain is configuration: the org Worker derives
+`MachineConfig.publisher_domain` (additive and optional) from its
+`APP_CALLBACK_URLS`, and a direct machine derives it from its own
+`[cloud] app_callback_urls`, by one rule in both places
+(`publisher_domain_from_callbacks` and the Worker's `publisherDomain`). When
+neither names exactly one domain, yaran makes no link and says why. The
+browser builds the URL with the shared strict `agentLinkUrl`; the server
+refuses any target that the strict Rust parser would not accept. The
+domain is public metadata: it proves nothing about who opens the link. A
+phone opens only a machine it already has (T42). Tests: `links.rs`,
+`cloud_phone_links_tests.rs`, `machine-routes.test.ts` and
+`lib/phoneLink.test.ts`.
+
+**Residual risk.** Org and machine ids are visible to anyone the link reaches.
+The phone's link handling and the publisher's association files (T63) are not
+implemented yet.
+
+**Detection.** None.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must

@@ -14,6 +14,8 @@
 /// ├── MachineViewCore/DataStores (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
 /// ├── MachineViewCore/DeviceLabel (inferred)
+/// ├── MachineViewCore/DirectAuth (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/InstallIdStore (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
@@ -21,12 +23,16 @@
 /// ├── MachineViewCore/Seams (inferred)
 /// ├── MachineViewCore/SecureEnclaveBackend (inferred)
 /// ├── MachineViewCore/SessionStore (inferred)
+/// ├── MachineViewCore/ShareInbox (inferred)
 /// └── MachineViewCore/UaToken (inferred)
 /// External: Foundation, UIKit
 ///
 /// Used by:
 /// MachineView/AppServices
+/// ├── MachineView/DirectFlow (inferred)
 /// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewController+Direct (inferred)
+/// ├── MachineView/MachineViewPlugin (inferred)
 /// ├── MachineView/NativeOrgApi (inferred)
 /// └── MachineView/SessionPlugin (inferred)
 /// <module-headers:end>
@@ -49,6 +55,10 @@ final class AppServices {
     let handoff: HandoffClient
     let mode: CallbackMode
     let uaToken: String
+    let deviceLabel: String
+    let directSessions: DirectSessionStore
+    let directAuth: DirectAuth
+    let shareInbox = ShareInbox.appInbox()
 
     private init() {
         let vault = CoreBindings.vault
@@ -57,7 +67,7 @@ final class AppServices {
         let appLock = CoreBindings.appLock
         installs = InstallIdStore(vault: vault)
         deviceKeys = DeviceKeyStore(backend: SecureEnclaveBackend(), installs: installs, diagnostics: diagnostics)
-        sessions = SessionStore(vault: vault, diagnostics: diagnostics, lockEnabled: { appLock?.lockEnabled() ?? false })
+        sessions = SessionStore(vault: vault, diagnostics: diagnostics)
         cleaner = WebKitDataCleaner(diagnostics: diagnostics)
         mode = Self.callbackMode()
         uaToken = Self.makeUaToken()
@@ -65,8 +75,11 @@ final class AppServices {
                            cleaner: cleaner, diagnostics: diagnostics, clock: Self.now)
         launcher = AuthSessionLauncher()
         let device = UIDevice.current
+        deviceLabel = DeviceLabel.clean(name: device.name, model: device.model)
+        directSessions = DirectSessionStore(vault: vault)
+        directAuth = DirectAuth(userAgent: uaToken, diagnostics: diagnostics)
         handoff = HandoffClient(vault: vault, deviceKeys: deviceKeys, sessions: sessions, orgs: orgs, launcher: launcher,
-                                mode: mode, deviceLabel: DeviceLabel.clean(name: device.name, model: device.model),
+                                mode: mode, deviceLabel: deviceLabel,
                                 clock: Self.now, diagnostics: diagnostics, appLock: appLock)
     }
 

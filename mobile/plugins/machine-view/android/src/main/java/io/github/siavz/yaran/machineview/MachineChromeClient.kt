@@ -2,7 +2,8 @@
  * The machine WebView's chrome policy: file chooser, permissions, windows.
  *
  * File inputs open the system picker through a launcher the activity registered in onCreate,
- * and the callback fires exactly once, with only `content://` results. Every permission
+ * after offering any files held from a share (G5), and the callback fires exactly once, with
+ * only `content://` results. Every permission
  * request (camera, microphone, MIDI, protected media) and geolocation is denied: yaran's UI
  * needs none. New windows are never created (multiple windows are off).
  *
@@ -28,7 +29,11 @@ import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 
-internal class MachineChromeClient(private val launchChooser: (Intent, (Array<Uri>?) -> Unit) -> Boolean) : WebChromeClient() {
+internal class MachineChromeClient(
+    private val launchChooser: (Intent, (Array<Uri>?) -> Unit) -> Boolean,
+    /** Offers held shared files first (G5); false when there are none. */
+    private val offerShare: (multiple: Boolean, deliver: (Array<Uri>?) -> Unit, pick: () -> Unit) -> Boolean = { _, _, _ -> false },
+) : WebChromeClient() {
     override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
         var delivered = false
         val once: (Array<Uri>?) -> Unit = { uris ->
@@ -37,12 +42,15 @@ internal class MachineChromeClient(private val launchChooser: (Intent, (Array<Ur
                 callback.onReceiveValue(contentOnly(uris))
             }
         }
-        val started = try {
-            launchChooser(params.createIntent(), once)
-        } catch (e: RuntimeException) {
-            false
+        val pick = {
+            val started = try {
+                launchChooser(params.createIntent(), once)
+            } catch (e: RuntimeException) {
+                false
+            }
+            if (!started) once(null)
         }
-        if (!started) once(null)
+        if (!offerShare(params.mode == FileChooserParams.MODE_OPEN_MULTIPLE, once, pick)) pick()
         return true
     }
 

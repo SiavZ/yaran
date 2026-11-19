@@ -1189,6 +1189,9 @@ async fn maintain(state: Arc<AuthState>) {
 }
 
 #[cfg(test)]
+mod cli_cookie_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

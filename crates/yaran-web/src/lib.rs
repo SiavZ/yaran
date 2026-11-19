@@ -40,6 +40,7 @@
 //! ├── cloud_loop
 //! ├── cloud_mode
 //! ├── cloud_mode_routes
+//! ├── cloud_phone_links
 //! ├── cloud_phone_routes
 //! ├── cloud_routes
 //! ├── cloud_test_support
@@ -141,6 +142,7 @@ pub(crate) mod cloud_jwks_cache;
 pub(crate) mod cloud_loop;
 pub mod cloud_mode;
 pub mod cloud_mode_routes;
+pub mod cloud_phone_links;
 pub mod cloud_phone_routes;
 pub mod cloud_routes;
 #[cfg(test)]

@@ -11,6 +11,7 @@
  * Uses:
  * src/screens/machines/machines.test.tsx
  * ├── @yaran/protocol:src/index.ts
+ * ├── @yaran/secure-store:src/index.ts
  * ├── src/lib/i18n.ts
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/native/machineView.ts
@@ -28,6 +29,7 @@ import { readFileSync } from 'node:fs';
 
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { MachineSummary } from '@yaran/protocol';
+import { SecureStore } from '@yaran/secure-store';
 import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -89,6 +91,46 @@ describe('MachineList', () => {
     await waitFor(() =>
       expect(MachineView.open).toHaveBeenCalledWith({ orgId: ORG.id, machineId: machine().id, host: 'laptop-ada.example.com' }),
     );
+  });
+
+  // The reported device path: the row's ⋯ menu, then Open.
+  it('opens a machine from the actions menu', async () => {
+    request.mockResolvedValue(page([machine()]));
+    renderShell(<MachineList />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Actions for laptop' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Open/ }));
+    await waitFor(() =>
+      expect(MachineView.open).toHaveBeenCalledWith({ orgId: ORG.id, machineId: machine().id, host: 'laptop-ada.example.com' }),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('says so when the native window refuses to open, instead of doing nothing', async () => {
+    request.mockResolvedValue(page([machine()]));
+    vi.mocked(MachineView.open).mockRejectedValueOnce(Object.assign(new Error('orgId, machineId, host or route is invalid'), { code: 'invalid_arguments' }));
+    renderShell(<MachineList />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Actions for laptop' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Open/ }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    expect(String(vi.mocked(toast.error).mock.calls[0]![0])).toContain('invalid_arguments');
+  });
+
+  it('still opens when remembering the last machine fails', async () => {
+    request.mockResolvedValue(page([machine()]));
+    vi.mocked(SecureStore.set).mockRejectedValueOnce(Object.assign(new Error('vault locked'), { code: 'vault_locked' }));
+    renderShell(<MachineList />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Actions for laptop' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Open/ }));
+    await waitFor(() => expect(MachineView.open).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows an error instead of loading forever when the native list call rejects', async () => {
+    request.mockRejectedValueOnce(Object.assign(new Error('the vault is locked'), { code: 'vault_locked' }));
+    renderShell(<MachineList />);
+    expect(await screen.findByText('Unlock the app, then try again.')).toBeTruthy();
+    request.mockResolvedValue(page([machine()]));
+    fireEvent.click(screen.getByRole('button', { name: /Try again|Retry/ }));
+    expect(await screen.findByText('laptop')).toBeTruthy();
   });
 
   it('groups by org when more than one org is added', async () => {

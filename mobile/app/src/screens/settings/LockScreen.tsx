@@ -10,6 +10,8 @@
  * src/screens/settings/LockScreen.tsx
  * ├── @yaran/secure-store:src/index.ts
  * ├── @yaran/ui-kit:src/button.tsx
+ * ├── @yaran/ui-kit:src/inline-code.tsx
+ * ├── src/lib/openMachine.ts
  * └── src/screens/Page.tsx
  * External: @lingui/react, lucide-react, react
  *
@@ -22,19 +24,32 @@
 import { Trans } from '@lingui/react/macro';
 import { AppLock } from '@yaran/secure-store';
 import { Button } from '@yaran/ui-kit/button';
+import { InlineCode } from '@yaran/ui-kit/inline-code';
 import { LockIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
+import { rejectionCode } from '../../lib/openMachine.ts';
 import { Page } from '../Page.tsx';
 
 export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
   const [note, setNote] = useState<'cancelled' | 'invalidated' | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   async function unlock() {
-    const { outcome } = await AppLock.unlock();
-    if (outcome === 'cancelled') return setNote('cancelled');
-    if (outcome === 'invalidated') setNote('invalidated');
-    else onUnlocked();
+    setFailure(null);
+    setNote(null);
+    try {
+      const { outcome } = await AppLock.unlock();
+      if (!mounted.current) return;
+      if (outcome === 'cancelled') return setNote('cancelled');
+      if (outcome === 'invalidated') setNote('invalidated');
+      else onUnlocked();
+    } catch (err) { if (mounted.current) setFailure(rejectionCode(err)); }
   }
 
   if (note === 'invalidated') {
@@ -52,11 +67,13 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
       </Page>
     );
   }
+  const code = <InlineCode>{failure}</InlineCode>;
   return (
     <Page title={<Trans>yaran is locked</Trans>}>
       {/* Centred on the sheet: centring the page itself would shrink the sheet to its content. */}
       <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center">
         <LockIcon aria-hidden className="size-10 self-center text-muted-foreground" />
+        {failure !== null && <p role="alert"><Trans>yaran couldn't unlock ({code}). Try again.</Trans></p>}
         {note === 'cancelled' && (
           <p role="status" className="text-sm text-muted-foreground">
             <Trans>Unlock was cancelled.</Trans>

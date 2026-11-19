@@ -25,6 +25,7 @@
 //! ├── cloud::protocol::fingerprint
 //! ├── cloud::protocol::handoff::tests
 //! ├── cloud::protocol::handoff_consent::tests
+//! ├── cloud::protocol::links
 //! ├── cloud::protocol::machine::tests
 //! ├── cloud::protocol::meta
 //! ├── cloud::protocol::pairing

@@ -26,6 +26,7 @@
 /// MachineViewCore/CoreAdapters
 /// ├── App/AppDelegate (inferred)
 /// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/MachineViewPlugin (inferred)
 /// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
 /// └── MachineViewCoreTests/LockTests (inferred)
 /// <module-headers:end>
@@ -78,8 +79,13 @@ public final class VaultSecrets: SecretVault {
         // Values are JSON; bytes that are not UTF-8 are refused rather than replaced.
         guard let text = String(bytes: value, encoding: .utf8) else { throw YaranCore.VaultError.invalidArgument }
         try locked {
+            // The index first, and only when the name is new: the record write is then the one
+            // step that can replace anything, so a failure never strands a half-replaced session.
+            if let name = target.name {
+                let known = try names(target.namespace)
+                if !known.contains(name) { try saveNames(target.namespace, known.union([name])) }
+            }
             try mapped { try vault.set(namespace: target.namespace, key: target.key, value: text, protection: protection) }
-            if let name = target.name { try saveNames(target.namespace, names(target.namespace).union([name])) }
         }
     }
 

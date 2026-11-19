@@ -13,8 +13,8 @@ vi.mock("@/lib/authGate", () => ({
 const { useAppMenuContext } = await import("./useAppMenuContext")
 
 describe("useAppMenuContext", () => {
-  it("offers the phone QR on a paired machine in a browser only", () => {
-    bootstrap = { cloud: { paired: true } }
+  it.each([true, false])("offers Connect a phone in a browser only (paired: %s)", (paired) => {
+    bootstrap = { cloud: { paired } }
     native = false
     expect(useAppMenuContext()).toMatchObject({ nativeShell: false, phonePairing: true })
     native = true
@@ -28,7 +28,7 @@ describe("useAppMenuContext", () => {
       ghAvailable: false,
       githubIntegrationEnabled: false,
       nativeShell: false,
-      phonePairing: false,
+      phonePairing: true,
       canSignOut: false,
     })
   })

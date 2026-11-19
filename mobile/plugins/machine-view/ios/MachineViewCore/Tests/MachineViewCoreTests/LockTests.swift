@@ -20,6 +20,7 @@
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
 /// ├── MachineViewCore/Seams (inferred)
 /// ├── MachineViewCore/SessionStore (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/FormatTests (inferred)
 /// ├── MachineViewCoreTests/StoreTests (inferred)
@@ -42,7 +43,7 @@ private final class LockRig {
     lazy var lock = AppLock(vault: core, biometry: { .available })
     lazy var secrets = VaultSecrets(core)
     let diag = MemoryDiag(), launcher = FakeLauncher()
-    lazy var sessions = SessionStore(vault: secrets, diagnostics: diag, lockEnabled: { [unowned self] in self.lock.status().enabled })
+    lazy var sessions = SessionStore(vault: secrets, diagnostics: diag)
     lazy var client = HandoffClient(
         vault: secrets, deviceKeys: DeviceKeyStore(backend: SoftwareKeyBackend(), installs: InstallIdStore(vault: secrets), diagnostics: diag),
         sessions: sessions, orgs: FakeOrgs(), launcher: launcher, mode: .https(domain: "app.example.com"), deviceLabel: "Ada's iPhone",

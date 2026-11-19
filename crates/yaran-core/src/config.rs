@@ -166,6 +166,7 @@
 //! ├── yaran-web
 //! ├── yaran-web::auth
 //! ├── yaran-web::auth::admission
+//! ├── yaran-web::auth::cli_cookie_tests
 //! ├── yaran-web::auth::cookie
 //! ├── yaran-web::auth::routes
 //! ├── yaran-web::background

@@ -15,6 +15,7 @@
  * ├── @yaran/secure-store:src/index.ts
  * ├── src/lib/buildInfo.ts
  * ├── src/lib/native/machineView.ts
+ * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.ts
  * ├── src/lib/route.ts
  * ├── src/screens/onboarding/ConfirmOrg.tsx
@@ -28,16 +29,17 @@
  * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import type { SignInOutcome } from '@yaran/machine-view';
 import type { Meta } from '@yaran/protocol';
 import { ScanError, startScan } from '@yaran/qr';
-import { BuildInfo } from '@yaran/secure-store';
+import { BuildInfo, SecureStore } from '@yaran/secure-store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetBuildInfoForTests } from '../../lib/buildInfo.ts';
 import { Session } from '../../lib/native/machineView.ts';
-import { orgStore } from '../../lib/orgStore.ts';
+import { choseMachine } from '../../lib/openMachine.ts';
+import { addOrg, eraseEverything, orgStore, signOutOrg } from '../../lib/orgStore.ts';
 import { parseRoute } from '../../lib/route.ts';
 import { renderShell } from '../../test/render.tsx';
 import { vault } from '../../test/setup.ts';
@@ -108,6 +110,41 @@ describe('EnterUrl', () => {
 });
 
 describe('ScanQr', () => {
+  it('a delayed QR result yields to a newer machine choice without a hash change', async () => {
+    let resolve!: (text: string) => void;
+    vi.mocked(startScan).mockReturnValue({ result: new Promise((r) => { resolve = r; }), stop: vi.fn() });
+    window.location.hash = '#/scan';
+    renderShell(<ScanQr />);
+    choseMachine();
+    await act(async () => { resolve('yaranapp://add-machine?u=https%3A%2F%2Fbox.example.com'); });
+    expect(window.location.hash).toBe('#/scan');
+  });
+
+  it.each([
+    'yaranapp://add-machine?u=https%3A%2F%2Fbox.example.com',
+    'yaranapp://add-org?u=https%3A%2F%2Fcp.example.com',
+  ])('a delayed QR result yields to newer navigation: %s', async (payload) => {
+    let resolve!: (text: string) => void;
+    vi.mocked(startScan).mockReturnValue({ result: new Promise((r) => { resolve = r; }), stop: vi.fn() });
+    window.location.hash = '#/scan';
+    renderShell(<ScanQr />);
+    window.location.hash = '#/settings';
+    await act(async () => { resolve(payload); });
+    expect(window.location.hash).toBe('#/settings');
+  });
+
+  it('a decoder completing after teardown cannot navigate', async () => {
+    let resolve!: (text: string) => void;
+    const stop = vi.fn();
+    vi.mocked(startScan).mockReturnValue({ result: new Promise((r) => { resolve = r; }), stop });
+    window.location.hash = '#/scan';
+    const view = renderShell(<ScanQr />);
+    view.unmount();
+    await act(async () => { resolve('yaranapp://add-machine?u=https%3A%2F%2Fbox.example.com'); });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(window.location.hash).toBe('#/scan');
+  });
+
   it('lets a denied camera scan again after its permission changes', async () => {
     const stop = vi.fn();
     vi.mocked(startScan)
@@ -130,7 +167,7 @@ describe('ScanQr', () => {
   it('explains a foreign code and a denied camera', async () => {
     vi.mocked(startScan).mockReturnValue({ result: Promise.resolve('https://example.com'), stop: vi.fn() });
     const { unmount } = renderShell(<ScanQr />);
-    expect((await screen.findByRole('alert')).textContent).toMatch(/isn't a yaran org code/);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/isn't a yaran org or machine code/);
     unmount();
     vi.mocked(startScan).mockReturnValue({ result: Promise.reject(new ScanError('permission_denied')), stop: vi.fn() });
     renderShell(<ScanQr />);
@@ -210,6 +247,35 @@ describe('ConfirmOrg', () => {
     expect(JSON.parse(vault.get('orgs/list')!)).toEqual([before]);
   });
 
+  it('names a vault or native refusal by its code instead of calling it a lock or offline', async () => {
+    const { SecureStore } = await import('@yaran/secure-store');
+    meta.mockResolvedValueOnce(ok(META));
+    vi.mocked(SecureStore.set).mockRejectedValueOnce(Object.assign(new Error('keystore'), { code: 'key_invalidated' }));
+    renderShell(<ConfirmOrg url="https://cp.example.com" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    const said = (await screen.findByRole('alert')).textContent!;
+    expect(said).toContain('key_invalidated');
+    expect(said).not.toMatch(/Unlock/);
+    expect(signIn).not.toHaveBeenCalled();
+
+    signIn.mockRejectedValueOnce(Object.assign(new Error('boom'), { code: 'native_error' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('native_error'));
+    expect(screen.getByRole('alert').textContent).not.toMatch(/No connection/);
+    expect(orgStore.get().orgs).toEqual([]);
+  });
+
+  it('says secure storage failed, not that the app is locked', async () => {
+    meta.mockResolvedValueOnce(ok(META));
+    signIn.mockResolvedValueOnce({ kind: 'secure_storage_failed' });
+    renderShell(<ConfirmOrg url="https://cp.example.com" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    const said = (await screen.findByRole('alert')).textContent!;
+    expect(said).toMatch(/secure storage/);
+    expect(said).not.toMatch(/Unlock/);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
   it('adds the org after a successful sign-in and opens Machines', async () => {
     meta.mockResolvedValueOnce(ok(META));
     nativeSignIn();
@@ -224,5 +290,115 @@ describe('ConfirmOrg', () => {
     renderShell(<ConfirmOrg url="https://192.168.1.1" />);
     expect(screen.getByRole('alert').textContent).toMatch(/isn't valid/);
     expect(meta).not.toHaveBeenCalled();
+  });
+});
+
+describe('ConfirmOrg after Erase everything, and after the screen is gone', () => {
+  const OLD = { id: 'https://cp.example.com', name: 'Old name', teamDomain: null, addedAt: '2026-01-01T00:00:00.000Z' };
+  function pending() {
+    let finish!: (o: SignInOutcome) => void;
+    signIn.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    return (o: SignInOutcome) => finish(o);
+  }
+  async function startOn(existing: boolean) {
+    if (existing) {
+      vault.set('orgs/list', JSON.stringify([OLD]));
+      orgStore.set({ loaded: true, orgs: [OLD] });
+    }
+    meta.mockResolvedValueOnce(ok(META));
+    window.location.hash = '#/confirm?u=https%3A%2F%2Fcp.example.com';
+    const view = renderShell(<ConfirmOrg url="https://cp.example.com" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(signIn).toHaveBeenCalled());
+    return view;
+  }
+
+  it.each([
+    ['cancelled', { kind: 'cancelled' } as SignInOutcome],
+    ['an error', { kind: 'offline' } as SignInOutcome],
+    ['signed in', { kind: 'signed_in', host: 'cp.example.com', email: 'ada@example.com', expiresAt: 1 } as SignInOutcome],
+  ])('a sign-in that ends %s after an erase brings nothing back and goes nowhere', async (_, outcome) => {
+    const finish = pending();
+    await startOn(true);
+    await eraseEverything();
+    finish(outcome);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(orgStore.get().orgs).toEqual([]);
+    expect(vault.get('orgs/list')).toBeUndefined();
+    expect(route()).toEqual({ name: 'confirm', url: 'https://cp.example.com' });
+  });
+
+  it('after the screen is gone: a failed sign-in still takes its staged org back out, and a success navigates nowhere', async () => {
+    const finish = pending();
+    const view = await startOn(false);
+    view.unmount();
+    finish({ kind: 'cancelled' });
+    await waitFor(() => expect(listedIds()).toEqual([]));
+    expect(orgStore.get().orgs).toEqual([]);
+
+    const success = pending();
+    const again = await startOn(false);
+    again.unmount();
+    success({ kind: 'signed_in', host: 'cp.example.com', email: 'ada@example.com', expiresAt: 1 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(listedIds()).toEqual(['https://cp.example.com']);
+    expect(route()).toEqual({ name: 'confirm', url: 'https://cp.example.com' });
+  });
+
+  describe('signing out of the org while its re-sign-in is pending', () => {
+    const NEW = { id: 'https://cp.example.com', name: 'New name', teamDomain: 'new.cloudflareaccess.com' };
+    const onDisk = () => JSON.parse(vault.get('orgs/list') ?? '[]') as { id: string; name: string; teamDomain: string | null }[];
+
+    it.each([
+      ['cancelled', { kind: 'cancelled' } as SignInOutcome],
+      ['failing', { kind: 'offline' } as SignInOutcome],
+    ])('a sign-in that ends %s does not put the signed-out org back', async (_, outcome) => {
+      const finish = pending();
+      await startOn(true);
+      await signOutOrg(OLD.id);
+      finish(outcome);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(orgStore.get().orgs).toEqual([]);
+      expect(onDisk()).toEqual([]);
+      expect(route()).toEqual({ name: 'confirm', url: 'https://cp.example.com' });
+    });
+
+    it('nor overwrite the org added again since with the old name and team', async () => {
+      const finish = pending();
+      await startOn(true);
+      await signOutOrg(OLD.id);
+      await addOrg(NEW);
+      finish({ kind: 'cancelled' });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(orgStore.get().orgs).toMatchObject([NEW]);
+      expect(onDisk()).toMatchObject([NEW]);
+    });
+
+    it('nor restore when the sign-out removal is still queued as the result arrives', async () => {
+      const finish = pending();
+      await startOn(true);
+      // Hold the sign-out's removal write in the org queue, then answer the sign-in.
+      const real = vi.mocked(SecureStore.set).getMockImplementation()!;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      vi.mocked(SecureStore.set).mockImplementationOnce(async (o) => (await gate, real(o)));
+      const signingOut = signOutOrg(OLD.id);
+      await vi.waitFor(() => expect(SecureStore.set).toHaveBeenCalled());
+      finish({ kind: 'cancelled' });
+      await new Promise((r) => setTimeout(r, 10));
+      release();
+      await signingOut;
+      await new Promise((r) => setTimeout(r, 20));
+      expect(orgStore.get().orgs).toEqual([]);
+      expect(onDisk()).toEqual([]);
+    });
+
+    it('a failed re-sign-in that still owns its staging puts the previous org back', async () => {
+      const finish = pending();
+      await startOn(true);
+      finish({ kind: 'cancelled' });
+      await waitFor(() => expect(orgStore.get().orgs).toEqual([OLD]));
+      expect(onDisk()).toEqual([OLD]);
+    });
   });
 });

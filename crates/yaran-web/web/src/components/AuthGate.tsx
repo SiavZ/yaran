@@ -7,6 +7,7 @@ import {
   BrokenPage,
   CheckingPage,
   LoginPage,
+  NativeSignInPage,
   NotYaranPage,
   OtherYaranPage,
   StuckPage,
@@ -17,6 +18,7 @@ import type { AuthStatus } from "@/lib/authApi"
 import { assertNever } from "@/lib/assertNever"
 import { useAuthPhase, type AuthPhase } from "@/lib/authGate"
 import { GATE_LAYER_ATTR } from "@/lib/gateLayer"
+import { isNativeShell } from "@/lib/native/nativeShell"
 
 // The root of the page: the app, and over it whatever page the sign-in gate
 // needs (the login, blocked, broken, unreachable or stuck page, or the cover
@@ -69,7 +71,8 @@ function gatePage(phase: Exclude<AuthPhase, { kind: "open" }>): ReactNode {
     case "checking":
       return <DelayedChecking />
     case "signed_out":
-      return <LoginPage status={phase.status} reason={phase.reason} />
+      // In the phone app the password belongs to its native sheet, never to a page form.
+      return isNativeShell() ? <NativeSignInPage reason={phase.reason} /> : <LoginPage status={phase.status} reason={phase.reason} />
     case "blocked":
       return <BlockedPage />
     case "broken":

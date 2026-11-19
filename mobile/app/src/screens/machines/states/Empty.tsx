@@ -31,7 +31,7 @@ export function NoOrgs() {
           <Trans>No org added</Trans>
         </EmptyTitle>
         <EmptyDescription>
-          <Trans>Add your org to see your machines here.</Trans>
+          <Trans>Add your org, or a machine reachable over HTTPS, to see your machines here.</Trans>
         </EmptyDescription>
       </EmptyHeader>
       <Button className="min-h-12" onClick={() => navigate({ name: 'welcome' })}>

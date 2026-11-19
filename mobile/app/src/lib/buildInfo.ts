@@ -19,11 +19,20 @@
  * src/lib/buildInfo.ts
  * ├── src/App.tsx
  * ├── src/a11y.test.tsx
+ * ├── src/approvalNavigation.test.tsx
+ * ├── src/continuations.test.tsx
+ * ├── src/explicitOpen.test.tsx
+ * ├── src/launch.test.tsx
+ * ├── src/lib/deepLinks.test.ts
+ * ├── src/lib/deepLinks.ts
+ * ├── src/lib/heldLinks.test.ts
+ * ├── src/reopenPriority.test.tsx
  * ├── src/screens/onboarding/EnterUrl.tsx
  * ├── src/screens/onboarding/onboarding.test.tsx
  * ├── src/screens/screens.test.tsx
  * ├── src/screens/settings/Licenses.tsx
- * └── src/screens/settings/settings.test.tsx
+ * ├── src/screens/settings/settings.test.tsx
+ * └── src/shareBatch.test.tsx
  * <module-headers:end>
  */
 import { BuildInfo, type Flavor } from '@yaran/secure-store';

@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Chromium WebView watches connectivity (navigator.onLine, online/offline) only with this. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application>
         <!-- Read at runtime: an empty domain means a dev build (custom-scheme callback, D8). -->
         <meta-data
@@ -40,6 +42,28 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="${publisherDomain}" android:path="/auth/callback" />
                 <data android:scheme="https" android:host="${publisherDomain}" android:path="/oauth/callback" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Verified agent links, https://<publisher-domain>/open#… (G6), handed to the app's own
+             launch activity as a VIEW intent; release builds only, like AuthCallbackHttps. The
+             shell opens only a machine this phone already has. -->
+        <activity
+            android:name=".OpenLinkActivity"
+            android:exported="false"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <activity-alias
+            android:name=".OpenLinkHttps"
+            android:targetActivity=".OpenLinkActivity"
+            android:exported="true"
+            android:enabled="false">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${publisherDomain}" android:path="/open" />
             </intent-filter>
         </activity-alias>
 

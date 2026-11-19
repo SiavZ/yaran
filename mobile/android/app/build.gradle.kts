@@ -9,6 +9,11 @@
  * - Publisher values come from `mobile/publisher.properties` (work item 17): the application
  *   id, the publisher domain (empty = development build), relay URL and Play push transport,
  *   as `BuildConfig` fields and manifest placeholders for Phase 15's callback aliases.
+ * - `-PpublisherDomainOverride=<host>` (test-only) gives the debug and e2e variants that
+ *   publisher domain, so the enabled App Link and https callback paths can be built and tested
+ *   (with a reserved test host such as `app.example.com`) without editing
+ *   mobile/publisher.properties. Release variants never take it, and packaging a release APK or
+ *   bundle with it set fails the build.
  * - `-PappIdOverride=<id>` replaces the properties file's `appId` for local and test builds;
  *   the release guard checks whichever id is in effect.
  * - Release signing reads `YARAN_ANDROID_KEYSTORE_FILE`, `YARAN_ANDROID_KEYSTORE_PASSWORD`,
@@ -18,12 +23,16 @@
  *
  * <module-headers:begin>
  * Uses: none
- * External: com.android.build.api.artifact, com.github.jk1.license.filter, com.github.jk1.license.render, java.util
+ * External: com.android.build.api.artifact, com.android.build.api.variant, com.android.build.gradle.internal.tasks, com.android.build.gradle.tasks, com.github.jk1.license.filter, com.github.jk1.license.render, java.util
  *
  * Used by: entry point (Gradle build script, read by ./gradlew in mobile/android)
  * <module-headers:end>
  */
 import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.variant.BuildConfigField
+import com.android.build.gradle.internal.tasks.PackageBundleTask
+import com.android.build.gradle.internal.tasks.VariantTask
+import com.android.build.gradle.tasks.PackageAndroidArtifact
 import com.github.jk1.license.filter.DependencyFilter
 import com.github.jk1.license.filter.LicenseBundleNormalizer
 import com.github.jk1.license.render.JsonReportRenderer
@@ -59,6 +68,14 @@ val appId =
         ?.takeIf { it.isNotEmpty() } ?: publisherValue("appId")
 val publisherDomain = publisherValue("publisherDomain")
 
+// Test-only: debug and e2e variants only (see the androidComponents block); never a release.
+val publisherDomainOverride =
+    providers
+        .gradleProperty("publisherDomainOverride")
+        .orNull
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+
 // The play flavor's push transport (Phase 16, G5): -Pyaran.playPushTransport wins, then the
 // publisher config, then the primary path. app-push.gradle reads the same property.
 val playPushTransport =
@@ -72,6 +89,9 @@ require(Regex("[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+").matches(appId)
 }
 require(isDevelopmentBuild || Regex("[a-z0-9]([a-z0-9.-]*[a-z0-9])?").matches(publisherDomain)) {
     "publisherDomain in mobile/publisher.properties must be a bare lowercase host name, got: $publisherDomain"
+}
+require(publisherDomainOverride == null || Regex("[a-z0-9]([a-z0-9.-]*[a-z0-9])?").matches(publisherDomainOverride)) {
+    "-PpublisherDomainOverride must be a bare lowercase host name, got: $publisherDomainOverride"
 }
 
 yaranGuards {
@@ -185,16 +205,50 @@ tasks.configureEach {
 // The unit tests read build outputs: the merged manifests and the generated BuildConfig of
 // the variants whose flags they check.
 val mergedManifests = mutableMapOf<String, Provider<RegularFile>>()
+val releaseVariants = mutableSetOf<String>()
 androidComponents {
     onVariants { variant -> mergedManifests[variant.name] = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST) }
+    // The test-only publisher domain reaches debug and e2e variants only, so no release can carry it.
+    onVariants { variant ->
+        if (variant.buildType == "release") {
+            releaseVariants += variant.name
+            return@onVariants
+        }
+        val domain = publisherDomainOverride ?: return@onVariants
+        variant.manifestPlaceholders.putAll(
+            mapOf("publisherDomain" to domain, "publisherCallbackEnabled" to "true", "devCallbackEnabled" to "false"),
+        )
+        variant.buildConfigFields?.put("PUBLISHER_DOMAIN", BuildConfigField("String", javaString(domain), null))
+        variant.buildConfigFields?.put("PUBLISHER_CALLBACK_ENABLED", BuildConfigField("boolean", "true", null))
+        variant.buildConfigFields?.put("DEV_CALLBACK_ENABLED", BuildConfigField("boolean", "false", null))
+    }
+}
+
+// And producing a release APK or bundle with the override set is refused outright. The check
+// is by AGP packaging task type and the variant it packages, so every route to a release
+// artifact (assemble, bundle, install, a dependency of another task) meets it, not task names.
+gradle.taskGraph.whenReady {
+    if (publisherDomainOverride == null) return@whenReady
+    val packaging =
+        allTasks
+            .filter { it.project == project && (it is PackageAndroidArtifact || it is PackageBundleTask) }
+            .mapNotNull { (it as? VariantTask)?.variantName }
+            .filter { it in releaseVariants }
+    if (packaging.isNotEmpty()) {
+        throw GradleException(
+            "-PpublisherDomainOverride is test-only and is refused for release artifacts (${packaging.distinct().joinToString()}).",
+        )
+    }
 }
 tasks.withType<Test>().configureEach {
     if (name != "testFossDebugUnitTest") return@configureEach
     val manifest = mergedManifests.getValue("fossDebug")
     val e2eManifest = mergedManifests.getValue("fossE2e")
+    val releaseManifest = mergedManifests.getValue("fossRelease")
     val buildConfigs = listOf("fossDebug", "fossE2e", "fossRelease", "playRelease")
     inputs.file(manifest)
     inputs.file(e2eManifest)
+    inputs.file(releaseManifest)
     dependsOn(buildConfigs.map { "generate${it.replaceFirstChar(Char::uppercase)}BuildConfig" })
     val buildConfigRoot = layout.buildDirectory.dir("generated/source/buildConfig")
     jvmArgumentProviders.add(
@@ -202,6 +256,7 @@ tasks.withType<Test>().configureEach {
             listOf(
                 "-Dyaran.mergedManifest=${manifest.get().asFile.absolutePath}",
                 "-Dyaran.mergedE2eManifest=${e2eManifest.get().asFile.absolutePath}",
+                "-Dyaran.mergedReleaseManifest=${releaseManifest.get().asFile.absolutePath}",
                 "-Dyaran.buildConfigRoot=${buildConfigRoot.get().asFile.absolutePath}",
             )
         },

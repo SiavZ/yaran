@@ -24,7 +24,8 @@
  *
  * Used by:
  * src/screens/settings/NotificationSettings.tsx
- * └── src/screens/settings/Settings.tsx
+ * ├── src/screens/settings/Settings.tsx
+ * └── src/screens/settings/notificationPreferences.test.tsx
  * <module-headers:end>
  */
 import { Capacitor } from '@capacitor/core';
@@ -47,12 +48,23 @@ export function NotificationSettings() {
   const { orgs } = useStore(orgStore);
   const machines = useStore(machinesStore);
   const [distributors, setDistributors] = useState<DistributorList | null>(null);
+  const [distributorRefresh, setDistributorRefresh] = useState(0);
   const [turningOff, setTurningOff] = useState<OrgRecord | null>(null);
 
   useEffect(() => {
     reconcileAllPush();
-    if (Capacitor.getPlatform() === 'android') void Push.listDistributors().then(setDistributors, () => setDistributors(null));
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    if (Capacitor.getPlatform() === 'android') {
+      void Push.listDistributors().then(
+        (list) => { if (live) setDistributors(list); },
+        () => { if (live) setDistributors(null); },
+      );
+    }
+    return () => { live = false; };
+  }, [distributorRefresh]);
 
   const rows: NotificationOrgRow[] = orgs.flatMap((org) => {
     const r = results[org.id];
@@ -79,7 +91,7 @@ export function NotificationSettings() {
         onTurnOff={(orgId) => setTurningOff(findOrg(orgId) ?? null)}
         onMuteOrg={(orgId, mode) => void mutePushOrg(orgId, mode)}
         onMuteMachine={(orgId, machineId, muted) => void mutePushMachine(orgId, machineId, muted)}
-        onSelectDistributor={(name) => void selectDistributor(name)}
+        onSelectDistributor={(name) => void selectDistributor(name).then(() => setDistributorRefresh((n) => n + 1))}
       />
       <Dialog open={turningOff !== null} onOpenChange={(open) => !open && setTurningOff(null)}>
         <DialogContent showCloseButton={false} destructive>

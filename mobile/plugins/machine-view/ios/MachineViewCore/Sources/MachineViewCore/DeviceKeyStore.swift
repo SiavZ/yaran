@@ -26,8 +26,11 @@
 /// ├── MachineViewCore/OrgApiClient (inferred)
 /// ├── MachineViewCore/SecureEnclaveBackend (inferred)
 /// ├── MachineViewCore/SessionStore (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
+/// ├── MachineViewCoreTests/OrgWipeTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// <module-headers:end>
 import Foundation

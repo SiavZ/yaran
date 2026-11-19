@@ -162,6 +162,195 @@ class VaultTest {
         assertThrows(CoreError.Tampered::class.java) { Vault(dir, keys).get("orgs", "locked") }
     }
 
+    // A session token an older build wrote while the lock was off must not stay readable once it is on.
+    @Test
+    fun enablingTheLockMovesLegacySessionEntriesIntoTheLockedClass() {
+        vault.set("session-direct", "h1", "direct-token", Protection.STANDARD)
+        vault.set("session-direct", "names", "a.example.com", Protection.STANDARD)
+        vault.set("session", "h2", "access-jwt", Protection.STANDARD)
+        vault.set("orgs", "list", "[]", Protection.STANDARD)
+        enableLock()
+        val relaunched = Vault(dir, keys) // a new process: the lock is wrapped and nothing is unlocked
+        assertThrows(CoreError.Locked::class.java) { relaunched.get("session-direct", "h1") }
+        assertThrows(CoreError.Locked::class.java) { relaunched.get("session", "h2") }
+        assertEquals("the host index stays listable", "a.example.com", relaunched.get("session-direct", "names"))
+        assertEquals("other namespaces keep their class", "[]", relaunched.get("orgs", "list"))
+        val raw = File(dir, "session-direct.bin").readBytes().decodeToString(throwOnInvalidSequence = false)
+        assertFalse(raw.contains("direct-token"))
+    }
+
+    @Test
+    fun aFailedPromotionLeavesTheLockOffAndEveryEntryReadable() {
+        vault.set("session-direct", "h1", "direct-token", Protection.STANDARD)
+        File(dir, "session.bin").writeBytes(ByteArray(64) { 7 })
+        val cipher = vault.lockCipherForEnable(allowDeviceCredential = false)
+        assertThrows(CoreError.Tampered::class.java) { vault.wrapUnderLock(cipher) }
+        assertFalse(vault.isLockWrapped())
+        assertEquals("direct-token", Vault(dir, keys).get("session-direct", "h1"))
+    }
+
+    // A lock an older build enabled never promoted its session entries: they are refused while
+    // locked, and the first unlock moves them into the locked class.
+    @Test
+    fun aLockEnabledByAnOlderBuildRefusesThenPromotesLegacySessions() {
+        enableLock()
+        // What the older build wrote while unlocked, after its lock was on.
+        vault.set("session-direct", "h1", "direct-token", Protection.STANDARD)
+        vault.set("session-direct", "names", "a.example.com", Protection.STANDARD)
+        vault.set("session", "h2", "access-jwt", Protection.STANDARD)
+        val relaunched = Vault(dir, keys)
+        assertThrows(CoreError.Locked::class.java) { relaunched.get("session-direct", "h1") }
+        assertThrows(CoreError.Locked::class.java) { relaunched.get("session", "h2") }
+        assertEquals("a.example.com", relaunched.get("session-direct", "names"))
+        relaunched.unlock(relaunched.lockCipherForUnlock())
+        assertEquals("nothing lost at the unlock", "direct-token", relaunched.get("session-direct", "h1"))
+        // Promoted: the locked-class wipe now takes them, and the host index stays.
+        relaunched.wipeLocked()
+        assertNull(relaunched.get("session-direct", "h1"))
+        assertNull(relaunched.get("session", "h2"))
+        assertEquals("a.example.com", relaunched.get("session-direct", "names"))
+    }
+
+    // Round 4: the lock key is invalidated before any unlock could promote an older build's
+    // standard session entries; losing the lock must take them as it takes the locked class.
+    @Test
+    fun anInvalidationBeforePromotionDropsLegacySessions() {
+        enableLock()
+        vault.set("session-direct", "h1", "direct-token", Protection.STANDARD)
+        vault.set("session-direct", "names", "a.example.com", Protection.STANDARD)
+        vault.set("session", "h2", "access-jwt", Protection.STANDARD)
+        vault.set("orgs", "list", "[]", Protection.STANDARD)
+        vault.relock()
+        keys.invalidate()
+        val relaunched = Vault(dir, keys)
+        assertEquals("invalidated", assertThrows(CoreError::class.java) { relaunched.lockCipherForUnlock() }.code)
+        assertEquals(listOf("names"), relaunched.list("session-direct"))
+        assertEquals(emptyList<String>(), relaunched.list("session"))
+        assertEquals("a.example.com", relaunched.get("session-direct", "names"))
+        assertEquals("[]", relaunched.get("orgs", "list"))
+    }
+
+    // Round 5: the invalidation's cleanup cannot rewrite a session namespace (its temp file
+    // path is taken). The wipe must fail as itself, not as a finished invalidation, and a
+    // restart must still see the lock and refuse the legacy secret until a retry completes.
+    @Test
+    fun aFailedInvalidationCleanupKeepsTheLockUntilARetryFinishesIt() {
+        enableLock()
+        vault.set("session-direct", "h1", "direct-token", Protection.STANDARD)
+        vault.set("session-direct", "names", "a.example.com", Protection.STANDARD)
+        vault.relock()
+        keys.invalidate()
+        val blocker = File(dir, "session-direct.bin.tmp").apply { mkdirs() }
+        assertThrows(CoreError.Unavailable::class.java) { Vault(dir, keys).lockCipherForUnlock() }
+
+        val restarted = Vault(dir, keys)
+        assertTrue("the lock is still on", restarted.isLockWrapped())
+        assertThrows(CoreError.Locked::class.java) { restarted.get("session-direct", "h1") }
+        assertEquals("a.example.com", restarted.get("session-direct", "names"))
+
+        blocker.delete()
+        assertEquals("invalidated", assertThrows(CoreError::class.java) { Vault(dir, keys).lockCipherForUnlock() }.code)
+        val wiped = Vault(dir, keys)
+        assertFalse(wiped.isLockWrapped())
+        assertEquals(listOf("names"), wiped.list("session-direct"))
+    }
+
+    // Round 8: the wipe cannot delete the lock marker (the vault directory refuses writes). The
+    // key must stay with it, the failure must not read as a finished invalidation, and once the
+    // directory accepts writes again a restart retries and completes it.
+    @Test
+    fun aMarkerThatCannotBeDeletedKeepsItsKeyUntilARetryFinishes() {
+        vault.set("orgs", "list", "[]", Protection.STANDARD)
+        enableLock()
+        vault.relock()
+        keys.invalidate()
+        assertTrue(dir.setWritable(false))
+        try {
+            assertThrows(CoreError.Unavailable::class.java) { Vault(dir, keys).lockCipherForUnlock() }
+        } finally {
+            dir.setWritable(true)
+        }
+        assertTrue("the key stayed with its marker", keys.hasLockKey)
+        val restarted = Vault(dir, keys)
+        assertTrue(restarted.isLockWrapped())
+        assertEquals("invalidated", assertThrows(CoreError::class.java) { restarted.lockCipherForUnlock() }.code)
+        assertFalse(Vault(dir, keys).isLockWrapped())
+        assertFalse(keys.hasLockKey)
+        assertEquals("[]", Vault(dir, keys).get("orgs", "list"))
+    }
+
+    // Round 10: an older build's partial save left a standard session secret with no `names`
+    // index, so the wipe empties the namespace, and the filesystem refuses to unlink it. That is
+    // not a finished invalidation: the marker and key stay, a restart still refuses the secret,
+    // and a retry once the file can be removed completes. (macOS `chflags uchg` refuses the unlink
+    // of this one file while the directory stays writable; skipped where that flag does not exist.)
+    @Test
+    fun anEmptiedNamespaceThatCannotBeUnlinkedKeepsTheLock() {
+        enableLock()
+        vault.set("session-direct", "h1", "direct-token", Protection.STANDARD) // no names index
+        vault.relock()
+        keys.invalidate()
+        val blob = File(dir, "session-direct.bin")
+        org.junit.Assume.assumeTrue(flags(blob, "uchg"))
+        try {
+            assertThrows(CoreError.Unavailable::class.java) { Vault(dir, keys).lockCipherForUnlock() }
+        } finally {
+            flags(blob, "nouchg")
+        }
+        assertTrue("the key stayed with its marker", keys.hasLockKey)
+        val restarted = Vault(dir, keys)
+        assertTrue(restarted.isLockWrapped())
+        assertThrows(CoreError.Locked::class.java) { restarted.get("session-direct", "h1") }
+        assertEquals("invalidated", assertThrows(CoreError::class.java) { restarted.lockCipherForUnlock() }.code)
+        assertFalse(blob.exists())
+        assertFalse(Vault(dir, keys).isLockWrapped())
+    }
+
+    // Round 11: the vault directory cannot be listed (its read permission is refused; files in it can
+    // still be read and written). That is not "no namespaces": the wipe must fail before it deletes
+    // the marker or key, a restart must still refuse the legacy secret (an older build's, with no
+    // names index), and once the listing works again a retry completes. A never-created vault is empty.
+    @Test
+    fun aVaultThatCannotBeListedIsNotEmpty() {
+        enableLock()
+        vault.set("session-direct", "h1", "direct-token", Protection.STANDARD) // no names index
+        vault.relock()
+        keys.invalidate()
+        assertTrue(dir.setReadable(false))
+        try {
+            assertThrows(CoreError.Unavailable::class.java) { Vault(dir, keys).lockCipherForUnlock() }
+            assertTrue("the key stayed with its marker", keys.hasLockKey)
+            val restarted = Vault(dir, keys)
+            assertTrue(restarted.isLockWrapped())
+            assertThrows(CoreError.Locked::class.java) { restarted.get("session-direct", "h1") }
+        } finally {
+            dir.setReadable(true)
+        }
+        assertEquals("invalidated", assertThrows(CoreError::class.java) { Vault(dir, keys).lockCipherForUnlock() }.code)
+        assertFalse(Vault(dir, keys).isLockWrapped())
+        assertEquals(emptyList<String>(), Vault(dir, keys).list("session-direct"))
+
+        Vault(File(dir, "never-created"), keys).wipeLocked() // a fresh vault has nothing to list, and that is fine
+    }
+
+    @Test
+    fun anEraseThatCannotListSaysSo() {
+        vault.set("orgs", "list", "[]", Protection.STANDARD)
+        assertTrue(dir.setReadable(false))
+        try {
+            assertThrows(CoreError.Unavailable::class.java) { Vault(dir, keys).eraseAll() }
+        } finally {
+            dir.setReadable(true)
+        }
+        Vault(dir, keys).eraseAll()
+        assertEquals(emptyList<String>(), dir.list()!!.toList())
+    }
+
+    private fun flags(
+        file: File,
+        flag: String,
+    ): Boolean = runCatching { ProcessBuilder("chflags", flag, file.path).start().waitFor() == 0 }.getOrDefault(false)
+
     private fun enableLock() {
         val cipher: Cipher = vault.lockCipherForEnable(allowDeviceCredential = false)
         vault.wrapUnderLock(cipher)

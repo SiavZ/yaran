@@ -10,6 +10,7 @@
 /// <module-headers:begin>
 /// Uses:
 /// App/SceneDelegate
+/// ├── MachineView/MachineViewPlugin (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// └── YaranCore/ScreenPrivacy (inferred)
 /// External: Capacitor, Darwin, UIKit
@@ -21,6 +22,7 @@
 
 import Capacitor
 import Darwin
+import MachineView
 import UIKit
 import YaranCore
 
@@ -36,7 +38,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         AppLock.shared.prompt = NSLocalizedString("lock.prompt", value: "Unlock yaran", comment: "Keychain prompt")
         PrivacyCover.shared.attach(to: window)
-        SceneDelegateProxy.shared.scene(scene, willConnectTo: session, options: connectionOptions)
+        // A cold start (G5): shared files are held natively and JS hears a count; links and user
+        // activities reach the shell as Capacitor's proxy would deliver them, never a file URL.
+        ShareIntake.connect(scene, options: connectionOptions)
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
@@ -55,8 +59,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         AppLock.shared.willEnterForeground(nowMs: Self.nowMs())
     }
 
+    /// Shared files (G5) stay native; every other URL (add-org, add-machine) goes to the shell.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-        SceneDelegateProxy.shared.scene(scene, openURLContexts: URLContexts)
+        let files = URLContexts.filter(\.url.isFileURL)
+        ShareIntake.receive(files.map(\.url))
+        let links = URLContexts.subtracting(files)
+        if !links.isEmpty { SceneDelegateProxy.shared.scene(scene, openURLContexts: links) }
     }
 
     func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {

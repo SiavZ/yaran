@@ -19,6 +19,7 @@
 //! Used by:
 //! cloud/protocol/uri.rs
 //! ├── cloud::protocol
+//! ├── cloud::protocol::links
 //! ├── cloud::qr
 //! ├── yaran-web::cloud_handoff_request
 //! └── yaran-web::cloud_phone_routes
@@ -36,7 +37,7 @@ pub const DEV_HANDOFF_REDIRECT: &str = "yaranapp://auth/callback";
 pub const ADD_ORG_MAX_CHARS: usize = 512;
 
 /// What JavaScript's `encodeURIComponent` leaves unescaped.
-const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+pub(crate) const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'_')
     .remove(b'.')

@@ -2,7 +2,7 @@
  * Entry point of the phone app shell, loaded by `index.html` inside the Capacitor WebView.
  *
  * Opts into the dark token set (the web and the shared tokens are dark-only), loads the
- * saved settings and org list from the vault, activates the saved language, then mounts.
+ * saved settings, org list and direct machine list from the vault, activates the saved language, then mounts.
  *
  * - The shell never touches the network; everything here is local.
  *
@@ -10,6 +10,7 @@
  * Uses:
  * src/main.tsx
  * ├── src/App.tsx
+ * ├── src/lib/directStore.ts
  * ├── src/lib/i18n.ts
  * ├── src/lib/orgStore.ts
  * └── src/lib/settingsStore.ts
@@ -25,6 +26,7 @@ import { createRoot } from 'react-dom/client';
 import './index.css';
 import { App } from './App.tsx';
 import { DEFAULT_LOCALE, activate, i18n, isLocale } from './lib/i18n.ts';
+import { loadDirect } from './lib/directStore.ts';
 import { loadOrgs } from './lib/orgStore.ts';
 import { loadSettings } from './lib/settingsStore.ts';
 
@@ -33,7 +35,7 @@ document.documentElement.style.colorScheme = 'dark';
 
 const settings = await loadSettings().catch(() => null);
 activate(settings && isLocale(settings.locale) ? settings.locale : DEFAULT_LOCALE);
-await loadOrgs();
+await Promise.all([loadOrgs(), loadDirect()]);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

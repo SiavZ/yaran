@@ -24,7 +24,8 @@ import Testing
 @testable import YaranCore
 
 struct PluginArgumentsTests {
-    @Test(arguments: ["session", "handoff", "install", "push", "push-keys", "sessions"])
+    // session-direct holds the direct-machine tokens (machine-view); JS must never reach it.
+    @Test(arguments: ["session", "handoff", "install", "push", "push-keys", "sessions", "session-direct"])
     func reservedNamespacesAreRefused(_ name: String) {
         #expect(throws: PluginErrorCode.reservedNamespace) { try PluginArguments.namespace(name) }
     }

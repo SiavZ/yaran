@@ -22,6 +22,7 @@
  * ├── io.github.siavz.yaran.core.AndroidKeyStoreTest (inferred)
  * ├── io.github.siavz.yaran.core.SoftwareKeyProvider (inferred)
  * ├── io.github.siavz.yaran.core.Vault (inferred)
+ * ├── io.github.siavz.yaran.core.VaultFiles (inferred)
  * └── io.github.siavz.yaran.machineview.CoreAdaptersTest
  * <module-headers:end>
  */

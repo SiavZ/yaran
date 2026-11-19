@@ -31,7 +31,8 @@
 //! ├── cloud::push_emitter::tests
 //! ├── cloud::push_runner
 //! ├── engine::push_hook
-//! └── yaran-core[test cloud_push_emitter]
+//! ├── yaran-core[test cloud_push_emitter]
+//! └── yaran-web::cloud_phone_links
 //! ```
 //! <module-headers:end>
 

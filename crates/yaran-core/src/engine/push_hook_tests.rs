@@ -297,3 +297,47 @@ fn push_follows_the_cloud_section() {
     config.cloud.push.push_coalesce_seconds = 0;
     assert_eq!(push_settings(&config).coalesce, std::time::Duration::ZERO);
 }
+
+/// G4: a phone (or any owner page) that is looking at an agent tab sends the viewed beat,
+/// which lands as `note_agent_viewed_if_known`; while that view is held the tab's
+/// signal raises nothing, for the phone or the sidebar. Only that tab is suppressed, and
+/// a view that lapsed (the page went hidden, was locked, or moved on) suppresses nothing.
+#[test]
+fn push_hook_a_held_view_of_the_tab_suppresses_its_push_and_nothing_else() {
+    let (mut engine, rx, _tmp) = engine_with_agent(16);
+    engine.config.ui.attention_indicator = true;
+    let _wt = seed_signaling_provider(&mut engine, "s1-slot");
+
+    // The web transport's entry point, as the viewed beat delivers it.
+    engine.note_agent_viewed_if_known("s1-slot");
+    engine.poll_agent_signals();
+    assert!(
+        drain(&rx).is_empty(),
+        "a held view raises no push for the viewed tab"
+    );
+    assert!(!engine.tab_needs_attention("s1-slot"));
+
+    // A sibling tab of the same agent is not on screen: its signal still raises.
+    engine
+        .agent_tabs
+        .insert(TabId::new("t2"), sample_tab("t2", "s1", "claude", 1));
+    let _t2 = seed_signaling_provider(&mut engine, "t2");
+    engine.note_agent_viewed_if_known("s1-slot");
+    engine.observe_push_tick(&[TabId::new("t2")], Instant::now());
+    let events = drain(&rx);
+    assert_eq!(events.len(), 1, "only the viewed tab is suppressed");
+    assert_eq!(attention(&events[0]).kind, AttentionKind::AttentionRaised);
+    assert_eq!(attention(&events[0]).tab_id.as_deref(), Some("t2"));
+
+    // The beats stopped (hidden, locked, backgrounded): once the engaged window passes,
+    // the next signal on the once-viewed tab raises as usual.
+    let lapsed = Instant::now()
+        .checked_sub(crate::engine::ATTENTION_ENGAGED_WINDOW + std::time::Duration::from_millis(50))
+        .expect("a past instant");
+    engine.agent_viewed.insert(TabId::new("s1-slot"), lapsed);
+    engine.observe_push_tick(&[TabId::new("s1-slot")], Instant::now());
+    let events = drain(&rx);
+    assert_eq!(events.len(), 1, "a lapsed view suppresses nothing");
+    assert_eq!(attention(&events[0]).kind, AttentionKind::AttentionRaised);
+    assert_eq!(attention(&events[0]).tab_id, None);
+}

@@ -20,6 +20,9 @@
 /// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/Vault (inferred)
+/// ├── YaranCore/Vault+LockSeam (inferred)
+/// ├── YaranCoreTests/KeychainWriteTests (inferred)
+/// ├── YaranCoreTests/LockTransitionTests (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)
 /// └── YaranCoreTests/VaultTests (inferred)
 /// <module-headers:end>
@@ -73,7 +76,9 @@ public enum KeychainFailure: Error, Equatable {
 public protocol KeychainStore: AnyObject, Sendable {
     /// Returns the item's data, or nil when it does not exist. A guarded read shows `prompt`.
     func read(_ item: KeychainItem, prompt: String?) throws -> Data?
-    /// Replaces the item (delete then add, so the access class and guard always match `item`).
+    /// Replaces the item so its access class and guard match `item`. An unguarded item is updated
+    /// in place (added when missing), so a failed write leaves the old value; a guarded one is
+    /// deleted and re-added, since its access control cannot be rewritten without a prompt.
     func write(_ data: Data, to item: KeychainItem) throws
     /// Deletes the item; deleting a missing item is not an error.
     func delete(_ item: KeychainItem) throws
@@ -87,6 +92,11 @@ public final class InMemoryKeychainStore: KeychainStore, @unchecked Sendable {
     private var items: [String: (item: KeychainItem, data: Data)] = [:]
     /// Set by tests to make the next guarded read behave like the real Keychain would.
     public var guardedReadFailure: KeychainFailure?
+    /// Set by tests: writes or deletes of these accounts fail, as a full or broken Keychain would.
+    public var failingWrites: Set<String> = []
+    public var failingDeletes: Set<String> = []
+    /// Set by tests: writes left before every later one fails, as a Keychain breaking mid-change would.
+    public var writesBeforeFailure: Int?
 
     public init() {}
 
@@ -101,11 +111,17 @@ public final class InMemoryKeychainStore: KeychainStore, @unchecked Sendable {
 
     public func write(_ data: Data, to item: KeychainItem) throws {
         lock.lock(); defer { lock.unlock() }
+        if failingWrites.contains(item.account) { throw KeychainFailure.unavailable }
+        if let left = writesBeforeFailure {
+            guard left > 0 else { throw KeychainFailure.unavailable }
+            writesBeforeFailure = left - 1
+        }
         items[slot(item.service, item.account)] = (item, data)
     }
 
     public func delete(_ item: KeychainItem) throws {
         lock.lock(); defer { lock.unlock() }
+        if failingDeletes.contains(item.account) { throw KeychainFailure.unavailable }
         items[slot(item.service, item.account)] = nil
     }
 
@@ -133,9 +149,31 @@ public final class InMemoryKeychainStore: KeychainStore, @unchecked Sendable {
     }
 }
 
+/// The Security framework calls `SystemKeychainStore` makes; a seam so its write order is testable.
+public struct SecItemCalls: Sendable {
+    public var add: @Sendable (CFDictionary) -> OSStatus
+    public var update: @Sendable (CFDictionary, CFDictionary) -> OSStatus
+    public var delete: @Sendable (CFDictionary) -> OSStatus
+    public var copy: @Sendable (CFDictionary, UnsafeMutablePointer<CFTypeRef?>) -> OSStatus
+
+    public init(add: @escaping @Sendable (CFDictionary) -> OSStatus,
+                update: @escaping @Sendable (CFDictionary, CFDictionary) -> OSStatus,
+                delete: @escaping @Sendable (CFDictionary) -> OSStatus,
+                copy: @escaping @Sendable (CFDictionary, UnsafeMutablePointer<CFTypeRef?>) -> OSStatus = { SecItemCopyMatching($0, $1) }) {
+        (self.add, self.update, self.delete, self.copy) = (add, update, delete, copy)
+    }
+
+    public static let system = SecItemCalls(add: { SecItemAdd($0, nil) }, update: { SecItemUpdate($0, $1) }, delete: { SecItemDelete($0) },
+                                            copy: { SecItemCopyMatching($0, $1) })
+}
+
 /// The real Keychain (data-protection keychain, generic-password class).
 public final class SystemKeychainStore: KeychainStore, @unchecked Sendable {
-    public init() {}
+    private let calls: SecItemCalls
+
+    public init(calls: SecItemCalls = .system) {
+        self.calls = calls
+    }
 
     private func baseQuery(_ service: String, _ account: String?, _ group: String?) -> [String: Any] {
         var query: [String: Any] = [
@@ -158,7 +196,7 @@ public final class SystemKeychainStore: KeychainStore, @unchecked Sendable {
             query[kSecUseAuthenticationContext as String] = context
         }
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = calls.copy(query as CFDictionary, &result)
         switch status {
         case errSecSuccess: return result as? Data
         case errSecItemNotFound: return nil
@@ -167,25 +205,35 @@ public final class SystemKeychainStore: KeychainStore, @unchecked Sendable {
     }
 
     public func write(_ data: Data, to item: KeychainItem) throws {
-        try delete(item)
         var query = baseQuery(item.service, item.account, item.accessGroup)
-        query[kSecValueData as String] = data
         let access = Self.accessAttribute(item.access)
-        if let guardedBy = item.guardedBy {
-            let flags: SecAccessControlCreateFlags = guardedBy == .biometryCurrentSet ? .biometryCurrentSet : .userPresence
-            guard let control = SecAccessControlCreateWithFlags(nil, access, flags, nil) else {
-                throw KeychainFailure.unavailable
+        guard let guardedBy = item.guardedBy else {
+            // Never delete first: a write that fails must leave the value it was replacing.
+            let changes: [String: Any] = [kSecValueData as String: data, kSecAttrAccessible as String: access]
+            let updated = calls.update(query as CFDictionary, changes as CFDictionary)
+            guard updated == errSecItemNotFound else {
+                guard updated == errSecSuccess else { throw Self.failure(updated) }
+                return
             }
-            query[kSecAttrAccessControl as String] = control
-        } else {
-            query[kSecAttrAccessible as String] = access
+            query.merge(changes) { _, new in new }
+            let added = calls.add(query as CFDictionary)
+            guard added == errSecSuccess else { throw Self.failure(added) }
+            return
         }
-        let status = SecItemAdd(query as CFDictionary, nil)
+        // Only the lock key is guarded, written inside the Vault's recoverable lock transitions.
+        try delete(item)
+        let flags: SecAccessControlCreateFlags = guardedBy == .biometryCurrentSet ? .biometryCurrentSet : .userPresence
+        guard let control = SecAccessControlCreateWithFlags(nil, access, flags, nil) else {
+            throw KeychainFailure.unavailable
+        }
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessControl as String] = control
+        let status = calls.add(query as CFDictionary)
         guard status == errSecSuccess else { throw Self.failure(status) }
     }
 
     public func delete(_ item: KeychainItem) throws {
-        let status = SecItemDelete(baseQuery(item.service, item.account, item.accessGroup) as CFDictionary)
+        let status = calls.delete(baseQuery(item.service, item.account, item.accessGroup) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw Self.failure(status) }
     }
 
@@ -198,7 +246,7 @@ public final class SystemKeychainStore: KeychainStore, @unchecked Sendable {
         context.interactionNotAllowed = true
         query[kSecUseAuthenticationContext as String] = context
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = calls.copy(query as CFDictionary, &result)
         switch status {
         case errSecSuccess:
             let rows = result as? [[String: Any]] ?? []

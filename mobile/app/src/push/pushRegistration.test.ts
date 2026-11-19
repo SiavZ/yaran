@@ -6,6 +6,7 @@
  * <module-headers:begin>
  * Uses:
  * src/push/pushRegistration.test.ts
+ * ├── src/push/muteSync.ts
  * ├── src/push/pushRegistration.ts
  * └── src/push/pushTestKit.ts
  * External: vitest
@@ -14,10 +15,9 @@
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";
+import { MuteSync, muteMachine } from "./muteSync.ts";
 import {
   drainPending,
-  MuteSync,
-  muteMachine,
   reconcileOrg,
   removeOrgPush,
   rowFromDevice,

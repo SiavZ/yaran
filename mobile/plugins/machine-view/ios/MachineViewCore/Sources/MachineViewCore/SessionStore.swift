@@ -14,6 +14,7 @@
 /// ├── MachineViewCore/B64url (inferred)
 /// ├── MachineViewCore/CookieSpec (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/SealedEnvelope (inferred)
 /// └── MachineViewCore/Seams (inferred)
 /// External: Foundation
@@ -21,9 +22,13 @@
 /// Used by:
 /// MachineViewCore/SessionStore
 /// ├── MachineView/AppServices (inferred)
+/// ├── MachineViewCore/DirectAuth (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
+/// ├── MachineViewCoreTests/OrgWipeTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// <module-headers:end>
 import Foundation
@@ -47,10 +52,9 @@ public struct StoredSession: Codable, Equatable, CustomStringConvertible {
 public final class SessionStore {
     private let vault: SecretVault
     private let diagnostics: DiagnosticsSink?
-    private let lockEnabled: () -> Bool
 
-    public init(vault: SecretVault, diagnostics: DiagnosticsSink?, lockEnabled: @escaping () -> Bool) {
-        (self.vault, self.diagnostics, self.lockEnabled) = (vault, diagnostics, lockEnabled)
+    public init(vault: SecretVault, diagnostics: DiagnosticsSink?) {
+        (self.vault, self.diagnostics) = (vault, diagnostics)
     }
 
     static let prefix = "session/"
@@ -65,12 +69,25 @@ public final class SessionStore {
         }
         let session = StoredSession(orgId: orgId, jwt: payload.jwt, cookie: payload.cookie, exp: exp, iat: payload.iat,
                                     email: payload.email, credentialKind: kind)
-        try vault.write(Self.prefix + payload.host, JSONEncoder().encode(session), lockEnabled() ? .locked : .standard)
+        // Locked class from creation: enabling App Lock later must not leave this bearer readable.
+        try vault.write(Self.prefix + payload.host, JSONEncoder().encode(session), .locked)
         return session
     }
 
+    /// The session, or nil when there is none. Throws `VaultError.locked` while locked and
+    /// `StoredRecordError.unreadable` for a record that is there but cannot be read: that is
+    /// never "signed out" (the window says so instead of starting a sign-in by itself).
     public func get(_ host: String) throws -> StoredSession? {
-        try vault.read(Self.prefix + host).flatMap { try? JSONDecoder().decode(StoredSession.self, from: $0) }
+        let data: Data?
+        do { data = try vault.read(Self.prefix + host) } catch VaultError.locked { throw VaultError.locked } catch { throw StoredRecordError.unreadable }
+        guard let data else { return nil }
+        guard let session = try? JSONDecoder().decode(StoredSession.self, from: data) else { throw StoredRecordError.unreadable }
+        return session
+    }
+
+    /// Only a session of `orgId`: another org's session for the same host is no session for this route.
+    public func get(_ host: String, orgId: String) throws -> StoredSession? {
+        try get(host).flatMap { $0.orgId == orgId ? $0 : nil }
     }
 
     public func status(_ host: String, now: Int64) -> (signedIn: Bool, expiresAt: Int64?) {
@@ -78,10 +95,12 @@ public final class SessionStore {
         return (stored.exp > now, stored.exp)
     }
 
+    /// Every host holding a session of `orgId`. A listing or a record that cannot be read throws: an
+    /// unreadable record may be this org's, so "none" would be a guess that leaves it behind.
     public func hosts(orgId: String) throws -> [String] {
         try vault.list(prefix: Self.prefix).compactMap { path in
             let host = String(path.dropFirst(Self.prefix.count))
-            return (try? get(host))?.orgId == orgId ? host : nil
+            return try get(host)?.orgId == orgId ? host : nil
         }
     }
 
@@ -90,7 +109,8 @@ public final class SessionStore {
     }
 
     /// Sign-out, `device_revoked` and org removal: sessions of `orgId` plus `extraHosts`,
-    /// their WebView data, the `install_id` and the device key.
+    /// their WebView data, the `install_id` and the device key. Throws, with nothing deleted and the
+    /// device identity kept for a retry, when the org's sessions cannot all be found.
     public func wipe(orgId: String, extraHosts: [String] = [], deviceKeys: DeviceKeyStore, cleaner: WebDataCleaner?) throws {
         let hosts = Array(Set(try self.hosts(orgId: orgId) + extraHosts)).sorted()
         try delete(hosts: hosts)

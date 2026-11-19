@@ -9,8 +9,8 @@
 /// - Standard items use `WhenUnlockedThisDeviceOnly`; namespaces the push NSE shares
 ///   (`sharedPrefixes`) use `AfterFirstUnlockThisDeviceOnly` in the app-group access group.
 /// - A blob that does not decode or authenticate is `VaultError.tampered`, never empty.
-/// - The lock seam (`unlock`, `guardDataKey`, `unguardDataKey`, `wipeLocked`) is driven by
-///   `AppLock`; plugins call only the namespace methods.
+/// - The lock seam (`unlock`, `guardDataKey`, `unguardDataKey`, `wipeLocked`, in
+///   `Vault+LockSeam.swift`) is driven by `AppLock`; plugins call only the namespace methods.
 /// - Thread-safe: every call runs under one recursive lock.
 ///
 /// <module-headers:begin>
@@ -27,6 +27,8 @@
 /// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/PluginArguments (inferred)
+/// ├── YaranCore/Vault+LockSeam (inferred)
+/// ├── YaranCoreTests/LockTransitionTests (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)
 /// ├── YaranCoreTests/VaultTests (inferred)
 /// └── YaranSecureStorePlugin/SecureStorePlugin (inferred)
@@ -50,6 +52,8 @@ public final class Vault: @unchecked Sendable {
     public static let service = "io.github.siavz.yaran.vault"
     static let dataKeyAccount = "key.locked"
     static let guardedKeyAccount = "key.locked.guarded"
+    /// A guard change in progress: the data key behind the NEW guard, one account per guard kind.
+    static let stagedKeyPrefix = "key.locked.guarded.next."
 
     /// The app-wide instance, built on the real Keychain with the `group.<bundle id>` group.
     public static let shared = Vault(
@@ -57,11 +61,12 @@ public final class Vault: @unchecked Sendable {
         accessGroup: Bundle.main.bundleIdentifier.map { "group." + $0 }
     )
 
-    private let store: KeychainStore
+    // Internal, not private: the lock seam in `Vault+LockSeam.swift` uses these.
+    let store: KeychainStore
     private let accessGroup: String?
     private let sharedPrefixes: [String]
     private let mutex = NSRecursiveLock()
-    private var dataKey: SymmetricKey?
+    var dataKey: SymmetricKey?
     /// Mirrors `AppLock`'s persisted setting; true means the data key sits behind the guard.
     var lockEnabled = false
 
@@ -85,7 +90,11 @@ public final class Vault: @unchecked Sendable {
         try withLock {
             try validate(namespace, key)
             let blob = try readBlob(namespace)
-            if let value = blob.standard[key] { return value }
+            if let value = blob.standard[key] {
+                // A session secret an older build left standard is as locked as the class it belongs in.
+                if Self.isSessionSecret(namespace, key), lockEnabled, dataKey == nil { throw VaultError.locked }
+                return value
+            }
             return try openLocked(blob, namespace)[key]
         }
     }
@@ -150,85 +159,33 @@ public final class Vault: @unchecked Sendable {
         try withLock { try io { try store.write(data, to: item(account: "meta." + name, shared: false)) } }
     }
 
-    // MARK: Lock seam (AppLock only). Keychain failures pass through as KeychainFailure.
+    /// The native session namespaces (machine-view's org `session/<host>` and direct
+    /// `session-direct/<host>` records): bearer secrets, always written in the locked class and
+    /// promoted there when the lock is enabled. Their `names` index lists host names, not
+    /// secrets, and stays standard so it can be listed while locked.
+    public static let sessionNamespaces = ["session", "session-direct"]
+    public static let sessionIndexKey = "names"
 
-    var isUnlocked: Bool { withLock { dataKey != nil } }
-
-    /// Reads the guarded key (this is the biometric prompt). Missing item = `invalidated`.
-    func unlock(guardedBy guardKind: KeychainGuard, prompt: String) throws {
-        try withLock {
-            guard let data = try store.read(guardedKeyItem(guardKind), prompt: prompt) else {
-                throw VaultError.invalidated
-            }
-            dataKey = try Self.key(from: data)
-        }
+    static func isSessionSecret(_ namespace: String, _ key: String) -> Bool {
+        sessionNamespaces.contains(namespace) && key != sessionIndexKey
     }
 
-    /// Forgets the in-memory data key so the `locked` class needs a fresh unlock.
-    func engage() {
-        withLock { if lockEnabled { dataKey = nil } }
-    }
-
-    /// Moves the data key behind the guard, proving one unlock before dropping the plain copy.
-    func guardDataKey(_ guardKind: KeychainGuard, prompt: String) throws {
-        try withLock {
-            let key = try lockedKey(create: true) ?? SymmetricKey(size: .bits256)
-            try store.write(key.withUnsafeBytes { Data($0) }, to: guardedKeyItem(guardKind))
-            do {
-                try unlock(guardedBy: guardKind, prompt: prompt)
-            } catch {
-                try? store.delete(guardedKeyItem(guardKind))
-                throw error
-            }
-            try store.delete(item(account: Self.dataKeyAccount, shared: false))
-            lockEnabled = true
+    func promoteToLocked(_ namespace: String) throws {
+        var blob = try readBlob(namespace)
+        let legacy = blob.standard.filter { Self.isSessionSecret(namespace, $0.key) }
+        guard !legacy.isEmpty else { return }
+        var locked = try openLocked(blob, namespace)
+        for (key, value) in legacy {
+            locked[key] = value
+            blob.standard[key] = nil
         }
-    }
-
-    /// Prompts, then moves the data key back to a plain item and deletes the guarded one.
-    func unguardDataKey(_ guardKind: KeychainGuard, prompt: String) throws {
-        try withLock {
-            try unlock(guardedBy: guardKind, prompt: prompt)
-            guard let key = dataKey else { throw VaultError.locked }
-            try store.write(key.withUnsafeBytes { Data($0) }, to: item(account: Self.dataKeyAccount, shared: false))
-            try store.delete(guardedKeyItem(guardKind))
-            lockEnabled = false
-        }
-    }
-
-    /// Re-writes the guarded key with a new guard (passcode fallback toggled). Needs an unlock.
-    func reguardDataKey(_ guardKind: KeychainGuard) throws {
-        try withLock {
-            guard let key = dataKey else { throw VaultError.locked }
-            try store.write(key.withUnsafeBytes { Data($0) }, to: guardedKeyItem(guardKind))
-        }
-    }
-
-    /// Drops every `locked` map and both key items; with the lock on, a fresh guarded key
-    /// replaces the lost one so the lock keeps working. `standard` values survive.
-    func wipeLocked(guardedBy guardKind: KeychainGuard) throws {
-        try withLock {
-            for account in try io({ try store.accounts(service: Self.service) }) where account.hasPrefix("ns.") {
-                let namespace = String(account.dropFirst(3))
-                var blob = try readBlob(namespace)
-                guard blob.locked != nil else { continue }
-                blob.locked = nil
-                try writeBlob(blob, namespace)
-            }
-            try io { try store.delete(item(account: Self.dataKeyAccount, shared: false)) }
-            try io { try store.delete(guardedKeyItem(guardKind)) }
-            dataKey = nil
-            if lockEnabled {
-                let fresh = SymmetricKey(size: .bits256)
-                try io { try store.write(fresh.withUnsafeBytes { Data($0) }, to: guardedKeyItem(guardKind)) }
-                dataKey = fresh
-            }
-        }
+        blob.locked = try sealLocked(locked, namespace)
+        try writeBlob(blob, namespace)
     }
 
     // MARK: Internals
 
-    private struct Blob: Codable {
+    struct Blob: Codable {
         // `v` is the stored blob's version field; renaming it would change what is on disk.
         // swiftlint:disable:next identifier_name
         var v = 1
@@ -236,13 +193,13 @@ public final class Vault: @unchecked Sendable {
         var locked: Data?
     }
 
-    private func withLock<T>(_ body: () throws -> T) rethrows -> T {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
         mutex.lock(); defer { mutex.unlock() }
         return try body()
     }
 
     /// Plain namespace I/O never prompts, so every Keychain failure there is `unavailable`.
-    private func io<T>(_ body: () throws -> T) throws -> T {
+    func io<T>(_ body: () throws -> T) throws -> T {
         do { return try body() } catch is KeychainFailure { throw VaultError.unavailable }
     }
 
@@ -250,7 +207,7 @@ public final class Vault: @unchecked Sendable {
         guard Self.isValidNamespace(namespace), Self.isValidKey(key) else { throw VaultError.invalidArgument }
     }
 
-    private func item(account: String, shared: Bool) -> KeychainItem {
+    func item(account: String, shared: Bool) -> KeychainItem {
         shared
             ? KeychainItem(service: Self.service, account: account, access: .afterFirstUnlockThisDeviceOnly,
                            accessGroup: accessGroup)
@@ -261,12 +218,18 @@ public final class Vault: @unchecked Sendable {
         item(account: "ns." + namespace, shared: sharedPrefixes.contains { namespace.hasPrefix($0) })
     }
 
-    private func guardedKeyItem(_ guardKind: KeychainGuard) -> KeychainItem {
+    func guardedKeyItem(_ guardKind: KeychainGuard) -> KeychainItem {
         KeychainItem(service: Self.service, account: Self.guardedKeyAccount,
                      access: .whenPasscodeSetThisDeviceOnly, guardedBy: guardKind)
     }
 
-    private func readBlob(_ namespace: String) throws -> Blob {
+    func stagedKeyItem(_ guardKind: KeychainGuard) -> KeychainItem {
+        let suffix = guardKind == .userPresence ? "presence" : "biometry"
+        return KeychainItem(service: Self.service, account: Self.stagedKeyPrefix + suffix,
+                            access: .whenPasscodeSetThisDeviceOnly, guardedBy: guardKind)
+    }
+
+    func readBlob(_ namespace: String) throws -> Blob {
         guard let data = try io({ try store.read(namespaceItem(namespace), prompt: nil) }) else { return Blob() }
         guard let blob = try? JSONDecoder().decode(Blob.self, from: data), blob.v == 1 else {
             throw VaultError.tampered
@@ -274,7 +237,7 @@ public final class Vault: @unchecked Sendable {
         return blob
     }
 
-    private func writeBlob(_ blob: Blob, _ namespace: String) throws {
+    func writeBlob(_ blob: Blob, _ namespace: String) throws {
         if blob.standard.isEmpty && blob.locked == nil {
             try io { try store.delete(namespaceItem(namespace)) }
             return
@@ -306,7 +269,7 @@ public final class Vault: @unchecked Sendable {
     }
 
     /// The `locked`-class key: the cached one, else (lock off) the plain item, created on demand.
-    private func lockedKey(create: Bool) throws -> SymmetricKey? {
+    func lockedKey(create: Bool) throws -> SymmetricKey? {
         if let dataKey { return dataKey }
         if lockEnabled { throw VaultError.locked }
         let plainItem = item(account: Self.dataKeyAccount, shared: false)
@@ -321,7 +284,7 @@ public final class Vault: @unchecked Sendable {
         return key
     }
 
-    private static func key(from data: Data) throws -> SymmetricKey {
+    static func key(from data: Data) throws -> SymmetricKey {
         guard data.count == 32 else { throw VaultError.tampered }
         return SymmetricKey(data: data)
     }

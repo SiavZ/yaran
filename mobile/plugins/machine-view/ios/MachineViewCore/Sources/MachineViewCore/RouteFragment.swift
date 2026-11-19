@@ -14,6 +14,7 @@
 ///
 /// Used by:
 /// MachineViewCore/RouteFragment
+/// ├── MachineView/MachineViewController+Direct (inferred)
 /// ├── MachineView/MachineViewPlugin (inferred)
 /// └── MachineViewCoreTests/PolicyTests (inferred)
 /// <module-headers:end>

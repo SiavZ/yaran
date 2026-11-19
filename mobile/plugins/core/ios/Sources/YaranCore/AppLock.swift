@@ -24,9 +24,11 @@
 /// YaranCore/AppLock
 /// ├── App/SceneDelegate (inferred)
 /// ├── MachineViewCore/CoreAdapters (inferred)
+/// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
 /// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── YaranCore/PluginArguments (inferred)
 /// ├── YaranCore/ScreenPrivacy (inferred)
+/// ├── YaranCoreTests/LockTransitionTests (inferred)
 /// ├── YaranCoreTests/VaultTests (inferred)
 /// ├── YaranSecureStorePlugin/AppLockPlugin (inferred)
 /// └── YaranSecureStorePlugin/SecureStorePlugin (inferred)
@@ -83,6 +85,8 @@ public final class AppLock: @unchecked Sendable {
     private let biometry: () -> Biometry
     private let mutex = NSRecursiveLock()
     private var settings = Settings()
+    /// False while the saved settings could not be read or decoded: see `loadSettings`.
+    private var settingsKnown = false
     private var backgroundedAtMs: Int64?
     private var held: ClosedRange<Int64>?
     /// Prompt text shown by the Keychain read; set from the app's localized strings.
@@ -94,11 +98,39 @@ public final class AppLock: @unchecked Sendable {
     public init(vault: Vault, biometry: @escaping () -> Biometry) {
         self.vault = vault
         self.biometry = biometry
-        if let data = try? vault.readMeta("applock"), let saved = try? JSONDecoder().decode(Settings.self, from: data) {
-            settings = saved
+        loadSettings()
+        locked = settings.enabled // no notification from init: nothing can observe this instance yet
+    }
+
+    /// Reads the saved settings. None saved is a first install: the defaults, lock off. Saved but
+    /// unreadable or undecodable is not "off": the lock is held engaged on provisional settings
+    /// that are never saved, no key copy is recovered or dropped (a staged copy may be the only
+    /// one), and every unlock or change reads them again first (`requireSettings`).
+    @discardableResult
+    private func loadSettings() -> Bool {
+        do {
+            if let data = try vault.readMeta("applock") {
+                settings = try JSONDecoder().decode(Settings.self, from: data)
+            } else {
+                settings = Settings()
+            }
+        } catch {
+            settingsKnown = false
+            settings = Settings()
+            settings.enabled = true
+            vault.lockEnabled = true
+            return false
         }
+        settingsKnown = true
         vault.lockEnabled = settings.enabled
-        locked = settings.enabled
+        vault.recoverGuard(enabled: settings.enabled, guardKind(settings.allowPasscode))
+        return true
+    }
+
+    /// Settings that could not be read at start are read again; still unreadable, nothing proceeds.
+    private func requireSettings() throws {
+        guard !settingsKnown else { return }
+        guard loadSettings() else { throw VaultError.unavailable }
     }
 
     /// The grace rule. A clock that went backwards locks, because that is the safe answer.
@@ -117,6 +149,7 @@ public final class AppLock: @unchecked Sendable {
 
     public func enable(allowPasscode: Bool) throws -> EnableOutcome {
         try withLock {
+            try requireSettings()
             if settings.enabled { return .enabled }
             if biometry() != .available && !allowPasscode { return .unavailable }
             do {
@@ -124,9 +157,17 @@ public final class AppLock: @unchecked Sendable {
             } catch let failure as KeychainFailure {
                 return failure == .cancelled || failure == .authenticationFailed ? .cancelled : .unavailable
             }
+            let previous = settings
             settings.enabled = true
             settings.allowPasscode = allowPasscode
-            try save()
+            do {
+                try save()
+            } catch {
+                settings = previous
+                vault.abandonGuard(guardKind(allowPasscode))
+                throw error
+            }
+            vault.finishGuard()
             setLocked(false)
             return .enabled
         }
@@ -134,6 +175,7 @@ public final class AppLock: @unchecked Sendable {
 
     public func disable() throws -> DisableOutcome {
         try withLock {
+            try requireSettings()
             guard settings.enabled else { return .disabled }
             do {
                 try vault.unguardDataKey(guardKind(settings.allowPasscode), prompt: prompt)
@@ -143,7 +185,14 @@ public final class AppLock: @unchecked Sendable {
                 throw Self.vaultError(failure)
             }
             settings.enabled = false
-            try save()
+            do {
+                try save()
+            } catch {
+                settings.enabled = true
+                vault.abandonUnguard()
+                throw error
+            }
+            vault.finishUnguard(guardKind(settings.allowPasscode))
             setLocked(false)
             return .disabled
         }
@@ -151,6 +200,7 @@ public final class AppLock: @unchecked Sendable {
 
     public func unlock() throws -> UnlockOutcome {
         try withLock {
+            try requireSettings()
             guard settings.enabled else {
                 setLocked(false)
                 return .unlocked
@@ -171,19 +221,34 @@ public final class AppLock: @unchecked Sendable {
         }
     }
 
-    /// Changing the passcode fallback re-guards the key, which needs the app unlocked.
+    /// Changing the passcode fallback re-guards the key, which needs the app unlocked. With the lock
+    /// on it is a recoverable transition: the key is staged behind the new guard before the setting
+    /// is saved, a failed save drops the staged copy, and only then does the main copy change.
     public func setOptions(grace: LockGrace?, allowPasscode: Bool?) throws {
         try withLock {
-            if let allowPasscode, allowPasscode != settings.allowPasscode {
-                if settings.enabled {
-                    do { try vault.reguardDataKey(guardKind(allowPasscode)) } catch let failure as KeychainFailure {
-                        throw Self.vaultError(failure)
-                    }
-                }
-                settings.allowPasscode = allowPasscode
-            }
+            try requireSettings()
+            let previous = settings
+            let reguard = settings.enabled && allowPasscode != nil && allowPasscode != settings.allowPasscode
+            if let allowPasscode { settings.allowPasscode = allowPasscode }
             if let grace { settings.grace = grace }
-            try save()
+            let kind = guardKind(settings.allowPasscode)
+            if reguard {
+                do { try vault.stageReguard(kind) } catch let failure as KeychainFailure {
+                    settings = previous
+                    throw Self.vaultError(failure)
+                } catch {
+                    settings = previous
+                    throw error
+                }
+            }
+            do {
+                try save()
+            } catch {
+                settings = previous
+                if reguard { vault.abandonReguard(kind) }
+                throw error
+            }
+            if reguard { vault.finishReguard(kind) }
         }
     }
 
@@ -227,6 +292,7 @@ public final class AppLock: @unchecked Sendable {
     public func reset() {
         withLock {
             settings = Settings()
+            settingsKnown = true
             vault.lockEnabled = false
             setLocked(false)
         }

@@ -96,7 +96,9 @@ describe('routing', () => {
     expect(await screen.findByRole('heading', { name: 'Welcome' })).toBeTruthy();
   });
   it('shows the lock screen instead of any screen while locked', async () => {
-    vi.mocked(AppLock.status).mockResolvedValueOnce({ enabled: true, allowPasscode: false, grace: '1min', locked: true, biometry: 'available' });
+    const locked = { enabled: true, allowPasscode: false, grace: '1min' as const, locked: true, biometry: 'available' as const };
+    // Read at start and again once the listeners are in; both say locked.
+    vi.mocked(AppLock.status).mockResolvedValueOnce(locked).mockResolvedValueOnce(locked);
     window.location.hash = buildRoute({ name: 'settings' });
     renderShell(<App />);
     await waitFor(() => expect(screen.getByRole('heading', { name: 'yaran is locked' })).toBeTruthy());

@@ -47,6 +47,7 @@
  * ├── src/lib/pageLifecycle.ts
  * ├── src/lib/paneDivider.ts
  * ├── src/lib/paneMacroTarget.ts
+ * ├── src/lib/phoneLink.ts
  * ├── src/lib/projectSettingsNotice.ts
  * ├── src/lib/projectsApi.ts
  * ├── src/lib/prose.tsx
@@ -284,6 +285,7 @@
  * ├── src/lib/storeMacros.test.ts
  * ├── src/lib/storeMobileBars.test.ts
  * ├── src/lib/storeOffline.test.ts
+ * ├── src/lib/storePhoneLinkReconnect.test.ts
  * ├── src/lib/storePrReference.test.ts
  * ├── src/lib/storeReconnectDeepLink.test.ts
  * ├── src/lib/storeRename.test.ts
@@ -309,6 +311,7 @@
 
 import { useSyncExternalStore } from "react"
 import { wsUrl } from "./apiBase"
+import { invalidatePhoneLinkTarget, pausePhoneLinkTarget, resumePhoneLinkTarget } from "./phoneLink"
 import { isAuthInterruption } from "./apiFetch"
 import {
   authPaused,
@@ -1809,6 +1812,7 @@ function routeEvent(event: EventsServerMessage): void {
     case "cloud.changed":
     case "config.changed":
       loadBootstrap()
+      invalidatePhoneLinkTarget() // the pairing or the publisher domain may have moved
       // A password or a `[server.auth]` change (from the CLI, a hand edit plus
       // reload, or another browser) moves what the banners and Preferences show.
       void refreshAuthStatus()
@@ -2081,7 +2085,7 @@ async function reloadIfServerChanged(owner: number | null = null): Promise<void>
 // anything missed while disconnected is recovered (an event that arrived during
 // the outage is gone otherwise). The `config` coarse topic is always subscribed,
 // so refetch the bootstrap document too; a `config.changed` missed during the
-// outage would otherwise leave stale providers/macros/UI flags until the next
+// outage would otherwise leave stale providers/macros/UI flags (and a re-pair the phone-link target) until the next
 // config edit. The selected session's changes are also recovered when one is set.
 eventsSocket.onOpen = () => {
   const skippedBootLoad = skipNextEventsOnOpenLoad
@@ -2097,6 +2101,7 @@ eventsSocket.onOpen = () => {
     //
     // The identity probe comes first: yaran may have been restarted during the
     // outage, and refetching state into old code is the wrong recovery.
+    pausePhoneLinkTarget() // a missed re-pair: forget the link target now, ask again in `recover`
     armReconnectDeepLink()
     // The probe below is this reconnect's own ask, so the backoff of any earlier
     // unknown answer starts over behind it. Its answer cannot fill a missing
@@ -2105,6 +2110,7 @@ eventsSocket.onOpen = () => {
     if (serverIdentityBaseline === null) scheduleIdentityReprobe()
     const recover = () => {
       loadBootstrap()
+      resumePhoneLinkTarget()
       loadWorkspace()
       const id = state.selectedSessionId
       if (id === null) return

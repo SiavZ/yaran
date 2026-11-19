@@ -89,7 +89,7 @@ describe("AppMenuSheet", () => {
   // sheet's root list must match the desktop menu's top level exactly.
   it("renders the same top-level titles as the desktop menu", () => {
     render(<Harness />)
-    const expected = appMenuModel({ ghAvailable: true, githubIntegrationEnabled: true, nativeShell: false, phonePairing: false, canSignOut: false })
+    const expected = appMenuModel({ ghAvailable: true, githubIntegrationEnabled: true, nativeShell: false, phonePairing: true, canSignOut: false })
       .filter((e) => e.kind !== "separator")
       .map((e) => (e.kind === "separator" ? "" : e.title))
     const rendered = screen.getAllByRole("menuitem").map((e) => e.textContent)

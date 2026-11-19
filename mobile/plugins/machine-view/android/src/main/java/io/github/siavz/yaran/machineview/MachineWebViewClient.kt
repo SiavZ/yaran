@@ -13,10 +13,11 @@
  * io.github.siavz.yaran.machineview.MachineWebViewClient
  * ├── io.github.siavz.yaran.machineview.NavigationPolicy (inferred)
  * └── io.github.siavz.yaran.machineview.RefusalPolicy (inferred)
- * External: android.net.http, android.webkit
+ * External: android.net.http, android.webkit, java.io
  *
  * Used by:
  * io.github.siavz.yaran.machineview.MachineWebViewClient
+ * ├── io.github.siavz.yaran.machineview.AdmissionRobolectricTest (inferred)
  * └── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * <module-headers:end>
  */
@@ -28,6 +29,7 @@ import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import java.io.ByteArrayInputStream
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
@@ -46,6 +48,9 @@ internal interface MachineWindow {
     fun onRendererGone(view: WebView)
 
     fun onHistoryChanged(url: String)
+
+    /** A main-frame document request, on the WebView's request thread: true lets it load. */
+    fun admitDocument(url: String): Boolean
 }
 
 internal class MachineWebViewClient(private val window: MachineWindow) : WebViewClient() {
@@ -60,6 +65,19 @@ internal class MachineWebViewClient(private val window: MachineWindow) : WebView
             }
         }
     }
+
+    /**
+     * Every main-frame document request (a navigation, a reload, a form post, a new-window target
+     * kept in place, the native load) is admitted by the window before it loads; a refused one
+     * gets an empty page and the window acts on why. Same-document moves (hash, history API)
+     * make no request and are untouched; subresources are not documents.
+     */
+    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+        if (!request.isForMainFrame || window.admitDocument(request.url.toString())) {
+            null
+        } else {
+            WebResourceResponse("text/html", "utf-8", 204, "No Content", mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0)))
+        }
 
     override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
         if (!request.isForMainFrame) return

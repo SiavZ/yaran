@@ -12,20 +12,29 @@
  * Uses:
  * src/test/setup.ts
  * ├── @yaran/secure-store:src/index.ts
+ * ├── src/lib/directStore.ts
  * ├── src/lib/i18n.ts
  * └── src/lib/native/machineView.ts
  * External: @testing-library/react, vitest
  *
  * Used by:
  * src/test/setup.ts
+ * ├── src/lib/directStore.test.ts
  * ├── src/lib/orgStore.test.ts
  * ├── src/lib/settingsStore.test.ts
- * └── src/screens/onboarding/onboarding.test.tsx
+ * ├── src/orgStaging.test.tsx
+ * ├── src/orgStagingSettle.test.tsx
+ * ├── src/screens/machines/approval.test.tsx
+ * ├── src/screens/machines/direct.test.tsx
+ * ├── src/screens/machines/instanceChanged.test.tsx
+ * ├── src/screens/onboarding/onboarding.test.tsx
+ * └── src/screens/settings/settings.test.tsx
  * <module-headers:end>
  */
 import { cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, vi } from 'vitest';
 
+import { directStore } from '../lib/directStore.ts';
 import { activate } from '../lib/i18n.ts';
 
 export const vault = new Map<string, string>();
@@ -75,10 +84,16 @@ vi.mock('../lib/native/machineView.ts', async (importOriginal) => {
       deviceKey: vi.fn(async () => ({ deviceKey: 'test-device-key' })),
       callbackMode: vi.fn(async () => ({ mode: 'https', domain: 'apps.example.org' })),
       signOut: vi.fn(async () => {}),
+      directStatus: vi.fn(async () => ({ kind: 'offline' })),
+      directSignIn: vi.fn(async () => ({ kind: 'cancelled' })),
+      directSignOut: vi.fn(async () => ({ kind: 'signed_out', serverEnded: true })),
+      routeStatus: vi.fn(async () => ({ kind: 'offline' })),
     },
     MachineView: {
       open: vi.fn(async () => {}),
       close: vi.fn(async () => {}),
+      shareStatus: vi.fn(async () => ({ kind: 'none' })),
+      discardShare: vi.fn(async () => {}),
       addListener: vi.fn(async () => ({ remove: async () => {} })),
       removeAllListeners: vi.fn(async () => {}),
     },
@@ -102,6 +117,7 @@ if (typeof navigator !== 'undefined' && !navigator.mediaDevices) {
 
 beforeEach(() => {
   vault.clear();
+  directStore.set({ loaded: true, machines: [] });
   if (typeof window !== 'undefined') window.location.hash = '';
 });
 

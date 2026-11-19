@@ -119,8 +119,9 @@ export interface AppMenuContext {
    *  Gates "Switch machine" and "Phone app settings", which only the app can
    *  answer: a browser cannot open the `yaranapp:` scheme. */
   nativeShell: boolean
-  /** Whether this machine is paired with an org and the page is NOT in the app.
-   *  Gates "Connect a phone…": there is no QR code to show otherwise. */
+  /** Whether the page is NOT in the phone app. Gates "Connect a phone…", which
+   *  shows the org code when paired and this machine's direct code (or what it
+   *  needs) either way. */
   phonePairing: boolean
   /** Whether this browser holds a session it can end: a password is set and
    *  this page signed in with it. False on a server with no password, or a

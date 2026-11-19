@@ -55,7 +55,25 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="yaranapp" android:host="add-org" />
             </intent-filter>
+
+            <!-- Add-machine links and QR codes: they only pre-fill Confirm machine, never add. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="yaranapp" android:host="add-machine" />
+            </intent-filter>
+
+            <!-- Files shared from another app (G5): MainActivity hands them to the machine-view
+                 ShareHolder, which keeps content:// URIs in memory and tells JS only a count. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
+
 
         <!-- The machine-view plugin's callback aliases ship dev defaults; this build's
              publisher domain picks the one that is on (D8). -->
@@ -66,6 +84,11 @@
         <activity-alias
             android:name="io.github.siavz.yaran.machineview.AuthCallbackDev"
             android:enabled="${devCallbackEnabled}"
+            tools:replace="android:enabled" />
+        <!-- Verified agent links (G6) follow the https callback: on only with a publisher domain. -->
+        <activity-alias
+            android:name="io.github.siavz.yaran.machineview.OpenLinkHttps"
+            android:enabled="${publisherCallbackEnabled}"
             tools:replace="android:enabled" />
     </application>
 </manifest>

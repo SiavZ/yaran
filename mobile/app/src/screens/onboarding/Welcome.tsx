@@ -1,8 +1,9 @@
 /**
- * Welcome: the first screen with no org added, offering the two ways to add one.
+ * Welcome: the first screen with nothing added, offering the ways to add an org or a machine.
  *
- * - Scanning is the primary path; typing the address always exists, so a camera failure
- *   never blocks onboarding.
+ * - Scanning is the primary path (it reads org and machine codes); typing the address always
+ *   exists, so a camera failure never blocks onboarding. A machine reachable over HTTPS
+ *   (for example on a tailnet) can be added directly, without Cloud Connect.
  *
  * <module-headers:begin>
  * Uses:
@@ -22,7 +23,7 @@
 import { Trans } from '@lingui/react/macro';
 import { Button } from '@yaran/ui-kit/button';
 import { InlineCode } from '@yaran/ui-kit/inline-code';
-import { KeyboardIcon, QrCodeIcon } from 'lucide-react';
+import { KeyboardIcon, MonitorIcon, QrCodeIcon } from 'lucide-react';
 
 import { navigate } from '../../lib/route.ts';
 import { Page } from '../Page.tsx';
@@ -32,7 +33,7 @@ export function Welcome() {
     <Page brand title={<Trans>Welcome</Trans>} className="welcome-page">
       <p className="max-w-sm text-xl leading-relaxed text-muted-foreground"><Trans>Your coding agents, within reach. Open the machines you work on from this phone.</Trans></p>
       <div className="mt-auto flex flex-col gap-3 pt-10">
-        <p className="mb-1 text-sm font-medium"><Trans>Start by connecting your org.</Trans></p>
+        <p className="mb-1 text-sm font-medium"><Trans>Start by connecting your org or a machine.</Trans></p>
         <Button className="min-h-12" onClick={() => navigate({ name: 'scan' })}>
           <QrCodeIcon aria-hidden />
           <Trans>Scan QR code</Trans>
@@ -40,6 +41,10 @@ export function Welcome() {
         <Button className="min-h-12" variant="outline" onClick={() => navigate({ name: 'enter-url' })}>
           <KeyboardIcon aria-hidden />
           <Trans>Type the org address</Trans>
+        </Button>
+        <Button className="min-h-12" variant="outline" onClick={() => navigate({ name: 'enter-machine' })}>
+          <MonitorIcon aria-hidden />
+          <Trans>Add a machine without Cloud Connect</Trans>
         </Button>
         <aside className="mt-3 rounded-[1.75rem] bg-muted p-5 text-sm leading-relaxed text-muted-foreground">
           <p className="mb-2 font-medium text-foreground"><Trans>Need a QR code?</Trans></p>

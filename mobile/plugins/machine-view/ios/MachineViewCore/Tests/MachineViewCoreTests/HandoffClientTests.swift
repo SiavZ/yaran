@@ -17,12 +17,16 @@
 /// ├── MachineViewCore/HandoffSignature (inferred)
 /// ├── MachineViewCore/Outcomes (inferred)
 /// ├── MachineViewCore/P256Point (inferred)
+/// ├── MachineViewCoreTests/DirectSettleTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/FormatTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// External: CryptoKit, Foundation, Testing
 ///
 /// Used by: entry point (Swift Testing, via bash ios/MachineViewCore/test.sh)
+/// MachineViewCoreTests/HandoffClientTests
+/// ├── MachineViewCoreTests/DirectRepairTests (inferred)
+/// └── MachineViewCoreTests/DirectTests (inferred)
 /// <module-headers:end>
 import CryptoKit
 import Foundation

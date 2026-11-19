@@ -1,5 +1,5 @@
 {
-  "description": "The one failure table (Phase 15 Failure matrix and Navigation/Refusal overlays). sign_in keys are SignInOutcome kinds the shell renders; overlay keys are what the native machine window shows. Placeholders: {host} {machine} {email} {domain} {code}. Every surface reads its own copy and a test pins it to this file, word for word.",
+  "description": "The one failure table (Phase 15 Failure matrix and Navigation/Refusal overlays). sign_in keys are SignInOutcome kinds the shell renders; overlay keys are what the native machine window shows. Placeholders: {host} {machine} {email} {domain} {code} {count}. direct keys are DirectSignInOutcome kinds the machine window shows after its own password sheet; the machine's own sentence, when there is one, follows as plain text. Every surface reads its own copy and a test pins it to this file, word for word.",
   "sign_in": {
     "cancelled": { "message": "Sign-in was cancelled.", "action": "try_again" },
     "declined": { "message": "You chose Cancel on the sign-in page, so this phone wasn't signed in.", "action": "try_again" },
@@ -17,7 +17,8 @@
     "not_owner": { "message": "{email} isn't the owner of {machine}.", "action": "back_to_machines" },
     "offline": { "message": "No connection. Check your network and try again.", "action": "retry" },
     "tls_error": { "message": "The connection to {host} isn't secure, so the app stopped.", "action": "back" },
-    "vault_locked": { "message": "Unlock the app to sign in.", "action": "unlock" }
+    "vault_locked": { "message": "Unlock the app to sign in.", "action": "unlock" },
+    "secure_storage_failed": { "message": "This phone's secure storage couldn't create or use the sign-in key, or save the sign-in. Try again; if it keeps failing, restart the phone.", "action": "try_again" }
   },
   "overlay": {
     "reauth": { "message": "Sign-in needed for {machine}", "actions": ["sign_in", "back_to_machines"] },
@@ -30,6 +31,34 @@
     "tls_error": { "message": "The connection to {host} isn't secure, so the app stopped.", "actions": ["back_to_machines"] },
     "banner": { "message": "Your session for {machine} ends in 10 minutes", "actions": ["renew"] },
     "download_refused": { "message": "Downloads aren't supported in the app. Open it in the yaran web UI on your computer.", "actions": [] },
-    "renderer_crashed": { "message": "The page crashed and was reloaded", "actions": [] }
+    "renderer_crashed": { "message": "The page crashed and was reloaded", "actions": [] },
+    "session_unreadable": { "message": "The saved sign-in for {machine} can't be read on this phone. Sign in again to replace it.", "actions": ["sign_in", "back_to_machines"] },
+    "access_on_direct": { "message": "{machine} is behind Cloudflare Access. Add it through its organization instead.", "actions": ["back_to_machines"] },
+    "not_yaran": { "message": "{host} didn't answer as a yaran machine.", "actions": ["retry", "back_to_machines"] },
+    "redirected": { "message": "{host} answered with a redirect, so the app stopped before sending anything.", "actions": ["back_to_machines"] },
+    "direct_offline": { "message": "{machine} didn't answer. Check that it's on and that this phone can reach it.", "actions": ["retry"] },
+    "offline_routes": { "message": "{machine} isn't answering on this route.", "actions": ["retry", "try_another_route"] },
+    "no_other_route": { "message": "No other route to {machine} answered.", "actions": [] },
+    "password_sheet": { "message": "Enter the yaran password for {host}. It goes only to {host}, and the app keeps the sign-in, not the password.", "actions": ["sign_in", "cancel"] },
+    "share_ready": { "message": "{count} shared files are ready. Open an agent and choose Attach a file.", "actions": ["discard"] },
+    "share_confirm": { "message": "Attach the {count} shared files here?", "actions": ["attach_shared", "choose_other"] },
+    "share_confirm_single": { "message": "This page takes one file. Attach the first of the {count} shared files here?", "actions": ["attach_shared", "choose_other"] },
+    "share_unsupported": { "message": "This version of iOS can't hand shared files to the page. Update to iOS 18.4 or later.", "actions": [] }
+  },
+  "direct": {
+    "cancelled": "Sign-in was cancelled.",
+    "wrong_password": "{host} didn't accept that password.",
+    "rate_limited": "{host} is refusing sign-ins for a while. Wait, then try again.",
+    "no_password": "{host} has no password set. Set one on the machine first.",
+    "server_refused": "{host} refused the sign-in ({code}).",
+    "not_yaran": "{host} didn't answer as a yaran machine.",
+    "access_required": "{host} is behind Cloudflare Access. Add it through its organization instead.",
+    "upgrade_required": "yaran on {host} is too old for the app. Update yaran on that machine, then try again.",
+    "redirected": "{host} answered with a redirect, so the password wasn't sent.",
+    "offline": "No connection to {host}. Check your network and try again.",
+    "tls_error": "The connection to {host} isn't secure, so the app stopped.",
+    "vault_locked": "Unlock the app to sign in.",
+    "refused": "The app refused this sign-in ({code}).",
+    "secure_storage_failed": "This phone's secure storage couldn't save the sign-in. Try again; if it keeps failing, restart the phone."
   }
 }

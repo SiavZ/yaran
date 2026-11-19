@@ -13,8 +13,11 @@
 ///
 /// Used by:
 /// MachineViewCore/Messages
-/// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/DirectFlow (inferred)
+/// ├── MachineView/MachineViewController+Direct (inferred)
+/// ├── MachineView/MachineViewController+Overlays (inferred)
 /// ├── MachineView/OverlayView (inferred)
+/// ├── MachineViewCoreTests/DirectTests (inferred)
 /// └── MachineViewCoreTests/FormatTests (inferred)
 /// <module-headers:end>
 import Foundation
@@ -44,7 +47,8 @@ public enum Messages {
         "not_owner": Row(message: "{email} isn't the owner of {machine}.", actions: ["back_to_machines"]),
         "offline": Row(message: "No connection. Check your network and try again.", actions: ["retry"]),
         "tls_error": Row(message: "The connection to {host} isn't secure, so the app stopped.", actions: ["back"]),
-        "vault_locked": Row(message: "Unlock the app to sign in.", actions: ["unlock"])
+        "vault_locked": Row(message: "Unlock the app to sign in.", actions: ["unlock"]),
+        "secure_storage_failed": Row(message: "This phone's secure storage couldn't create or use the sign-in key, or save the sign-in. Try again; if it keeps failing, restart the phone.", actions: ["try_again"])
     ]
 
     public static let overlay: [String: Row] = [
@@ -58,12 +62,42 @@ public enum Messages {
         "tls_error": Row(message: "The connection to {host} isn't secure, so the app stopped.", actions: ["back_to_machines"]),
         "banner": Row(message: "Your session for {machine} ends in 10 minutes", actions: ["renew"]),
         "download_refused": Row(message: "Downloads aren't supported in the app. Open it in the yaran web UI on your computer.", actions: []),
-        "renderer_crashed": Row(message: "The page crashed and was reloaded", actions: [])
+        "renderer_crashed": Row(message: "The page crashed and was reloaded", actions: []),
+        "session_unreadable": Row(message: "The saved sign-in for {machine} can't be read on this phone. Sign in again to replace it.", actions: ["sign_in", "back_to_machines"]),
+        "access_on_direct": Row(message: "{machine} is behind Cloudflare Access. Add it through its organization instead.", actions: ["back_to_machines"]),
+        "not_yaran": Row(message: "{host} didn't answer as a yaran machine.", actions: ["retry", "back_to_machines"]),
+        "redirected": Row(message: "{host} answered with a redirect, so the app stopped before sending anything.", actions: ["back_to_machines"]),
+        "direct_offline": Row(message: "{machine} didn't answer. Check that it's on and that this phone can reach it.", actions: ["retry"]),
+        "offline_routes": Row(message: "{machine} isn't answering on this route.", actions: ["retry", "try_another_route"]),
+        "no_other_route": Row(message: "No other route to {machine} answered.", actions: []),
+        "password_sheet": Row(message: "Enter the yaran password for {host}. It goes only to {host}, and the app keeps the sign-in, not the password.", actions: ["sign_in", "cancel"]),
+        "share_ready": Row(message: "{count} shared files are ready. Open an agent and choose Attach a file.", actions: ["discard"]),
+        "share_confirm": Row(message: "Attach the {count} shared files here?", actions: ["attach_shared", "choose_other"]),
+        "share_confirm_single": Row(message: "This page takes one file. Attach the first of the {count} shared files here?", actions: ["attach_shared", "choose_other"]),
+        "share_unsupported": Row(message: "This version of iOS can't hand shared files to the page. Update to iOS 18.4 or later.", actions: [])
+    ]
+
+    /// The machine window's own sentence for a failed direct sign-in, keyed by `DirectSignInOutcome` kind.
+    public static let direct: [String: String] = [
+        "cancelled": "Sign-in was cancelled.",
+        "wrong_password": "{host} didn't accept that password.",
+        "rate_limited": "{host} is refusing sign-ins for a while. Wait, then try again.",
+        "no_password": "{host} has no password set. Set one on the machine first.",
+        "server_refused": "{host} refused the sign-in ({code}).",
+        "not_yaran": "{host} didn't answer as a yaran machine.",
+        "access_required": "{host} is behind Cloudflare Access. Add it through its organization instead.",
+        "upgrade_required": "yaran on {host} is too old for the app. Update yaran on that machine, then try again.",
+        "redirected": "{host} answered with a redirect, so the password wasn't sent.",
+        "offline": "No connection to {host}. Check your network and try again.",
+        "tls_error": "The connection to {host} isn't secure, so the app stopped.",
+        "vault_locked": "Unlock the app to sign in.",
+        "refused": "The app refused this sign-in ({code}).",
+        "secure_storage_failed": "This phone's secure storage couldn't save the sign-in. Try again; if it keeps failing, restart the phone."
     ]
 
     public static func fill(_ template: String, _ vars: [String: String]) -> String {
         var out = template
-        for key in ["host", "machine", "email", "domain", "code"] {
+        for key in ["host", "machine", "email", "domain", "code", "count"] {
             out = out.replacingOccurrences(of: "{\(key)}", with: vars[key] ?? key)
         }
         return out

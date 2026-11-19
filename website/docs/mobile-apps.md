@@ -1,15 +1,17 @@
 ---
 title: The phone app
-description: Installing the yaran app on Android or iPhone, adding your org, how sign-in and its confirmation page work, the machines list, app lock, and signing out.
+description: Installing the yaran app on Android or iPhone, adding your org or a machine directly, how sign-in and its confirmation page work, the machines list, phone links to an agent, app lock, and signing out.
 group: Cloud Connect
 order: 73
 ---
 
 The yaran app puts your org's machines in your pocket. Each machine opens its own yaran
 web UI, served by the machine itself, so the app is always exactly as new as the yaran
-on the other end. The app speaks Cloud Connect only: your org needs a
-[control plane](/docs/cloud-admin-setup), and the machine must be
-[paired](/docs/cloud-connect-machine).
+on the other end. It reaches a machine two ways: through your org's Cloud Connect, which
+needs a [control plane](/docs/cloud-admin-setup) and a
+[paired](/docs/cloud-connect-machine) machine, or
+[directly by the machine's HTTPS address](#adding-a-machine-without-cloud-connect), for
+example its `tailscale serve` name.
 
 > [!WARNING]
 > **Cloudflare terminates TLS and can read everything the app shows you from a
@@ -46,6 +48,39 @@ Open the app and either scan a QR code or type your org's address.
 Before anything else happens, the app shows the org's name and its Cloudflare Access
 team domain, and the reminder that Cloudflare decrypts traffic at its edge. Check that
 it is the org you expect, then continue. A link or QR code never adds an org on its own.
+
+## Adding a machine without Cloud Connect
+
+A machine you can already reach over HTTPS from the phone, such as its `tailscale serve`
+name on your tailnet, can be added on its own, with no org.
+
+- **QR code.** On that machine, open its web UI **through that HTTPS address** and choose
+  **Connect a phone…** in the cog menu. The **By this machine's address** section shows a
+  code for the address the page is open on. Scan it in the app.
+- **Typing it.** Enter the machine's address in the app.
+
+The app shows the machine's address and asks you to confirm before adding it. A link or
+QR code never adds a machine on its own. If the machine has a password and asks for it on
+that address, the app asks for it once, in its own password screen, and keeps the
+resulting sign-in on the phone. It lasts as long as a command-line sign-in does
+(`cli_token_idle_days` unused), and ends when you remove the machine from the app, when
+someone signs that session out from the machine's web UI, or when the password changes.
+
+> [!IMPORTANT]
+> **HTTPS only.** The app does not open plain `http://` addresses, IP addresses or
+> addresses with a port. **Connect a phone…** draws the machine code only when yaran
+> itself knows the page came over HTTPS, which is a `tailscale serve` HTTPS address or a
+> Tailscale Funnel. Behind your own HTTPS proxy, type the address into the app instead.
+> A machine's Cloud Connect address is added through its org, never on its own.
+
+> [!IMPORTANT]
+> **The machine needs a compatible yaran.** The app opens a machine's page, through an
+> org or on its own, only when that machine runs a yaran that hands signing in to the app.
+> On an older yaran the app says the machine needs an update and shows nothing. Update
+> yaran on that machine, then open it again.
+
+A machine added this way does not go through Cloudflare, and gets no push notifications:
+those come through an org.
 
 ## Signing in
 
@@ -100,6 +135,21 @@ your computer. Inside a machine, the cog menu adds
 
 The `⋯` on a row has **Remove…**, which asks first and then unpairs that machine, so
 yaran on it stops its cloud connection.
+
+### Phone links to an agent
+
+In a machine's web UI, an agent's `⋯` menu and each of its tab pills' `⋯` menus have
+**Copy phone link**. It copies a link such as `https://<publisher-domain>/open#…` that
+opens that agent, or that tab, in the yaran app. Send it to yourself and tap it on your
+phone: the app opens the agent only on a phone that has already added that machine, and
+otherwise says so. A link never adds an org or a machine, and it carries no sign-in, only
+which org, machine and agent it names.
+
+Where the link points comes from configuration, never from a guess: a Cloud Connect
+machine uses the domain its org's control plane names, and a machine added by its address
+uses its own `[cloud] app_callback_urls`. When neither names one, or a machine without an
+org is not open over an HTTPS address yaran can vouch for, **Copy phone link** copies
+nothing and says why.
 
 ## Settings
 

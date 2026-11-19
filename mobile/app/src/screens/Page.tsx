@@ -15,7 +15,10 @@
  * Used by:
  * src/screens/Page.tsx
  * ├── src/screens/machines/MachineList.tsx
+ * ├── src/screens/machines/MachineRoutes.tsx
+ * ├── src/screens/machines/ShareTarget.tsx
  * ├── src/screens/machines/states/PhoneRemoved.tsx
+ * ├── src/screens/onboarding/ConfirmMachine.tsx
  * ├── src/screens/onboarding/ConfirmOrg.tsx
  * ├── src/screens/onboarding/EnterUrl.tsx
  * ├── src/screens/onboarding/ScanQr.tsx

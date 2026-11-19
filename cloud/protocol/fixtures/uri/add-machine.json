@@ -1,0 +1,137 @@
+{
+  "description": "yaranapp://add-machine?u=<pct-encoded https origin>, total <= 512 chars. STRICT: exactly one parameter u; no path, fragment, empty pair or other parameter; the host is lowercase, two or more labels, alphabetic TLD, no port, IP literal, userinfo or xn-- label. It only pre-fills Confirm machine, never adds. parseAppUri answers uri_invalid for it, so existing AppUri switches are unchanged. build: expect is the URI or null (refused). parse: expect is {host} or uri_invalid.",
+  "build": [
+    {
+      "host": "laptop.tail1234.ts.net",
+      "expect": "yaranapp://add-machine?u=https%3A%2F%2Flaptop.tail1234.ts.net"
+    },
+    {
+      "host": "yaran.example.com",
+      "expect": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com"
+    },
+    {
+      "host": "localhost",
+      "expect": null
+    },
+    {
+      "host": "192.168.1.20",
+      "expect": null
+    },
+    {
+      "host": "Yaran.example.com",
+      "expect": null
+    },
+    {
+      "host": "yaran.example.com:8443",
+      "expect": null
+    },
+    {
+      "host": "xn--yrn-1na.example.com",
+      "expect": null
+    },
+    {
+      "host": "",
+      "expect": null
+    },
+    {
+      "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "expect": null
+    }
+  ],
+  "parse": [
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Flaptop.tail1234.ts.net",
+      "expect": {
+        "host": "laptop.tail1234.ts.net"
+      }
+    },
+    {
+      "uri": "YARANAPP://add-machine?u=https%3A%2F%2Fyaran.example.com",
+      "expect": {
+        "host": "yaran.example.com"
+      }
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https://yaran.example.com",
+      "expect": {
+        "host": "yaran.example.com"
+      }
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com&utm=qr",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com&u=https%3A%2F%2Fyaran.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com&",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com#x=1",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com#",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine/x?u=https%3A%2F%2Fyaran.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=http%3A%2F%2Fyaran.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com%2F",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fyaran.example.com%3A8443",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fuser%40yaran.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2F10.0.0.5",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Flocalhost",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2FYaran.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=https%3A%2F%2Fxn--yrn-1na.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-machine?u=%E0%A4%A",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "https://add-machine?u=https%3A%2F%2Fyaran.example.com",
+      "expect": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-org?u=https%3A%2F%2Fyaran.example.com",
+      "expect": "uri_invalid"
+    }
+  ]
+}

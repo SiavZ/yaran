@@ -16,8 +16,12 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.InstallIdStore
+ * ├── io.github.siavz.yaran.machineview.AuthTabRegistryRobolectricTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.CoreAdaptersTest (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.HandoffFailureTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.NativeCookieIsolationRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClient (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)

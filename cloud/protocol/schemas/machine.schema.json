@@ -92,7 +92,14 @@
             "min_interval_ms": { "type": "integer", "minimum": 0 }
           }
         },
-        "server_time": { "$ref": "common.schema.json#/$defs/Timestamp" }
+        "server_time": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "publisher_domain": {
+          "description": "Optional, additive: the phone app's verified link domain, the one host of the Worker's https APP_CALLBACK_URLS ending /auth/callback. Absent when there is none or they disagree. Public metadata; never proof of origin or ownership.",
+          "type": "string",
+          "maxLength": 253,
+          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$",
+          "not": { "pattern": "(?:^|\\.)xn--" }
+        }
       }
     },
     "EventBatch": {

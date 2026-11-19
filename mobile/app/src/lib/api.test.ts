@@ -117,3 +117,14 @@ describe('failureMessage', () => {
     expect(sentence({ kind: 'tls_error', host: 'cp.example.com' })).toContain('cp.example.com');
   });
 });
+
+describe('a rejected native call', () => {
+  it('is a failure with a sentence, not a thrown promise', async () => {
+    request.mockRejectedValueOnce(Object.assign(new Error('the vault is locked'), { code: 'vault_locked' }));
+    const got = await listMachines('https://cp.example.com');
+    expect(got).toEqual({ ok: false, failure: { kind: 'native_error', code: 'vault_locked' } });
+    if (!got.ok) expect(sentence(got.failure)).toBe('Unlock the app, then try again.');
+    request.mockRejectedValueOnce(new Error('boom'));
+    expect(await getMe('https://cp.example.com')).toEqual({ ok: false, failure: { kind: 'native_error', code: 'unknown' } });
+  });
+});

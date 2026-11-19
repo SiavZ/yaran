@@ -16,14 +16,25 @@
  *
  * Used by:
  * src/lib/notify.ts
+ * ├── src/App.tsx
  * ├── src/lib/deepLinks.ts
  * ├── src/lib/notify.test.ts
+ * ├── src/lib/share.ts
  * ├── src/push/pushWiring.ts
+ * ├── src/screens/machines/DirectCheck.tsx
+ * ├── src/screens/machines/DirectSection.tsx
+ * ├── src/screens/machines/InstanceChangedDialog.tsx
+ * ├── src/screens/machines/MachineList.tsx
+ * ├── src/screens/machines/MachineRoutes.tsx
  * ├── src/screens/machines/RemoveMachineDialog.tsx
+ * ├── src/screens/machines/ShareTarget.tsx
+ * ├── src/screens/onboarding/ConfirmMachine.tsx
+ * ├── src/screens/onboarding/ConfirmOrg.tsx
  * ├── src/screens/orgs/SignOutOrgDialog.tsx
  * ├── src/screens/settings/Diagnostics.tsx
  * ├── src/screens/settings/EraseDialog.tsx
- * └── src/screens/settings/SecuritySettings.tsx
+ * ├── src/screens/settings/SecuritySettings.tsx
+ * └── src/screens/settings/Settings.tsx
  * <module-headers:end>
  */
 import { statusToastDuration } from '@yaran/ui-kit/toast-policy';

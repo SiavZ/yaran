@@ -58,6 +58,7 @@ class BuildOutputsTest {
         }
         val permissions = elements(root, "uses-permission").map { it.getAttributeNS(android, "name") }
         assertTrue(permissions.contains("android.permission.CAMERA"))
+        assertTrue(permissions.contains("android.permission.ACCESS_NETWORK_STATE"))
         val queried = elements(root, "action").map { it.getAttributeNS(android, "name") }
         assertTrue(queried.contains("android.support.customtabs.action.CustomTabsService"))
         val main = elements(root, "activity").single { it.getAttributeNS(android, "name").endsWith(".MainActivity") }
@@ -73,21 +74,66 @@ class BuildOutputsTest {
         assertEquals("io.github.siavz.yaran.app.YaranApplication", application.getAttributeNS(android, "name"))
         // Exactly one callback alias, the one this build's publisher domain picks (empty = dev scheme).
         val domain = buildConfigValue("foss/debug", "String PUBLISHER_DOMAIN").trim('"')
-        val aliases =
-            elements(root, "activity-alias").associate {
-                it.getAttributeNS(android, "name").substringAfterLast('.') to it.getAttributeNS(android, "enabled")
-            }
-        val release = domain.isNotEmpty()
-        assertEquals(mapOf("AuthCallbackHttps" to "$release", "AuthCallbackDev" to "${!release}"), aliases)
-        val https = elements(root, "activity-alias").single { it.getAttributeNS(android, "name").endsWith(".AuthCallbackHttps") }
-        val hosts = elements(https, "data").map { it.getAttributeNS(android, "host") }
-        assertEquals(listOf(domain, domain), hosts)
+        assertLinkFilters(root, main, domain)
         // The plugin picks its callback mode from this value at runtime (PluginRuntime), not from the aliases.
         val runtimeDomainName = "io.github.siavz.yaran.machineview.publisherDomain"
         val runtimeDomain = elements(application, "meta-data").single { it.getAttributeNS(android, "name") == runtimeDomainName }
         assertEquals(domain, runtimeDomain.getAttributeNS(android, "value"))
         val flavor = elements(application, "meta-data").single { it.getAttributeNS(android, "name") == "io.github.siavz.yaran.FLAVOR" }
         assertEquals("foss", flavor.getAttributeNS(android, "value"))
+    }
+
+    /** Exactly the aliases this build's publisher domain picks, and every link and share filter. */
+    private fun assertLinkFilters(
+        root: Element,
+        main: Element,
+        domain: String,
+    ) {
+        val aliases =
+            elements(root, "activity-alias").associate {
+                it.getAttributeNS(android, "name").substringAfterLast('.') to it.getAttributeNS(android, "enabled")
+            }
+        val release = domain.isNotEmpty()
+        assertEquals(
+            mapOf("AuthCallbackHttps" to "$release", "AuthCallbackDev" to "${!release}", "OpenLinkHttps" to "$release"),
+            aliases,
+        )
+        assertOpenLink(root, domain)
+        // Add-machine links (pre-fill only) and file shares (G5) reach MainActivity.
+        assertTrue(
+            "yaranapp://add-machine filter",
+            elements(main, "data").any {
+                it.getAttributeNS(android, "scheme") == "yaranapp" && it.getAttributeNS(android, "host") == "add-machine"
+            },
+        )
+        assertShareFilter(main)
+        val https = elements(root, "activity-alias").single { it.getAttributeNS(android, "name").endsWith(".AuthCallbackHttps") }
+        val hosts = elements(https, "data").map { it.getAttributeNS(android, "host") }
+        assertEquals(listOf(domain, domain), hosts)
+    }
+
+    /** Verified agent links (G6): only https://<publisher-domain>/open, auto-verified, into the forwarder. */
+    private fun assertOpenLink(
+        root: Element,
+        domain: String,
+    ) {
+        val open = elements(root, "activity-alias").single { it.getAttributeNS(android, "name").endsWith(".OpenLinkHttps") }
+        assertTrue(open.getAttributeNS(android, "targetActivity").endsWith(".OpenLinkActivity"))
+        val filter = elements(open, "intent-filter").single()
+        assertEquals("true", filter.getAttributeNS(android, "autoVerify"))
+        val data = elements(filter, "data").map { listOf("scheme", "host", "path").map { a -> it.getAttributeNS(android, a) } }
+        assertEquals(listOf(listOf("https", domain, "/open")), data)
+    }
+
+    /** File shares (G5): SEND and SEND_MULTIPLE of any type reach MainActivity. */
+    private fun assertShareFilter(main: Element) {
+        val share =
+            elements(main, "intent-filter").single { f ->
+                elements(f, "action").any { it.getAttributeNS(android, "name") == "android.intent.action.SEND" }
+            }
+        val actions = elements(share, "action").map { it.getAttributeNS(android, "name") }.toSet()
+        assertEquals(setOf("android.intent.action.SEND", "android.intent.action.SEND_MULTIPLE"), actions)
+        assertEquals(listOf("*/*"), elements(share, "data").map { it.getAttributeNS(android, "mimeType") })
     }
 
     /** The value of `<declaration> = <value>;` in a variant's generated BuildConfig (`<flavor>/<buildType>`). */
@@ -104,6 +150,29 @@ class BuildOutputsTest {
         val flag = { variant: String -> buildConfigValue(variant, "boolean E2E_WEBVIEW_DEBUG") }
         assertEquals("true", flag("foss/e2e"))
         listOf("foss/debug", "foss/release", "play/release").forEach { assertEquals(it, "false", flag(it)) }
+    }
+
+    // Debug builds run one instance per display for device testing; release stays a singleton.
+    @Test
+    fun launchModesAreStandardOnlyInDebug() {
+        fun modes(property: String): Map<String, String> {
+            val root =
+                DocumentBuilderFactory
+                    .newInstance()
+                    .apply { isNamespaceAware = true }
+                    .newDocumentBuilder()
+                    .parse(File(property(property)))
+                    .documentElement
+            return elements(root, "activity").associate {
+                it.getAttributeNS(android, "name").substringAfterLast('.') to it.getAttributeNS(android, "launchMode")
+            }
+        }
+        val debug = modes("yaran.mergedManifest")
+        assertEquals("standard", debug["MainActivity"])
+        assertEquals("singleTop", debug["MachineViewActivity"])
+        val release = modes("yaran.mergedReleaseManifest")
+        assertEquals("singleTask", release["MainActivity"])
+        assertEquals("singleTask", release["MachineViewActivity"])
     }
 
     // A plugin library that gives its own placeholders values bakes them in before the app merge,

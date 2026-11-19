@@ -13,13 +13,18 @@
  * ├── io.github.siavz.yaran.machineview.BrowserLauncher (inferred)
  * ├── io.github.siavz.yaran.machineview.CallbackUrl (inferred)
  * ├── io.github.siavz.yaran.machineview.CoreBindings (inferred)
+ * ├── io.github.siavz.yaran.machineview.Direct (inferred)
+ * ├── io.github.siavz.yaran.machineview.DirectFlow (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
+ * ├── io.github.siavz.yaran.machineview.MachineState (inferred)
  * ├── io.github.siavz.yaran.machineview.Outcomes (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * └── io.github.siavz.yaran.machineview.UrlParts (inferred)
  * External: com.getcapacitor, com.getcapacitor.annotation, org.json
  *
  * Used by: entry point (Capacitor plugin (@CapacitorPlugin), registered by the app's Capacitor bridge)
+ * io.github.siavz.yaran.machineview.SessionPlugin
+ * └── io.github.siavz.yaran.machineview.MachineViewPlugin (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
@@ -58,6 +63,10 @@ class SessionPlugin : Plugin() {
                 work(rt)?.let { call.resolve(it) } ?: call.resolve()
             } catch (e: VaultLockedException) {
                 call.reject("the vault is locked", "vault_locked")
+            } catch (e: Exception) {
+                // Uncaught here it would kill the process from the io thread; the shell maps this code.
+                rt.core.diagnostics.append("machine-view session call failed error=${e.javaClass.simpleName}")
+                call.reject("the native session call failed", "native_error")
             }
         }
     }
@@ -130,7 +139,56 @@ class SessionPlugin : Plugin() {
         }
     }
 
+    @PluginMethod
+    fun directStatus(call: PluginCall) {
+        val host = call.getString("host") ?: return call.reject("host is required", "invalid_arguments")
+        background(call) { rt ->
+            try {
+                js(DirectFlow.status(rt, host).toJs())
+            } catch (e: VaultLockedException) {
+                js(DirectStatus.VaultLocked.toJs())
+            }
+        }
+    }
+
+    @PluginMethod
+    fun directSignIn(call: PluginCall) {
+        val host = call.getString("host") ?: return call.reject("host is required", "invalid_arguments")
+        try {
+            rt()
+        } catch (e: IllegalStateException) {
+            return call.reject("the app has not installed its core bindings", "unavailable")
+        }
+        activity.runOnUiThread { DirectFlow.signIn(activity, host) { call.resolve(js(it.toJs())) } }
+    }
+
+    @PluginMethod
+    fun directSignOut(call: PluginCall) {
+        val host = call.getString("host") ?: return call.reject("host is required", "invalid_arguments")
+        val signInId = call.getString("signInId")
+        if (signInId != null && !SIGN_IN_ID.matches(signInId)) return call.reject("signInId is malformed", "invalid_arguments")
+        background(call) { js(DirectFlow.signOut(it, host, signInId).toJs()) }
+    }
+
+    @PluginMethod
+    fun routeStatus(call: PluginCall) {
+        val route = call.getObject("route")?.let { MachineState.parseRoutes("[$it]")?.single() }
+            ?: return call.reject("route must be {kind:\"org\", orgId, machineId, host} or {kind:\"direct\", host}", "invalid_arguments")
+        background(call) { rt ->
+            try {
+                js(DirectFlow.routeStatus(rt, route))
+            } catch (e: VaultLockedException) {
+                js(DirectStatus.VaultLocked.toJs())
+            }
+        }
+    }
+
     companion object {
+        private val SIGN_IN_ID = Regex("^[A-Za-z0-9_-]{22}$")
+
+        /** A flat outcome map as a JS object (null stays null). */
+        internal fun js(m: Map<String, Any?>): JSObject = JSObject().apply { m.forEach { (k, v) -> put(k, v ?: JSONObject.NULL) } }
+
         internal fun toJs(r: ApiResult): JSObject {
             val o = JSObject().put("kind", r.kind)
             when (r) {

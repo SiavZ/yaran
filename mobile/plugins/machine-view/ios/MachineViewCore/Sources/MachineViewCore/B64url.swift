@@ -12,6 +12,7 @@
 /// Used by:
 /// MachineViewCore/B64url
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
+/// ├── MachineViewCore/DirectSessionStore (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/P256Point (inferred)
 /// ├── MachineViewCore/SealedEnvelope (inferred)

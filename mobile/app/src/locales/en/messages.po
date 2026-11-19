@@ -2,8 +2,78 @@ msgid ""
 msgstr ""
 "Language: en\n"
 
+msgid "({chip} refused the sign-in: {code}.)"
+msgstr "({chip} refused the sign-in: {code}.)"
+
+#. placeholder {0}: event.dropped
+msgid "{0, plural, one {# shared item was left out} other {# shared items were left out}}"
+msgstr "{0, plural, one {# shared item was left out} other {# shared items were left out}}"
+
+#. placeholder {0}: m.name
+#. placeholder {1}: org.name
+msgid "{0} in {1}"
+msgstr "{0} in {1}"
+
+msgid "{chip} answered, but not like yaran. Check the address."
+msgstr "{chip} answered, but not like yaran. Check the address."
+
+#. placeholder {0}: owner.name
+msgid "{chip} belongs to <0>{0}</0> on this phone. Open it from that org instead."
+msgstr "{chip} belongs to <0>{0}</0> on this phone. Open it from that org instead."
+
+msgid "{chip} belongs to an org on this phone. Open it from that org instead."
+msgstr "{chip} belongs to an org on this phone. Open it from that org instead."
+
+msgid "{chip} has no password yet. Set one there with {command}, then try again."
+msgstr "{chip} has no password yet. Set one there with {command}, then try again."
+
+msgid "{chip} is already on this phone as a direct machine."
+msgstr "{chip} is already on this phone as a direct machine."
+
+msgid "{chip} is behind Cloudflare Access. Add it through its organization instead."
+msgstr "{chip} is behind Cloudflare Access. Add it through its organization instead."
+
+msgid "{chip} lets this network in without a password, so there is nothing to sign in to."
+msgstr "{chip} lets this network in without a password, so there is nothing to sign in to."
+
+msgid "{chip} sent the app somewhere else, so it stopped. Use the address yaran answers on directly."
+msgstr "{chip} sent the app somewhere else, so it stopped. Use the address yaran answers on directly."
+
+msgid "{chip} was removed from this phone, so nothing was signed in."
+msgstr "{chip} was removed from this phone, so nothing was signed in."
+
+msgid "{count, plural, one {Send # file to…} other {Send # files to…}}"
+msgstr "{count, plural, one {Send # file to…} other {Send # files to…}}"
+
+msgid "{label} already has {MAX_ROUTES} ways to reach it. Remove one to add another."
+msgstr "{label} already has {MAX_ROUTES} ways to reach it. Remove one to add another."
+
+msgid "{left}: the app takes up to 10 files, and only ones the other app hands over directly."
+msgstr "{left}: the app takes up to 10 files, and only ones the other app hands over directly."
+
+msgid "{name} is already a way to reach a direct machine."
+msgstr "{name} is already a way to reach a direct machine."
+
+msgid "{name} is no longer in its org's list on this phone, so it wasn't added."
+msgstr "{name} is no longer in its org's list on this phone, so it wasn't added."
+
+msgid "{name} still asks for a sign-in, so it wasn't added. Try again."
+msgstr "{name} still asks for a sign-in, so it wasn't added. Try again."
+
 msgid "{name} was already removed."
 msgstr "{name} was already removed."
+
+msgid "{name}'s org changed on this phone while it was being checked, so it wasn't added."
+msgstr "{name}'s org changed on this phone while it was being checked, so it wasn't added."
+
+#. placeholder {0}: route.host
+msgid "<0>{0}</0> (its own address)"
+msgstr "<0>{0}</0> (its own address)"
+
+#. placeholder {0}: machine(route)
+#. placeholder {1}: orgName(route.orgId)
+msgid "<0>{0}</0> through <1>{1}</1>"
+msgstr "<0>{0}</0> through <1>{1}</1>"
 
 msgid "<0>{email}</0> isn't the owner of <1>{host}</1>."
 msgstr "<0>{email}</0> isn't the owner of <1>{host}</1>."
@@ -23,31 +93,99 @@ msgstr "15 minutes in the background"
 msgid "5 minutes in the background"
 msgstr "5 minutes in the background"
 
+msgid "A different yaran answered than the machine this phone added, so its window closed. Open the machine again to check it."
+msgstr "A different yaran answered than the machine this phone added, so its window closed. Open the machine again to check it."
+
+msgid "A different yaran answered the sign-in than the one checked above, so nothing was added. Check the address and try again."
+msgstr "A different yaran answered the sign-in than the one checked above, so nothing was added. Check the address and try again."
+
+msgid "A different yaran answers at {chip}, so it can't be a way to reach this machine."
+msgstr "A different yaran answers at {chip}, so it can't be a way to reach this machine."
+
+msgid "A different yaran answers at {host}"
+msgstr "A different yaran answers at {host}"
+
+msgid "A different yaran answers at {name}, so it can't be a way to reach {label}."
+msgstr "A different yaran answers at {name}, so it can't be a way to reach {label}."
+
+msgid "A machine can have up to {MAX_ROUTES} ways to reach it. Remove one to add another."
+msgstr "A machine can have up to {MAX_ROUTES} ways to reach it. Remove one to add another."
+
+msgid "A sign-in to {name} succeeded, but the app couldn't save its details. Check Orgs, and add the org again if it is missing or out of date."
+msgstr "A sign-in to {name} succeeded, but the app couldn't save its details. Check Orgs, and add the org again if it is missing or out of date."
+
 msgid "About and licenses"
 msgstr "About and licenses"
 
 #. placeholder {0}: machine.name
 #. placeholder {0}: org.name
+#. placeholder {0}: record.label
 msgid "Actions for {0}"
 msgstr "Actions for {0}"
+
+#. placeholder {0}: machine.name
+#. placeholder {1}: org.name
+msgid "Add <0>{0}</0> through <1>{1}</1>"
+msgstr "Add <0>{0}</0> through <1>{1}</1>"
+
+msgid "Add a machine"
+msgstr "Add a machine"
+
+msgid "Add a machine without Cloud Connect"
+msgstr "Add a machine without Cloud Connect"
 
 msgid "Add an org"
 msgstr "Add an org"
 
+msgid "Add another way to reach it"
+msgstr "Add another way to reach it"
+
+msgid "Add machine"
+msgstr "Add machine"
+
 msgid "Add org"
 msgstr "Add org"
+
+msgid "Add this machine?"
+msgstr "Add this machine?"
 
 msgid "Add this org?"
 msgstr "Add this org?"
 
-msgid "Add your org to see your machines here."
-msgstr "Add your org to see your machines here."
+msgid "Add this way"
+msgstr "Add this way"
+
+msgid "Add your org, or a machine reachable over HTTPS, to see your machines here."
+msgstr "Add your org, or a machine reachable over HTTPS, to see your machines here."
+
+#. placeholder {0}: saved.label
+msgid "Added {name} as a way to reach <0>{0}</0>. It answered as the same machine."
+msgstr "Added {name} as a way to reach <0>{0}</0>. It answered as the same machine."
+
+msgid "Added <0>{host}</0> as a way to reach {label}."
+msgstr "Added <0>{host}</0> as a way to reach {label}."
+
+msgid "Added <0>{host}</0>. Tap it to open."
+msgstr "Added <0>{host}</0>. Tap it to open."
+
+#. placeholder {0}: adding.host
+msgid "Address: <0>{0}</0>"
+msgstr "Address: <0>{0}</0>"
+
+msgid "Address: <0>{host}</0>"
+msgstr "Address: <0>{host}</0>"
 
 msgid "Address: <0>{org}</0>"
 msgstr "Address: <0>{org}</0>"
 
 msgid "Allow device passcode"
 msgstr "Allow device passcode"
+
+msgid "An org on this phone now lists that address, so it can't also open as a direct machine. Remove the direct machine and open it from its org."
+msgstr "An org on this phone now lists that address, so it can't also open as a direct machine. Remove the direct machine and open it from its org."
+
+msgid "Another HTTPS address"
+msgstr "Another HTTPS address"
 
 msgid "App interface"
 msgstr "App interface"
@@ -91,14 +229,40 @@ msgstr "Camera preview"
 msgid "Cancel"
 msgstr "Cancel"
 
+msgid "Cancel and discard"
+msgstr "Cancel and discard"
+
+msgid "Check again"
+msgstr "Check again"
+
+msgid "Check this address"
+msgstr "Check this address"
+
+#. placeholder {0}: machine.name
+msgid "Checking <0>{0}</0>…"
+msgstr "Checking <0>{0}</0>…"
+
+msgid "Checking for shared files…"
+msgstr "Checking for shared files…"
+
 msgid "Checking the control plane…"
 msgstr "Checking the control plane…"
+
+msgid "Checking the machine…"
+msgstr "Checking the machine…"
 
 msgid "Continue"
 msgstr "Continue"
 
 msgid "Couldn't open the share sheet for the diagnostics log."
 msgstr "Couldn't open the share sheet for the diagnostics log."
+
+msgid "Couldn't remove {name} ({code}). It is still on this phone; try again."
+msgstr "Couldn't remove {name} ({code}). It is still on this phone; try again."
+
+#. placeholder {0}: out.code
+msgid "Couldn't remove {name} (<0>{0}</0>). It is still on this phone; try again."
+msgstr "Couldn't remove {name} (<0>{0}</0>). It is still on this phone; try again."
 
 #. placeholder {0}: i18n._(failureMessage(got.failure))
 msgid "Couldn't remove {name}: {0}"
@@ -115,6 +279,18 @@ msgstr "Development build: sign-in replies use a link any app on this phone can 
 
 msgid "Diagnostics"
 msgstr "Diagnostics"
+
+msgid "Direct"
+msgstr "Direct"
+
+msgid "Direct · {ways} ways to reach it"
+msgstr "Direct · {ways} ways to reach it"
+
+msgid "Direct machines don't send notifications; those come through Cloud Connect."
+msgstr "Direct machines don't send notifications; those come through Cloud Connect."
+
+msgid "Discarded the shared files. Nothing was sent."
+msgstr "Discarded the shared files. Nothing was sent."
 
 msgid "Erase everything"
 msgstr "Erase everything"
@@ -137,14 +313,26 @@ msgstr "Export…"
 msgid "Get this address from your admin or your org's Cloud Connect page. It looks like cp.example.com."
 msgstr "Get this address from your admin or your org's Cloud Connect page. It looks like cp.example.com."
 
+msgid "Go to Machines"
+msgstr "Go to Machines"
+
 msgid "Hide screen content"
 msgstr "Hide screen content"
+
+msgid "Identity <0>{instance}</0>. The app checks it each time it opens the machine."
+msgstr "Identity <0>{instance}</0>. The app checks it each time it opens the machine."
 
 msgid "Immediately"
 msgstr "Immediately"
 
 msgid "Install or enable a browser (Chrome, Firefox, Brave, Vanadium…) to sign in."
 msgstr "Install or enable a browser (Chrome, Firefox, Brave, Vanadium…) to sign in."
+
+msgid "It doesn't report an identity, so the app can't add other ways to reach it or notice a different yaran at this address."
+msgstr "It doesn't report an identity, so the app can't add other ways to reach it or notice a different yaran at this address."
+
+msgid "Keep and open"
+msgstr "Keep and open"
 
 msgid "Language"
 msgstr "Language"
@@ -164,11 +352,23 @@ msgstr "Lock after"
 msgid "Lock setting saved."
 msgstr "Lock setting saved."
 
+msgid "Machine address"
+msgstr "Machine address"
+
 msgid "Machines"
 msgstr "Machines"
 
 msgid "Manage orgs"
 msgstr "Manage orgs"
+
+msgid "Move down"
+msgstr "Move down"
+
+msgid "Move up"
+msgstr "Move up"
+
+msgid "Moved. The app tries the ways to reach {label} in this order."
+msgstr "Moved. The app tries the ways to reach {label} in this order."
 
 msgid "Native components"
 msgstr "Native components"
@@ -179,11 +379,23 @@ msgstr "Need a QR code?"
 msgid "Never connected"
 msgstr "Never connected"
 
+msgid "Newer shared files arrived before these were discarded, so nothing was discarded. The newer files are still waiting."
+msgstr "Newer shared files arrived before these were discarded, so nothing was discarded. The newer files are still waiting."
+
+msgid "Newer shared files arrived before these were sent, so nothing was sent. Pick a machine for the files waiting now."
+msgstr "Newer shared files arrived before these were sent, so nothing was sent. Pick a machine for the files waiting now."
+
 msgid "No camera was found. Type the org address instead."
 msgstr "No camera was found. Type the org address instead."
 
+msgid "No connection to {chip}. Check your network and try again."
+msgstr "No connection to {chip}. Check your network and try again."
+
 msgid "No connection. Check your network and try again."
 msgstr "No connection. Check your network and try again."
+
+msgid "No machine is on this phone yet. Add one, then share again."
+msgstr "No machine is on this phone yet. Add one, then share again."
 
 msgid "No machines yet. On the computer you want to reach, run <0>yaran cloud login</0> and it appears here."
 msgstr "No machines yet. On the computer you want to reach, run <0>yaran cloud login</0> and it appears here."
@@ -194,8 +406,17 @@ msgstr "No org added"
 msgid "No org added yet."
 msgstr "No org added yet."
 
+msgid "No shared files are waiting."
+msgstr "No shared files are waiting."
+
+msgid "None of the ways to reach that machine answered as it. Check that yaran runs there, then try again."
+msgstr "None of the ways to reach that machine answered as it. Check that yaran runs there, then try again."
+
 msgid "None of your orgs offers notifications yet."
 msgstr "None of your orgs offers notifications yet."
+
+msgid "Not now"
+msgstr "Not now"
 
 msgid "Notifications"
 msgstr "Notifications"
@@ -208,6 +429,9 @@ msgstr "On your computer, run <0>yaran cloud pair-phone</0>, or ask your admin f
 
 msgid "Online"
 msgstr "Online"
+
+msgid "Only continue if you expected to add this machine. Links and QR codes can come from anyone."
+msgstr "Only continue if you expected to add this machine. Links and QR codes can come from anyone."
 
 msgid "Only continue if you expected to add this org. Links and QR codes can come from anyone."
 msgstr "Only continue if you expected to add this org. Links and QR codes can come from anyone."
@@ -236,8 +460,17 @@ msgstr "Orgs"
 msgid "Phone removed"
 msgstr "Phone removed"
 
+msgid "Pick the machine, open the agent, then choose Attach a file. The app offers these files there and sends nothing before that."
+msgstr "Pick the machine, open the agent, then choose Attach a file. The app offers these files there and sends nothing before that."
+
 msgid "Preferences"
 msgstr "Preferences"
+
+msgid "Reach this machine over HTTPS, for example with tailscale serve."
+msgstr "Reach this machine over HTTPS, for example with tailscale serve."
+
+msgid "Reached over HTTPS without Cloud Connect. They don't send notifications."
+msgstr "Reached over HTTPS without Cloud Connect. They don't send notifications."
 
 msgid "Refresh machines"
 msgstr "Refresh machines"
@@ -247,6 +480,9 @@ msgstr "Releases on GitHub"
 
 msgid "Removal of {name} started. yaran on that machine stops its cloud connection."
 msgstr "Removal of {name} started. yaran on that machine stops its cloud connection."
+
+msgid "Remove {label}?"
+msgstr "Remove {label}?"
 
 #. placeholder {0}: machine?.name ?? ''
 msgid "Remove <0>{0}</0>?"
@@ -261,8 +497,23 @@ msgstr "Remove machine"
 msgid "Remove this phone's saved orgs, sign-ins and preferences."
 msgstr "Remove this phone's saved orgs, sign-ins and preferences."
 
+msgid "Remove this way"
+msgstr "Remove this way"
+
 msgid "Remove…"
 msgstr "Remove…"
+
+msgid "Removed {name} and ended this phone's sign-in on it."
+msgstr "Removed {name} and ended this phone's sign-in on it."
+
+msgid "Removed {name} from this phone."
+msgstr "Removed {name} from this phone."
+
+msgid "Removed {name} from this phone. The machine didn't confirm ending the sign-in; Sign out in its web page ends every sign-in."
+msgstr "Removed {name} from this phone. The machine didn't confirm ending the sign-in; Sign out in its web page ends every sign-in."
+
+msgid "Removed that way to reach {label}."
+msgstr "Removed that way to reach {label}."
 
 msgid "Removing {name}…"
 msgstr "Removing {name}…"
@@ -273,17 +524,20 @@ msgstr "Reopen last machine on launch"
 msgid "Retry"
 msgstr "Retry"
 
+msgid "Saving…"
+msgstr "Saving…"
+
 msgid "Scan a QR code instead"
 msgstr "Scan a QR code instead"
+
+msgid "Scan a yaran QR code"
+msgstr "Scan a yaran QR code"
 
 msgid "Scan again"
 msgstr "Scan again"
 
 msgid "Scan QR code"
 msgstr "Scan QR code"
-
-msgid "Scan the org QR code"
-msgstr "Scan the org QR code"
 
 msgid "Screen content is now hidden from screenshots and the app switcher."
 msgstr "Screen content is now hidden from screenshots and the app switcher."
@@ -303,8 +557,24 @@ msgstr "Setting up"
 msgid "Settings"
 msgstr "Settings"
 
+msgid "Share a file to yaran; text isn't supported yet."
+msgstr "Share a file to yaran; text isn't supported yet."
+
+msgid "Share to a machine"
+msgstr "Share to a machine"
+
 msgid "Sign in"
 msgstr "Sign in"
+
+msgid "Sign in again…"
+msgstr "Sign in again…"
+
+msgid "Sign in and continue"
+msgstr "Sign in and continue"
+
+#. placeholder {0}: now.host
+msgid "Sign in to <0>{0}</0> again, then open the machine to check it."
+msgstr "Sign in to <0>{0}</0> again, then open the machine to check it."
 
 msgid "Sign out"
 msgstr "Sign out"
@@ -326,11 +596,17 @@ msgstr "Sign-in was cancelled."
 msgid "Sign-ins removed"
 msgstr "Sign-ins removed"
 
+msgid "Signed in to {chip}."
+msgstr "Signed in to {chip}."
+
 msgid "Signed out of {name} and removed it from this phone."
 msgstr "Signed out of {name} and removed it from this phone."
 
-msgid "Start by connecting your org."
-msgstr "Start by connecting your org."
+msgid "Signing in…"
+msgstr "Signing in…"
+
+msgid "Start by connecting your org or a machine."
+msgstr "Start by connecting your org or a machine."
 
 msgid "Status unknown"
 msgstr "Status unknown"
@@ -344,35 +620,126 @@ msgstr "Support"
 msgid "That address contains a user name or password. Remove everything before the @ and try again."
 msgstr "That address contains a user name or password. Remove everything before the @ and try again."
 
+#. placeholder {0}: owner.kind === 'org' ? owner.name : owner.label
+msgid "That address is already used on this phone (by {0})."
+msgstr "That address is already used on this phone (by {0})."
+
 msgid "That doesn't look like a domain name. Check for typos."
 msgstr "That doesn't look like a domain name. Check for typos."
+
+msgid "That doesn't look like a machine name. Check for typos."
+msgstr "That doesn't look like a machine name. Check for typos."
+
+msgid "That link is for a machine this phone hasn't added."
+msgstr "That link is for a machine this phone hasn't added."
 
 msgid "That link isn't a yaran link this app can open, so it was ignored."
 msgstr "That link isn't a yaran link this app can open, so it was ignored."
 
+msgid "That link points somewhere the app can't open."
+msgstr "That link points somewhere the app can't open."
+
+msgid "That machine address isn't valid, so it can't be added."
+msgstr "That machine address isn't valid, so it can't be added."
+
+msgid "That machine isn't in this org's list any more. Refresh the list and try again."
+msgstr "That machine isn't in this org's list any more. Refresh the list and try again."
+
+msgid "That machine isn't on this phone any more."
+msgstr "That machine isn't on this phone any more."
+
+msgid "That machine's yaran is too old for this app to show it, so its window closed. Update yaran on that machine, then open it again."
+msgstr "That machine's yaran is too old for this app to show it, so its window closed. Update yaran on that machine, then open it again."
+
 msgid "That org address isn't valid, so it can't be added."
 msgstr "That org address isn't valid, so it can't be added."
 
-msgid "That QR code isn't a yaran org code. Scan the code your admin or yaran cloud pair-phone shows."
-msgstr "That QR code isn't a yaran org code. Scan the code your admin or yaran cloud pair-phone shows."
+msgid "That password isn't right."
+msgstr "That password isn't right."
 
-msgid "That setting can't change while app lock is on. Turn app lock off, change it, then turn the lock back on."
-msgstr "That setting can't change while app lock is on. Turn app lock off, change it, then turn the lock back on."
+msgid "That QR code isn't a yaran org or machine code. Scan the code your admin or yaran cloud pair-phone shows."
+msgstr "That QR code isn't a yaran org or machine code. Scan the code your admin or yaran cloud pair-phone shows."
 
 msgid "That sign-in reply didn't match a sign-in from this phone, so it was ignored."
 msgstr "That sign-in reply didn't match a sign-in from this phone, so it was ignored."
 
-msgid "That yaran code doesn't contain a valid org address."
-msgstr "That yaran code doesn't contain a valid org address."
+msgid "That way to reach {label} changed meanwhile; nothing moved."
+msgstr "That way to reach {label} changed meanwhile; nothing moved."
+
+msgid "That way to reach the machine changed while the app was checking it, so nothing was saved. Open the machine again to check it."
+msgstr "That way to reach the machine changed while the app was checking it, so nothing was saved. Open the machine again to check it."
+
+msgid "That yaran code doesn't contain a valid org or machine address."
+msgstr "That yaran code doesn't contain a valid org or machine address."
 
 msgid "The account you signed in with isn't the owner of <0>{host}</0>."
 msgstr "The account you signed in with isn't the owner of <0>{host}</0>."
+
+msgid "The app couldn't discard the shared files ({code}). Try again."
+msgstr "The app couldn't discard the shared files ({code}). Try again."
+
+msgid "The app couldn't end the sign-in to {chip} ({why}) or list it ({saved}). Erase everything in Settings removes it from this phone."
+msgstr "The app couldn't end the sign-in to {chip} ({why}) or list it ({saved}). Erase everything in Settings removes it from this phone."
+
+msgid "The app couldn't end the sign-in to {chip} ({why}), so it is listed under Machines. Remove it there to end it."
+msgstr "The app couldn't end the sign-in to {chip} ({why}), so it is listed under Machines. Remove it there to end it."
+
+msgid "The app couldn't load that org's machines to open the link. Check your connection and try again."
+msgstr "The app couldn't load that org's machines to open the link. Check your connection and try again."
+
+msgid "The app couldn't open the machine window ({code}). Try again; if it keeps happening, send diagnostics from Settings."
+msgstr "The app couldn't open the machine window ({code}). Try again; if it keeps happening, send diagnostics from Settings."
+
+msgid "The app couldn't reach {chip} ({code}). Try again; if it keeps happening, send diagnostics from Settings."
+msgstr "The app couldn't reach {chip} ({code}). Try again; if it keeps happening, send diagnostics from Settings."
+
+msgid "The app couldn't save the change ({code}). Nothing changed; try again."
+msgstr "The app couldn't save the change ({code}). Nothing changed; try again."
+
+msgid "The app couldn't save the new identity ({code}). Try again."
+msgstr "The app couldn't save the new identity ({code}). Try again."
+
+#. placeholder {0}: approval.code
+msgid "The app couldn't save this on the phone (<0>{0}</0>). Try again."
+msgstr "The app couldn't save this on the phone (<0>{0}</0>). Try again."
+
+msgid "The app couldn't show the sign-in for {chip} ({code}). Try again; if it keeps happening, send diagnostics from Settings."
+msgstr "The app couldn't show the sign-in for {chip} ({code}). Try again; if it keeps happening, send diagnostics from Settings."
+
+#. placeholder {0}: route.host
+msgid "The app couldn't sign out of <0>{0}</0> ({code}), so the route stays. Try again."
+msgstr "The app couldn't sign out of <0>{0}</0> ({code}), so the route stays. Try again."
+
+#. placeholder {0}: o.code
+msgid "The app couldn't start the sign-in (<0>{0}</0>). Try again; if it keeps happening, send diagnostics from Settings."
+msgstr "The app couldn't start the sign-in (<0>{0}</0>). Try again; if it keeps happening, send diagnostics from Settings."
+
+msgid "The app couldn't undo adding {chip} (<0>{code}</0>), so it stays listed under Machines with its sign-in. Remove it there if you didn't mean to add it."
+msgstr "The app couldn't undo adding {chip} (<0>{code}</0>), so it stays listed under Machines with its sign-in. Remove it there if you didn't mean to add it."
+
+msgid "The app couldn't undo the identity change for {name} ({code}). The new identity is still saved; check it before opening the machine again."
+msgstr "The app couldn't undo the identity change for {name} ({code}). The new identity is still saved; check it before opening the machine again."
+
+msgid "The app couldn't undo the route change. The saved change is still listed; check it in Ways to reach it."
+msgstr "The app couldn't undo the route change. The saved change is still listed; check it in Ways to reach it."
+
+msgid "The app couldn't undo the temporary org details for {name} ({code}). Its entry is still saved; review it in Orgs or sign out to remove it."
+msgstr "The app couldn't undo the temporary org details for {name} ({code}). Its entry is still saved; review it in Orgs or sign out to remove it."
+
+msgid "The app reaches machines on the standard HTTPS port. Remove the port, for example by serving yaran with tailscale serve."
+msgstr "The app reaches machines on the standard HTTPS port. Remove the port, for example by serving yaran with tailscale serve."
+
+msgid "The app refused {chip}: it isn't an address the app can use."
+msgstr "The app refused {chip}: it isn't an address the app can use."
 
 msgid "The app refused to contact <0>{host}</0> because the address broke a safety rule."
 msgstr "The app refused to contact <0>{host}</0> because the address broke a safety rule."
 
 msgid "The app refused to send that request because it broke a safety rule. Update the app if this keeps happening."
 msgstr "The app refused to send that request because it broke a safety rule. Update the app if this keeps happening."
+
+msgid "The app tries these in order each time it opens the machine and uses the first one that answers as this machine. Each one signs in on its own; none shares another's sign-in. Another way is another browser to the machine, with its own drafts."
+msgstr "The app tries these in order each time it opens the machine and uses the first one that answers as this machine. Each one signs in on its own; none shares another's sign-in. Another way is another browser to the machine, with its own drafts."
 
 msgid "The app was closed while you were signing in, so that sign-in can't finish. Start it again."
 msgstr "The app was closed while you were signing in, so that sign-in can't finish. Start it again."
@@ -385,6 +752,15 @@ msgstr "The camera couldn't start. Type the org address instead."
 
 msgid "The camera permission is off. Turn it on for yaran in the phone's settings, or type the org address instead."
 msgstr "The camera permission is off. Turn it on for yaran in the phone's settings, or type the org address instead."
+
+msgid "The connection is HTTPS all the way to yaran."
+msgstr "The connection is HTTPS all the way to yaran."
+
+msgid "The connection is HTTPS, but yaran says the last hop to it was not encrypted. Check that the proxy in front of it runs on the same machine."
+msgstr "The connection is HTTPS, but yaran says the last hop to it was not encrypted. Check that the proxy in front of it runs on the same machine."
+
+msgid "The connection to {chip} isn't secure, so the app stopped."
+msgstr "The connection to {chip} isn't secure, so the app stopped."
 
 msgid "The connection to {host} isn't secure, so the app stopped."
 msgstr "The connection to {host} isn't secure, so the app stopped."
@@ -413,8 +789,18 @@ msgstr "The diagnostics log was handed to the app you picked."
 msgid "The log is empty."
 msgstr "The log is empty."
 
+#. placeholder {0}: record?.label ?? ''
+msgid "The machine at {host} isn't <0>{0}</0>, the one this phone added. If you reinstalled or reset yaran there, keep it. If you didn't expect this, remove it."
+msgstr "The machine at {host} isn't <0>{0}</0>, the one this phone added. If you reinstalled or reset yaran there, keep it. If you didn't expect this, remove it."
+
+msgid "The machine's HTTPS address, with no port. On a tailnet, serve yaran with <0>tailscale serve</0> and use its name, such as laptop.tail1234.ts.net."
+msgstr "The machine's HTTPS address, with no port. On a tailnet, serve yaran with <0>tailscale serve</0> and use its name, such as laptop.tail1234.ts.net."
+
 msgid "The org's control plane is too old for this app. Ask your admin to update it."
 msgstr "The org's control plane is too old for this app. Ask your admin to update it."
+
+msgid "The reopen preference couldn't be saved ({code}). It kept its previous value. Try again."
+msgstr "The reopen preference couldn't be saved ({code}). It kept its previous value. Try again."
 
 #. placeholder {0}: o.code
 msgid "The sign-in page refused this request (<0>{0}</0>). Update the app."
@@ -426,8 +812,17 @@ msgstr "The sign-in reply couldn't be decrypted. Update the app and yaran on the
 msgid "The sign-in reply had already expired. Check that this phone's clock is right, then try again."
 msgstr "The sign-in reply had already expired. Check that this phone's clock is right, then try again."
 
+msgid "The yaran on {chip} is too old for this app to show it, so its window closed. Update yaran on that machine, then open it again."
+msgstr "The yaran on {chip} is too old for this app to show it, so its window closed. Update yaran on that machine, then open it again."
+
+msgid "The yaran on {chip} is too old for this app to sign in to it or show it. Update yaran on that machine, then try again."
+msgstr "The yaran on {chip} is too old for this app to sign in to it or show it. Update yaran on that machine, then try again."
+
 msgid "This app is too old for the org's control plane. Update the app."
 msgstr "This app is too old for the org's control plane. Update the app."
+
+msgid "This app only accepts plain-ASCII machine names, so look-alike characters cannot fake one."
+msgstr "This app only accepts plain-ASCII machine names, so look-alike characters cannot fake one."
 
 msgid "This app only accepts plain-ASCII org domains, so look-alike characters cannot fake one."
 msgstr "This app only accepts plain-ASCII org domains, so look-alike characters cannot fake one."
@@ -450,8 +845,20 @@ msgstr "This copy of the app couldn't prove it owns the sign-in link for <0>{0}<
 msgid "This deletes the machine's tunnel and sign-in app in your org. yaran on <0>{0}</0> stops its cloud connection; run <1>yaran cloud login</1> there to add it again."
 msgstr "This deletes the machine's tunnel and sign-in app in your org. yaran on <0>{0}</0> stops its cloud connection; run <1>yaran cloud login</1> there to add it again."
 
+msgid "This development build can't open verified agent links. Install the app from an official channel to use them."
+msgstr "This development build can't open verified agent links. Install the app from an official channel to use them."
+
 msgid "This log never includes sign-in tokens, cookies or link parameters, but it does include org and machine host names and machine names. Check it before you share it."
 msgstr "This log never includes sign-in tokens, cookies or link parameters, but it does include org and machine host names and machine names. Check it before you share it."
+
+msgid "This machine doesn't report an identity, so the app can't check that another address reaches the same machine."
+msgstr "This machine doesn't report an identity, so the app can't check that another address reaches the same machine."
+
+msgid "This machine lets this network in without a password."
+msgstr "This machine lets this network in without a password."
+
+msgid "This machine needs a password and has none. Set one there with <0>yaran config set server.auth.password</0>, then check again."
+msgstr "This machine needs a password and has none. Set one there with <0>yaran config set server.auth.password</0>, then check again."
 
 msgid "This org's control plane is newer than this app. Update yaran from your app store, then try again."
 msgstr "This org's control plane is newer than this app. Update yaran from your app store, then try again."
@@ -459,9 +866,25 @@ msgstr "This org's control plane is newer than this app. Update yaran from your 
 msgid "This org's control plane is too old for this app. Ask your admin to update the control plane, then try again."
 msgstr "This org's control plane is too old for this app. Ask your admin to update the control plane, then try again."
 
+msgid "This phone couldn't finish the request. Try again; if it keeps happening, send diagnostics from Settings."
+msgstr "This phone couldn't finish the request. Try again; if it keeps happening, send diagnostics from Settings."
+
+msgid "This phone is already signed in to it."
+msgstr "This phone is already signed in to it."
+
 #. placeholder {0}: org?.name ?? ''
 msgid "This phone is removed from <0>{0}</0> and its sign-ins there are deleted. You can add the org again later."
 msgstr "This phone is removed from <0>{0}</0> and its sign-ins there are deleted. You can add the org again later."
+
+msgid "This phone signed out of {name}, but couldn't forget it ({code}). It is still listed; try again."
+msgstr "This phone signed out of {name}, but couldn't forget it ({code}). It is still listed; try again."
+
+#. placeholder {0}: out.code
+msgid "This phone signed out of {name}, but couldn't forget it (<0>{0}</0>). It is still listed; try again."
+msgstr "This phone signed out of {name}, but couldn't forget it (<0>{0}</0>). It is still listed; try again."
+
+msgid "This phone signs out of {label} and forgets it and its ways to reach it. yaran on the machine keeps running; you can add it again later."
+msgstr "This phone signs out of {label} and forgets it and its ways to reach it. yaran on the machine keeps running; you can add it again later."
 
 msgid "This phone was removed from <0>{org}</0> (by you or an admin), so its sign-ins were deleted. Add the org again to keep using it."
 msgstr "This phone was removed from <0>{org}</0> (by you or an admin), so its sign-ins were deleted. Add the org again to keep using it."
@@ -472,8 +895,26 @@ msgstr "This phone was removed from the org, so its sign-ins were deleted. Add t
 msgid "This phone's clock is more than five minutes off from <0>{host}</0>, so the sign-in was refused. Set the clock automatically and try again."
 msgstr "This phone's clock is more than five minutes off from <0>{host}</0>, so the sign-in was refused. Set the clock automatically and try again."
 
+msgid "This phone's secure storage couldn't create or use the sign-in key, or save the sign-in. Try again; if it keeps failing, restart the phone."
+msgstr "This phone's secure storage couldn't create or use the sign-in key, or save the sign-in. Try again; if it keeps failing, restart the phone."
+
+msgid "This phone's secure storage couldn't save the sign-in to {chip}, so the machine ended it again. Try again; if it keeps failing, restart the phone."
+msgstr "This phone's secure storage couldn't save the sign-in to {chip}, so the machine ended it again. Try again; if it keeps failing, restart the phone."
+
 msgid "This signs the phone out of every org, removes every org and setting, and deletes the keys that protect them. You'll have to add your orgs again."
 msgstr "This signs the phone out of every org, removes every org and setting, and deletes the keys that protect them. You'll have to add your orgs again."
+
+msgid "This version of iOS can't hand shared files to a machine page. Update to iOS 18.4 or later."
+msgstr "This version of iOS can't hand shared files to a machine page. Update to iOS 18.4 or later."
+
+msgid "Those shared files are no longer waiting. Share them to yaran again."
+msgstr "Those shared files are no longer waiting. Share them to yaran again."
+
+msgid "Through an org on this phone. The app checks that it answers as this machine, signing in to it first if needed, before adding it."
+msgstr "Through an org on this phone. The app checks that it answers as this machine, signing in to it first if needed, before adding it."
+
+msgid "Too many attempts. Wait, then try again."
+msgstr "Too many attempts. Wait, then try again."
 
 msgid "Too many requests in a short time. Wait a minute and try again."
 msgstr "Too many requests in a short time. Wait a minute and try again."
@@ -493,6 +934,12 @@ msgstr "Turn off"
 msgid "Type the address your admin gave you, such as cp.example.com."
 msgstr "Type the address your admin gave you, such as cp.example.com."
 
+msgid "Type the machine address"
+msgstr "Type the machine address"
+
+msgid "Type the machine's HTTPS address, such as laptop.tail1234.ts.net."
+msgstr "Type the machine's HTTPS address, such as laptop.tail1234.ts.net."
+
 msgid "Type the org address"
 msgstr "Type the org address"
 
@@ -505,23 +952,56 @@ msgstr "Unlock"
 msgid "Unlock the app first, then sign in."
 msgstr "Unlock the app first, then sign in."
 
+msgid "Unlock the app, then remove {name} again."
+msgstr "Unlock the app, then remove {name} again."
+
+msgid "Unlock the app, then try again."
+msgstr "Unlock the app, then try again."
+
 msgid "Unlock was cancelled."
 msgstr "Unlock was cancelled."
 
 msgid "Unlock with the phone's passcode when biometrics fail."
 msgstr "Unlock with the phone's passcode when biometrics fail."
 
+msgid "Unlock yaran to open that link."
+msgstr "Unlock yaran to open that link."
+
+msgid "Use only the machine's address, without a path after it."
+msgstr "Use only the machine's address, without a path after it."
+
 msgid "Use only the org's domain, without a path after it."
 msgstr "Use only the org's domain, without a path after it."
 
+msgid "Use the machine's HTTPS name, not an IP address: no certificate matches an IP address."
+msgstr "Use the machine's HTTPS name, not an IP address: no certificate matches an IP address."
+
+msgid "Ways to reach {label}"
+msgstr "Ways to reach {label}"
+
+msgid "Ways to reach it"
+msgstr "Ways to reach it"
+
+msgid "Ways to reach it…"
+msgstr "Ways to reach it…"
+
 msgid "Welcome"
 msgstr "Welcome"
+
+msgid "yaran couldn't confirm that security setting ({code}). Try again."
+msgstr "yaran couldn't confirm that security setting ({code}). Try again."
+
+msgid "yaran couldn't unlock ({code}). Try again."
+msgstr "yaran couldn't unlock ({code}). Try again."
 
 msgid "yaran is locked"
 msgstr "yaran is locked"
 
 msgid "You chose Cancel on the sign-in page, so this phone wasn't signed in."
 msgstr "You chose Cancel on the sign-in page, so this phone wasn't signed in."
+
+msgid "You'll sign in once with the machine's password, in a secure sheet the machine's page can't read."
+msgstr "You'll sign in once with the machine's password, in a secure sheet the machine's page can't read."
 
 msgid "Your account in this org is disabled. Ask your admin to turn it back on."
 msgstr "Your account in this org is disabled. Ask your admin to turn it back on."

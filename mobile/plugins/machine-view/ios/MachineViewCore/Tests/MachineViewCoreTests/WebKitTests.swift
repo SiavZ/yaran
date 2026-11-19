@@ -14,7 +14,9 @@
 /// ├── MachineViewCore/CookieSpec (inferred)
 /// ├── MachineViewCore/DataStores (inferred)
 /// ├── MachineViewCore/NavigationDelegate (inferred)
-/// └── MachineViewCore/NavigationPolicy (inferred)
+/// ├── MachineViewCore/NavigationPolicy (inferred)
+/// ├── MachineViewCoreTests/DirectOwnershipTests (inferred)
+/// └── MachineViewCoreTests/DirectSettleTests (inferred)
 /// External: Foundation, Testing, WebKit
 ///
 /// Used by: entry point (Swift Testing, via bash ios/MachineViewCore/test.sh)

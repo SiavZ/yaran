@@ -105,14 +105,13 @@ class StoresTest {
     }
 
     @Test
-    fun sessionsTakeTheEarlierExpAndFollowTheLock() {
+    fun sessionsTakeTheEarlierExpAndAreAlwaysLockedClass() {
         val cleared = mutableListOf<String>()
-        val lock = FakeLock(enabled = true)
-        val s = SessionStore(vault, lock, diag) { cleared += it }
+        val s = SessionStore(vault, diag) { cleared += it }
         val p = TestSealer.payload("machine", "m1.example.com", 2_000, 1_000, jwtExp = 1_500)
         s.put("org1", payload(p))
         assertEquals(1_500, s.get("m1.example.com")!!.exp)
-        assertEquals(ProtectionClass.LOCKED, vault.classes["session/m1.example.com"])
+        assertEquals("locked even with App Lock off", ProtectionClass.LOCKED, vault.classes["session/m1.example.com"])
         assertNull(s.status("m1.example.com", 1_500))
         assertTrue(s.status("m1.example.com", 1_499) != null)
         assertFalse(s.get("m1.example.com").toString().contains("eyJ"))
@@ -128,7 +127,7 @@ class StoresTest {
     @Test
     fun signOutClearsGivenHostsAndTheOrgsOthers() {
         val cleared = mutableListOf<String>()
-        val s = SessionStore(vault, FakeLock(), diag) { cleared += it }
+        val s = SessionStore(vault, diag) { cleared += it }
         s.put("org1", payload(TestSealer.payload("machine", "m1.example.com", 2_000, 1_000)))
         s.put("org1", payload(TestSealer.payload("machine", "m2.example.com", 2_000, 1_000)))
         s.put("org2", payload(TestSealer.payload("machine", "m3.example.com", 2_000, 1_000)))
@@ -141,7 +140,7 @@ class StoresTest {
 
     @Test
     fun unreadableJwtExpFallsBackWithADiagnostic() {
-        val s = SessionStore(vault, FakeLock(), diag) { }
+        val s = SessionStore(vault, diag) { }
         val p = TestSealer.payload("machine", "m1.example.com", 2_000, 1_000).put("jwt", "a.b.c")
         s.put("org1", payload(p))
         assertEquals(2_000, s.get("m1.example.com")!!.exp)

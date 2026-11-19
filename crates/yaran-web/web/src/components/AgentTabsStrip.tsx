@@ -14,6 +14,7 @@ import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { SortableStrip } from "@/components/SortableStrip"
 import { AttentionDot } from "@/components/AttentionDot"
+import { CopyPhoneLinkItem } from "@/components/CopyPhoneLinkItem"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -306,6 +307,10 @@ function TabPill({
                 })}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <CopyPhoneLinkItem
+              agentId={session.id}
+              tabId={isFirstTab(session, tab.id) ? undefined : tab.id}
+            />
             <DropdownMenuSeparator />
             {/* Unlike Close, the only tab can stop too, since the tab stays.
                 Absent rather than disabled with no process, like Detach. */}

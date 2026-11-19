@@ -5,6 +5,7 @@ import { Button } from "@yaran/ui-kit/button"
 import { InlineCode } from "@yaran/ui-kit/inline-code"
 import { renderInlineCode } from "@/lib/inlineMarkdown"
 import { Input } from "@yaran/ui-kit/input"
+import { reauthUri } from "@yaran/protocol/uri"
 import type { AuthStatus, LoginAnswer } from "@/lib/authApi"
 import { rateLimitLead } from "@/lib/authErrors"
 import { retryAuthGate, signIn, type SignOutReason } from "@/lib/authGate"
@@ -252,6 +253,21 @@ export function LoginPage({
 
 // Every gate page's way out. It always asks afresh, so a request still hanging
 // from before cannot hold it, and it comes back enabled however that ends.
+// Inside the phone app (its user agent says so: a presentation hint, never an authority) the
+// password is never typed into this page. The app keeps its sign-in natively, and its own
+// sheet asks for the password: the button navigates to the strict control URL the machine
+// window intercepts, and nothing is posted from here.
+export function NativeSignInPage({ reason }: { reason: SignOutReason }) {
+  return (
+    <Shell title="Sign in to yaran">
+      <p className="text-sm text-muted-foreground">{REASON[reason]} The app asks for the password itself.</p>
+      <Button className="h-10" onClick={() => location.assign(reauthUri(location.hostname))}>
+        Sign in
+      </Button>
+    </Shell>
+  )
+}
+
 function RetryButton({ label }: { label: string }) {
   const [busy, setBusy] = useState(false)
   return (

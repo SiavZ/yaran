@@ -7,7 +7,8 @@
  * `noHistory` callback activity; the machine window is `singleTask`, not exported, and keeps the
  * page across size, orientation, uiMode and density changes. The library's `android` block gives
  * no placeholder values, which would shadow the app's, and no source file calls a WebView
- * bridge API (D9). The app's merged-manifest check (one build per variant) belongs to Phase 14's app.
+ * bridge API (D9). The library asks for `ACCESS_NETWORK_STATE`, without which Chromium's
+ * WebView never watches connectivity, so the page gets no `online` event (G3). The app's merged-manifest check (one build per variant) belongs to Phase 14's app.
  *
  * - Pure JVM XML parsing.
  *
@@ -53,6 +54,18 @@ class ManifestTest {
         assertEquals(listOf("https://\${publisherDomain}/auth/callback", "https://\${publisherDomain}/oauth/callback"), dataOf(https))
     }
 
+    // G6: verified agent links, off by default like the https callback; the app enables both together.
+    @Test
+    fun openLinkAliasIsVerifiedAndOffByDefault() {
+        val open = alias(".OpenLinkHttps")
+        assertEquals("false", open.a("enabled"))
+        assertEquals(".OpenLinkActivity", open.a("targetActivity"))
+        assertEquals("true", (open.getElementsByTagName("intent-filter").item(0) as Element).a("autoVerify"))
+        assertEquals(listOf("https://\${publisherDomain}/open"), dataOf(open))
+        val forwarder = elements("activity").single { it.a("name") == ".OpenLinkActivity" }
+        assertEquals("only the verified alias reaches it", "false", forwarder.a("exported"))
+    }
+
     @Test
     fun devAliasIsTheOnlyCustomSchemeAndOnByDefault() {
         val dev = alias(".AuthCallbackDev")
@@ -60,6 +73,13 @@ class ManifestTest {
         assertEquals(listOf("yaranapp://auth/callback", "yaranapp://oauth/callback"), dataOf(dev))
         val schemes = elements("data").map { it.a("scheme") }
         assertEquals(2, schemes.count { it == "yaranapp" })
+    }
+
+    // G3: Chromium's WebView registers its network-change notifier only when this is granted.
+    @Test
+    fun asksForNetworkStateSoTheWebViewFiresOnline() {
+        val permissions = elements("uses-permission").map { it.a("name") }.toSet()
+        assertEquals(setOf("android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"), permissions)
     }
 
     @Test

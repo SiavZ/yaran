@@ -34,6 +34,7 @@
 //! ├── cloud::protocol::handoff
 //! ├── cloud::protocol::handoff::tests
 //! ├── cloud::protocol::handoff_consent
+//! ├── cloud::protocol::links
 //! ├── cloud::protocol::machine
 //! ├── cloud::protocol::meta
 //! ├── cloud::protocol::pairing
