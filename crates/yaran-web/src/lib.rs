@@ -23,6 +23,7 @@
 //! ├── auth
 //! ├── auth::provenance
 //! ├── background
+//! ├── board_routes
 //! ├── bootstrap
 //! ├── bootstrap_routes
 //! ├── browse_routes

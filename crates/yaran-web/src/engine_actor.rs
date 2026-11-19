@@ -11,6 +11,7 @@
 //! engine_actor.rs
 //! ├── auth
 //! ├── auth::admission
+//! ├── board_routes
 //! ├── bootstrap
 //! ├── cloud_mode
 //! ├── cloud_routes

@@ -40,6 +40,7 @@
  * ├── web:src/components/AgentStartupCommandDialog.tsx
  * ├── web:src/components/AttachPullRequestDialog.tsx
  * ├── web:src/components/AuthBanners.tsx
+ * ├── web:src/components/BoardDialog.tsx
  * ├── web:src/components/ChangeBaseBranchDialog.tsx
  * ├── web:src/components/ChangeProviderDialog.tsx
  * ├── web:src/components/ChangedFiles.tsx

@@ -221,6 +221,7 @@
 //! ├── yaran-web
 //! ├── yaran-web::auth::warnings
 //! ├── yaran-web::background
+//! ├── yaran-web::board_routes
 //! ├── yaran-web::bootstrap
 //! ├── yaran-web::cloud_loop
 //! ├── yaran-web::cloud_mode

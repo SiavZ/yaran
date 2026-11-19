@@ -22,6 +22,7 @@
 //! ├── auth::provenance
 //! ├── auth::routes
 //! ├── auth::socket
+//! ├── board_routes
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes
@@ -90,6 +91,7 @@
 //! ├── auth::routes
 //! ├── auth::socket
 //! ├── background
+//! ├── board_routes
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes

@@ -10,6 +10,7 @@
  * ├── src/components/AgentInfoDialog.tsx
  * ├── src/components/AgentStartupCommandDialog.tsx
  * ├── src/components/AttachPullRequestDialog.tsx
+ * ├── src/components/BoardDialog.tsx
  * ├── src/components/ChangeBaseBranchDialog.tsx
  * ├── src/components/ChangeProviderDialog.tsx
  * ├── src/components/ChangedFiles.tsx
@@ -69,7 +70,7 @@
  * ├── src/lib/store.ts
  * ├── src/lib/theater.ts
  * └── src/lib/viewport.ts
- * External: @/components, react
+ * External: react
  *
  * Used by:
  * src/App.tsx

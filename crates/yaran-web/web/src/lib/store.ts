@@ -102,6 +102,9 @@
  * ├── src/components/AttachPullRequestDialog.tsx
  * ├── src/components/AttachedSection.tsx
  * ├── src/components/AuthBanners.tsx
+ * ├── src/components/BoardDialog.test.tsx
+ * ├── src/components/BoardDialog.tsx
+ * ├── src/components/BoardHubButton.tsx
  * ├── src/components/ChangeBaseBranchDialog.test.tsx
  * ├── src/components/ChangeBaseBranchDialog.tsx
  * ├── src/components/ChangeProviderDialog.tsx

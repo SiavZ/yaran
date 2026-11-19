@@ -29,6 +29,7 @@
  * ├── web:src/components/AgentStartupCommandDialog.tsx
  * ├── web:src/components/AttachPullRequestDialog.tsx
  * ├── web:src/components/AuthGate.test.tsx
+ * ├── web:src/components/BoardDialog.tsx
  * ├── web:src/components/ChangeBaseBranchDialog.tsx
  * ├── web:src/components/ChangeProviderDialog.tsx
  * ├── web:src/components/CheckoutDefaultBranchDialog.tsx
