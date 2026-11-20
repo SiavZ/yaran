@@ -69,6 +69,16 @@ fn a_jcode_target_takes_only_its_marked_registration() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    // A jcode that passes its client's agent (SiavZ/jcode#11) names it.
+    let mut named = Command::new(std::env::current_exe().unwrap())
+        .args(["peer::router::tests::env_probe_helper", "--exact"])
+        .env("YARAN_ENV_PROBE_SLEEP", "1")
+        .env("YARAN_SESSION_ID", "s1")
+        .env("JCODE_MCP_CHANNEL_SESSION", "session_owl_2")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300));
     let processes = ProcessTable::snapshot(None);
     let legacy = peer("legacy", &wt, std::process::id(), "2026-11-18T10:00:00Z");
@@ -84,8 +94,11 @@ fn a_jcode_target_takes_only_its_marked_registration() {
     );
     let unmarked = reachable_claude_peer(&target, &[legacy], &processes);
     // Two jcode sessions in one directory cannot be told apart.
-    let ambiguous = reachable_claude_peer(&target, &[current, second], &processes);
-    for child in [&mut marked, &mut phantom] {
+    let ambiguous = reachable_claude_peer(&target, &[current.clone(), second.clone()], &processes);
+    // ...unless one of them names the agent.
+    let owns = peer("owns", &wt, named.id(), "2026-11-18T07:00:00Z");
+    let identified = reachable_claude_peer(&target, &[current, second, owns], &processes);
+    for child in [&mut marked, &mut phantom, &mut named] {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -93,4 +106,5 @@ fn a_jcode_target_takes_only_its_marked_registration() {
     assert_eq!(picked, Ok("current".to_string()));
     assert_eq!(unmarked, Err(Unreachable::Unregistered));
     assert_eq!(ambiguous, Err(Unreachable::Ambiguous));
+    assert_eq!(identified, Ok("owns".to_string()));
 }
