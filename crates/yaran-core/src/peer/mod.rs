@@ -16,6 +16,7 @@
 //! it from the session store is [`session_store`].
 
 mod amq;
+mod broker;
 mod handle;
 pub(crate) mod router;
 pub mod session_store;

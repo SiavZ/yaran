@@ -1,10 +1,11 @@
 use super::*;
+use serde_json::json;
 use std::fs;
 use tempfile::tempdir;
 
 use crate::peer::test_support::session;
 
-fn peer(id: &str, cwd: &Path, pid: u32, registered_at: &str) -> ClaudePeer {
+pub(super) fn peer(id: &str, cwd: &Path, pid: u32, registered_at: &str) -> ClaudePeer {
     ClaudePeer {
         id: id.to_string(),
         cwd: cwd.to_string_lossy().to_string(),
@@ -212,7 +213,11 @@ fn the_yaran_session_id_wins_over_the_legacy_name() {
         session_id_in_environ(&env(&["YARAN_SESSION_ID_X=nope"])),
         None
     );
-    assert_eq!(session_id_in_environ(&env(&["YARAN_SESSION_ID="])), None);
+    // Set empty is reported, so the ancestry walk stops there (jcode).
+    assert_eq!(
+        session_id_in_environ(&env(&["YARAN_SESSION_ID=", "DUX_SESSION_ID=old"])),
+        Some(String::new())
+    );
 }
 
 /// A broker that predates `pid` / `registered_at` still parses, and its
@@ -948,84 +953,4 @@ fn peer_commands_ask_the_running_yaran_once() {
     assert!(run_peer(&args(&["list"]), &paths, &fetch, &mut std::io::sink()).is_ok());
     assert_eq!(asked.get(), 2);
     assert!(!paths.sessions_db_path.exists(), "no database was opened");
-}
-
-#[test]
-fn broker_response_parsing_checks_status_and_json() {
-    assert_eq!(
-        parse_broker_response("HTTP/1.1 200 OK\r\nX: y\r\n\r\n{\"ok\":true}").unwrap(),
-        json!({ "ok": true })
-    );
-    let err = parse_broker_response("HTTP/1.1 500 Oops\r\n\r\n\u{1b}]0;x\u{7}boom")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("HTTP 500"));
-    assert!(!err.contains('\u{1b}'), "broker body must be sanitised");
-    assert!(parse_broker_response("garbage").is_err());
-    assert!(parse_broker_response("HTTP/1.1 200 OK\r\n\r\nnot json").is_err());
-}
-
-#[test]
-fn an_empty_yaran_session_id_names_no_agent() {
-    let env = |parts: &[&str]| parts.iter().map(OsString::from).collect::<Vec<_>>();
-    assert!(names_no_session(&env(&["YARAN_SESSION_ID="])));
-    assert!(!names_no_session(&env(&["YARAN_SESSION_ID=agent-7"])));
-    assert!(!names_no_session(&env(&["PATH=/bin"])));
-}
-
-#[test]
-fn jcode_targets_route_via_claude_peers_only_in_their_own_worktree() {
-    let dir = tempdir().unwrap();
-    let sender = SenderContext {
-        handle: "sender".to_string(),
-        session: Some(session("s1", "claude", "sender", dir.path())),
-    };
-    let mut target = PeerTarget {
-        handle: "target".to_string(),
-        session: Some(session("s2", "jcode", "target", dir.path())),
-    };
-    assert_eq!(
-        choose_transport(TransportPreference::Auto, &sender, &target).unwrap(),
-        ChosenTransport::ClaudePeers
-    );
-    target.session.as_mut().unwrap().shared_workspace = true;
-    assert_eq!(
-        choose_transport(TransportPreference::Auto, &sender, &target).unwrap(),
-        ChosenTransport::Amq
-    );
-}
-
-/// Older jcode ran one claude-peers server for the whole daemon and dropped
-/// every push, so only a registration jcode marks per session is reachable.
-#[test]
-fn a_jcode_target_takes_only_its_marked_registration() {
-    let dir = tempdir().unwrap();
-    let wt = dir.path().join("worktree");
-    fs::create_dir_all(&wt).unwrap();
-    let target = session("s1", "jcode", "feature", &wt);
-    let mut marked = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "peer::router::tests::env_probe_helper",
-            "--exact",
-            "--test-threads=1",
-        ])
-        .env("YARAN_ENV_PROBE_SLEEP", "1")
-        .env("YARAN_SESSION_ID", "")
-        .env("JCODE_MCP_CHANNEL_SESSION", "session_fox_1")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let processes = ProcessTable::snapshot(None);
-    let legacy = peer("legacy", &wt, std::process::id(), "2026-11-18T10:00:00Z");
-    let current = peer("current", &wt, marked.id(), "2026-11-18T09:00:00Z");
-
-    let picked = reachable_claude_peer(&target, &[legacy.clone(), current], &processes);
-    let unmarked = reachable_claude_peer(&target, &[legacy], &processes);
-    let _ = marked.kill();
-    let _ = marked.wait();
-
-    assert_eq!(picked, Ok("current".to_string()));
-    assert_eq!(unmarked, Err(Unreachable::Unregistered));
 }
