@@ -16,6 +16,7 @@
 //! it from the session store is [`session_store`].
 
 mod amq;
+mod broker;
 mod handle;
 pub(crate) mod router;
 pub mod session_store;
@@ -73,6 +74,13 @@ impl PeerSession {
     /// Whether the agent runs Claude.
     pub fn is_claude(&self) -> bool {
         self.provider == "claude"
+    }
+
+    /// Whether Claude Peers can reach the agent: Claude always, and jcode
+    /// outside a shared workspace, where its registration is found by
+    /// directory because jcode's MCP servers run under the jcode daemon.
+    pub fn takes_claude_peers(&self) -> bool {
+        self.is_claude() || (self.provider == "jcode" && !self.shared_workspace)
     }
 
     /// A session a message can actually reach: live, and its directory still

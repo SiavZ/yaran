@@ -1,10 +1,11 @@
 use super::*;
+use serde_json::json;
 use std::fs;
 use tempfile::tempdir;
 
 use crate::peer::test_support::session;
 
-fn peer(id: &str, cwd: &Path, pid: u32, registered_at: &str) -> ClaudePeer {
+pub(super) fn peer(id: &str, cwd: &Path, pid: u32, registered_at: &str) -> ClaudePeer {
     ClaudePeer {
         id: id.to_string(),
         cwd: cwd.to_string_lossy().to_string(),
@@ -212,7 +213,11 @@ fn the_yaran_session_id_wins_over_the_legacy_name() {
         session_id_in_environ(&env(&["YARAN_SESSION_ID_X=nope"])),
         None
     );
-    assert_eq!(session_id_in_environ(&env(&["YARAN_SESSION_ID="])), None);
+    // Set empty is reported, so the ancestry walk stops there (jcode).
+    assert_eq!(
+        session_id_in_environ(&env(&["YARAN_SESSION_ID=", "DUX_SESSION_ID=old"])),
+        Some(String::new())
+    );
 }
 
 /// A broker that predates `pid` / `registered_at` still parses, and its
@@ -948,19 +953,4 @@ fn peer_commands_ask_the_running_yaran_once() {
     assert!(run_peer(&args(&["list"]), &paths, &fetch, &mut std::io::sink()).is_ok());
     assert_eq!(asked.get(), 2);
     assert!(!paths.sessions_db_path.exists(), "no database was opened");
-}
-
-#[test]
-fn broker_response_parsing_checks_status_and_json() {
-    assert_eq!(
-        parse_broker_response("HTTP/1.1 200 OK\r\nX: y\r\n\r\n{\"ok\":true}").unwrap(),
-        json!({ "ok": true })
-    );
-    let err = parse_broker_response("HTTP/1.1 500 Oops\r\n\r\n\u{1b}]0;x\u{7}boom")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("HTTP 500"));
-    assert!(!err.contains('\u{1b}'), "broker body must be sanitised");
-    assert!(parse_broker_response("garbage").is_err());
-    assert!(parse_broker_response("HTTP/1.1 200 OK\r\n\r\nnot json").is_err());
 }
