@@ -718,11 +718,17 @@ fn reachable_claude_peer(
         })
         .cloned()
         .collect();
+    // A registration that names the agent settles it; otherwise two unnamed
+    // jcode sessions in its directory cannot be told apart.
     let here = canonical_or_raw(Path::new(&session.directory));
+    let owner = |p: &ClaudePeer| p.pid.and_then(|pid| processes.yaran_session_of(pid));
     if jcode
+        && !delivering
+            .iter()
+            .any(|p| owner(p).as_deref() == Some(session.id.as_str()))
         && delivering
             .iter()
-            .filter(|p| canonical_or_raw(Path::new(&p.cwd)) == here)
+            .filter(|p| owner(p).is_none() && canonical_or_raw(Path::new(&p.cwd)) == here)
             .count()
             > 1
     {
