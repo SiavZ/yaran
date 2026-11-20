@@ -5,16 +5,17 @@
 //!
 //! - Claude-to-Claude routes always use Claude Peers, including sessions in a
 //!   shared workspace. An explicit `--transport amq` is refused for that pair.
-//! - Either endpoint in a shared workspace for other provider combinations:
-//!   always AMQ. Claude Peers keys a registration by working directory, so it
-//!   cannot tell mixed-provider agents sharing one apart.
+//! - Either endpoint in a shared workspace for other provider combinations,
+//!   unless the target is jcode: always AMQ. Claude Peers keys a registration
+//!   by working directory, so it cannot tell mixed-provider agents apart.
 //! - Otherwise `auto` sends to a Claude or jcode target over Claude Peers
 //!   (the broker is then required, not a best-effort preference) and to
 //!   anything else over AMQ. `--transport amq` is the manual override.
 //! - A jcode target's registration is the claude-peers server its jcode
 //!   session runs (`JCODE_MCP_CHANNEL_SESSION` in its environment), found by
-//!   directory. Older jcode shared one server across sessions and dropped
-//!   every push, so a registration without that marker is never used.
+//!   directory, shared workspace or not. Older jcode shared one server across
+//!   sessions and dropped every push, so a registration without that marker
+//!   is never used, and two marked ones in one directory get AMQ, not a guess.
 //! - When a Claude target cannot take a Claude Peers push right now (the
 //!   broker is not answering, the target has no registration because its
 //!   claude-peers server died, or its Claude Code no longer loads the channel
@@ -74,8 +75,8 @@ yaran peer - route messages between Yaran agent sessions
 Subcommands:
   yaran peer send [--from <handle>] [--transport auto|amq|claude-peers] <target> <message...>
                        Send through the Yaran router. Claude-to-Claude routes
-                       always use Claude Peers, as do routes to jcode agents
-                       in their own worktree; other shared routes use AMQ.
+                       always use Claude Peers, as do routes to jcode agents;
+                       other shared routes use AMQ.
   yaran peer list        List Yaran sessions and transport health.
   yaran peer sync-amq    Reconcile AMQ's agent registry from sessions.sqlite3.
 
@@ -222,6 +223,9 @@ fn run_peer_list(
                         }
                         Err(Unreachable::ChannelOff) => {
                             "  [claude-peers channel off: messages go via AMQ until restarted]"
+                        }
+                        Err(Unreachable::Ambiguous) => {
+                            "  [another jcode session shares this directory: messages go via AMQ]"
                         }
                     }
                 }
@@ -518,7 +522,13 @@ fn choose_transport(
             .session
             .as_ref()
             .is_some_and(|session| session.shared_workspace);
-    if shared_endpoint {
+    // A jcode target's registration is told apart by jcode's own marker, not
+    // by directory alone, so a shared workspace does not rule it out.
+    let jcode_target = target
+        .session
+        .as_ref()
+        .is_some_and(|s| s.provider == "jcode");
+    if shared_endpoint && !jcode_target {
         if preference == TransportPreference::ClaudePeers {
             bail!(
                 "Claude Peers cannot route shared-workspace sessions; use --transport amq or omit --transport"
@@ -635,6 +645,9 @@ enum Unreachable {
     /// Registered, but its Claude Code did not load the channel: the MCP
     /// server drains the broker queue and Claude Code discards each push.
     ChannelOff,
+    /// A jcode agent whose directory holds more than one jcode session's
+    /// registration: nothing says which is the agent's.
+    Ambiguous,
 }
 
 /// Why a Claude target cannot take a Claude Peers push right now.
@@ -661,6 +674,10 @@ impl PeersUnavailable {
             Self::Target(Unreachable::ChannelOff) => format!(
                 "{target} is not listening on the claude-peers channel because Claude Code \
                  relaunched itself without it; restart the agent in yaran to restore Claude Peers"
+            ),
+            Self::Target(Unreachable::Ambiguous) => format!(
+                "{target} shares its directory with another jcode session, so its Claude Peers \
+                 registration cannot be told apart from that one's"
             ),
         }
     }
@@ -701,6 +718,16 @@ fn reachable_claude_peer(
         })
         .cloned()
         .collect();
+    let here = canonical_or_raw(Path::new(&session.directory));
+    if jcode
+        && delivering
+            .iter()
+            .filter(|p| canonical_or_raw(Path::new(&p.cwd)) == here)
+            .count()
+            > 1
+    {
+        return Err(Unreachable::Ambiguous);
+    }
     let id = select_claude_peer_id(
         session,
         &delivering,

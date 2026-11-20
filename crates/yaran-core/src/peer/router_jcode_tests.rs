@@ -1,5 +1,5 @@
-//! jcode routing: a jcode agent in its own worktree takes Claude Peers, and
-//! only the claude-peers server jcode runs for that session receives.
+//! jcode routing: a jcode agent takes Claude Peers, shared workspace or not,
+//! and only the claude-peers server jcode runs for that session receives.
 
 use super::tests::peer;
 use super::*;
@@ -7,13 +7,16 @@ use crate::peer::test_support::session;
 use std::fs;
 use tempfile::tempdir;
 
+/// Observed live: an orchestrator and its jcode workers all run in shared
+/// workspaces, and every message to a worker went to an AMQ inbox jcode never reads.
 #[test]
-fn jcode_targets_route_via_claude_peers_only_in_their_own_worktree() {
+fn jcode_targets_route_via_claude_peers_even_in_a_shared_workspace() {
     let dir = tempdir().unwrap();
-    let sender = SenderContext {
+    let mut sender = SenderContext {
         handle: "sender".to_string(),
         session: Some(session("s1", "claude", "sender", dir.path())),
     };
+    sender.session.as_mut().unwrap().shared_workspace = true;
     let mut target = PeerTarget {
         handle: "target".to_string(),
         session: Some(session("s2", "jcode", "target", dir.path())),
@@ -23,6 +26,11 @@ fn jcode_targets_route_via_claude_peers_only_in_their_own_worktree() {
         ChosenTransport::ClaudePeers
     );
     target.session.as_mut().unwrap().shared_workspace = true;
+    assert_eq!(
+        choose_transport(TransportPreference::Auto, &sender, &target).unwrap(),
+        ChosenTransport::ClaudePeers
+    );
+    target.session.as_mut().unwrap().provider = "codex".to_string();
     assert_eq!(
         choose_transport(TransportPreference::Auto, &sender, &target).unwrap(),
         ChosenTransport::Amq
@@ -67,8 +75,16 @@ fn a_jcode_target_takes_only_its_marked_registration() {
     let backend = peer("backend", &wt, phantom.id(), "2026-11-18T11:00:00Z");
     let current = peer("current", &wt, marked.id(), "2026-11-18T09:00:00Z");
 
-    let picked = reachable_claude_peer(&target, &[legacy.clone(), backend, current], &processes);
+    let second = peer("second", &wt, marked.id(), "2026-11-18T08:00:00Z");
+
+    let picked = reachable_claude_peer(
+        &target,
+        &[legacy.clone(), backend, current.clone()],
+        &processes,
+    );
     let unmarked = reachable_claude_peer(&target, &[legacy], &processes);
+    // Two jcode sessions in one directory cannot be told apart.
+    let ambiguous = reachable_claude_peer(&target, &[current, second], &processes);
     for child in [&mut marked, &mut phantom] {
         let _ = child.kill();
         let _ = child.wait();
@@ -76,4 +92,5 @@ fn a_jcode_target_takes_only_its_marked_registration() {
 
     assert_eq!(picked, Ok("current".to_string()));
     assert_eq!(unmarked, Err(Unreachable::Unregistered));
+    assert_eq!(ambiguous, Err(Unreachable::Ambiguous));
 }

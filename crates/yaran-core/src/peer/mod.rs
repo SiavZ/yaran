@@ -76,11 +76,11 @@ impl PeerSession {
         self.provider == "claude"
     }
 
-    /// Whether Claude Peers can reach the agent: Claude always, and jcode
-    /// outside a shared workspace, where its registration is found by
-    /// directory because jcode's MCP servers run under the jcode daemon.
+    /// Whether Claude Peers can reach the agent: Claude and jcode. A jcode
+    /// agent's registration is found by directory and jcode's per-session
+    /// marker, because jcode's MCP servers run under the jcode daemon.
     pub fn takes_claude_peers(&self) -> bool {
-        self.is_claude() || (self.provider == "jcode" && !self.shared_workspace)
+        self.is_claude() || self.provider == "jcode"
     }
 
     /// A session a message can actually reach: live, and its directory still
