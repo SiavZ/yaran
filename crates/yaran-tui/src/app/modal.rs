@@ -76,6 +76,7 @@
 //! ├── app::hint_lines
 //! ├── app::input
 //! ├── app::jcode_models
+//! ├── app::jcode_models_picker
 //! ├── app::picker_lists
 //! └── app::project_actions
 //! ```
@@ -327,8 +328,10 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // editor, radios and checkboxes, and Cancel/Save. The Save button is
         // what keeps it dual-mode compliant.
         PromptState::SessionSettings(_) => ModalSpec { family: Form, multiline_field: true, confirm_button: true },
-        PromptState::JcodeModels(prompt) => if prompt.busy || prompt.outcomes.is_some() {
+        PromptState::JcodeModels(prompt) => if prompt.busy || prompt.loading || prompt.outcomes.is_some() {
             ModalSpec { family: Report, multiline_field: false, confirm_button: false }
+        } else if prompt.picking.is_some() {
+            ModalSpec { family: Picker, multiline_field: false, confirm_button: false }
         } else {
             ModalSpec { family: Form, multiline_field: false, confirm_button: true }
         },
@@ -465,10 +468,13 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
             vec![&prompt.draft_title, &prompt.draft_system_prompt]
         }
         PromptState::JcodeModels(prompt) => {
-            if prompt.busy || prompt.outcomes.is_some() {
+            if prompt.busy || prompt.loading || prompt.outcomes.is_some() {
                 vec![]
             } else {
-                vec![&prompt.model]
+                prompt
+                    .picking
+                    .as_ref()
+                    .map_or_else(Vec::new, |picker| vec![&picker.filter])
             }
         }
         PromptState::PickProject { list, .. } => vec![&list.filter],
@@ -1017,16 +1023,7 @@ pub(super) mod tests {
         let mut prompts = vec![
             (
                 "JcodeModels",
-                PromptState::JcodeModels(super::super::jcode_models::ModelsPrompt {
-                    targets: Vec::new(),
-                    selected: std::collections::HashSet::new(),
-                    model: TextInput::new(),
-                    focus: super::super::jcode_models::ModelsFocus::Model,
-                    busy: false,
-                    error: None,
-                    outcomes: None,
-                    scroll: super::super::components::ScrollViewRender::default(),
-                }),
+                PromptState::JcodeModels(super::super::jcode_models::ModelsPrompt::new(Vec::new())),
             ),
             (
                 "Command",

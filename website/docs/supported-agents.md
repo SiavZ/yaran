@@ -114,22 +114,26 @@ recreated working copy have not been measured separately for Grok.
 ## Bulk model changes in jcode
 
 In the terminal UI, run `change-jcode-models` from the command palette. In the web UI,
-choose **Change jcode models…** from the app menu. Enter a model ID, tick the jcodes
-you want, or select all running jcodes, then apply. Use `jcode model list` to find
-model IDs. Conversations and drafts stay in place, and each failed change is reported.
-Stopped tabs are not changed.
-
-jcode's model indicator may need a tab reconnect to refresh after a bulk change.
+choose **Change jcode models…** from the app menu. Select individual running jcodes
+or select all, then choose a native model/provider route and its reasoning level.
+These choices come from jcode's own `/models` picker. Multiple selected jcodes offer
+only their shared routes and reasoning levels; Yaran never guesses from a model name.
+Conversations and drafts stay in place, and each failed change is reported by tab.
+Stopped or restarted clients are not substituted for the clients you selected.
 
 > [!IMPORTANT]
-> Enable `debug_socket = true` under `[display]` in jcode's configuration, then reload
-> its server. This enables jcode's local control commands for other programs running
+> Use current jcode clients/server with native model-choice control. After updating,
+> reload the server and clients. Enable `debug_socket = true` under `[display]` in
+> jcode's configuration and reload its server after changing that setting. This
+> enables jcode's local control commands for other programs running
 > as your Unix user. Yaran does not enable it for you. If a tab cannot be identified,
-> focus that jcode tab once and retry; older jcode versions may need an update.
+> focus that jcode tab once and retry. Older jcode versions fail explicitly instead
+> of accepting an ambiguous model name.
 
 Jcodes sharing a folder are identified by their client processes, including extra
 provider tabs. SSH clients are not supported by the bulk switcher. If a change times
-out, check the model inside jcode before retrying: the request may still complete.
+out, check the model, provider and reasoning inside jcode before retrying: the
+request may still complete. Busy clients refuse immediately; retry after the turn.
 
 ## Changing any of this
 

@@ -25,101 +25,250 @@ fn selection(all: &[ModelTarget], ids: &[&str]) -> BTreeMap<String, String> {
         .collect()
 }
 
-#[test]
-fn selected_tabs_use_exact_client_registrations_and_report_partial_failure() {
+fn native_choice(id: &str, method: &str, levels: &[&str]) -> serde_json::Value {
+    serde_json::json!({ "id": id, "name": "future-model-2099", "provider": "Native provider", "api_method": method,
+        "available": true, "detail": "from jcode", "selection": { "native_exact_route": method, "model": "future-model-2099" },
+        "reasoning_effort": levels.last(), "reasoning_levels": levels.iter().map(|level| serde_json::json!({ "value": level, "label": format!("Native {level}") })).collect::<Vec<_>>() })
+}
+
+fn native_clients() -> (
+    tempfile::TempDir,
+    [crate::pty::PtyClient; 3],
+    Vec<ModelTarget>,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let clients = [client(root), client(root), client(root)];
-    let pids = clients
-        .each_ref()
-        .map(|client| client.child_process_id().unwrap());
-    let all = vec![
-        target("a", root, pids[0]),
-        target("b", root, pids[1]),
-        target("c", root, pids[2]),
-    ];
+    let all: Vec<_> = clients
+        .iter()
+        .enumerate()
+        .map(|(i, client)| target(["a", "b", "c"][i], root, client.child_process_id().unwrap()))
+        .collect();
     std::fs::create_dir(root.join("client_sessions")).unwrap();
-    for (pid, id) in [
-        (pids[0], "session_fox_1_ab"),
-        (pids[1], "session_owl_2_cd"),
-        (pids[2], "session_elk_3_ef"),
-    ] {
-        std::fs::write(root.join("client_sessions").join(pid.to_string()), id).unwrap();
+    for (i, target) in all.iter().enumerate() {
+        let session = ["session_fox_1_ab", "session_owl_2_cd", "session_elk_3_ef"][i];
+        std::fs::write(
+            root.join("client_sessions")
+                .join(target.process.sid.to_string()),
+            session,
+        )
+        .unwrap();
+        std::fs::write(root.join(format!("{session}.json")), serde_json::json!({ "choices": [native_choice("route-oauth", "oauth", &["low", "high"]), native_choice("route-api", "api", &["low", "high"])], "client_pid": target.process.sid, "client_id": format!("connection-{session}"), "session_id": session }).to_string()).unwrap();
     }
-    let script = r#"#!/bin/sh
-[ "$1" = debug ] && [ "$2" = --no-update ] || exit 42
-if [ "$3" = sessions ]; then
-    printf '%s' '[{"session_id":"session_fox_1_ab"},{"session_id":"session_owl_2_cd"},{"session_id":"session_elk_3_ef"}]'
-else
-    printf '%s\n' "$4 $5 $7" >> "$JCODE_HOME/calls"
-    if [ "$4" = session_elk_3_ef ]; then echo 'model unavailable' >&2; exit 1; fi
-    [ "$6" = -- ] || exit 43
-    printf '%s' '{"model":"test-model"}'
-fi
-"#;
-    std::fs::write(root.join("jcode"), script).unwrap();
+    std::fs::write(
+        root.join("ack.json"),
+        r#"{"id":"route-oauth","model":"future-model-2099","reasoning_effort":"high"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("jcode"),
+        r#"#!/bin/sh
+[ "$1" = debug ] && [ "$2" = --no-update ] && [ "$3" = --session ] || exit 42
+case "$5" in
+    client:model-options) cat "$JCODE_HOME/$4.json" ;;
+    set_model_choice)
+        [ "$6" = -- ] || exit 43
+        printf '%s\n' "$4 $7" >> "$JCODE_HOME/calls"
+        if [ "$4" = session_elk_3_ef ]; then echo 'model unavailable' >&2; exit 1; fi
+        cat "$JCODE_HOME/ack.json" ;;
+    *) exit 44 ;;
+esac
+"#,
+    )
+    .unwrap();
     std::fs::set_permissions(root.join("jcode"), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let result = change_models(&all, &selection(&all, &["a", "c"]), "test-model").unwrap();
-    assert_eq!(result.len(), 2);
-    assert!(result[0].error.is_none());
+    (tmp, clients, all)
+}
+
+#[test]
+fn selected_tabs_send_native_provider_and_reasoning_without_guessing() {
+    let (tmp, _clients, all) = native_clients();
+    let root = tmp.path();
+    let outcomes = change_models(
+        &all,
+        &selection(&all, &["a", "c"]),
+        "route-oauth",
+        Some("high"),
+    )
+    .unwrap();
+    assert!(outcomes[0].error.is_none());
     assert!(
-        result[1]
+        outcomes[1]
             .error
             .as_ref()
             .unwrap()
             .contains("model unavailable")
     );
     let calls = std::fs::read_to_string(root.join("calls")).unwrap();
-    assert!(calls.contains("session_fox_1_ab set_model test-model"));
-    assert!(calls.contains("session_elk_3_ef set_model test-model"));
-    assert!(
-        !calls.contains("session_owl"),
-        "unselected conversations stay untouched"
+    assert!(!calls.contains("session_owl"));
+    let request: serde_json::Value =
+        serde_json::from_str(calls.lines().next().unwrap().split_once(' ').unwrap().1).unwrap();
+    assert_eq!(
+        request["selection"],
+        native_choice("route-oauth", "oauth", &["high"])["selection"]
     );
-    change_models(&all, &selection(&all, &["a", "b", "c"]), "test-model").unwrap();
-    assert!(
-        std::fs::read_to_string(root.join("calls"))
-            .unwrap()
-            .contains("session_owl_2_cd")
-    );
+    assert_eq!(request["reasoning_effort"], "high");
+    assert_eq!(request["client_id"], "connection-session_fox_1_ab");
+    change_models(
+        &all,
+        &selection(&all, &["a", "b", "c"]),
+        "route-oauth",
+        Some("high"),
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(root.join("calls")).unwrap();
+    assert!(before.contains("session_owl"));
     let mut selected = selection(&all, &["a", "b", "c"]);
     selected.insert("b".into(), "previous-run".into());
     selected.insert("stopped".into(), "previous-run".into());
-    let before = std::fs::read_to_string(root.join("calls")).unwrap();
     let mut relative = all.clone();
     for target in &mut relative {
         target.env[0].1 = ".".into();
         target.command = "./jcode".into();
     }
-    let result = change_models(&relative, &selected, "--help").unwrap();
-    assert_eq!(result.len(), 4);
-    assert!(result[0].error.is_none());
+    let outcomes = change_models(&relative, &selected, "route-oauth", Some("high")).unwrap();
+    assert_eq!(outcomes.len(), 4);
+    assert!(outcomes[0].error.is_none());
     assert!(
-        result[1]
+        outcomes[1]
             .error
             .as_ref()
             .unwrap()
             .contains("stopped or restarted")
     );
     assert!(
-        result[3]
+        outcomes[3]
             .error
             .as_ref()
             .unwrap()
             .contains("stopped or restarted")
     );
-    let calls = std::fs::read_to_string(root.join("calls")).unwrap();
-    assert!(calls[before.len()..].contains("session_fox_1_ab set_model --help"));
-    assert!(!calls[before.len()..].contains("session_owl"));
-    std::fs::write(root.join("jcode"), "#!/bin/sh\nif [ \"$3\" = sessions ]; then echo '[{\"session_id\":\"session_fox_1_ab\"}]'; else echo help; fi\n").unwrap();
-    let result = change_models(&all, &selection(&all, &["a"]), "--help").unwrap();
+    let after = std::fs::read_to_string(root.join("calls")).unwrap();
+    assert!(!after[before.len()..].contains("session_owl"));
+    let before = after;
+    for (id, effort) in [
+        ("not-an-offered-route", Some("high")),
+        ("route-oauth", Some("invented-level")),
+        ("route-oauth", None),
+    ] {
+        assert!(
+            change_models(&all, &selection(&all, &["a"]), id, effort).unwrap()[0]
+                .error
+                .is_some()
+        );
+    }
+    assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), before);
+    std::fs::write(root.join("ack.json"), "help").unwrap();
     assert!(
-        result[0]
+        change_models(&all, &selection(&all, &["a"]), "route-oauth", Some("high")).unwrap()[0]
             .error
             .as_ref()
             .unwrap()
             .contains("did not acknowledge")
     );
+    std::fs::write(
+        root.join("ack.json"),
+        r#"{"id":"route-api","model":"future-model-2099","reasoning_effort":"low"}"#,
+    )
+    .unwrap();
+    assert!(
+        change_models(&all, &selection(&all, &["a"]), "route-oauth", Some("high")).unwrap()[0]
+            .error
+            .is_some()
+    );
+}
+
+#[test]
+fn catalog_preserves_routes_and_intersects_native_reasoning_levels() {
+    let (tmp, _clients, all) = native_clients();
+    let selected = selection(&all, &["a", "b"]);
+    let mut single = native_choice("route-oauth", "oauth", &["low"]);
+    single["reasoning_effort"] = "low".into();
+    std::fs::write(
+        tmp.path().join("session_owl_2_cd.json"),
+        serde_json::json!({ "choices": [single, native_choice("route-api", "api", &[])], "client_pid": all[1].process.sid, "client_id": "connection-session_owl_2_cd", "session_id": "session_owl_2_cd" })
+            .to_string(),
+    )
+    .unwrap();
+    let choices = model_catalog(&all, &selected).unwrap();
+    assert_eq!(
+        choices.len(),
+        2,
+        "same model on different providers remains two choices"
+    );
+    assert_eq!(choices[0].reasoning_levels.len(), 1);
+    assert_eq!(choices[0].reasoning_effort.as_deref(), Some("low"));
+    assert!(
+        !choices[1].available,
+        "incompatible reasoning ladders cannot silently fall back"
+    );
+    assert!(
+        serde_json::to_value(&choices).unwrap()[0]
+            .get("selection")
+            .is_none(),
+        "native routing payload stays in core"
+    );
+    assert!(
+        !tmp.path().join("calls").exists(),
+        "reading choices never changes a model"
+    );
+    std::fs::write(
+        tmp.path().join("session_owl_2_cd.json"),
+        "old jcode cannot export model-options",
+    )
+    .unwrap();
+    assert!(
+        model_catalog(&all, &selected)
+            .unwrap_err()
+            .to_string()
+            .contains("Update jcode")
+    );
+}
+
+#[test]
+fn catalog_rejects_a_different_client_or_conversation_before_mutation() {
+    let (tmp, _clients, all) = native_clients();
+    let path = tmp.path().join("session_fox_1_ab.json");
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (field, value) in [
+        ("client_pid", serde_json::json!(all[1].process.sid)),
+        ("session_id", serde_json::json!("another-conversation")),
+        ("client_id", serde_json::json!("")),
+    ] {
+        let mut catalog = original.clone();
+        catalog[field] = value;
+        std::fs::write(&path, catalog.to_string()).unwrap();
+        assert!(model_catalog(&all, &selection(&all, &["a"])).is_err());
+        assert!(
+            change_models(&all, &selection(&all, &["a"]), "route-oauth", Some("high")).unwrap()[0]
+                .error
+                .is_some()
+        );
+        assert!(!tmp.path().join("calls").exists());
+    }
+}
+
+#[test]
+fn invalid_input_and_stale_selection_never_launch_a_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let all = vec![target("a", tmp.path(), 999_999_999)];
+    for id in ["", "model\nnext", "model\u{1b}"] {
+        assert!(change_models(&all, &selection(&all, &["a"]), id, None).is_err());
+    }
+    assert!(change_models(&all, &BTreeMap::new(), "route", None).is_err());
+    let selected = BTreeMap::from([
+        ("missing".into(), "old-run".into()),
+        ("a".into(), "old-run".into()),
+    ]);
+    let outcomes = change_models(&all, &selected, "route", None).unwrap();
+    assert!(outcomes.iter().all(|outcome| {
+        outcome
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("stopped or restarted")
+    }));
 }
 
 #[test]
@@ -138,41 +287,18 @@ fn stale_pid_markers_never_select_another_conversation() {
         .unwrap()
         .set_times(std::fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
         .unwrap();
-    assert!(registered_session(&t, tmp.path()).is_err());
+    assert!(registered_client(&t, tmp.path()).is_err());
     std::fs::write(
         tmp.path().join(t.process.sid.to_string()),
         "session_fox_1_ab",
     )
     .unwrap();
     assert_eq!(
-        registered_session(&t, tmp.path()).unwrap(),
+        registered_client(&t, tmp.path()).unwrap().0,
         "session_fox_1_ab"
     );
     std::fs::write(tmp.path().join(t.process.sid.to_string()), "--untrusted").unwrap();
-    assert!(registered_session(&t, tmp.path()).is_err());
-}
-
-#[test]
-fn invalid_input_and_stale_selection_never_launch_a_command() {
-    let tmp = tempfile::tempdir().unwrap();
-    let all = vec![target("a", tmp.path(), 999_999_999)];
-    for model in ["", " ", "model\nnext", "model\u{1b}"] {
-        assert!(change_models(&all, &selection(&all, &["a"]), model).is_err());
-    }
-    assert!(change_models(&all, &BTreeMap::new(), "model").is_err());
-    let selected = BTreeMap::from([
-        ("missing".into(), "old-run".into()),
-        ("a".into(), "old-run".into()),
-    ]);
-    let outcomes = change_models(&all, &selected, "model").unwrap();
-    assert_eq!(outcomes.len(), 2);
-    assert!(outcomes.iter().all(|outcome| {
-        outcome
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("stopped or restarted")
-    }));
+    assert!(registered_client(&t, tmp.path()).is_err());
 }
 
 #[test]

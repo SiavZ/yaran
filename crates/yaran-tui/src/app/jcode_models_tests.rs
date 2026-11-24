@@ -26,7 +26,6 @@ fn selection_supports_individual_and_all_jcodes_and_movement_changes_only_focus(
     let tmp = tempfile::tempdir().unwrap();
     seed_running_jcodes(&mut app, tmp.path());
     app.open_jcode_models();
-    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_jcode_models_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
     let PromptState::JcodeModels(prompt) = &app.prompt else {
         panic!("models form");
@@ -87,21 +86,79 @@ fn rendered_targets_and_cancel_are_clickable() {
 }
 
 #[test]
-fn model_entry_and_escape_do_not_change_agents() {
+fn arbitrary_model_text_cannot_be_applied_and_escape_does_not_change_agents() {
     let mut app = test_app(default_bindings());
     app.execute_command("change-jcode-models").unwrap();
     app.handle_jcode_models_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
     let PromptState::JcodeModels(prompt) = &app.prompt else {
         panic!("models form");
     };
-    assert_eq!(prompt.model.text, "x");
-    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(
-        matches!(app.prompt, PromptState::JcodeModels(_)),
-        "no targets means no work"
-    );
+    assert!(prompt.chosen().is_none());
+    assert!(!prompt.can_apply());
+    assert!(super::super::modal::prompt_text_inputs(&app.prompt).is_empty());
     app.handle_jcode_models_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(matches!(app.prompt, PromptState::None));
+}
+
+#[test]
+fn native_model_provider_and_reasoning_choices_stay_together() {
+    use super::super::jcode_models::{ModelsPicker, ModelsPickerKind};
+    let mut app = test_app(default_bindings());
+    let tmp = tempfile::tempdir().unwrap();
+    seed_running_jcodes(&mut app, tmp.path());
+    app.open_jcode_models();
+    let PromptState::JcodeModels(prompt) = &mut app.prompt else {
+        panic!("models form");
+    };
+    prompt.selected = prompt
+        .targets
+        .iter()
+        .map(|target| target.tab_id.clone())
+        .collect();
+    let choice = |id, method, levels: &[&str]| {
+        serde_json::from_value(serde_json::json!({
+        "id": id, "name": "same model", "provider": "Native provider", "api_method": method, "detail": "native catalog", "available": true,
+        "reasoning_effort": levels.last(), "reasoning_levels": levels.iter().map(|level| serde_json::json!({ "value": level, "label": format!("Native {level}") })).collect::<Vec<_>>(), "selection": {} })).unwrap()
+    };
+    prompt.choices = vec![
+        choice("oauth", "openai-oauth", &["low", "high"]),
+        choice("api", "openai-api-key", &["custom-low", "custom-max"]),
+    ];
+    prompt.picking = Some(ModelsPicker {
+        kind: ModelsPickerKind::Model,
+        filter: TextInput::new(),
+        selected: 0,
+    });
+    for letter in "api-key".chars() {
+        app.handle_jcode_models_key(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::NONE));
+    }
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let PromptState::JcodeModels(prompt) = &app.prompt else {
+        panic!("models form");
+    };
+    assert_eq!(prompt.chosen().unwrap().id, "api");
+    assert_eq!(prompt.reasoning.as_deref(), Some("custom-max"));
+    assert!(prompt.can_apply());
+    app.press_jcode_models_focus(ModelsFocus::Reasoning);
+    assert_eq!(
+        super::super::modal::modal_spec(&app.prompt).unwrap().family,
+        super::super::modal::ModalFamily::Picker
+    );
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let PromptState::JcodeModels(prompt) = &app.prompt else {
+        panic!("models form");
+    };
+    assert_eq!(prompt.reasoning.as_deref(), Some("custom-low"));
+    app.press_jcode_models_focus(ModelsFocus::Target(0));
+    let PromptState::JcodeModels(prompt) = &app.prompt else {
+        panic!("models form");
+    };
+    assert!(
+        prompt.chosen().is_none(),
+        "changing targets requires choosing from their common native catalog again"
+    );
+    assert!(!prompt.can_apply());
 }
 
 #[test]
@@ -192,7 +249,7 @@ fn mouse_reaches_hidden_targets_and_results_keep_each_tab_failure_readable() {
 }
 
 #[test]
-fn validation_and_worker_failures_are_visible_inside_a_short_terminal_dialog() {
+fn catalog_and_worker_failures_are_visible_inside_a_short_terminal_dialog() {
     use ratatui::{Terminal, backend::TestBackend};
     let mut app = test_app(default_bindings());
     let tmp = tempfile::tempdir().unwrap();
@@ -202,10 +259,7 @@ fn validation_and_worker_failures_are_visible_inside_a_short_terminal_dialog() {
         panic!("models form");
     };
     prompt.selected.insert(prompt.targets[0].tab_id.clone());
-    prompt.model.text = "x".repeat(257);
-    app.apply_jcode_models();
-    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(matches!(&app.prompt, PromptState::JcodeModels(prompt) if prompt.busy));
+    app.load_jcode_model_choices();
     super::super::test_support::finish_ui_jobs(&mut app);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.render(frame)).unwrap();
@@ -217,8 +271,8 @@ fn validation_and_worker_failures_are_visible_inside_a_short_terminal_dialog() {
         .map(ratatui::buffer::Cell::symbol)
         .collect();
     assert!(
-        text.contains("at most 256 bytes"),
-        "validation remains visible above the field"
+        text.contains("Could not load model choices"),
+        "catalog failure stays inside the dialog"
     );
     app.finish_jcode_models(None);
     terminal.draw(|frame| app.render(frame)).unwrap();
@@ -229,8 +283,5 @@ fn validation_and_worker_failures_are_visible_inside_a_short_terminal_dialog() {
         .iter()
         .map(ratatui::buffer::Cell::symbol)
         .collect();
-    assert!(
-        text.contains("The model worker stopped"),
-        "worker failures stay inside the dialog too"
-    );
+    assert!(text.contains("The model worker stopped"));
 }

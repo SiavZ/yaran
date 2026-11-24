@@ -90,6 +90,8 @@ pub(crate) enum ButtonState {
 pub(crate) enum ButtonPressedTarget {
     JcodeModelsApply,
     JcodeModelsCancel,
+    JcodeModelsModel,
+    JcodeModelsReasoning,
     RuntimeKillCancel,
     RuntimeKillHovered,
     RuntimeKillSelected,

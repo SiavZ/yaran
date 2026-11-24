@@ -12,6 +12,17 @@ export interface ModelChange {
   error: string | null
 }
 
+export interface ModelChoice {
+  id: string
+  name: string
+  provider: string
+  api_method: string
+  available: boolean
+  detail: string
+  reasoning_effort: string | null
+  reasoning_levels: { value: string; label: string }[]
+}
+
 async function response<T>(request: Promise<Response>): Promise<T> {
   const result = await request
   if (!result.ok) throw new Error(await result.text())
@@ -20,9 +31,14 @@ async function response<T>(request: Promise<Response>): Promise<T> {
 
 export const jcodeModelsApi = {
   targets: (signal?: AbortSignal) => response<ModelTarget[]>(apiFetch("/api/v1/jcode/models", { signal })),
-  change: (runs: Record<string, string>, model: string) => response<ModelChange[]>(apiFetch("/api/v1/jcode/models", {
+  catalog: (runs: Record<string, string>, signal?: AbortSignal) => response<ModelChoice[]>(apiFetch("/api/v1/jcode/models/catalog", {
+    method: "POST", signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ runs }),
+  })),
+  change: (runs: Record<string, string>, choice_id: string, reasoning_effort: string | null) => response<ModelChange[]>(apiFetch("/api/v1/jcode/models", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ runs, model }),
+    body: JSON.stringify({ runs, choice_id, reasoning_effort }),
   })),
 }

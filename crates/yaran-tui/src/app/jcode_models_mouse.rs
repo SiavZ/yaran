@@ -3,46 +3,9 @@
 use super::input::{contains_point, cursor_from_single_line_click};
 use super::jcode_models::ModelsFocus;
 use super::{App, OverlayMouseLayout, PromptState};
-use crate::keybindings::{Action, BindingScope};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 
 impl App {
-    pub(super) fn handle_jcode_models_results_key(&mut self, key: KeyEvent) -> bool {
-        let action = self
-            .bindings
-            .lookup(&key, BindingScope::Dialog)
-            .or_else(|| self.bindings.lookup(&key, BindingScope::Help));
-        let PromptState::JcodeModels(prompt) = &mut self.prompt else {
-            return false;
-        };
-        match action {
-            Some(Action::CloseOverlay | Action::Confirm) => self.prompt = PromptState::None,
-            Some(Action::MoveDown) => {
-                prompt.scroll.offset = prompt
-                    .scroll
-                    .offset
-                    .saturating_add(1)
-                    .min(prompt.scroll.max_offset());
-            }
-            Some(Action::MoveUp) => prompt.scroll.offset = prompt.scroll.offset.saturating_sub(1),
-            Some(Action::ScrollPageDown) => {
-                prompt.scroll.offset = prompt
-                    .scroll
-                    .offset
-                    .saturating_add(prompt.scroll.viewport)
-                    .min(prompt.scroll.max_offset());
-            }
-            Some(Action::ScrollPageUp) => {
-                prompt.scroll.offset = prompt.scroll.offset.saturating_sub(prompt.scroll.viewport);
-            }
-            Some(Action::ScrollToTop) => prompt.scroll.offset = 0,
-            Some(Action::ScrollToBottom) => prompt.scroll.offset = prompt.scroll.max_offset(),
-            _ if key.code == KeyCode::Char(' ') => self.prompt = PromptState::None,
-            _ => {}
-        }
-        false
-    }
-
     pub(super) fn handle_jcode_models_wheel(&mut self, mouse: MouseEvent) -> Option<bool> {
         let PromptState::JcodeModels(prompt) = &mut self.prompt else {
             return None;
@@ -55,12 +18,22 @@ impl App {
             MouseEventKind::ScrollUp => false,
             _ => return None,
         };
+        if prompt.loading {
+            return Some(false);
+        }
         let OverlayMouseLayout::JcodeModels { list, .. } = self.overlay_layout.active else {
             return Some(false);
         };
         if contains_point(list, mouse.column, mouse.row) {
             self.pressed_button = None;
-            if prompt.outcomes.is_some() {
+            let count = prompt.picker_rows().len();
+            if let Some(picker) = &mut prompt.picking {
+                picker.selected = if down {
+                    (picker.selected + 1).min(count.saturating_sub(1))
+                } else {
+                    picker.selected.saturating_sub(1)
+                };
+            } else if prompt.outcomes.is_some() {
                 prompt.scroll.offset = if down {
                     prompt
                         .scroll
@@ -89,13 +62,14 @@ impl App {
         let OverlayMouseLayout::JcodeModels { input, .. } = self.overlay_layout.active else {
             return;
         };
-        if let PromptState::JcodeModels(prompt) = &mut self.prompt {
-            prompt.focus = ModelsFocus::Model;
-            prompt.model.cursor = cursor_from_single_line_click(
-                &prompt.model.text,
-                prompt.model.cursor,
+        if let PromptState::JcodeModels(prompt) = &mut self.prompt
+            && let Some(picker) = &mut prompt.picking
+        {
+            picker.filter.cursor = cursor_from_single_line_click(
+                &picker.filter.text,
+                picker.filter.cursor,
                 input,
-                10,
+                8,
                 column,
             );
         }

@@ -878,10 +878,13 @@ path to message other agents under the operator's identity.
 neither installs nor launches it until selected. The explicit bulk model switcher
 uses jcode's CLI, with arguments passed without a shell and a bounded wait. It
 resolves selected live Yaran tabs through per-process client registrations written
-after each tab launched, validates the native conversation id against connected
-jcode sessions, and refuses unknown identities and SSH clients. Multiple jcodes
+after each tab launched, and matches the native catalog's client PID and conversation.
+Native control binds the choice to the same server-issued client connection and
+revalidates the exact offered provider route and reasoning level before mutation.
+It refuses reconnected, busy or ambiguous clients and SSH clients. Multiple jcodes
 in one folder remain separate targets. The authenticated web route takes tab ids
-only, never a caller-supplied executable, socket path or native conversation id.
+and native choice ids, never a caller-supplied executable, socket path or native
+conversation id.
 Debug control stays opt-in under the same-UID trust accepted in T2. The `jcode-amq` wrapper fails
 closed below a reviewed version floor and probes the version with
 `--no-update` so the probe itself cannot swap the binary. Every wrapped launch

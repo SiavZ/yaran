@@ -35,7 +35,9 @@
 //! ├── app::input
 //! ├── app::jcode_models
 //! ├── app::jcode_models_mouse
+//! ├── app::jcode_models_picker
 //! ├── app::jcode_models_render
+//! ├── app::jcode_models_results
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
@@ -168,7 +170,9 @@
 //! ├── app::jcode_models
 //! ├── app::jcode_models::tests
 //! ├── app::jcode_models_mouse
+//! ├── app::jcode_models_picker
 //! ├── app::jcode_models_render
+//! ├── app::jcode_models_results
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
@@ -4992,6 +4996,8 @@ pub(crate) enum OverlayMouseLayout {
     },
     JcodeModels {
         input: Rect,
+        model: Rect,
+        reasoning: Rect,
         all: Rect,
         list: Rect,
         items: usize,
@@ -5920,7 +5926,9 @@ mod ellipsis_rows;
 mod hint_lines;
 mod jcode_models;
 mod jcode_models_mouse;
+mod jcode_models_picker;
 mod jcode_models_render;
+mod jcode_models_results;
 #[cfg(test)]
 mod name_chip_dialogs;
 mod new_agent_settings;

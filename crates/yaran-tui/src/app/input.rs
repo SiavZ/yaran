@@ -383,6 +383,8 @@ enum MouseTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PromptMouseTarget {
     JcodeModelsInput,
+    JcodeModelsModel,
+    JcodeModelsReasoning,
     JcodeModelsAll,
     JcodeModelsItem(usize),
     JcodeModelsApply,
@@ -688,6 +690,10 @@ impl ButtonPressedTarget {
             }
             PromptMouseTarget::JcodeModelsApply => Some(ButtonPressedTarget::JcodeModelsApply),
             PromptMouseTarget::JcodeModelsCancel => Some(ButtonPressedTarget::JcodeModelsCancel),
+            PromptMouseTarget::JcodeModelsModel => Some(ButtonPressedTarget::JcodeModelsModel),
+            PromptMouseTarget::JcodeModelsReasoning => {
+                Some(ButtonPressedTarget::JcodeModelsReasoning)
+            }
             PromptMouseTarget::JcodeModelsInput
             | PromptMouseTarget::JcodeModelsAll
             | PromptMouseTarget::JcodeModelsItem(_)
@@ -2266,11 +2272,9 @@ impl App {
     )]
     fn handle_prompt_paste(&mut self, text: &str) {
         if let PromptState::JcodeModels(prompt) = &mut self.prompt {
-            if !prompt.busy
-                && prompt.outcomes.is_none()
-                && prompt.focus == super::jcode_models::ModelsFocus::Model
-            {
-                prompt.model.insert_str(text);
+            if let Some(picker) = &mut prompt.picking {
+                picker.filter.insert_str(text);
+                picker.selected = 0;
             }
             return;
         }
@@ -7860,8 +7864,8 @@ impl App {
     )]
     fn prompt_mouse_target(&self, column: u16, row: u16) -> Option<PromptMouseTarget> {
         match self.overlay_layout.active {
-            OverlayMouseLayout::JcodeModels { input, all, list, items, offset, apply, cancel } => {
-                super::modal::click_target(&[(input, PromptMouseTarget::JcodeModelsInput), (all, PromptMouseTarget::JcodeModelsAll), (apply, PromptMouseTarget::JcodeModelsApply), (cancel, PromptMouseTarget::JcodeModelsCancel)], column, row)
+            OverlayMouseLayout::JcodeModels { input, model, reasoning, all, list, items, offset, apply, cancel } => {
+                super::modal::click_target(&[(input, PromptMouseTarget::JcodeModelsInput), (model, PromptMouseTarget::JcodeModelsModel), (reasoning, PromptMouseTarget::JcodeModelsReasoning), (all, PromptMouseTarget::JcodeModelsAll), (apply, PromptMouseTarget::JcodeModelsApply), (cancel, PromptMouseTarget::JcodeModelsCancel)], column, row)
                     .or_else(|| Self::overlay_row_at(list, offset, items, column, row).map(PromptMouseTarget::JcodeModelsItem))
             }
             OverlayMouseLayout::Command {
@@ -11440,7 +11444,10 @@ impl App {
             PromptMouseTarget::JcodeModelsItem(i) => {
                 self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Target(i));
             }
-            PromptMouseTarget::JcodeModelsApply | PromptMouseTarget::JcodeModelsCancel => {
+            PromptMouseTarget::JcodeModelsApply
+            | PromptMouseTarget::JcodeModelsCancel
+            | PromptMouseTarget::JcodeModelsModel
+            | PromptMouseTarget::JcodeModelsReasoning => {
                 unreachable!("buttons use the release dispatcher")
             }
             PromptMouseTarget::CommandInput => {
@@ -11710,6 +11717,14 @@ impl App {
     )]
     fn activate_button(&mut self, button: ButtonPressedTarget) -> bool {
         match button {
+            ButtonPressedTarget::JcodeModelsModel => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Model);
+                false
+            }
+            ButtonPressedTarget::JcodeModelsReasoning => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Reasoning);
+                false
+            }
             ButtonPressedTarget::JcodeModelsApply => {
                 self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Apply);
                 false

@@ -6,12 +6,16 @@ use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::bounded_command::{
     ChildGroup, CommandOutcome, DEFAULT_READER_DRAIN, run_command_with_timeout,
 };
 use crate::engine::Engine;
+
+#[path = "jcode_model_catalog.rs"]
+mod catalog;
+pub use catalog::{ModelChoice, ReasoningLevel, model_catalog};
 
 /// A running jcode tab offered by either surface.
 #[derive(Clone, Debug, Serialize)]
@@ -43,11 +47,6 @@ pub struct ModelChange {
     pub label: String,
     /// Absent when jcode acknowledged the change.
     pub error: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct NativeSession {
-    session_id: String,
 }
 
 impl Engine {
@@ -104,11 +103,11 @@ fn jcode_home(target: &ModelTarget) -> Result<PathBuf> {
     Ok(target.directory.join(path))
 }
 
-fn registered_session(target: &ModelTarget, registry: &Path) -> Result<String> {
+fn registered_client(target: &ModelTarget, registry: &Path) -> Result<(String, u32)> {
     let processes = crate::process_sessions::snapshot(&[target.process]);
     let boot_now = crate::process_sessions::boot_nanos_now();
     let wall_now = SystemTime::now();
-    let read = |process: &crate::process_sessions::ProcessIdentity| -> Option<String> {
+    let read = |process: &crate::process_sessions::ProcessIdentity| -> Option<(String, u32)> {
         let path = registry.join(process.pid.to_string());
         // Kernel start time also survives Yaran adopting this PTY during reload.
         if process.start_time == 0 {
@@ -121,7 +120,7 @@ fn registered_session(target: &ModelTarget, registry: &Path) -> Result<String> {
             return None;
         }
         let id = std::fs::read_to_string(path).ok()?.trim().to_string();
-        crate::resume_recovery::jcode_session_id_is_valid(&id).then_some(id)
+        crate::resume_recovery::jcode_session_id_is_valid(&id).then_some((id, process.pid))
     };
     if let Some(process) = processes
         .iter()
@@ -194,7 +193,7 @@ fn debug(
             );
         }
         CommandOutcome::TimedOut => bail!(
-            "jcode did not acknowledge the model change within 10 seconds. Check the model in jcode before retrying."
+            "jcode did not acknowledge the model change within 10 seconds. Check the model, provider and reasoning level in jcode before retrying."
         ),
         CommandOutcome::Failed(error) | CommandOutcome::NotFound(error) => {
             bail!("{}", crate::sanitize::for_terminal(&error))
@@ -206,16 +205,22 @@ fn debug(
 ///
 /// # Errors
 ///
-/// Refuses an invalid model id or an empty selection before doing work.
+/// Refuses an invalid native choice or an empty selection before doing work.
 /// Individual control failures are returned beside each tab in the outcomes.
 pub fn change_models(
     all: &[ModelTarget],
     selected: &BTreeMap<String, String>,
-    model: &str,
+    choice_id: &str,
+    reasoning_effort: Option<&str>,
 ) -> Result<Vec<ModelChange>> {
-    let model = model.trim();
-    if model.is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
-        bail!("Enter a model id of at most 256 bytes, without control characters.");
+    if choice_id.is_empty()
+        || choice_id.len() > 8192
+        || choice_id.chars().any(char::is_control)
+        || reasoning_effort.is_some_and(|level| {
+            level.is_empty() || level.len() > 64 || level.chars().any(char::is_control)
+        })
+    {
+        bail!("Choose a native model/provider route and its offered reasoning level.");
     }
     if selected.is_empty() {
         bail!("Select running jcode tabs.");
@@ -224,26 +229,37 @@ pub fn change_models(
     for (id, run_id) in selected {
         let target = all.iter().find(|t| &t.tab_id == id);
         let result = (|| {
-            let target = target.filter(|target| &target.run_id == run_id).context(
-                "This tab stopped or restarted. Reopen the model switcher to select its current client.",
-            )?;
-            let registry = jcode_home(target)?.join("client_sessions");
-            let session = registered_session(target, &registry)?;
-            let native: Vec<NativeSession> =
-                serde_json::from_str(&debug(target, None, "sessions", None)?)
-                    .context("Could not read jcode's connected conversations.")?;
-            if !native.iter().any(|native| native.session_id == session) {
+            let target = selected_target(all, id, run_id)?;
+            let (session, client, choices) = catalog::choices_for_target(target)?;
+            let choice = choices.iter().find(|choice| choice.id == choice_id && choice.available)
+                .context("This exact model/provider route is unavailable in this jcode. Reload the choices.")?;
+            if reasoning_effort.map_or(!choice.reasoning_levels.is_empty(), |effort| {
+                !choice
+                    .reasoning_levels
+                    .iter()
+                    .any(|level| level.value == effort)
+            }) {
                 bail!(
-                    "This tab's jcode conversation is no longer connected. Focus it and try again."
+                    "This reasoning level is not offered for this model/provider route. Reload the choices."
                 );
             }
-            let acknowledgement: serde_json::Value =
-                serde_json::from_str(&debug(target, Some(&session), "set_model", Some(model))?)
-                    .context("jcode did not acknowledge a model change.")?;
-            if acknowledgement
-                .get("model")
-                .and_then(|value| value.as_str())
-                .is_none_or(str::is_empty)
+            let request = serde_json::json!({ "selection": choice.selection, "reasoning_effort": reasoning_effort, "client_id": client }).to_string();
+            let acknowledgement: serde_json::Value = serde_json::from_str(&debug(
+                target,
+                Some(&session),
+                "set_model_choice",
+                Some(&request),
+            )?)
+            .context("jcode did not acknowledge a model change.")?;
+            if acknowledgement.get("id").and_then(|value| value.as_str()) != Some(choice_id)
+                || acknowledgement
+                    .get("reasoning_effort")
+                    .and_then(|value| value.as_str())
+                    != reasoning_effort
+                || acknowledgement
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .is_none_or(str::is_empty)
             {
                 bail!("jcode did not acknowledge a model change.");
             }
@@ -256,6 +272,12 @@ pub fn change_models(
         });
     }
     Ok(outcomes)
+}
+
+fn selected_target<'a>(all: &'a [ModelTarget], id: &str, run_id: &str) -> Result<&'a ModelTarget> {
+    all.iter().find(|target| target.tab_id == id && target.run_id == run_id).context(
+        "This tab stopped or restarted. Reopen the model switcher to select its current client.",
+    )
 }
 
 #[cfg(test)]
