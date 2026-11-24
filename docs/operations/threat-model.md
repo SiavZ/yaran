@@ -874,8 +874,15 @@ outlives individual panes, and loads the operator's user-scope MCP servers —
 including fleet-messaging servers such as claude-peers — giving the agent a
 path to message other agents under the operator's identity.
 
-**Mitigation in code.** jcode is only a default configuration entry: Yaran
-neither installs nor launches it until selected. The `jcode-amq` wrapper fails
+**Mitigation in code.** The jcode provider is a default configuration entry: Yaran
+neither installs nor launches it until selected. The explicit bulk model switcher
+uses jcode's CLI, with arguments passed without a shell and a bounded wait. It
+resolves selected live Yaran tabs through per-process client registrations written
+after each tab launched, validates the native conversation id against connected
+jcode sessions, and refuses unknown identities and SSH clients. Multiple jcodes
+in one folder remain separate targets. The authenticated web route takes tab ids
+only, never a caller-supplied executable, socket path or native conversation id.
+Debug control stays opt-in under the same-UID trust accepted in T2. The `jcode-amq` wrapper fails
 closed below a reviewed version floor and probes the version with
 `--no-update` so the probe itself cannot swap the binary. Every wrapped launch
 has `--no-update` force-injected (and `resume_by_id_args` repeats it, since

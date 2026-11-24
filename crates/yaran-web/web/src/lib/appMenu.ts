@@ -74,6 +74,7 @@ import {
   openCustomizeWebapp,
   openGlobalEnv,
   openTaskManager,
+  openJcodeModels,
   openBoard,
   openMacrosDialog,
   openCloudDialog,
@@ -218,6 +219,13 @@ export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
       run: () => openProjects(),
     },
     { kind: "separator", id: "sep-create" },
+    {
+      kind: "item",
+      id: "jcode-models",
+      title: "Change jcode models…",
+      icon: SlidersHorizontal,
+      run: () => openJcodeModels(),
+    },
     {
       kind: "item",
       id: "preferences",

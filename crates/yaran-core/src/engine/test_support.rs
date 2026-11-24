@@ -84,6 +84,7 @@
 //! ├── engine::worktree_removal_race_tests
 //! ├── flat_list
 //! ├── git::clone
+//! ├── jcode_models::tests
 //! ├── leftover_folders
 //! ├── operations
 //! ├── project_order

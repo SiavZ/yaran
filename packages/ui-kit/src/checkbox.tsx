@@ -18,6 +18,7 @@
  * ├── web:src/components/ChangedFiles.tsx
  * ├── web:src/components/CheckboxRow.tsx
  * ├── web:src/components/ConfirmRecreateWorkingCopyDialog.tsx
+ * ├── web:src/components/JcodeModelsDialog.tsx
  * ├── web:src/components/RenameSessionDialog.tsx
  * └── web:src/components/WorktreesDialog.tsx
  * <module-headers:end>

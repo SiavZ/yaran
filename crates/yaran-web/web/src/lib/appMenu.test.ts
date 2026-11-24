@@ -19,6 +19,7 @@ const openConfigEditor = vi.fn()
 const openMacrosDialog = vi.fn()
 const openGlobalEnv = vi.fn()
 const openTaskManager = vi.fn()
+const openJcodeModels = vi.fn()
 const openCloudDialog = vi.fn()
 const sortAgents = vi.fn()
 const openWelcomeScreen = vi.fn()
@@ -40,6 +41,7 @@ vi.mock("@/lib/store", () => ({
   openMacrosDialog: () => openMacrosDialog(),
   openGlobalEnv: () => openGlobalEnv(),
   openTaskManager: () => openTaskManager(),
+  openJcodeModels: () => openJcodeModels(),
   openCloudDialog: () => openCloudDialog(),
   sortAgents: (by: string) => sortAgents(by),
   openWelcomeScreen: () => openWelcomeScreen(),
@@ -100,6 +102,7 @@ describe("appMenuModel", () => {
       // to add one: the home for managing a project that has no agents.
       ["item", "projects"],
       ["separator", "sep-create"],
+      ["item", "jcode-models"],
       ["item", "preferences"],
       ["separator", "sep-preferences"],
       ["submenu", "sort-agents"],
@@ -337,6 +340,8 @@ describe("appMenuModel", () => {
     expect(openGlobalEnv).toHaveBeenCalledOnce()
     run("task-manager")
     expect(openTaskManager).toHaveBeenCalledOnce()
+    run("jcode-models")
+    expect(openJcodeModels).toHaveBeenCalledOnce()
     run("yaran-cloud")
     expect(openCloudDialog).toHaveBeenCalledOnce()
     run("projects")
@@ -425,7 +430,7 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows Connect a phone… on a paired machine in a browser", () => {
-    expect(top({ phonePairing: true }).slice(10, 14)).toEqual([
+    expect(top({ phonePairing: true }).slice(11, 15)).toEqual([
       "task-manager",
       "yaran-cloud",
       "sep-device",
@@ -435,7 +440,7 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows the native entries inside the app, in order", () => {
-    expect(top({ nativeShell: true }).slice(10, 16)).toEqual([
+    expect(top({ nativeShell: true }).slice(11, 17)).toEqual([
       "task-manager",
       "yaran-cloud",
       "sep-device",

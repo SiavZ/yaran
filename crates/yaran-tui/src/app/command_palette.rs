@@ -70,6 +70,7 @@ impl PaletteCategory {
             | Action::NewStandaloneAgent
             | Action::ForkAgent
             | Action::ChangeAgentProvider
+            | Action::ChangeJcodeModels
             | Action::NewTab
             | Action::CloseTab
             | Action::StopTab

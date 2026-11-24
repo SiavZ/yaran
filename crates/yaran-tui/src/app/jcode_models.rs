@@ -1,0 +1,186 @@
+//! One model id, applied to selected running jcodes through their own CLI.
+
+use std::collections::HashSet;
+
+use ratatui::crossterm::event::KeyEvent;
+use yaran_core::engine::{Final, status_op};
+use yaran_core::jcode_models::{ModelChange, ModelTarget, change_models};
+
+use super::components::FocusStep;
+use super::input::cursor_from_single_line_click;
+use super::modal::{ModalKeyStep, TextFieldFocus, binding_lookup_is_suppressed, modal_key_step};
+use super::text_input::TextInput;
+use super::{App, OverlayMouseLayout, PromptState};
+use crate::keybindings::{Action, BindingScope};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ModelsFocus {
+    Model,
+    All,
+    Target(usize),
+    Apply,
+    Cancel,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModelsPrompt {
+    pub(super) targets: Vec<ModelTarget>,
+    pub(super) selected: HashSet<String>,
+    pub(super) model: TextInput,
+    pub(super) focus: ModelsFocus,
+}
+
+impl ModelsPrompt {
+    fn move_focus(&mut self, step: FocusStep) {
+        let count = self.targets.len() + 4;
+        let index = match self.focus {
+            ModelsFocus::Model => 0,
+            ModelsFocus::All => 1,
+            ModelsFocus::Target(i) => i + 2,
+            ModelsFocus::Apply => count - 2,
+            ModelsFocus::Cancel => count - 1,
+        };
+        let next = match step {
+            FocusStep::Forward => (index + 1) % count,
+            FocusStep::Backward => (index + count - 1) % count,
+        };
+        self.focus = match next {
+            0 => ModelsFocus::Model,
+            1 => ModelsFocus::All,
+            i if i == count - 2 => ModelsFocus::Apply,
+            i if i == count - 1 => ModelsFocus::Cancel,
+            i => ModelsFocus::Target(i - 2),
+        };
+    }
+
+    fn toggle(&mut self) {
+        match self.focus {
+            ModelsFocus::All if self.selected.len() == self.targets.len() => self.selected.clear(),
+            ModelsFocus::All => {
+                self.selected = self.targets.iter().map(|t| t.tab_id.clone()).collect();
+            }
+            ModelsFocus::Target(i) => {
+                let id = self.targets[i].tab_id.clone();
+                if !self.selected.remove(&id) {
+                    self.selected.insert(id);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl App {
+    pub(super) fn open_jcode_models(&mut self) {
+        self.prompt = PromptState::JcodeModels(ModelsPrompt {
+            targets: self.engine.jcode_model_targets(),
+            selected: HashSet::new(),
+            model: TextInput::new(),
+            focus: ModelsFocus::Model,
+        });
+    }
+
+    fn apply_jcode_models(&mut self) {
+        let PromptState::JcodeModels(prompt) = &self.prompt else {
+            return;
+        };
+        if prompt.selected.is_empty() || prompt.model.text.trim().is_empty() {
+            self.set_error(
+                "Choose running jcodes and enter a model ID before applying the change.",
+            );
+            return;
+        }
+        let targets = self.engine.jcode_model_targets();
+        let selected = prompt.selected.iter().cloned().collect::<Vec<_>>();
+        let model = prompt.model.text.clone();
+        let op = status_op("Changing the selected jcode models...")
+            .on_success(|outcomes: &Vec<ModelChange>| {
+                let changed = outcomes.iter().filter(|outcome| outcome.error.is_none()).count();
+                let errors = outcomes.iter().filter_map(|outcome| outcome.error.as_ref().map(|e| format!("{}: {e}", outcome.label))).collect::<Vec<_>>();
+                if errors.is_empty() {
+                    Final::info(format!("Changed the model of {changed} jcode tabs. Conversations and drafts are preserved."))
+                } else {
+                    Final::error(format!("Changed {changed} jcode models; {} failed. {}", errors.len(), errors.join("; ")))
+                }
+            })
+            .on_failure(|error: &anyhow::Error| Final::error(error.to_string()));
+        let reaction = self
+            .engine
+            .spawn_status_op(op, move || change_models(&targets, &selected, &model));
+        self.prompt = PromptState::None;
+        self.apply_reaction(reaction);
+    }
+
+    fn activate_jcode_models_focus(&mut self) {
+        let PromptState::JcodeModels(prompt) = &mut self.prompt else {
+            return;
+        };
+        match prompt.focus {
+            ModelsFocus::Model | ModelsFocus::Apply => self.apply_jcode_models(),
+            ModelsFocus::Cancel => self.prompt = PromptState::None,
+            _ => prompt.toggle(),
+        }
+    }
+
+    pub(super) fn handle_jcode_models_key(&mut self, key: KeyEvent) -> bool {
+        self.pressed_button = None;
+        let PromptState::JcodeModels(prompt) = &mut self.prompt else {
+            return false;
+        };
+        let field = if prompt.focus == ModelsFocus::Model {
+            TextFieldFocus::Field
+        } else {
+            TextFieldFocus::Elsewhere
+        };
+        let action = if binding_lookup_is_suppressed(key, field, self.extended_keys) {
+            None
+        } else {
+            self.bindings
+                .lookup(&key, BindingScope::Dialog)
+                .or_else(|| self.bindings.lookup(&key, BindingScope::Palette))
+        };
+        match modal_key_step(action, key, field) {
+            ModalKeyStep::Close => self.prompt = PromptState::None,
+            ModalKeyStep::MoveFocus(step) => prompt.move_focus(step),
+            ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus => {
+                self.activate_jcode_models_focus();
+            }
+            ModalKeyStep::FallThroughToField => match action {
+                Some(Action::MoveDown) => prompt.move_focus(FocusStep::Forward),
+                Some(Action::MoveUp) => prompt.move_focus(FocusStep::Backward),
+                _ if field == TextFieldFocus::Field => {
+                    prompt.model.handle_key(key);
+                }
+                _ => {}
+            },
+        }
+        false
+    }
+
+    pub(super) fn click_jcode_models_input(&mut self, column: u16) {
+        let OverlayMouseLayout::JcodeModels { input, .. } = self.overlay_layout.active else {
+            return;
+        };
+        if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+            prompt.focus = ModelsFocus::Model;
+            prompt.model.cursor = cursor_from_single_line_click(
+                &prompt.model.text,
+                prompt.model.cursor,
+                input,
+                10,
+                column,
+            );
+        }
+    }
+
+    pub(super) fn press_jcode_models_focus(&mut self, focus: ModelsFocus) {
+        if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+            prompt.focus = focus;
+        }
+        self.activate_jcode_models_focus();
+    }
+}
+
+#[cfg(test)]
+#[path = "jcode_models_tests.rs"]
+mod tests;

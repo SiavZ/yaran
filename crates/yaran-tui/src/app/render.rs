@@ -80,6 +80,7 @@
 //! ├── app::grouped_sidebar_tests
 //! ├── app::human_board_dialog
 //! ├── app::input
+//! ├── app::jcode_models_render
 //! ├── app::orphan_worktrees
 //! ├── app::overlay_dismiss
 //! ├── app::presize
@@ -14965,6 +14966,7 @@ impl App {
             | PromptState::ConfigureGlobalEnv { .. }
             | PromptState::CommentDiffLine { .. } => self.render_configure_prompt(frame),
             PromptState::SessionSettings(_) => self.render_session_settings(frame),
+            PromptState::JcodeModels(_) => self.render_jcode_models(frame),
             PromptState::RenameSession { .. } => self.render_rename_session_prompt(frame),
             PromptState::EditMacros { .. } => self.render_edit_macros(frame),
             PromptState::ResourceMonitor { .. } => {
@@ -17024,7 +17026,7 @@ pub(super) fn single_line_scroll(
 const RENAME_BRANCH_NEEDS_A_NAME: &str =
     "Type a name to rename the branch to. An empty name only resets the agent's name.";
 
-fn render_single_line_field(
+pub(super) fn render_single_line_field(
     prefix: &str,
     text: &str,
     cursor: usize,

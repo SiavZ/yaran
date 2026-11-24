@@ -177,6 +177,7 @@
 //! ├── engine::watch_tick
 //! ├── engine::worktree_link
 //! ├── engine::worktree_removal_race_tests
+//! ├── jcode_models
 //! ├── leftover_folders
 //! ├── operations
 //! ├── poller_status
@@ -198,6 +199,7 @@
 //! ├── yaran-tui::app::dock
 //! ├── yaran-tui::app::first_load
 //! ├── yaran-tui::app::input
+//! ├── yaran-tui::app::jcode_models
 //! ├── yaran-tui::app::name_chip_dialogs
 //! ├── yaran-tui::app::new_agent_settings
 //! ├── yaran-tui::app::picker_lists

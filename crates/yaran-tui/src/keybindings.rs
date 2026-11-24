@@ -30,6 +30,8 @@
 //! ├── app::first_load
 //! ├── app::hint_lines
 //! ├── app::input
+//! ├── app::jcode_models
+//! ├── app::jcode_models_render
 //! ├── app::modal
 //! ├── app::pr_clone
 //! ├── app::project_actions
@@ -342,6 +344,13 @@ pub(crate) const BINDING_DEFS: &[BindingDef] = &[
     },
     BindingDef {
         action: Action::ChangeAgentProvider,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::ChangeJcodeModels,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -4488,11 +4497,12 @@ mod tests {
     }
 
     /// The TUI palette's command set, sorted, kept by hand.
-    const EXPECTED_PALETTE_COMMANDS: [&str; 101] = [
+    const EXPECTED_PALETTE_COMMANDS: [&str; 102] = [
         "add-project",
         "agent-info",
         "change-agent-provider",
         "change-default-provider",
+        "change-jcode-models",
         "change-project-base-branch",
         "change-project-default-provider",
         "change-theme",

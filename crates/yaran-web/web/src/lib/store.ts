@@ -171,6 +171,7 @@
  * ├── src/components/InputMenuItems.tsx
  * ├── src/components/InsetHeader.test.tsx
  * ├── src/components/InsetHeader.tsx
+ * ├── src/components/JcodeModelsDialog.tsx
  * ├── src/components/LauncherCorner.tsx
  * ├── src/components/LoginPage.tsx
  * ├── src/components/MacroPopover.test.tsx
@@ -1047,6 +1048,7 @@ export interface YaranState {
   // The rows are derived live from the spine joined to the polled stats, so the
   // dialog needs no state beyond this open flag.
   taskManagerOpen: boolean
+  jcodeModelsOpen: boolean
   // The human board (the app menu's "Tasks for Human…"). It reads the board
   // itself while open, so the store holds only this gate.
   boardOpen: boolean
@@ -1541,6 +1543,7 @@ let state: YaranState = {
   createAgentNamePending: false,
   createAgentPrInput: "",
   taskManagerOpen: false,
+  jcodeModelsOpen: false,
   boardOpen: false,
   cloudDialogOpen: false,
   connectPhoneOpen: false,
@@ -9935,6 +9938,14 @@ export function setAccessoryBarVisibility(next: boolean): Promise<boolean> {
 // while open.
 export function openTaskManager(): void {
   setState({ taskManagerOpen: true })
+}
+
+export function openJcodeModels(): void {
+  setState({ jcodeModelsOpen: true })
+}
+
+export function closeJcodeModels(): void {
+  setState({ jcodeModelsOpen: false })
 }
 
 export function closeTaskManager(): void {

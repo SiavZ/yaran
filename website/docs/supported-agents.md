@@ -111,6 +111,24 @@ recreated working copy have not been measured separately for Grok.
   you run a different CLI named `grok`, set `resume_args = []` (or its own resume flags),
   because yaran fills in `--continue` otherwise.
 
+## Bulk model changes in jcode
+
+In the terminal UI, run `change-jcode-models` from the command palette. In the web UI,
+choose **Change jcode models…** from the app menu. Enter a model ID, tick the jcodes
+you want, or select all running jcodes, then apply. Use `jcode model list` to find
+model IDs. Conversations and drafts stay in place, and each failed change is reported.
+Stopped tabs are not changed.
+
+> [!IMPORTANT]
+> Enable `debug_socket = true` under `[display]` in jcode's configuration, then reload
+> its server. This enables jcode's local control commands for other programs running
+> as your Unix user. Yaran does not enable it for you. If a tab cannot be identified,
+> focus that jcode tab once and retry; older jcode versions may need an update.
+
+Jcodes sharing a folder are identified by their client processes, including extra
+provider tabs. SSH clients are not supported by the bulk switcher. If a change times
+out, check the model inside jcode before retrying: the request may still complete.
+
 ## Changing any of this
 
 Every value above is a setting in the provider's `[providers.<name>]` block: the command
