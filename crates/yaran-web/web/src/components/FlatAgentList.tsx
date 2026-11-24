@@ -83,6 +83,7 @@ import {
 import {
   FLAT_SORT_LABELS,
   flatRowKey,
+  inInactiveTail,
   isListTerminal,
   isQuietSession,
   listDragBaseline,
@@ -90,6 +91,7 @@ import {
   overlaidListInputs,
   planListDrop,
   quietTailForcedOpen,
+  sessionsWithOwnTerminal,
   stateWord,
   type FlatRow,
   type FlatSortKey,
@@ -959,6 +961,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     ],
   )
   const agentSearch = query
+  const withTerminal = sessionsWithOwnTerminal(terminals)
   // A newly selected row is scrolled into view, a just-created one as soon as
   // its row arrives, so a launch never happens out of sight below the fold.
   const revealRef = useRevealSelectedRow(selectedRowKey(selectedTarget))
@@ -1170,7 +1173,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
                         )}
                         selectedTarget={selectedTarget}
                         handlers={handlers}
-                        sortable
+                        sortable={!grouped || !inInactiveTail(row.session, withTerminal.has(row.session.id))}
                         query={query}
                         pickId={searchPick.rowId(key)}
                         picked={searchPick.activeKey === key}
