@@ -299,17 +299,19 @@ fn fixture(app: &mut App, name: &str) -> PickerFixture {
     match name {
         "Command" => {
             let commands: Vec<String> = app
-                .filtered_palette_commands("")
+                .palette_entries("agent")
                 .iter()
-                .filter_map(|binding| binding.palette_name.map(str::to_string))
+                .map(|entry| entry.name().to_string())
                 .collect();
             PickerFixture {
                 tall: PromptState::Command {
-                    input: TextInput::new(),
+                    category: None,
+                    input: TextInput::with_text("agent".to_string()),
                     selected: 0,
                 },
                 last_label: last(&commands),
                 empty: PromptState::Command {
+                    category: None,
                     input: TextInput::with_text("zzzz-no-such-command".to_string()),
                     selected: 0,
                 },

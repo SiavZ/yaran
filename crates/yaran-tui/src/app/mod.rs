@@ -16,6 +16,7 @@
 //! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
+//! ├── app::command_palette
 //! ├── app::components
 //! ├── app::components::focus_ring
 //! ├── app::confirm_dialog
@@ -144,6 +145,8 @@
 //! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
+//! ├── app::command_palette
+//! ├── app::command_palette::tests
 //! ├── app::confirm_dialog
 //! ├── app::debug_input
 //! ├── app::diff_comment_view
@@ -3694,6 +3697,7 @@ pub(crate) enum PromptState {
     Command {
         input: TextInput,
         selected: usize,
+        category: Option<command_palette::PaletteCategory>,
     },
     BrowseProjects {
         /// What this browse is FOR. The folder listing is the same either way
@@ -5867,6 +5871,7 @@ pub(crate) use cloud_mode::SetCloudModePrompt;
 // CJK glyph exactly as the pane's own wrapper does, and two functions that
 // disagree about that produce rows too wide for the box they were measured for.
 mod changes_tree;
+mod command_palette;
 pub(crate) mod components;
 mod confirm_dialog;
 mod debug_input;
@@ -7840,23 +7845,6 @@ impl App {
         if self.engine.config.projects != config_project_configs {
             self.engine.config.projects = config_project_configs;
         }
-    }
-
-    /// The palette's matches, phrase hits first and the looser ones after
-    /// them, with everything the current state cannot run removed.
-    ///
-    /// One flat list, which is the coordinate space `selected` lives in and
-    /// the order the palette draws: there is no boundary row between the two
-    /// tiers, so nothing else needs to know where one ends.
-    pub(crate) fn filtered_palette_commands(
-        &self,
-        input: &str,
-    ) -> Vec<&crate::keybindings::RuntimeBinding> {
-        self.bindings
-            .filtered_palette(input)
-            .into_iter()
-            .filter(|binding| self.is_palette_action_available(binding.action))
-            .collect()
     }
 
     #[expect(
@@ -11319,6 +11307,7 @@ mod tests {
 
         app.fullscreen_overlay = FullscreenOverlay::None;
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::default(),
             selected: 0,
         };

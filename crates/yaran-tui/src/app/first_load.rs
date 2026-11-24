@@ -1957,7 +1957,11 @@ mod tests {
         input.insert_char('n');
         input.insert_char('e');
         input.insert_char('w');
-        PromptState::Command { input, selected: 0 }
+        PromptState::Command {
+            input,
+            selected: 0,
+            category: None,
+        }
     }
 
     fn palette_text(prompt: &PromptState) -> Option<String> {

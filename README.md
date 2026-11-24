@@ -34,6 +34,8 @@ They are not identical, on purpose. Each surface does what its medium is good at
 
 You won't find a per-feature comparison table here, because a table like that is stale the week after it's written. The app is the reference: in the terminal, the help overlay and the command palette; in the browser, the cog menu and the row `⋯` menus.
 
+The terminal palette opens on categories: Agents, Projects, Terminals, Git & files, View & appearance, Input & macros, Connections, and Tools & configuration. Each category contains its actions and preferences together. Typing still searches every command directly.
+
 Beside the two front ends there is a command line, for scripts and for the times a shell is quicker than a pane: `yaran agents ls`, `yaran agents rm`, `yaran macros add` and the rest list and change the same workspace through whichever yaran is running. [Command Line](#command-line) has the tour.
 
 One thing worth knowing before you point a browser at anything: **the web UI's password is optional, and off until you set one.** [Server Mode](#server-mode) explains who can get in and which shapes are safe; read it before you bind anything but loopback.
