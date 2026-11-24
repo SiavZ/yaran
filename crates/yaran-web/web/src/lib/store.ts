@@ -3041,6 +3041,7 @@ function navigateAfterVanish(
     goneSessionId,
     agentSortValue(state),
     spine.terminals,
+    state.bootstrap?.sidebar_style === "grouped" ? spine.projects.map((project) => project.id) : undefined,
   )
   fallBackTo(() => selectSessionRoute(next, "replace"))
 }

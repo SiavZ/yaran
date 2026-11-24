@@ -424,6 +424,7 @@ pub(crate) struct SocketClient {
     /// Whether a terminal socket's pane is on screen as it opens (`?viewed=`).
     /// Absent is on screen, so an older page behaves as it always has.
     viewed: crate::engine_actor::PaneVisibility,
+    independent_view: bool,
     address: Option<IpAddr>,
     verified: bool,
 }
@@ -435,6 +436,7 @@ struct SocketLinkQuery {
     browser: Option<String>,
     page: Option<String>,
     viewed: Option<String>,
+    independent_view: Option<String>,
 }
 
 impl axum::extract::FromRequestParts<AppState> for SocketClient {
@@ -455,7 +457,7 @@ impl SocketClient {
             .ok()
             .map(|axum::extract::Query(query)| query);
         let bounded = |id: Option<String>| id.filter(|id| crate::rest_common::id_within_bound(id));
-        let (link, after, browser, page, viewed) = match query {
+        let (link, after, browser, page, viewed, independent_view) = match query {
             Some(query) => (
                 bounded(query.events),
                 bounded(query.after),
@@ -472,6 +474,7 @@ impl SocketClient {
                 } else {
                     crate::engine_actor::PaneVisibility::OnScreen
                 },
+                query.independent_view.as_deref() == Some("1"),
             ),
             None => (
                 None,
@@ -479,6 +482,7 @@ impl SocketClient {
                 None,
                 None,
                 crate::engine_actor::PaneVisibility::OnScreen,
+                false,
             ),
         };
         let verified = parts
@@ -495,6 +499,7 @@ impl SocketClient {
             browser,
             page,
             viewed,
+            independent_view,
             address: verified.or(peer),
             verified: verified.is_some(),
         }
@@ -2384,7 +2389,7 @@ async fn handle_pty_socket(
 
     let seat = seat_pty_socket(&pty_size_owners, &target, &attach);
     let conn_id = seat.id();
-    let viewed = attach.client.viewed;
+    let (viewed, independent_view) = (attach.client.viewed, attach.client.independent_view);
     // The release, on EVERY exit path. A socket that gave up on its opening
     // sends has to let go of the pty too (it may have claimed it at the
     // handshake), and so does one a panic unwinds through: leaving it held wedges
@@ -2458,6 +2463,7 @@ async fn handle_pty_socket(
             engine: &engine,
             target: &target,
             conn_id,
+            independent_view,
             seat: &seat,
             sink: &sink,
             owners: &pty_size_owners,
@@ -2732,6 +2738,7 @@ struct AttachedPtySocket<'a> {
     engine: &'a EngineHandle,
     target: &'a PtyTarget,
     conn_id: u64,
+    independent_view: bool,
     /// Held around each frame's registry bookkeeping and write, so a frame the
     /// quiet watchdog outran leaves no ghost participant or holder behind.
     seat: &'a yaran_core::pty_owners::Seat,
@@ -2945,16 +2952,17 @@ impl AttachedPtySocket<'_> {
         // Every seated participant may type. A non-holder's keystroke moves the
         // size to it and enqueues its desired grids under the owners lock, so
         // the child is resized for the typist before the bytes below land.
-        let verdict = self.owners.note_write(
-            pty_id,
-            self.conn_id,
-            yaran_core::pty::classify_pty_write(bytes),
-            self.user_agent,
-            |grid| {
-                self.engine
-                    .resize_pty(grid.pty_id.clone(), grid.rows, grid.cols, grid.seq);
-            },
-        );
+        let kind = yaran_core::pty::classify_pty_write(bytes);
+        let verdict = if self.independent_view {
+            self.owners
+                .note_write_preserving_size(pty_id, self.conn_id, kind)
+        } else {
+            self.owners
+                .note_write(pty_id, self.conn_id, kind, self.user_agent, |grid| {
+                    self.engine
+                        .resize_pty(grid.pty_id.clone(), grid.rows, grid.cols, grid.seq);
+                })
+        };
         if let Some(epoch) = verdict.epoch {
             yaran_core::logger::info(&crate::pty_log::describe_size_handover(
                 pty_id,
@@ -2991,6 +2999,9 @@ impl AttachedPtySocket<'_> {
     }
 
     fn handle_resize_frame(&self, frame: &PtyResizeFrame) {
+        if self.independent_view {
+            return;
+        }
         let Some(_seated) = self.seat.hold() else {
             return;
         };

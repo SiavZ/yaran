@@ -15,9 +15,9 @@ On a desktop-width screen it is three panes.
 
 ![The yaran web workspace on a desktop screen: the sidebar of agents and terminals on the left, the running agent's terminal in the middle, and the list of changed files on the right.](/screens/web-workspace-layout.png#full)
 
-**The collapsible left sidebar** lists your agents and your project and standalone terminals in one list, titled **Agents & Terminals**, with the dormant agents tucked into a collapsible Inactive tail. Toggle it with `Ctrl-b` (`Cmd-b` on a Mac). It carries:
+**The collapsible left sidebar** lists your agents and your project and standalone terminals in one list, titled **Agents & Terminals**. The browser and phone keep a flat list but follow the TUI's order. With the TUI's default grouped list, projects follow the order you set there; each project's agents follow the shared sort, with its dormant agents and then its terminals after them. Standalone agents and terminals come last. With `sidebar_style = "flat"`, sorting applies across projects and dormant agents sit in a collapsible Inactive tail. Toggle the browser sidebar with `Ctrl-b` (`Cmd-b` on a Mac). It carries:
 
-- A sort control (Active first by default, or by recently updated, recently created, name, or a manual drag order). Drag rows to arrange them by hand.
+- A sort control (Active first by default, or by recently updated, recently created, name, or a manual drag order). Drag rows to arrange them by hand; with the TUI's grouped list, agents move within their own project and project terminals stay after its agents.
 - A search box that filters the list.
 - The launcher at the bottom: **New agent…**, with a **▾** beside it that lists every other way to create something, grouped into agents, terminals and projects. See [Agents from the browser](/docs/web-agents#creating-an-agent).
 
@@ -306,24 +306,24 @@ On a computer the top bar comes back the same way, with the **Theater** button i
 > [!TIP]
 > Theater is remembered per row of the agents list, in that browser, so the agent you like watching full-screen comes back full-screen and the others do not. Switching between an agent's tabs or terminals never takes you in or out of it; a project or standalone terminal keeps its own.
 
-### Every device types, the last one to type sets the size
+### Every device types; the phone keeps its own width
 
-Every device pointed at the same terminal sees the same output at the same time, and
-**every one of them can type into it**: a browser on your laptop, the phone in your
-hand and the terminal UI, all at once. Nothing to claim, nothing to take over.
+Every device connected to a terminal sees its live output and can type into it.
+The phone wraps decoded text at its own width, using your chosen terminal font size.
+Opening, reopening or typing on the phone leaves the desktop terminal's size alone.
+Long-press text to select it and use the phone's Copy action. Tap the output to type
+directly, or choose the optional message box from the pane's Input menu.
 
-A terminal still has one size, so **the device that typed last sets it.** The moment you
-type, the terminal is resized to fit your screen and the program in it redraws for you.
-Every other device keeps showing exactly the same screen, scaled down to fit its own
-window: the browser shrinks the text (and lets you pan if even the smallest text does not
-fit), and the terminal UI shows what fits in its pane and leaves the rest blank. Type on
-another device and the size follows you there.
+The underlying program still has one terminal grid. Yaran decodes its cursor commands
+at that grid before wrapping the text on the phone, so redraws replace old text
+correctly. Decorative horizontal rules fit the phone. Fixed-column tables and full-screen
+programs appear as wrapped text, rather than running a second copy at a different size.
+**Earlier output** loads more of the configured terminal scrollback.
 
-**A device sizes an agent and its terminals together.** Typing into one of an agent's
-tabs or companion terminals sizes all of them for your screen. A project or standalone
-terminal is sized on its own.
-
-**The terminal UI is one of those devices.** When yaran is [serving in the background of a running TUI](/docs/server-mode#serve-in-the-background-and-keep-the-tui), typing in the TUI sizes the terminal for the TUI's pane, and typing in a browser sizes it for the browser, exactly as between two browsers.
+Between desktop browsers and the terminal UI, the last device to type sets the shared
+grid. Other desktop browsers shrink it to fit or allow panning; the terminal UI clips
+what does not fit. Typing into one of an agent's tabs or companion terminals sizes its
+whole row. A project or standalone terminal is sized on its own.
 
 > [!NOTE]
 > Two people typing into the same terminal at the same moment see their keystrokes

@@ -2376,7 +2376,7 @@ pub struct UiConfig {
     /// Stored as a string, not an enum, following the
     /// `pr_banner_position`/`agent_sort` convention: an unknown value must
     /// degrade to the default at the one place that reads it, not refuse the
-    /// whole config file. TUI-only (the web sidebar keeps its own layout).
+    /// whole config file. The web keeps its flat layout but follows this order.
     pub sidebar_style: String,
     /// How much vertical room each agent-list row takes: "compact" (the
     /// default, the fork's one line per project header and one line per agent

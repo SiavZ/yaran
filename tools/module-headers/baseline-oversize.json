@@ -388,8 +388,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/pty.rs (8557 lines after rebrand 0956be7ac) with the fork's 8935-line copy at c626621cd into 10229 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: PTY-based terminal client plus the surface-agnostic cell types for its terminal-grid snapshot; shared input: the QueryReply write kind and its one classifier call; the classifier itself lives in pty_query_reply.rs"
   },
   "crates/yaran-core/src/pty_owners.rs": {
-    "lines": 2333,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/pty_owners.rs (2344 lines after rebrand 0956be7ac) with the fork's 1492-line copy at c626621cd into 2344 lines at 7e4a9c0f1; module: The input-ownership registry: who currently holds the right to type into a PTY and to decide its grid"
+    "lines": 2376,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/pty_owners.rs (2344 lines after rebrand 0956be7ac) with the fork's 1492-line copy at c626621cd into 2344 lines at 7e4a9c0f1; module: The input-ownership registry: who currently holds the right to type into a PTY and to decide its grid; Phone view: retain the single locked write-classification path while adding a preserve-size entry point.; Phone view: private sizing policy is Copy for the shared input gate."
   },
   "crates/yaran-core/src/purge.rs": {
     "lines": 1478,
@@ -440,8 +440,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/text_encoding.rs (1103 lines; 1103 after rebrand 0956be7ac); module: Text encodings for the web editor: turning a file's bytes into the text the editor shows, and the edited text back into bytes in the same..."
   },
   "crates/yaran-core/src/viewmodel.rs": {
-    "lines": 4219,
-    "reason": "baseline 2026-11-14; phase 10: the bootstrap cloud projection and its field pin; phase 10: the generated module-headers block required now that this file is in optIn; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/viewmodel.rs (4148 lines after rebrand 0956be7ac) with the fork's 3528-line copy at c626621cd into 4202 lines at 7e4a9c0f1; +18 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Serializable projection of `Engine` state for web clients; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal"
+    "lines": 4237,
+    "reason": "baseline 2026-11-14; phase 10: the bootstrap cloud projection and its field pin; phase 10: the generated module-headers block required now that this file is in optIn; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/viewmodel.rs (4148 lines after rebrand 0956be7ac) with the fork's 3528-line copy at c626621cd into 4202 lines at 7e4a9c0f1; +18 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Serializable projection of `Engine` state for web clients; provider model_from_session_args: one config field, its renderers and launch kind, wired through every ProviderCommandConfig literal; Phone/TUI order parity: expose the existing sidebar style in bootstrap and test its default and fallback in the existing projection harness."
   },
   "crates/yaran-core/src/watch/engine.rs": {
     "lines": 1170,
@@ -836,8 +836,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/serve_legs.rs (3422 lines after rebrand 0956be7ac) with the fork's 1562-line copy at c626621cd into 3424 lines at 7e4a9c0f1; +4 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Per-leg listener lifecycle: the shutdown primitive every serve path shares, the registry of live legs and their individual stop lanes,..."
   },
   "crates/yaran-web/src/server.rs": {
-    "lines": 8695,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: the cloud control in AppState and RouterParams, the route merge and the cloud.changed topic; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud ingress layer, handoff route merge, 4401 select arms, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring; phase 13: one route merge and the events beat match arm; logic lives in events_beat.rs and cloud_phone_routes.rs; phase 13: web-native wiring stacked on the phase 09 to 12 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/server.rs (8521 lines after rebrand 0956be7ac) with the fork's 6757-line copy at c626621cd into 8756 lines at 7e4a9c0f1; +4 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: axum router + the WebSocket handlers (`/ws/events` and the per-PTY sockets) bridging the browser to the engine actor; mobile parity A/F: merge the cloud_phone_links routes; Mobile parity integration: regenerate dependency-header comments for new phone-link modules; no executable lines added by this header update.; human board in the web UI: wiring for the board routes, the BoardInputs engine request and the dialog gate; human board in the web UI: generated module-header lines naming board_routes; bulk jcode models: merge the dedicated routes and generated module edges"
+    "lines": 8706,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: the cloud control in AppState and RouterParams, the route merge and the cloud.changed topic; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud ingress layer, handoff route merge, 4401 select arms, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring; phase 13: one route merge and the events beat match arm; logic lives in events_beat.rs and cloud_phone_routes.rs; phase 13: web-native wiring stacked on the phase 09 to 12 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/src/server.rs (8521 lines after rebrand 0956be7ac) with the fork's 6757-line copy at c626621cd into 8756 lines at 7e4a9c0f1; +4 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: axum router + the WebSocket handlers (`/ws/events` and the per-PTY sockets) bridging the browser to the engine actor; mobile parity A/F: merge the cloud_phone_links routes; Mobile parity integration: regenerate dependency-header comments for new phone-link modules; no executable lines added by this header update.; human board in the web UI: wiring for the board routes, the BoardInputs engine request and the dialog gate; human board in the web UI: generated module-header lines naming board_routes; bulk jcode models: merge the dedicated routes and generated module edges; Phone view: minimal socket query, input-policy and resize guards; rendering and new transport checks live in separate modules.; bulk jcode models: combine native model route registration with the merged phone terminal routes"
   },
   "crates/yaran-web/src/server_inspect_routes.rs": {
     "lines": 509,
@@ -972,12 +972,12 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/FirstLoadDialog.test.tsx (580 lines after rebrand 0956be7ac) with the fork's 550-line copy at c626621cd into 580 lines at 7e4a9c0f1; module: tests for FirstLoadDialog"
   },
   "crates/yaran-web/web/src/components/FlatAgentList.test.tsx": {
-    "lines": 2395,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/FlatAgentList.test.tsx (2341 lines after rebrand 0956be7ac) with the fork's 1793-line copy at c626621cd into 2395 lines at 7e4a9c0f1; module: tests for FlatAgentList"
+    "lines": 2419,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/FlatAgentList.test.tsx (2341 lines after rebrand 0956be7ac) with the fork's 1793-line copy at c626621cd into 2395 lines at 7e4a9c0f1; module: tests for FlatAgentList; Phone/TUI order parity: exercise live project reorder and layout-mode updates using the existing list/DnD test harness.; Review fix: one assertion in the grouped mounted-list fixture pins inactive rows as non-sortable."
   },
   "crates/yaran-web/web/src/components/FlatAgentList.tsx": {
-    "lines": 1260,
-    "reason": "baseline 2026-11-14"
+    "lines": 1272,
+    "reason": "baseline 2026-11-14; Phone/TUI order parity: pass the existing project order into shared ordering and drag helpers; restrict grouped-mode terminal dragging.; Review fix: derive quiet-row drag eligibility from the same terminal-aware inactive predicate as the TUI.; Review correction: pass the active sort into the shared flat persistence baseline for grouped drops."
   },
   "crates/yaran-web/web/src/components/InsetHeader.test.tsx": {
     "lines": 951,
@@ -1024,8 +1024,8 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/Sidebar.test.tsx (2342 lines after rebrand 0956be7ac) with the fork's 2041-line copy at c626621cd into 2342 lines at 7e4a9c0f1; module: tests for Sidebar"
   },
   "crates/yaran-web/web/src/components/Sidebar.tsx": {
-    "lines": 647,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/Sidebar.tsx (647 lines after rebrand 0956be7ac) with the fork's 557-line copy at c626621cd into 647 lines at 7e4a9c0f1; module: Sidebar (no header comment)"
+    "lines": 648,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/Sidebar.tsx (647 lines after rebrand 0956be7ac) with the fork's 557-line copy at c626621cd into 647 lines at 7e4a9c0f1; module: Sidebar (no header comment); Phone/TUI order parity: wire the collapsed rail to the same project order as the expanded list."
   },
   "crates/yaran-web/web/src/components/StandaloneEditor.test.tsx": {
     "lines": 568,
@@ -1048,20 +1048,20 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.clipboard.test.tsx (1072 lines after rebrand 0956be7ac) with the fork's 1069-line copy at c626621cd into 1072 lines at 7e4a9c0f1; module: tests for TerminalPane.clipboard"
   },
   "crates/yaran-web/web/src/components/TerminalPane.filedrop.test.tsx": {
-    "lines": 1552,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.filedrop.test.tsx (1556 lines after rebrand 0956be7ac) with the fork's 1439-line copy at c626621cd into 1556 lines at 7e4a9c0f1; module: tests for TerminalPane.filedrop"
+    "lines": 1554,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.filedrop.test.tsx (1556 lines after rebrand 0956be7ac) with the fork's 1439-line copy at c626621cd into 1556 lines at 7e4a9c0f1; module: tests for TerminalPane.filedrop; Review fix: two parser-hook stubs mirror cursor visibility subscriptions used by the mounted terminal."
   },
   "crates/yaran-web/web/src/components/TerminalPane.test.tsx": {
-    "lines": 5113,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.test.tsx (6025 lines after rebrand 0956be7ac) with the fork's 5438-line copy at c626621cd into 6025 lines at 7e4a9c0f1; module: tests for TerminalPane"
+    "lines": 5155,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.test.tsx (6025 lines after rebrand 0956be7ac) with the fork's 5438-line copy at c626621cd into 6025 lines at 7e4a9c0f1; module: tests for TerminalPane; Phone view: exercise native selection and direct focus using the existing mounted-pane fixture; keep legacy touch encoding checks on tablet width.; Review fix: mounted native-phone viewport cases and cursor-parser stubs retain independent input in landscape.; Review correction: exercise native typing and visible viewport paging through the existing mounted phone fixture.; Review correction: mounted-slot regression proves decoder replacement also replaces the visible flow view."
   },
   "crates/yaran-web/web/src/components/TerminalPaneLinks.test.tsx": {
-    "lines": 718,
-    "reason": "baseline 2026-11-14"
+    "lines": 740,
+    "reason": "baseline 2026-11-14; Phone view: exercise cell-mapped OSC links through the existing real-xterm mounted pane fixture."
   },
   "crates/yaran-web/web/src/components/TerminalStack.tsx": {
-    "lines": 708,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalStack.tsx (794 lines; 794 after rebrand 0956be7ac); module: TerminalStack (no header comment)"
+    "lines": 722,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalStack.tsx (794 lines; 794 after rebrand 0956be7ac); module: TerminalStack (no header comment); Phone view: wire the separate renderer and interaction ref into the existing terminal pane.; Review fix: derive one phone-identity/viewport verdict and pass it to both renderer and socket lifecycle.; Review correction: key the visible child with the identity returned by its existing decoder lifecycle."
   },
   "crates/yaran-web/web/src/components/TheaterFlight.test.tsx": {
     "lines": 550,
@@ -1156,12 +1156,12 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/notify.test.ts (526 lines after rebrand 0956be7ac) with the fork's 420-line copy at c626621cd into 526 lines at 7e4a9c0f1; module: tests for notify"
   },
   "crates/yaran-web/web/src/lib/ptySocket.test.ts": {
-    "lines": 1004,
-    "reason": "baseline 2026-11-14; phase 13: the 4401 retry test needs this file's FakeWS and serverValidated gate setup; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/ptySocket.test.ts (1052 lines after rebrand 0956be7ac) with the fork's 967-line copy at c626621cd into 1100 lines at 7e4a9c0f1; module: tests for ptySocket"
+    "lines": 1020,
+    "reason": "baseline 2026-11-14; phase 13: the 4401 retry test needs this file's FakeWS and serverValidated gate setup; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/ptySocket.test.ts (1052 lines after rebrand 0956be7ac) with the fork's 967-line copy at c626621cd into 1100 lines at 7e4a9c0f1; module: tests for ptySocket; Phone view: exercise the new socket flag and reconnect using the existing WebSocket fixture."
   },
   "crates/yaran-web/web/src/lib/ptySocket.ts": {
-    "lines": 526,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/ptySocket.ts (543 lines after rebrand 0956be7ac) with the fork's 479-line copy at c626621cd into 554 lines at 7e4a9c0f1; module: A dedicated WebSocket to one PTY (an agent's provider tab or a companion terminal)"
+    "lines": 530,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/ptySocket.ts (543 lines after rebrand 0956be7ac) with the fork's 479-line copy at c626621cd into 554 lines at 7e4a9c0f1; module: A dedicated WebSocket to one PTY (an agent's provider tab or a companion terminal); Phone view: four lines wire an independent-view query and refuse shared resize sends."
   },
   "crates/yaran-web/web/src/lib/reconnectingSocket.test.ts": {
     "lines": 1104,
@@ -1184,8 +1184,8 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/settingsDescriptors.ts (525 lines after rebrand 0956be7ac) with the fork's 496-line copy at c626621cd into 557 lines at 7e4a9c0f1; module: Data model for the Preferences modal (`CustomizeWebappDialog.tsx`), which renders from `SETTING_GROUPS` rather than per-field JSX"
   },
   "crates/yaran-web/web/src/lib/store.ts": {
-    "lines": 10344,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 13: wiring only (connectPhoneOpen flag and open/close, access-session configure and trigger); phase 13: web-native wiring stacked on the phase 09 to 12 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/store.ts (10101 lines after rebrand 0956be7ac) with the fork's 6623-line copy at c626621cd into 10457 lines at 7e4a9c0f1; +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The web UI's global store: connection, view model and UI state; mobile parity server track: Copy phone link wiring (the phoneLink import, invalidatePhoneLinkTarget on cloud.changed/config.changed and on events-socket reconnect recovery) and the Used-by lines of phoneLink.ts and storePhoneLinkReconnect.test.ts; human board in the web UI: wiring for the board routes, the BoardInputs engine request and the dialog gate; human board in the web UI: generated module-header lines naming board_routes; bulk jcode models: dialog visibility and open/close actions, plus the generated import edge"
+    "lines": 10345,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 13: wiring only (connectPhoneOpen flag and open/close, access-session configure and trigger); phase 13: web-native wiring stacked on the phase 09 to 12 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/lib/store.ts (10101 lines after rebrand 0956be7ac) with the fork's 6623-line copy at c626621cd into 10457 lines at 7e4a9c0f1; +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The web UI's global store: connection, view model and UI state; mobile parity server track: Copy phone link wiring (the phoneLink import, invalidatePhoneLinkTarget on cloud.changed/config.changed and on events-socket reconnect recovery) and the Used-by lines of phoneLink.ts and storePhoneLinkReconnect.test.ts; human board in the web UI: wiring for the board routes, the BoardInputs engine request and the dialog gate; human board in the web UI: generated module-header lines naming board_routes; bulk jcode models: dialog visibility and open/close actions, plus the generated import edge; Phone/TUI order parity: pass project order to next-agent navigation so it follows the displayed list.; bulk jcode models: generated dependency header after combining the bulk dialog and merged phone view store"
   },
   "crates/yaran-web/web/src/lib/storeAuth.test.ts": {
     "lines": 538,

@@ -83,6 +83,7 @@ import {
 import {
   FLAT_SORT_LABELS,
   flatRowKey,
+  inInactiveTail,
   isListTerminal,
   isQuietSession,
   listDragBaseline,
@@ -90,6 +91,7 @@ import {
   overlaidListInputs,
   planListDrop,
   quietTailForcedOpen,
+  sessionsWithOwnTerminal,
   stateWord,
   type FlatRow,
   type FlatSortKey,
@@ -846,6 +848,7 @@ function flatAgentListModel(
     | "pendingTerminalPlacement"
   >,
   agentSort: FlatSortKey,
+  grouped: boolean,
 ) {
   const { spine, agentSearch: rawAgentSearch } = yaran
   const query = rawAgentSearch ?? ""
@@ -861,7 +864,8 @@ function flatAgentListModel(
     pendingTerminalOrder: yaran.pendingTerminalOrder,
     pendingTerminalPlacement: yaran.pendingTerminalPlacement,
   })
-  const { main, inactive } = orderFlatRows(sessions, terminals, agentSort)
+  const projectOrder = grouped ? rawProjects.map((project) => project.id) : undefined
+  const { main, inactive } = orderFlatRows(sessions, terminals, agentSort, projectOrder)
   const decorated = new Map(
     assembleFlatTerminals(terminals, sessions, rawProjects, projectName).map(
       (entry) => [entry.terminal.id, entry],
@@ -896,6 +900,7 @@ function flatAgentListModel(
     hasRows: agentCount + terminalCount > 0,
     query,
     manual: agentSort === "manual",
+    projectOrder,
     emptyVerbIsAddProject,
     nothing,
     nothingMatches,
@@ -918,6 +923,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     pendingTerminalPlacement,
   } = yaran
   const agentSort = agentSortValue(yaran)
+  const grouped = yaran.bootstrap?.sidebar_style === "grouped"
   const {
     sessions,
     terminals,
@@ -928,6 +934,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     hasRows,
     query,
     manual,
+    projectOrder,
     emptyVerbIsAddProject,
     nothing,
     nothingMatches,
@@ -941,6 +948,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
         pendingTerminalPlacement,
       },
       agentSort,
+      grouped,
     ),
     [
       spine,
@@ -949,9 +957,11 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
       pendingTerminalOrder,
       pendingTerminalPlacement,
       agentSort,
+      grouped,
     ],
   )
   const agentSearch = query
+  const withTerminal = sessionsWithOwnTerminal(terminals)
   // A newly selected row is scrolled into view, a just-created one as soon as
   // its row arrives, so a launch never happens out of sight below the fold.
   const revealRef = useRevealSelectedRow(selectedRowKey(selectedTarget))
@@ -1014,11 +1024,13 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     const { active, over } = event
     if (!over) return
     const plan = planListDrop(
-      listDragBaseline(sessions, terminals, agentSort),
+      listDragBaseline(sessions, terminals, agentSort, projectOrder),
       String(active.id),
       String(over.id),
       sessions,
       terminals,
+      grouped,
+      agentSort,
     )
     if (!plan) return
     if (!manual) setAgentSort("manual")
@@ -1162,7 +1174,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
                         )}
                         selectedTarget={selectedTarget}
                         handlers={handlers}
-                        sortable
+                        sortable={!grouped || !inInactiveTail(row.session, withTerminal.has(row.session.id))}
                         query={query}
                         pickId={searchPick.rowId(key)}
                         picked={searchPick.activeKey === key}
@@ -1176,7 +1188,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
                           selectedTarget.terminalId === row.terminal.id
                         }
                         onSelect={handlers.onSelectTerminal}
-                        sortable
+                        sortable={!grouped}
                         query={query}
                         pickId={searchPick.rowId(key)}
                         picked={searchPick.activeKey === key}

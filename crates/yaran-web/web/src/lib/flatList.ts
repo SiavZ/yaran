@@ -11,7 +11,7 @@
 // flatList.test.ts reads.
 
 import { agentRowKey, terminalRowKey } from "@/hooks/use-reveal-selected-row"
-import { sessionLabel } from "@/lib/agentWorkspace"
+import { sessionLabel, workspaceProjectId } from "@/lib/agentWorkspace"
 import {
   compareCodePoints,
   epoch,
@@ -223,6 +223,7 @@ export function orderFlatRows(
   sessions: readonly SessionView[],
   terminals: readonly TerminalView[],
   key: FlatSortKey,
+  projectOrder?: readonly string[],
 ): FlatRows {
   const withTerminal = sessionsWithOwnTerminal(terminals)
   const shown = new Set<string>()
@@ -256,6 +257,40 @@ export function orderFlatRows(
       main.sort((a, b) => -compareCodePoints(rowName(a), rowName(b)))
       break
   }
+  if (projectOrder) {
+    // Flatten the grouped TUI's order: projects, orphan groups, then Standalone;
+    // each group's active agents, quiet agents, and finally its own terminals.
+    const groups = new Map<string | null, FlatRow[]>(projectOrder.map((id) => [id, []]))
+    for (const session of sessions) {
+      const project = workspaceProjectId(session.workspace)
+      if (project !== null && !groups.has(project)) groups.set(project, [])
+    }
+    for (const terminal of terminals.filter(isListTerminal)) {
+      matchWireOwner(terminal.owner, {
+        session: () => undefined,
+        project: (owner) => {
+          if (!groups.has(owner.project_id)) groups.set(owner.project_id, [])
+        },
+        standalone: () => undefined,
+      })
+    }
+    groups.set(null, [])
+    for (const row of main) {
+      if (row.kind === "agent") groups.get(workspaceProjectId(row.session.workspace))!.push(row)
+    }
+    for (const session of inactive) {
+      groups.get(workspaceProjectId(session.workspace))!.push({ kind: "agent", session })
+    }
+    for (const terminal of terminals.filter(isListTerminal)) {
+      const project = matchWireOwner(terminal.owner, {
+        session: () => null,
+        project: (owner) => owner.project_id,
+        standalone: () => null,
+      })
+      groups.get(project)!.push({ kind: "terminal", terminal })
+    }
+    return { main: [...groups.values()].flat(), inactive: [] }
+  }
   return { main, inactive }
 }
 
@@ -273,9 +308,10 @@ export function nextActiveSessionId(
   goneSessionId: string,
   key: FlatSortKey,
   terminals: readonly TerminalView[] = [],
+  projectOrder?: readonly string[],
 ): string | null {
   const mainAgents = (sessions: SessionView[]) =>
-    orderFlatRows(sessions, terminals, key).main.flatMap((row) =>
+    orderFlatRows(sessions, terminals, key, projectOrder).main.flatMap((row) =>
       row.kind === "agent" ? [row.session] : [],
     )
   const candidates = mainAgents(current)
@@ -308,15 +344,16 @@ export function listDragBaseline(
   sessions: readonly SessionView[],
   terminals: readonly TerminalView[],
   key: FlatSortKey,
+  projectOrder?: readonly string[],
 ): FlatRow[] {
-  if (key === "manual") {
+  if (key === "manual" && !projectOrder) {
     return interleaveTerminals(
       sessions,
       new Set(sessions.map((session) => session.id)),
       terminals.filter(isListTerminal),
     )
   }
-  const { main, inactive } = orderFlatRows(sessions, terminals, key)
+  const { main, inactive } = orderFlatRows(sessions, terminals, key, projectOrder)
   return [
     ...main,
     ...inactive.map((session): FlatRow => ({ kind: "agent", session })),
@@ -348,10 +385,27 @@ export function planListDrop(
   overKey: string,
   sessions: readonly SessionView[],
   terminals: readonly TerminalView[],
+  grouped = false,
+  key: FlatSortKey = "manual",
 ): ListDropPlan | null {
   const from = baseline.findIndex((row) => flatRowKey(row) === activeKey)
   const to = baseline.findIndex((row) => flatRowKey(row) === overKey)
   if (from === -1 || to === -1 || from === to) return null
+  if (grouped) {
+    const source = baseline[from]
+    const target = baseline[to]
+    const withTerminal = sessionsWithOwnTerminal(terminals)
+    if (source.kind !== "agent" || target.kind !== "agent"
+      || inInactiveTail(source.session, withTerminal.has(source.session.id))
+      || inInactiveTail(target.session, withTerminal.has(target.session.id))
+      || workspaceProjectId(source.session.workspace) !== workspaceProjectId(target.session.workspace)) {
+      return null
+    }
+    // Group projection decides eligibility; the TUI's flat baseline persists
+    // the move without rewriting unrelated projects' saved interleaving.
+    const plan = planListDrop(listDragBaseline(sessions, terminals, key), activeKey, overKey, sessions, terminals)
+    return { agentOrder: plan?.agentOrder ?? null, placements: {}, terminalOrder: null }
+  }
   const next = baseline.slice()
   const [moved] = next.splice(from, 1)
   next.splice(to, 0, moved)

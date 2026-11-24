@@ -2372,11 +2372,9 @@ async fn accumulate_until(
     acc
 }
 
-/// The server contract shared input leans on, pinned over a real socket: (1) a
-/// SECOND connection to a PTY another connection holds is replayed the
-/// scrollback on open; (2) a PLAIN resize from it is recorded and applies
-/// nothing, so no `size` event goes out; (3) its TYPING reaches the child, and
-/// moves the size to it first, so its recorded grid arrives as a `size` event.
+#[path = "ws_transport/independent_view.rs"]
+mod independent_view;
+
 #[tokio::test]
 async fn a_second_pty_connection_is_replayed_scrollback_and_typing_moves_the_size() {
     let (addr, _tmp) = boot().await;

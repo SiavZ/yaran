@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, render } from "@testing-library/react"
+import { act, cleanup, fireEvent, render } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 import type { ConnState } from "@/lib/types"
@@ -268,6 +268,28 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+})
+
+it("opens a phone flow link through the real xterm linkifier without forwarding a click to the agent", async () => {
+  const media = window.matchMedia
+  vi.stubGlobal("matchMedia", (query: string) => ({ ...media(query), matches: query.includes("767px") }))
+  const { sock, term } = await mountLinkPane({ mouseTracking: true })
+  await act(() => new Promise((done) => setTimeout(done, 80)))
+  const row = document.querySelector<HTMLElement>("[data-flow-row='0']")!
+  expect(row).toBeTruthy()
+  const caret = document.createRange()
+  caret.setStart(row.querySelector("span")!.firstChild!, 1)
+  Object.defineProperty(document, "caretRangeFromPoint", { configurable: true, value: () => caret })
+  try {
+    term.blur()
+    fireEvent.click(row)
+    expect(openSpy).toHaveBeenCalledOnce()
+    expect(openSpy.mock.calls[0][0]).toBe(LINK_URL)
+    expect(sentBytes(sock)).toBe("")
+    expect(document.activeElement).not.toBe(term.textarea)
+  } finally {
+    delete (document as Partial<Document>).caretRangeFromPoint
+  }
 })
 
 // Mount the pane, push an OSC 8 hyperlink through the PTY socket, and hand back
