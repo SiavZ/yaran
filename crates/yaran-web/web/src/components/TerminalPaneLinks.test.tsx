@@ -80,7 +80,7 @@ vi.mock("@/lib/notify", async (importOriginal) => {
   return { ...actual, notifyInfo: (...args: unknown[]) => notifyInfoMock(...args) }
 })
 vi.mock("sonner", () => ({
-  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), getToasts: () => [] }),
 }))
 vi.mock("@/components/MacroPopover", () => ({ MacroPopover: () => null }))
 vi.mock("@/lib/ptySocket", async (importOriginal) => {
