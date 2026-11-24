@@ -190,3 +190,47 @@ fn mouse_reaches_hidden_targets_and_results_keep_each_tab_failure_readable() {
     app.handle_jcode_models_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(matches!(app.prompt, PromptState::None));
 }
+
+#[test]
+fn validation_and_worker_failures_are_visible_inside_a_short_terminal_dialog() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut app = test_app(default_bindings());
+    let tmp = tempfile::tempdir().unwrap();
+    seed_running_jcodes(&mut app, tmp.path());
+    app.open_jcode_models();
+    let PromptState::JcodeModels(prompt) = &mut app.prompt else {
+        panic!("models form");
+    };
+    prompt.selected.insert(prompt.targets[0].tab_id.clone());
+    prompt.model.text = "x".repeat(257);
+    app.apply_jcode_models();
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(&app.prompt, PromptState::JcodeModels(prompt) if prompt.busy));
+    super::super::test_support::finish_ui_jobs(&mut app);
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(
+        text.contains("at most 256 bytes"),
+        "validation remains visible above the field"
+    );
+    app.finish_jcode_models(None);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(
+        text.contains("The model worker stopped"),
+        "worker failures stay inside the dialog too"
+    );
+}

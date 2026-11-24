@@ -28,6 +28,7 @@ pub(crate) struct ModelsPrompt {
     pub(super) model: TextInput,
     pub(super) focus: ModelsFocus,
     pub(super) busy: bool,
+    pub(super) error: Option<String>,
     pub(super) outcomes: Option<Vec<ModelChange>>,
     pub(super) scroll: ScrollViewRender,
 }
@@ -80,6 +81,7 @@ impl App {
             model: TextInput::new(),
             focus: ModelsFocus::Model,
             busy: false,
+            error: None,
             outcomes: None,
             scroll: ScrollViewRender::default(),
         });
@@ -90,8 +92,8 @@ impl App {
             return;
         };
         if prompt.selected.is_empty() || prompt.model.text.trim().is_empty() {
-            self.set_error(
-                "Choose running jcodes and enter a model ID before applying the change.",
+            prompt.error = Some(
+                "Choose running jcodes and enter a model ID before applying the change.".into(),
             );
             return;
         }
@@ -104,6 +106,7 @@ impl App {
             .collect();
         let model = prompt.model.text.clone();
         prompt.busy = true;
+        prompt.error = None;
         self.spawn_ui_job(
             UiJob {
                 busy: "Changing the selected jcode models...".into(),
@@ -138,8 +141,20 @@ impl App {
                     prompt.focus = ModelsFocus::Cancel;
                 }
             }
-            Some(Err(error)) => self.set_error(error.to_string()),
-            None => {}
+            Some(Err(error)) => {
+                let message = error.to_string();
+                if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+                    prompt.error = Some(message.clone());
+                }
+                self.set_error(message);
+            }
+            None => {
+                if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+                    prompt.error = Some(
+                        "The model worker stopped. Check models in jcode before retrying.".into(),
+                    );
+                }
+            }
         }
     }
 

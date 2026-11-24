@@ -17,7 +17,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::Line,
-    widgets::{ListItem, Paragraph, Widget},
+    widgets::{ListItem, Paragraph, Widget, Wrap},
 };
 
 impl App {
@@ -43,12 +43,21 @@ impl App {
         }
         let width = inner.width.saturating_sub(2);
         let x = inner.x + 1;
-        Paragraph::new("Choose running jcodes and enter a model ID.")
-            .render(Rect::new(x, inner.y, width, 1), frame.buffer_mut());
-        Paragraph::new("Conversations and drafts stay in place; jcode control must be enabled.")
+        if let Some(error) = &prompt.error {
+            Paragraph::new(error.as_str())
+                .wrap(Wrap { trim: false })
+                .style(ratatui::style::Style::default().fg(self.theme.status_error_fg))
+                .render(Rect::new(x, inner.y, width, 3), frame.buffer_mut());
+        } else {
+            Paragraph::new("Choose running jcodes and enter a model ID.")
+                .render(Rect::new(x, inner.y, width, 1), frame.buffer_mut());
+            Paragraph::new(
+                "Conversations and drafts stay in place; jcode control must be enabled.",
+            )
             .render(Rect::new(x, inner.y + 1, width, 1), frame.buffer_mut());
-        Paragraph::new("jcode's model indicator may need a tab reconnect to refresh.")
-            .render(Rect::new(x, inner.y + 2, width, 1), frame.buffer_mut());
+            Paragraph::new("jcode's model indicator may need a tab reconnect to refresh.")
+                .render(Rect::new(x, inner.y + 2, width, 1), frame.buffer_mut());
+        }
         let input = Rect::new(x, inner.y + 3, width, 1);
         Paragraph::new(render_single_line_field(
             "Model ID: ",

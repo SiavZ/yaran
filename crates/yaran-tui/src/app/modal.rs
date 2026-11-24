@@ -1023,6 +1023,7 @@ pub(super) mod tests {
                     model: TextInput::new(),
                     focus: super::super::jcode_models::ModelsFocus::Model,
                     busy: false,
+                    error: None,
                     outcomes: None,
                     scroll: super::super::components::ScrollViewRender::default(),
                 }),
