@@ -85,8 +85,9 @@ impl App {
                 }
                 prompt.loading = false;
                 match answer {
-                    Some(Ok(choices)) => {
-                        prompt.choices = choices;
+                    Some(Ok(catalog)) => {
+                        prompt.choices = catalog.choices;
+                        prompt.bindings = catalog.bindings;
                         prompt.choice = None;
                         prompt.reasoning = None;
                         let selected = prompt

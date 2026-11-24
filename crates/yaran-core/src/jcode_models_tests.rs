@@ -84,9 +84,13 @@ esac
 fn selected_tabs_send_native_provider_and_reasoning_without_guessing() {
     let (tmp, _clients, all) = native_clients();
     let root = tmp.path();
+    let bindings = model_catalog(&all, &selection(&all, &["a", "b", "c"]))
+        .unwrap()
+        .bindings;
     let outcomes = change_models(
         &all,
         &selection(&all, &["a", "c"]),
+        &bindings,
         "route-oauth",
         Some("high"),
     )
@@ -112,6 +116,7 @@ fn selected_tabs_send_native_provider_and_reasoning_without_guessing() {
     change_models(
         &all,
         &selection(&all, &["a", "b", "c"]),
+        &bindings,
         "route-oauth",
         Some("high"),
     )
@@ -126,7 +131,8 @@ fn selected_tabs_send_native_provider_and_reasoning_without_guessing() {
         target.env[0].1 = ".".into();
         target.command = "./jcode".into();
     }
-    let outcomes = change_models(&relative, &selected, "route-oauth", Some("high")).unwrap();
+    let outcomes =
+        change_models(&relative, &selected, &bindings, "route-oauth", Some("high")).unwrap();
     assert_eq!(outcomes.len(), 4);
     assert!(outcomes[0].error.is_none());
     assert!(
@@ -152,15 +158,31 @@ fn selected_tabs_send_native_provider_and_reasoning_without_guessing() {
         ("route-oauth", None),
     ] {
         assert!(
-            change_models(&all, &selection(&all, &["a"]), id, effort).unwrap()[0]
+            change_models(&all, &selection(&all, &["a"]), &bindings, id, effort).unwrap()[0]
                 .error
                 .is_some()
         );
     }
     assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), before);
+}
+
+#[test]
+fn invalid_native_acknowledgements_are_reported() {
+    let (tmp, _clients, all) = native_clients();
+    let root = tmp.path();
+    let bindings = model_catalog(&all, &selection(&all, &["a"]))
+        .unwrap()
+        .bindings;
     std::fs::write(root.join("ack.json"), "help").unwrap();
     assert!(
-        change_models(&all, &selection(&all, &["a"]), "route-oauth", Some("high")).unwrap()[0]
+        change_models(
+            &all,
+            &selection(&all, &["a"]),
+            &bindings,
+            "route-oauth",
+            Some("high")
+        )
+        .unwrap()[0]
             .error
             .as_ref()
             .unwrap()
@@ -172,7 +194,14 @@ fn selected_tabs_send_native_provider_and_reasoning_without_guessing() {
     )
     .unwrap();
     assert!(
-        change_models(&all, &selection(&all, &["a"]), "route-oauth", Some("high")).unwrap()[0]
+        change_models(
+            &all,
+            &selection(&all, &["a"]),
+            &bindings,
+            "route-oauth",
+            Some("high")
+        )
+        .unwrap()[0]
             .error
             .is_some()
     );
@@ -190,7 +219,7 @@ fn catalog_preserves_routes_and_intersects_native_reasoning_levels() {
             .to_string(),
     )
     .unwrap();
-    let choices = model_catalog(&all, &selected).unwrap();
+    let choices = model_catalog(&all, &selected).unwrap().choices;
     assert_eq!(
         choices.len(),
         2,
@@ -228,6 +257,9 @@ fn catalog_preserves_routes_and_intersects_native_reasoning_levels() {
 #[test]
 fn catalog_rejects_a_different_client_or_conversation_before_mutation() {
     let (tmp, _clients, all) = native_clients();
+    let bindings = model_catalog(&all, &selection(&all, &["a"]))
+        .unwrap()
+        .bindings;
     let path = tmp.path().join("session_fox_1_ab.json");
     let original: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -241,7 +273,14 @@ fn catalog_rejects_a_different_client_or_conversation_before_mutation() {
         std::fs::write(&path, catalog.to_string()).unwrap();
         assert!(model_catalog(&all, &selection(&all, &["a"])).is_err());
         assert!(
-            change_models(&all, &selection(&all, &["a"]), "route-oauth", Some("high")).unwrap()[0]
+            change_models(
+                &all,
+                &selection(&all, &["a"]),
+                &bindings,
+                "route-oauth",
+                Some("high")
+            )
+            .unwrap()[0]
                 .error
                 .is_some()
         );
@@ -250,18 +289,93 @@ fn catalog_rejects_a_different_client_or_conversation_before_mutation() {
 }
 
 #[test]
+fn catalog_binding_survives_until_apply_and_routes_without_levels_keep_native_effort() {
+    let (tmp, _clients, all) = native_clients();
+    let selected = selection(&all, &["a"]);
+    let snapshot = model_catalog(&all, &selected).unwrap();
+    let path = tmp.path().join("session_fox_1_ab.json");
+    let mut catalog: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    catalog["client_id"] = "reconnected-client".into();
+    std::fs::write(&path, catalog.to_string()).unwrap();
+    assert!(model_catalog(&all, &selected).is_ok());
+    let changes = change_models(
+        &all,
+        &selected,
+        &snapshot.bindings,
+        "route-oauth",
+        Some("high"),
+    )
+    .unwrap();
+    assert!(
+        changes[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("since its choices were loaded")
+    );
+    assert!(!tmp.path().join("calls").exists());
+
+    let new_session = "session_fox_2_ab";
+    catalog["session_id"] = new_session.into();
+    std::fs::write(
+        tmp.path()
+            .join("client_sessions")
+            .join(all[0].process.sid.to_string()),
+        new_session,
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join(format!("{new_session}.json")),
+        catalog.to_string(),
+    )
+    .unwrap();
+    assert!(model_catalog(&all, &selected).is_ok());
+    let changes = change_models(
+        &all,
+        &selected,
+        &snapshot.bindings,
+        "route-oauth",
+        Some("high"),
+    )
+    .unwrap();
+    assert!(
+        changes[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("since its choices were loaded")
+    );
+    assert!(!tmp.path().join("calls").exists());
+
+    catalog["choices"] = serde_json::json!([native_choice("route-oauth", "oauth", &[])]);
+    std::fs::write(
+        tmp.path().join(format!("{new_session}.json")),
+        catalog.to_string(),
+    )
+    .unwrap();
+    let snapshot = model_catalog(&all, &selected).unwrap();
+    let changes = change_models(&all, &selected, &snapshot.bindings, "route-oauth", None).unwrap();
+    assert!(
+        changes[0].error.is_none(),
+        "native routes without a level step may retain their default effort"
+    );
+}
+
+#[test]
 fn invalid_input_and_stale_selection_never_launch_a_command() {
     let tmp = tempfile::tempdir().unwrap();
     let all = vec![target("a", tmp.path(), 999_999_999)];
+    let bindings = BTreeMap::new();
     for id in ["", "model\nnext", "model\u{1b}"] {
-        assert!(change_models(&all, &selection(&all, &["a"]), id, None).is_err());
+        assert!(change_models(&all, &selection(&all, &["a"]), &bindings, id, None).is_err());
     }
-    assert!(change_models(&all, &BTreeMap::new(), "route", None).is_err());
+    assert!(change_models(&all, &BTreeMap::new(), &bindings, "route", None).is_err());
     let selected = BTreeMap::from([
         ("missing".into(), "old-run".into()),
         ("a".into(), "old-run".into()),
     ]);
-    let outcomes = change_models(&all, &selected, "route", None).unwrap();
+    let outcomes = change_models(&all, &selected, &bindings, "route", None).unwrap();
     assert!(outcomes.iter().all(|outcome| {
         outcome
             .error

@@ -38,6 +38,7 @@ pub(crate) struct ModelsPrompt {
     pub(super) targets: Vec<ModelTarget>,
     pub(super) selected: HashSet<String>,
     pub(super) choices: Vec<ModelChoice>,
+    pub(super) bindings: BTreeMap<String, String>,
     pub(super) choice: Option<usize>,
     pub(super) reasoning: Option<String>,
     pub(super) picking: Option<ModelsPicker>,
@@ -55,6 +56,7 @@ impl ModelsPrompt {
             targets,
             selected: HashSet::new(),
             choices: Vec::new(),
+            bindings: BTreeMap::new(),
             choice: None,
             reasoning: None,
             picking: None,
@@ -137,6 +139,7 @@ impl ModelsPrompt {
             _ => return,
         }
         self.choices.clear();
+        self.bindings.clear();
         self.choice = None;
         self.reasoning = None;
         self.error = None;
@@ -166,6 +169,7 @@ impl App {
         let reasoning = prompt.reasoning.clone();
         let targets = self.engine.jcode_model_targets();
         let selected = prompt.selected_runs();
+        let bindings = prompt.bindings.clone();
         prompt.busy = true;
         prompt.error = None;
         self.spawn_ui_job(
@@ -173,7 +177,15 @@ impl App {
                 busy: "Changing the selected jcode models...".into(),
                 stopped: "The model worker stopped. Check models in jcode before retrying.".into(),
             },
-            move || change_models(&targets, &selected, &choice_id, reasoning.as_deref()),
+            move || {
+                change_models(
+                    &targets,
+                    &selected,
+                    &bindings,
+                    &choice_id,
+                    reasoning.as_deref(),
+                )
+            },
             App::finish_jcode_models,
         );
     }
@@ -312,8 +324,9 @@ impl App {
                 && let ModelsFocus::Target(index) = focus
             {
                 picker.selected = index;
+            } else {
+                prompt.focus = focus;
             }
-            prompt.focus = focus;
         }
         self.activate_jcode_models_focus();
     }

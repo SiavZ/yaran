@@ -33,6 +33,7 @@ async fn targets(State(state): State<AppState>) -> Response {
 #[derive(Deserialize)]
 struct ChangeBody {
     runs: BTreeMap<String, String>,
+    bindings: BTreeMap<String, String>,
     choice_id: String,
     reasoning_effort: Option<String>,
 }
@@ -49,6 +50,7 @@ async fn change(State(state): State<AppState>, Json(body): Json<ChangeBody>) -> 
         change_models(
             &targets,
             &body.runs,
+            &body.bindings,
             &body.choice_id,
             body.reasoning_effort.as_deref(),
         )

@@ -45,6 +45,19 @@ struct NativeCatalog {
     session_id: String,
 }
 
+/// Shared native choices and the client bindings captured while loading them.
+#[derive(Clone, Debug, Serialize)]
+pub struct ModelCatalog {
+    /// Exact native routes shared by the selected clients.
+    pub choices: Vec<ModelChoice>,
+    /// Opaque comparison values; these are never used to address a client.
+    pub bindings: BTreeMap<String, String>,
+}
+
+pub(super) fn binding(session: &str, client: &str) -> String {
+    serde_json::json!([session, client]).to_string()
+}
+
 pub(super) fn choices_for_target(
     target: &ModelTarget,
 ) -> Result<(String, String, Vec<ModelChoice>)> {
@@ -71,19 +84,21 @@ pub(super) fn choices_for_target(
 pub fn model_catalog(
     all: &[ModelTarget],
     selected: &BTreeMap<String, String>,
-) -> Result<Vec<ModelChoice>> {
+) -> Result<ModelCatalog> {
     if selected.is_empty() {
         bail!("Select running jcode tabs first.");
     }
     let mut common: Option<Vec<ModelChoice>> = None;
+    let mut bindings = BTreeMap::new();
     for (id, run) in selected {
         let target = selected_target(all, id, run)?;
-        let (_, _, choices) = choices_for_target(target).map_err(|error| {
+        let (session, client, choices) = choices_for_target(target).map_err(|error| {
             anyhow::anyhow!(
                 "Could not load model choices for {} ({id}): {error:#}",
                 target.label
             )
         })?;
+        bindings.insert(id.clone(), binding(&session, &client));
         if let Some(common) = &mut common {
             common.retain_mut(|choice| {
                 let Some(other) = choices.iter().find(|other| other.id == choice.id) else {
@@ -122,5 +137,8 @@ pub fn model_catalog(
             common = Some(choices);
         }
     }
-    Ok(common.unwrap_or_default())
+    Ok(ModelCatalog {
+        choices: common.unwrap_or_default(),
+        bindings,
+    })
 }

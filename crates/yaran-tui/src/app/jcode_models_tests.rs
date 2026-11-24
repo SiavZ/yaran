@@ -162,6 +162,41 @@ fn native_model_provider_and_reasoning_choices_stay_together() {
 }
 
 #[test]
+fn unavailable_picker_rows_never_become_form_target_indices() {
+    let mut app = test_app(default_bindings());
+    let tmp = tempfile::tempdir().unwrap();
+    seed_running_jcodes(&mut app, tmp.path());
+    app.open_jcode_models();
+    let PromptState::JcodeModels(prompt) = &mut app.prompt else {
+        panic!("models form");
+    };
+    prompt.focus = ModelsFocus::Model;
+    prompt.selected = prompt
+        .targets
+        .iter()
+        .map(|target| target.tab_id.clone())
+        .collect();
+    prompt.choices = (0..3).map(|id| serde_json::from_value(serde_json::json!({
+        "id": id.to_string(), "name": "Unavailable model", "provider": "Native", "api_method": "api", "available": false,
+        "detail": "Unavailable", "reasoning_effort": null, "reasoning_levels": [], "selection": {}
+    })).unwrap()).collect();
+    prompt.picking = Some(ModelsPicker {
+        kind: ModelsPickerKind::Model,
+        filter: TextInput::new(),
+        selected: 0,
+    });
+    app.press_jcode_models_focus(ModelsFocus::Target(2));
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let PromptState::JcodeModels(prompt) = &app.prompt else {
+        panic!("models form");
+    };
+    assert_eq!(prompt.focus, ModelsFocus::Model);
+    assert!(prompt.picking.is_none());
+    assert_eq!(prompt.selected.len(), 2);
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+#[test]
 fn mouse_reaches_hidden_targets_and_results_keep_each_tab_failure_readable() {
     use ratatui::{
         Terminal,

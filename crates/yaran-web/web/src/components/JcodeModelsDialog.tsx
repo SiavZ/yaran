@@ -22,6 +22,7 @@ function Body({ busy, setBusy }: { busy: boolean; setBusy: (busy: boolean) => vo
   const [targets, setTargets] = useState<ModelTarget[] | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [choices, setChoices] = useState<ModelChoice[] | null>([])
+  const [bindings, setBindings] = useState<Record<string, string>>({})
   const [choiceId, setChoiceId] = useState("")
   const [reasoning, setReasoning] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -40,8 +41,8 @@ function Body({ busy, setBusy }: { busy: boolean; setBusy: (busy: boolean) => vo
   useEffect(() => {
     if (!Object.keys(runs).length) return
     const controller = new AbortController()
-    void jcodeModelsApi.catalog(runs, controller.signal).then(choices => {
-      if (!controller.signal.aborted) setChoices(choices)
+    void jcodeModelsApi.catalog(runs, controller.signal).then(catalog => {
+      if (!controller.signal.aborted) { setChoices(catalog.choices); setBindings(catalog.bindings) }
     }).catch(error => {
       if (!controller.signal.aborted) { setChoices([]); setError(String(error)) }
     })
@@ -51,6 +52,7 @@ function Body({ busy, setBusy }: { busy: boolean; setBusy: (busy: boolean) => vo
   function selectTargets(next: Set<string>) {
     setSelected(next)
     setChoices(next.size ? null : [])
+    setBindings({})
     setChoiceId("")
     setReasoning(null)
     setError(null)
@@ -70,7 +72,7 @@ function Body({ busy, setBusy }: { busy: boolean; setBusy: (busy: boolean) => vo
     setError(null)
     setOutcomes([])
     try {
-      setOutcomes(await jcodeModelsApi.change(runs, choice.id, reasoning))
+      setOutcomes(await jcodeModelsApi.change(runs, bindings, choice.id, reasoning))
     } catch (error) {
       setError(String(error))
     } finally {

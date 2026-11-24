@@ -15,7 +15,7 @@ use crate::engine::Engine;
 
 #[path = "jcode_model_catalog.rs"]
 mod catalog;
-pub use catalog::{ModelChoice, ReasoningLevel, model_catalog};
+pub use catalog::{ModelCatalog, ModelChoice, ReasoningLevel, model_catalog};
 
 /// A running jcode tab offered by either surface.
 #[derive(Clone, Debug, Serialize)]
@@ -210,6 +210,7 @@ fn debug(
 pub fn change_models(
     all: &[ModelTarget],
     selected: &BTreeMap<String, String>,
+    bindings: &BTreeMap<String, String>,
     choice_id: &str,
     reasoning_effort: Option<&str>,
 ) -> Result<Vec<ModelChange>> {
@@ -231,6 +232,11 @@ pub fn change_models(
         let result = (|| {
             let target = selected_target(all, id, run_id)?;
             let (session, client, choices) = catalog::choices_for_target(target)?;
+            if bindings.get(id) != Some(&catalog::binding(&session, &client)) {
+                bail!(
+                    "This jcode reconnected or changed conversation since its choices were loaded. Reload the native model choices."
+                );
+            }
             let choice = choices.iter().find(|choice| choice.id == choice_id && choice.available)
                 .context("This exact model/provider route is unavailable in this jcode. Reload the choices.")?;
             if reasoning_effort.map_or(!choice.reasoning_levels.is_empty(), |effort| {
@@ -252,10 +258,11 @@ pub fn change_models(
             )?)
             .context("jcode did not acknowledge a model change.")?;
             if acknowledgement.get("id").and_then(|value| value.as_str()) != Some(choice_id)
-                || acknowledgement
-                    .get("reasoning_effort")
-                    .and_then(|value| value.as_str())
-                    != reasoning_effort
+                || reasoning_effort.is_some()
+                    && acknowledgement
+                        .get("reasoning_effort")
+                        .and_then(|value| value.as_str())
+                        != reasoning_effort
                 || acknowledgement
                     .get("model")
                     .and_then(|value| value.as_str())

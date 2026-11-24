@@ -23,6 +23,11 @@ export interface ModelChoice {
   reasoning_levels: { value: string; label: string }[]
 }
 
+export interface ModelCatalog {
+  choices: ModelChoice[]
+  bindings: Record<string, string>
+}
+
 async function response<T>(request: Promise<Response>): Promise<T> {
   const result = await request
   if (!result.ok) throw new Error(await result.text())
@@ -31,14 +36,14 @@ async function response<T>(request: Promise<Response>): Promise<T> {
 
 export const jcodeModelsApi = {
   targets: (signal?: AbortSignal) => response<ModelTarget[]>(apiFetch("/api/v1/jcode/models", { signal })),
-  catalog: (runs: Record<string, string>, signal?: AbortSignal) => response<ModelChoice[]>(apiFetch("/api/v1/jcode/models/catalog", {
+  catalog: (runs: Record<string, string>, signal?: AbortSignal) => response<ModelCatalog>(apiFetch("/api/v1/jcode/models/catalog", {
     method: "POST", signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ runs }),
   })),
-  change: (runs: Record<string, string>, choice_id: string, reasoning_effort: string | null) => response<ModelChange[]>(apiFetch("/api/v1/jcode/models", {
+  change: (runs: Record<string, string>, bindings: Record<string, string>, choice_id: string, reasoning_effort: string | null) => response<ModelChange[]>(apiFetch("/api/v1/jcode/models", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ runs, choice_id, reasoning_effort }),
+    body: JSON.stringify({ runs, bindings, choice_id, reasoning_effort }),
   })),
 }
