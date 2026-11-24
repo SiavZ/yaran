@@ -93,6 +93,13 @@ it("uses theme colors for a visible cursor and removes it when the app hides it"
   await waitFor(() => expect(caret()).not.toBeNull())
 })
 
+it("keeps real text that soft-wraps after a full source-grid decorative rule", async () => {
+  const view = mount()
+  await act(() => write(view.term, "─".repeat(120) + "Status: ready"))
+  await screen.findByText("Status: ready")
+  expect(screen.getByTestId("flow-terminal").querySelector("hr")).toBeNull()
+})
+
 it("maps both halves of a glyph to the same cell rather than the next caret boundary", async () => {
   const view = mount()
   await act(() => write(view.term, "abcd"))

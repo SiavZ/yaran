@@ -79,6 +79,7 @@ export function FlowTerminal({ termRef, interactionsRef, focusInput, fontFamily,
       if (!term || !root || disposed) return
       const selection = root.ownerDocument.getSelection()
       if (selection && !selection.isCollapsed && root.contains(selection.anchorNode)) return
+      if (historyAnchor.current === null) following.current = root.scrollHeight - root.scrollTop - root.clientHeight < 24
       setScreen(terminalFlowScreen(term, historyRows, interactionsRef.current?.cursorVisible?.() ?? true))
     }
     const schedule = () => {
@@ -172,6 +173,7 @@ export function FlowTerminal({ termRef, interactionsRef, focusInput, fontFamily,
     <div
       ref={rootRef}
       data-testid="flow-terminal"
+      data-terminal-flow=""
       className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-background p-2 text-foreground select-text"
       style={{ fontFamily: terminalFontFamily(fontFamily), fontSize: clampTerminalFontSize(fontSize), lineHeight: 1.5, WebkitUserSelect: "text", touchAction: "pan-y pinch-zoom" }}
       onScroll={() => {
@@ -188,7 +190,7 @@ export function FlowTerminal({ termRef, interactionsRef, focusInput, fontFamily,
         setHistoryRows((count) => count + 200)
       }}>Earlier output</Button> : null}
       <div role="log" aria-label="Terminal output">
-        {logicalRows(screen.rows).map((rows) => rows[0].rule ? (
+        {logicalRows(screen.rows).map((rows) => rows.length === 1 && rows[0].rule ? (
           <hr key={rows[0].row} className="my-1 border-border" />
         ) : (
           <div key={rows[0].row} className="min-h-[1.5em] whitespace-pre-wrap [overflow-wrap:anywhere]">

@@ -25,6 +25,7 @@ import {
 import { pasteClipboardText, pasteIntoTerm } from "@/lib/termClipboard"
 import type { PtySocket } from "@/lib/ptySocket"
 import { arrowSeq, ESC, pageKeySeq } from "@/lib/termkeys"
+import { terminalFlowViewport } from "@/lib/terminalFlow"
 import {
   dispatchMouseReplay,
   rectCenter,
@@ -358,7 +359,9 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
     if (altScreen) {
       forwardPageToApp(term, ptyRef.current, up)
     } else {
-      term.scrollPages(up ? -1 : 1)
+      const flow = terminalFlowViewport(term)
+      if (flow) flow.scrollTop += (up ? -1 : 1) * flow.clientHeight
+      else term.scrollPages(up ? -1 : 1)
     }
     // Only a touch device has a soft keyboard to dismiss; without the gate a
     // narrow-window mouse user silently loses terminal focus when paging. A

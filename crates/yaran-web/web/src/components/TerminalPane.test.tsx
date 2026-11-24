@@ -1583,6 +1583,16 @@ it.each([500, 900])("a native phone keeps independent output and input at %i CSS
     fireEvent.click(flow)
     expect(focus).toHaveBeenCalledOnce()
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
+    Object.defineProperties(flow, { scrollHeight: { value: 1200 }, clientHeight: { value: 300 } })
+    flow.scrollTop = 0
+    term.dataHandler?.("a")
+    expect(flow.scrollTop).toBe(1200)
+    if (phoneWidth === 500) {
+      fireEvent.click(screen.getByRole("button", { name: "Page up" }))
+      expect(flow.scrollTop).toBe(900)
+      fireEvent.click(screen.getByRole("button", { name: "Page down" }))
+      expect(flow.scrollTop).toBe(1200)
+    }
   } finally {
     cleanup()
     pointer.restore()

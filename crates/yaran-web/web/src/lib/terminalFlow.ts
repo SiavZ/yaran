@@ -7,6 +7,18 @@ export type FlowRun = { text: string; style: CSSProperties; cursor: boolean }
 export type FlowRow = { row: number; runs: FlowRun[]; wrapped: boolean; rule: boolean }
 export type FlowScreen = { rows: FlowRow[]; earlier: boolean; alternate: boolean }
 
+export function terminalFlowViewport(term: Pick<Terminal, "element">): HTMLElement | null {
+  return term.element?.closest("[data-terminal-pane]")?.querySelector<HTMLElement>("[data-terminal-flow]") ?? null
+}
+
+export function scrollFlowToBottom(term: Pick<Terminal, "element">): void {
+  const viewport = terminalFlowViewport(term)
+  if (!viewport) return
+  const selection = viewport.ownerDocument.getSelection()
+  if (selection && viewport.contains(selection.anchorNode)) selection.removeAllRanges()
+  viewport.scrollTop = viewport.scrollHeight
+}
+
 // xterm exposes cursor coordinates but not DECTCEM visibility through its buffer API.
 export function trackFlowCursor(term: Terminal) {
   let visible = true
