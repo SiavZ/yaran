@@ -882,9 +882,10 @@ after each tab launched, and matches the native catalog's client PID and convers
 Native control binds the choice to the same server-issued client connection and
 revalidates the exact offered provider route and reasoning level before mutation.
 It refuses reconnected, busy or ambiguous clients and SSH clients. Multiple jcodes
-in one folder remain separate targets. The authenticated web route takes tab ids
-and native choice ids, never a caller-supplied executable, socket path or native
-conversation id.
+in one folder remain separate targets. The authenticated web route takes tab/run
+ids, a native choice and reasoning level, and catalog bindings for comparison only.
+It addresses clients using fresh server-side lookups, never a caller-supplied
+executable, socket path or native conversation id.
 Debug control stays opt-in under the same-UID trust accepted in T2. The `jcode-amq` wrapper fails
 closed below a reviewed version floor and probes the version with
 `--no-update` so the probe itself cannot swap the binary. Every wrapped launch
