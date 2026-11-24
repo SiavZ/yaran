@@ -365,7 +365,7 @@ On a phone or tablet, **press and hold** on the terminal. The word under your fi
 
 - While your finger is down, the terminal stops following new output, so the text you are selecting stays where it is. It catches up with the output when you lift.
 - Drag past the top or bottom edge and the terminal keeps scrolling for as long as you hold there.
-- **Lift your finger and it is copied**, under the same `ui.copy_on_select` preference.
+- **Lift your finger and it is copied**, under the same `ui.copy_on_select` preference. Some browsers and the phone app refuse a copy that ends a drag; yaran then says it couldn't copy and offers a **Copy** button, and a tap on it copies the same text.
 - Press on blank space and nothing highlights; yaran tells you there is nothing to copy there.
 - If the terminal changes under your finger (the screen resizes, or a full-screen app opens or closes), nothing is copied and yaran says so; press again.
 - The highlight stays on the text you copied until the next tap clears it. If the terminal was following output, that text may scroll out of view as it catches up, highlight and all.
@@ -538,7 +538,7 @@ An **accessory bar** sits above the soft keyboard with the keys a phone keyboard
 
 ![The phone typing bar: two rows of terminal keys above a message box with a send button.](/screens/phone-compose-bar.png)
 
-Below it sits the **compose bar**: a real text box where you type the message and hit **Send**. This is where your keyboard's autocorrect, swipe typing, and voice input actually work.
+By default you type **straight into the terminal**, keystroke by keystroke, the way a terminal works anywhere else. If you would rather compose first, pick **Use virtual input** from the pane's `⋯` menu and a **compose bar** appears below the keys: a real text box where you type the message and hit **Send**. This is where your keyboard's autocorrect, swipe typing, and voice input actually work.
 
 - **Enter** adds a newline instead of submitting.
 - **Send** delivers the whole message and presses Enter for you.
@@ -557,20 +557,20 @@ Below it sits the **compose bar**: a real text box where you type the message an
 
 Whether the compose bar appears is the `ui.compose_bar` setting, a Preferences row with three values:
 
-- **Automatic** (the default) asks your browser whether you point at the screen with a finger, and uses the answer as the starting point. Your own choice from the typing-surface switch wins from then on.
-- **Always** and **Never** are for the device yaran guesses wrong on.
-- **Never** restores typing straight into the terminal. On a touch device it keeps the terminal keys, since a finger still cannot produce Esc or a Ctrl chord and there is no switch under **Never** to bring them back with. Only the message box goes.
+- **Automatic** (the default) starts every device typing straight into the terminal, phones included. Your own choice from the typing-surface switch wins from then on.
+- **Always** and **Never** decide for every device at once, and hide the switch.
+- **Never** means typing straight into the terminal with no way to the message box. On a touch device it keeps the terminal keys, since a finger still cannot produce Esc or a Ctrl chord and there is no switch under **Never** to bring them back with. Only the message box goes.
 
 > [!IMPORTANT]
-> **Width decides the layout; your pointer decides which typing surface you start with.**
+> **Width decides the layout; your pointer decides whether the terminal keys are offered.**
 >
-> A tablet in landscape gets the desktop panes *and* the accessory keys and compose box. A mouse on a narrow window starts with neither. Rotating a tablet never swaps your typing surface out from under you.
+> A tablet in landscape gets the desktop panes *and* the accessory keys. A mouse on a narrow window gets neither. Rotating a tablet never swaps your typing surface out from under you.
 
 ### The typing-surface switch
 
-What the browser cannot see is a keyboard case, so there is a **typing-surface switch**: **Type directly in the terminal**, and **Use virtual input** to come back. Both live in the **Input** group of the pane's own `⋯` menu (see below), always: the switch never moves, whatever is left under the terminal.
+There is a **typing-surface switch**: **Use virtual input** for the message box, and **Type directly in the terminal** to go back. Both live in the **Input** group of the pane's own `⋯` menu (see below), always: the switch never moves, whatever is left under the terminal.
 
-**Your choice wins, on any device, in both directions.** The pointer only decides where you start.
+**Your choice wins, on any device, in both directions.** Every device starts typing directly.
 
 - Ask for the message box on a laptop and you get it, keys and all, and while it is up your keystrokes go into the box rather than straight to the terminal.
 - Switching to Direct takes the **message box** away and leaves the terminal keys where they are. A phone keeps Esc, Tab and the Ctrl latch while every keystroke goes straight to the terminal: tap the virtual **Ctrl**, then press the letter on your keyboard.

@@ -208,86 +208,63 @@ describe("composeBarMode", () => {
 })
 
 describe("resolvedTypingSurface", () => {
-  // THE POINTER IS A DEFAULT, NOT A GATE. Nobody has chosen, so the capability
-  // answers: a finger gets the buffered box, a mouse types straight in.
-  it("falls back to the pointer while nothing has been chosen", () => {
-    expect(resolvedTypingSurface("auto", true, null)).toBe("compose")
-    expect(resolvedTypingSurface("auto", false, null)).toBe("direct")
+  // Typing goes straight into the terminal until somebody chooses otherwise, a
+  // phone included (the user's decision, 2026-11-24). There is no pointer in
+  // the signature: the pointer no longer picks the surface.
+  it("types straight into the terminal while nothing has been chosen", () => {
+    expect(resolvedTypingSurface("auto", null)).toBe("direct")
   })
 
-  // The whole point of the fix: an explicit choice wins on EVERY device, in
-  // both directions. Turning the message box on where the browser thinks it is
-  // not needed is allowed.
-  it("lets an explicit choice win in both directions on either pointer", () => {
-    expect(resolvedTypingSurface("auto", false, "compose")).toBe("compose")
-    expect(resolvedTypingSurface("auto", true, "direct")).toBe("direct")
-    expect(resolvedTypingSurface("auto", true, "compose")).toBe("compose")
-    expect(resolvedTypingSurface("auto", false, "direct")).toBe("direct")
+  // An explicit choice wins on EVERY device, in both directions.
+  it("lets an explicit choice win in both directions", () => {
+    expect(resolvedTypingSurface("auto", "compose")).toBe("compose")
+    expect(resolvedTypingSurface("auto", "direct")).toBe("direct")
   })
 
   // The SETTING is the configuration surface and it wins. A per-device toggle
   // must never quietly defeat something the operator wrote in config.
   it("lets always and never win over the device-local choice", () => {
-    expect(resolvedTypingSurface("always", false, "direct")).toBe("compose")
-    expect(resolvedTypingSurface("never", true, "compose")).toBe("direct")
+    expect(resolvedTypingSurface("always", "direct")).toBe("compose")
+    expect(resolvedTypingSurface("never", "compose")).toBe("direct")
   })
 })
 
-// EVERY STATE OF THE RESOLVED RULE, as a table. Three modes times two pointer
-// answers times three choices is small enough to write out in full, and written
-// out in full a changed arm shows up as a row that disagrees rather than as a
-// case nobody thought to add. The prose tests above say WHY each arm is what it
-// is; this says WHAT, exhaustively.
+// EVERY STATE OF THE RESOLVED RULE, as a table. Three modes times three
+// choices, written out in full so a changed arm shows up as a row that
+// disagrees rather than as a case nobody thought to add.
 describe("resolvedTypingSurface over every state", () => {
-  const table: [
-    ComposeBarMode,
-    boolean,
-    TypingSurfaceChoice | null,
-    TypingSurfaceChoice,
-  ][] = [
-    // The setting has decided; neither the pointer nor the choice is consulted.
-    ["always", false, null, "compose"],
-    ["always", false, "compose", "compose"],
-    ["always", false, "direct", "compose"],
-    ["always", true, null, "compose"],
-    ["always", true, "compose", "compose"],
-    ["always", true, "direct", "compose"],
-    ["never", false, null, "direct"],
-    ["never", false, "compose", "direct"],
-    ["never", false, "direct", "direct"],
-    ["never", true, null, "direct"],
-    ["never", true, "compose", "direct"],
-    ["never", true, "direct", "direct"],
-    // `auto` means work it out: the person first, the browser second.
-    ["auto", false, null, "direct"],
-    ["auto", false, "compose", "compose"],
-    ["auto", false, "direct", "direct"],
-    ["auto", true, null, "compose"],
-    ["auto", true, "compose", "compose"],
-    ["auto", true, "direct", "direct"],
+  const table: [ComposeBarMode, TypingSurfaceChoice | null, TypingSurfaceChoice][] = [
+    // The setting has decided; the choice is not consulted.
+    ["always", null, "compose"],
+    ["always", "compose", "compose"],
+    ["always", "direct", "compose"],
+    ["never", null, "direct"],
+    ["never", "compose", "direct"],
+    ["never", "direct", "direct"],
+    // `auto` means the person decides, and nobody deciding means direct.
+    ["auto", null, "direct"],
+    ["auto", "compose", "compose"],
+    ["auto", "direct", "direct"],
   ]
 
-  it.each(table)(
-    "%s with coarse=%s and choice %s resolves to %s",
-    (mode, coarsePointer, choice, expected) => {
-      expect(resolvedTypingSurface(mode, coarsePointer, choice)).toBe(expected)
-      // The two readers of the rule agree with it by construction, and this is
-      // what keeps that true if either ever grows a condition of its own.
-      expect(composeBarShown(mode, coarsePointer, choice)).toBe(
-        expected === "compose",
-      )
-    },
-  )
+  it.each(table)("%s with choice %s resolves to %s", (mode, choice, expected) => {
+    expect(resolvedTypingSurface(mode, choice)).toBe(expected)
+    // The two readers of the rule agree with it by construction, and this is
+    // what keeps that true if either ever grows a condition of its own.
+    expect(composeBarShown(mode, choice)).toBe(expected === "compose")
+  })
 })
 
 // THE TWO ORTHOGONAL QUESTIONS. Width decides the LAYOUT (how much room is
-// there, so which shell you get). The POINTER decides the DEFAULT TYPING
-// SURFACE (is a finger doing the typing, so does the text need a buffer
-// autocorrect and swipe can work in). These helpers answer only the second one,
-// and nothing here has a width in it.
+// there, so which shell you get). The POINTER decides whether the KEY ROW is on
+// offer (a finger has no Esc, Tab or Ctrl). These helpers answer only the
+// second one, and nothing here has a width in it.
 describe("terminalKeysApply", () => {
+  // A phone with nothing chosen types directly but still gets the key row,
+  // since a soft keyboard has no Esc, Tab or Ctrl.
   it("is up wherever the pointer is coarse and nothing has been chosen", () => {
     expect(terminalKeysApply("auto", true, null)).toBe(true)
+    expect(composeBarShown("auto", null)).toBe(false)
   })
 
   it("is down for a fine pointer unless the user or the setting asked", () => {
@@ -308,12 +285,12 @@ describe("terminalKeysApply", () => {
   // while a physical keyboard types the letter is a real way to work.
   it("keeps the keys on a phone that chose direct typing", () => {
     expect(terminalKeysApply("auto", true, "direct")).toBe(true)
-    expect(composeBarShown("auto", true, "direct")).toBe(false)
+    expect(composeBarShown("auto", "direct")).toBe(false)
   })
 
   it("keeps the keys on a phone whose compose box is switched off", () => {
     expect(terminalKeysApply("never", true, null)).toBe(true)
-    expect(composeBarShown("never", true, null)).toBe(false)
+    expect(composeBarShown("never", null)).toBe(false)
     expect(terminalKeysApply("never", true, "direct")).toBe(true)
   })
 
@@ -325,7 +302,7 @@ describe("terminalKeysApply", () => {
       choice: "compose" | "direct" | null,
       keysVisible: boolean,
     ) => ({
-      box: composeBarShown("auto", coarse, choice),
+      box: composeBarShown("auto", choice),
       keys: keysVisible && terminalKeysApply("auto", coarse, choice),
     })
     expect(state(true, "compose", true)).toEqual({ box: true, keys: true })
@@ -340,11 +317,11 @@ describe("terminalKeysApply", () => {
   // and whatever the choice, the two answers are the same answer.
   it("collapses onto the message box wherever the pointer is fine", () => {
     const modes: ComposeBarMode[] = ["auto", "always", "never"]
-    const choices: TypingSurfaceChoice[] = [null, "compose", "direct"]
+    const choices: (TypingSurfaceChoice | null)[] = [null, "compose", "direct"]
     for (const mode of modes) {
       for (const choice of choices) {
         expect(terminalKeysApply(mode, false, choice)).toBe(
-          composeBarShown(mode, false, choice),
+          composeBarShown(mode, choice),
         )
       }
     }
@@ -354,8 +331,8 @@ describe("terminalKeysApply", () => {
   // of them: that is the state a finger holds a virtual Ctrl in, and a laptop
   // has a real one.
   it("spans two states on a fine pointer, keys-alone not among them", () => {
-    const state = (choice: TypingSurfaceChoice, keysVisible: boolean) => ({
-      box: composeBarShown("auto", false, choice),
+    const state = (choice: TypingSurfaceChoice | null, keysVisible: boolean) => ({
+      box: composeBarShown("auto", choice),
       keys: keysVisible && terminalKeysApply("auto", false, choice),
     })
     expect(state("compose", true)).toEqual({ box: true, keys: true })
@@ -366,21 +343,18 @@ describe("terminalKeysApply", () => {
 })
 
 describe("composeBarShown", () => {
-  it("follows the pointer while nothing has been chosen on this device", () => {
-    expect(composeBarShown("auto", true, null)).toBe(true)
-    expect(composeBarShown("auto", false, null)).toBe(false)
+  it("is off while nothing has been chosen on this device", () => {
+    expect(composeBarShown("auto", null)).toBe(false)
   })
 
   it("lets the device-local choice flip the surface in both directions", () => {
-    expect(composeBarShown("auto", true, "direct")).toBe(false)
-    expect(composeBarShown("auto", false, "compose")).toBe(true)
+    expect(composeBarShown("auto", "compose")).toBe(true)
+    expect(composeBarShown("auto", "direct")).toBe(false)
   })
 
   it("lets always and never win over the device-local choice", () => {
-    expect(composeBarShown("always", true, "direct")).toBe(true)
-    expect(composeBarShown("always", false, "direct")).toBe(true)
-    expect(composeBarShown("never", true, "compose")).toBe(false)
-    expect(composeBarShown("never", false, "compose")).toBe(false)
+    expect(composeBarShown("always", "direct")).toBe(true)
+    expect(composeBarShown("never", "compose")).toBe(false)
   })
 })
 

@@ -27,6 +27,7 @@ import {
 } from "@/test/matchMedia"
 import { GLYPH_SPINNER_CLASS, SPINNER_FRAMES } from "@/lib/spinnerFrames"
 import { usePaneInputGroup } from "@/lib/paneInputGroup"
+import { setTypingSurface } from "@/lib/typingSurface"
 import {
   paneCoverOwnedFor,
   resetPaneCovers,
@@ -643,6 +644,7 @@ function last(): FakePtySocket {
 
 beforeEach(() => {
   resetComposeDrafts()
+  setTypingSurface(null)
   FakePtySocket.instances = []
   TermStub.instances = []
   FitStub.fits = 0
@@ -1116,13 +1118,9 @@ describe("TerminalPane macro trigger", () => {
 // breakpoint is how these tests mount the mobile shell.
 describe("TerminalPane mobile compose bar", () => {
   const desktopWidth = window.innerWidth
-  // `goMobile` now means "the phone SHELL is up AND touch is the primary
-  // pointer". Those are two different signals since the compose bar moved off
-  // the width breakpoint: width still drives the mobile layout, but the
-  // compose bar itself is gated on `pointer: coarse` (see
-  // `hooks/use-coarse-pointer.ts`). Real phones report both, so these suites
-  // set both; the tests that pull them APART live in the compose-bar gate
-  // suite at the end of this file.
+  // `goMobile` means a phone: its shell (width), a finger (`pointer: coarse`),
+  // and the message box chosen on this device, since typing goes straight into
+  // the terminal until somebody picks the box. The gate suite pulls them apart.
   let pointerStub: MatchMediaStub | null = null
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", {
@@ -1130,6 +1128,7 @@ describe("TerminalPane mobile compose bar", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -1331,13 +1330,9 @@ describe("TerminalPane mobile compose bar", () => {
 // the typing surface having had focus when the tap landed.
 describe("TerminalPane accessory keys preserve the keyboard state", () => {
   const desktopWidth = window.innerWidth
-  // `goMobile` now means "the phone SHELL is up AND touch is the primary
-  // pointer". Those are two different signals since the compose bar moved off
-  // the width breakpoint: width still drives the mobile layout, but the
-  // compose bar itself is gated on `pointer: coarse` (see
-  // `hooks/use-coarse-pointer.ts`). Real phones report both, so these suites
-  // set both; the tests that pull them APART live in the compose-bar gate
-  // suite at the end of this file.
+  // `goMobile` means a phone: its shell (width), a finger (`pointer: coarse`),
+  // and the message box chosen on this device, since typing goes straight into
+  // the terminal until somebody picks the box. The gate suite pulls them apart.
   let pointerStub: MatchMediaStub | null = null
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", {
@@ -1345,6 +1340,7 @@ describe("TerminalPane accessory keys preserve the keyboard state", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -1433,13 +1429,9 @@ const composeSink = () => paneMacroTargetFor("s1")?.compose ?? null
 
 describe("TerminalPane compose macro insert sink", () => {
   const desktopWidth = window.innerWidth
-  // `goMobile` now means "the phone SHELL is up AND touch is the primary
-  // pointer". Those are two different signals since the compose bar moved off
-  // the width breakpoint: width still drives the mobile layout, but the
-  // compose bar itself is gated on `pointer: coarse` (see
-  // `hooks/use-coarse-pointer.ts`). Real phones report both, so these suites
-  // set both; the tests that pull them APART live in the compose-bar gate
-  // suite at the end of this file.
+  // `goMobile` means a phone: its shell (width), a finger (`pointer: coarse`),
+  // and the message box chosen on this device, since typing goes straight into
+  // the terminal until somebody picks the box. The gate suite pulls them apart.
   let pointerStub: MatchMediaStub | null = null
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", {
@@ -1447,6 +1439,7 @@ describe("TerminalPane compose macro insert sink", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -1571,13 +1564,9 @@ describe.each([
 // empty once the finger lifts).
 describe("TerminalPane tap-to-focus redirect", () => {
   const desktopWidth = window.innerWidth
-  // `goMobile` now means "the phone SHELL is up AND touch is the primary
-  // pointer". Those are two different signals since the compose bar moved off
-  // the width breakpoint: width still drives the mobile layout, but the
-  // compose bar itself is gated on `pointer: coarse` (see
-  // `hooks/use-coarse-pointer.ts`). Real phones report both, so these suites
-  // set both; the tests that pull them APART live in the compose-bar gate
-  // suite at the end of this file.
+  // `goMobile` means a phone: its shell (width), a finger (`pointer: coarse`),
+  // and the message box chosen on this device, since typing goes straight into
+  // the terminal until somebody picks the box. The gate suite pulls them apart.
   let pointerStub: MatchMediaStub | null = null
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", {
@@ -1585,6 +1574,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -1817,13 +1807,9 @@ describe("TerminalPane forwards a touch drag as wheel reports", () => {
 
 describe("TerminalPane mobile accessory-bar preference", () => {
   const desktopWidth = window.innerWidth
-  // `goMobile` now means "the phone SHELL is up AND touch is the primary
-  // pointer". Those are two different signals since the compose bar moved off
-  // the width breakpoint: width still drives the mobile layout, but the
-  // compose bar itself is gated on `pointer: coarse` (see
-  // `hooks/use-coarse-pointer.ts`). Real phones report both, so these suites
-  // set both; the tests that pull them APART live in the compose-bar gate
-  // suite at the end of this file.
+  // `goMobile` means a phone: its shell (width), a finger (`pointer: coarse`),
+  // and the message box chosen on this device, since typing goes straight into
+  // the terminal until somebody picks the box. The gate suite pulls them apart.
   let pointerStub: MatchMediaStub | null = null
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", {
@@ -1831,6 +1817,7 @@ describe("TerminalPane mobile accessory-bar preference", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -1876,10 +1863,9 @@ describe("TerminalPane mobile accessory-bar preference", () => {
 // terminal carry the message box and the terminal keys and nothing else.
 describe("TerminalPane has no menu under the terminal", () => {
   const desktopWidth = window.innerWidth
-  // `goMobile` means "the phone SHELL is up AND touch is the primary pointer".
-  // Those are two different signals since the compose bar moved off the width
-  // breakpoint: width still drives the mobile layout, but the typing surfaces
-  // are gated on `pointer: coarse`. Real phones report both.
+  // `goMobile` means a phone: its shell (width), a finger (`pointer: coarse`),
+  // and the message box chosen on this device, since typing goes straight into
+  // the terminal until somebody picks the box. The gate suite pulls them apart.
   let pointerStub: MatchMediaStub | null = null
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", {
@@ -1887,6 +1873,7 @@ describe("TerminalPane has no menu under the terminal", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(async () => {
     Object.defineProperty(window, "innerWidth", {
@@ -2616,16 +2603,13 @@ describe("TerminalPane reports every local re-grid to the PTY", () => {
   })
 })
 
-// THE COMPOSE-BAR GATE. The bar used to carry its own `useIsMobile()` width
-// check, so its visibility had a SECOND width opinion on top of the shell's. It
-// is now gated on the three-way `ui.compose_bar` mode resolved against
-// `pointer: coarse`.
+// THE COMPOSE-BAR GATE: the three-way `ui.compose_bar` mode resolved against
+// this device's choice. Under `auto` typing goes straight into the terminal on
+// every device until somebody picks the box (the user's decision, 2026-11-24),
+// so neither the pointer nor the width decides it.
 //
-// SCOPE: this decides the BAR, not the mobile SHELL. The pane still returns the
-// desktop layout above the 768px breakpoint (that early return is layout, and
-// is deliberately untouched), so these tests hold the width inside the mobile
-// range and vary the pointer and the mode, which is exactly the axis the gate
-// now owns. The one test that varies width does so within that range.
+// SCOPE: this decides the BAR, not the mobile SHELL, so these tests hold the
+// width inside the mobile range and vary the pointer, the mode and the choice.
 describe("TerminalPane compose bar gate", () => {
   const desktopWidth = window.innerWidth
   let pointerStub: MatchMediaStub | null = null
@@ -2649,33 +2633,27 @@ describe("TerminalPane compose bar gate", () => {
   const barIsUp = () =>
     screen.queryByRole("textbox", { name: "Message" }) !== null
 
-  it("shows the bar on a coarse pointer and hides it on a fine one", () => {
-    pointerStub = stubCoarsePointer(true)
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(barIsUp()).toBe(true)
-
-    cleanup()
-    pointerStub.restore()
-    pointerStub = stubCoarsePointer(false)
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(barIsUp()).toBe(false)
+  it("shows no bar under auto with nothing chosen, on either pointer", () => {
+    for (const coarse of [true, false]) {
+      pointerStub?.restore()
+      pointerStub = stubCoarsePointer(coarse)
+      render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+      expect(barIsUp(), `coarse=${coarse}`).toBe(false)
+      cleanup()
+    }
   })
 
-  // THE REGRESSION. Same device, same pointer, four widths inside the mobile
-  // range. The answer must not move. Under the old gate the bar was tied to a
-  // width comparison of its own; now the only thing that decides it is the
-  // pointer.
+  // THE REGRESSION. Same device, same choice, four widths inside the mobile
+  // range. The answer must not move: no width comparison decides the bar.
   it("does NOT change when only the viewport width changes", () => {
-    for (const coarse of [true, false]) {
+    for (const choice of [null, "compose"] as const) {
       for (const width of [760, 640, 500, 320]) {
         pointerStub?.restore()
-        pointerStub = stubCoarsePointer(coarse)
+        pointerStub = stubCoarsePointer(true)
+        setTypingSurface(choice)
         setWidth(width)
         render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-        expect(
-          barIsUp(),
-          `coarse=${coarse} width=${width}: the bar must follow the pointer, not the width`
-        ).toBe(coarse)
+        expect(barIsUp(), `choice=${choice} width=${width}`).toBe(choice === "compose")
         cleanup()
       }
     }
@@ -2693,51 +2671,52 @@ describe("TerminalPane compose bar gate", () => {
   // A tablet with a keyboard case and one without are INDISTINGUISHABLE to the
   // browser (measured), so the user must be able to override the capability
   // answer in both directions. That is the entire reason this is not a bool.
-  it("'always' shows the bar even on a fine pointer", () => {
+  it("'always' shows the bar even on a fine pointer that chose direct", () => {
     pointerStub = stubCoarsePointer(false)
+    setTypingSurface("direct")
     withMode("always")
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(barIsUp()).toBe(true)
   })
 
-  it("'never' hides the bar even on a coarse pointer", () => {
+  it("'never' hides the bar even on a coarse pointer that chose the box", () => {
     pointerStub = stubCoarsePointer(true)
+    setTypingSurface("compose")
     withMode("never")
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(barIsUp()).toBe(false)
   })
 
-  it("'auto' defers to the pointer in both directions", () => {
-    pointerStub = stubCoarsePointer(true)
-    withMode("auto")
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(barIsUp()).toBe(true)
-
-    cleanup()
-    pointerStub.restore()
-    pointerStub = stubCoarsePointer(false)
-    withMode("auto")
-    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(barIsUp()).toBe(false)
+  it("'auto' follows the device's choice in both directions on either pointer", () => {
+    for (const coarse of [true, false]) {
+      for (const choice of ["compose", "direct"] as const) {
+        pointerStub?.restore()
+        pointerStub = stubCoarsePointer(coarse)
+        setTypingSurface(choice)
+        withMode("auto")
+        render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+        expect(barIsUp(), `coarse=${coarse} choice=${choice}`).toBe(choice === "compose")
+        cleanup()
+      }
+    }
   })
 
-  // An older server omits the field entirely; it must behave as "auto" rather
-  // than as "off".
+  // An older server omits the field entirely; it must behave as "auto" (the
+  // choice is honoured) rather than as "never".
   it("treats an absent mode as auto", () => {
     pointerStub = stubCoarsePointer(true)
     withMode(undefined)
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    expect(barIsUp()).toBe(false)
+    act(() => setTypingSurface("compose"))
     expect(barIsUp()).toBe(true)
   })
 })
 
-// WIDTH DECIDES THE LAYOUT; THE POINTER DECIDES THE TYPING SURFACE. The two
-// are orthogonal, and treating them as one question was the bug: a tablet in
-// landscape gets the DESKTOP shell because it has the room, and still needs the
-// buffered input because a finger is still doing the typing. So both touch
-// surfaces (the compose bar and the accessory keys) travel with the pointer,
-// including inside the desktop shell, which was impossible before.
-describe("TerminalPane typing surfaces follow the pointer, not the layout", () => {
+// WIDTH DECIDES THE LAYOUT, NEVER THE TYPING SURFACES. A tablet in landscape
+// gets the DESKTOP shell because it has the room, and a finger still gets the
+// key row there; the message box comes up wherever this device chose it.
+describe("TerminalPane typing surfaces follow the pointer and the choice, not the layout", () => {
   const desktopWidth = 1200
   let pointerStub: MatchMediaStub | null = null
 
@@ -2776,6 +2755,7 @@ describe("TerminalPane typing surfaces follow the pointer, not the layout", () =
 
   it("puts the terminal pane and touch rows under one column on a coarse desktop", () => {
     pointerStub = stubCoarsePointer(true)
+    setTypingSurface("compose")
     const view = render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     const terminalPane = screen.getByTestId("terminal-container")
       .closest(".group")!
@@ -2790,10 +2770,11 @@ describe("TerminalPane typing surfaces follow the pointer, not the layout", () =
     expect(accessoryUp()).toBe(true)
   })
 
-  it("renders BOTH bars in the desktop shell on a coarse pointer", () => {
+  // A finger with nothing chosen types directly, keys row and all.
+  it("renders only the key row in the desktop shell on a coarse pointer", () => {
     pointerStub = stubCoarsePointer(true)
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
-    expect(composeUp()).toBe(true)
+    expect(composeUp()).toBe(false)
     expect(accessoryUp()).toBe(true)
   })
 
@@ -2807,6 +2788,7 @@ describe("TerminalPane typing surfaces follow the pointer, not the layout", () =
   // Whose grid the terminal has changes nothing about the typing surfaces.
   it("renders both while another page holds the size", () => {
     pointerStub = stubCoarsePointer(true)
+    setTypingSurface("compose")
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     act(() => notifyPtyOwner("s1", "conn-other"))
     expect(composeUp()).toBe(true)
@@ -2846,10 +2828,6 @@ describe("TerminalPane typing surfaces follow the pointer, not the layout", () =
 describe("TerminalPane inactive cursor style", () => {
   let pointerStub: MatchMediaStub | null = null
 
-  beforeEach(async () => {
-    const mod = await import("@/lib/typingSurface")
-    mod.setTypingSurface(null)
-  })
   afterEach(() => {
     pointerStub?.restore()
     pointerStub = null
@@ -2857,6 +2835,7 @@ describe("TerminalPane inactive cursor style", () => {
 
   it("opens solid when the compose bar is the typing surface", async () => {
     pointerStub = stubCoarsePointer(true)
+    setTypingSurface("compose")
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     await act(async () => {})
     expect(TermStub.instances.at(-1)!.options.cursorInactiveStyle).toBe("block")
@@ -2873,6 +2852,7 @@ describe("TerminalPane inactive cursor style", () => {
 
   it("follows the typing-surface toggle on the SAME terminal", async () => {
     pointerStub = stubCoarsePointer(true)
+    setTypingSurface("compose")
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     await act(async () => {})
     const term = TermStub.instances.at(-1)!
@@ -2899,6 +2879,7 @@ describe("TerminalPane compose placeholder follows the surface", () => {
 
   beforeEach(() => {
     pointerStub = stubCoarsePointer(true)
+    setTypingSurface("compose")
   })
   afterEach(() => {
     pointerStub?.restore()
@@ -2935,23 +2916,15 @@ describe("TerminalPane compose placeholder follows the surface", () => {
 })
 
 // WHAT THE PANE PUBLISHES for the top menu's Input group, which is the one home
-// of the surface switch and (on a computer) the keys row. The pointer is a
-// DEFAULT, not a gate: the switch is on offer wherever `compose_bar` is `auto`,
-// and the keys wherever a key row belongs on this device, shown or hidden.
+// of the surface switch and (on a computer) the keys row. The switch is on
+// offer wherever `compose_bar` is `auto`, and the keys wherever a key row
+// belongs on this device, shown or hidden.
 describe("TerminalPane publishes its input group", () => {
   let pointerStub: MatchMediaStub | null = null
 
-  beforeEach(async () => {
-    // A stored choice would decide the surface on its own; start every case with
-    // the decision back in the pointer's hands.
-    const mod = await import("@/lib/typingSurface")
-    mod.setTypingSurface(null)
-  })
-  afterEach(async () => {
+  afterEach(() => {
     pointerStub?.restore()
     pointerStub = null
-    const mod = await import("@/lib/typingSurface")
-    mod.setTypingSurface(null)
   })
 
   const hideAccessoryBar = () => {
@@ -2964,12 +2937,13 @@ describe("TerminalPane publishes its input group", () => {
 
   // One table: pointer x `compose_bar` mode x the device's choice x the keys
   // preference. Each expectation is worked out from what the surfaces ARE (the
-  // box is up under `always`, never under `never`, the pointer's default under
+  // box is up under `always`, never under `never`, only when chosen under
   // `auto`; a finger always has keys on offer, a laptop only beside the box),
   // not from the code under test.
   const cases = [
-    { name: "a finger, auto, nothing chosen", coarse: true, mode: "auto", choice: null, keysOn: true, want: { surfaceSwitch: true, composeSurface: true, keysToggle: true } },
-    { name: "a finger, keys hidden", coarse: true, mode: "auto", choice: null, keysOn: false, want: { surfaceSwitch: true, composeSurface: true, keysToggle: true } },
+    { name: "a finger, auto, nothing chosen", coarse: true, mode: "auto", choice: null, keysOn: true, want: { surfaceSwitch: true, composeSurface: false, keysToggle: true } },
+    { name: "a finger, keys hidden", coarse: true, mode: "auto", choice: null, keysOn: false, want: { surfaceSwitch: true, composeSurface: false, keysToggle: true } },
+    { name: "a finger that asked for the box", coarse: true, mode: "auto", choice: "compose", keysOn: true, want: { surfaceSwitch: true, composeSurface: true, keysToggle: true } },
     { name: "a finger typing directly", coarse: true, mode: "auto", choice: "direct", keysOn: true, want: { surfaceSwitch: true, composeSurface: false, keysToggle: true } },
     { name: "a mouse, nothing chosen", coarse: false, mode: "auto", choice: null, keysOn: true, want: { surfaceSwitch: true, composeSurface: false, keysToggle: false } },
     { name: "a mouse that asked for the box", coarse: false, mode: "auto", choice: "compose", keysOn: true, want: { surfaceSwitch: true, composeSurface: true, keysToggle: true } },
@@ -3072,6 +3046,7 @@ describe("TerminalPane input group while another page holds the size", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   })
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -3100,10 +3075,10 @@ describe("TerminalPane input group while another page holds the size", () => {
 describe("TerminalPane typing-surface toggle", () => {
   let pointerStub: MatchMediaStub | null = null
 
-  beforeEach(async () => {
+  // The box starts up, as the device chose it, so each test flips away from it.
+  beforeEach(() => {
     pointerStub = stubCoarsePointer(true)
-    const mod = await import("@/lib/typingSurface")
-    mod.setTypingSurface(null)
+    setTypingSurface("compose")
   })
   afterEach(() => {
     pointerStub?.restore()
@@ -3591,6 +3566,7 @@ describe("TerminalPane long-press text selection", () => {
   it("does not raise the soft keyboard", () => {
     Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
     const pointer = stubCoarsePointer()
+    setTypingSurface("compose")
     try {
       render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
       const compose = screen.getByRole("textbox", { name: "Message" })
@@ -3624,6 +3600,7 @@ describe("TerminalPane long-press text selection", () => {
   it("moves no focus when Android follows the long press with a contextmenu", async () => {
     Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
     const pointer = stubCoarsePointer()
+    setTypingSurface("compose")
     try {
       render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
       const compose = screen.getByRole("textbox", { name: "Message" })
@@ -3989,6 +3966,7 @@ describe("TerminalPane compose draft survives a remount", () => {
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -4053,6 +4031,7 @@ describe("TerminalPane does not summon the keyboard before it has reconciled", (
   const goMobile = () => {
     Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -4112,6 +4091,7 @@ describe("TerminalPane and theater mode", () => {
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   }
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
@@ -4504,6 +4484,7 @@ describe("TerminalPane input group for the top menu", () => {
 
   it("carries no menu in the compose row when the box is up in theater", () => {
     pointerStub = stubCoarsePointer(true)
+    setTypingSurface("compose")
     mockState = { ...makeState(), theater: true } as YaranState
     paneWithProbe()
 
@@ -4518,6 +4499,7 @@ describe("TerminalPane input group for the top menu", () => {
 // into nothing, and the caret would claim the terminal is being typed into.
 describe("TerminalPane compose surface belongs to the owner", () => {
   let pointerStub: MatchMediaStub | null = null
+  beforeEach(() => setTypingSurface("compose"))
   afterEach(() => {
     pointerStub?.restore()
     pointerStub = null
@@ -4722,6 +4704,7 @@ describe("TerminalPane publishes its macro target", () => {
 // pin what changes once it has two.
 describe("TerminalStack with two parts", () => {
   let pointerStub: MatchMediaStub | null = null
+  beforeEach(() => setTypingSurface("compose"))
   afterEach(() => {
     pointerStub?.restore()
     pointerStub = null

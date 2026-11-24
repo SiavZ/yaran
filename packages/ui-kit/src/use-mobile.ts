@@ -17,6 +17,7 @@
  * ├── src/dropdown-menu.tsx
  * ├── src/popover.tsx
  * ├── src/sonner.tsx
+ * ├── src/use-mobile.test.tsx
  * ├── web:src/App.tsx
  * ├── web:src/components/AttachPullRequestDialog.tsx
  * ├── web:src/components/ChangedFiles.tsx
@@ -48,15 +49,24 @@ export const MOBILE_BREAKPOINT = 768
  */
 export function isMobileViewport(): boolean {
   if (typeof window === "undefined") return false
-  return window.innerWidth < MOBILE_BREAKPOINT
+  // The media query, not `innerWidth`: the CSS breakpoints answer from the layout
+  // viewport, while a phone's `innerWidth` follows pinch zoom and horizontal
+  // overflow and can read past the breakpoint, which painted the desktop shell
+  // on a phone. Only a browser without matchMedia (jsdom) reads the width.
+  if (typeof window.matchMedia !== "function") {
+    return window.innerWidth < MOBILE_BREAKPOINT
+  }
+  return window.matchMedia(MOBILE_QUERY).matches
 }
 
+const MOBILE_QUERY = `(max-width: ${MOBILE_BREAKPOINT - 1}px)`
+
 function subscribe(callback: () => void) {
-  // jsdom ships no matchMedia. A missing one costs only the resize subscription,
-  // since the snapshot below reads window.innerWidth directly, so degrade to a
-  // no-op unsubscribe instead of crashing tests that never stubbed it.
+  // jsdom ships no matchMedia, and the snapshot then reads the width directly,
+  // so degrade to a no-op unsubscribe instead of crashing tests that never
+  // stubbed it.
   if (typeof window.matchMedia !== "function") return () => {}
-  const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
+  const mql = window.matchMedia(MOBILE_QUERY)
   mql.addEventListener("change", callback)
   return () => mql.removeEventListener("change", callback)
 }
@@ -67,7 +77,7 @@ function subscribe(callback: () => void) {
 export function useIsMobile() {
   return React.useSyncExternalStore(
     subscribe,
-    () => window.innerWidth < MOBILE_BREAKPOINT,
+    isMobileViewport,
     () => false
   )
 }

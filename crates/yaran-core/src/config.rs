@@ -1871,12 +1871,12 @@ impl WebDragDropPaste {
 /// When the web UI's touch terminal puts up the mobile compose bar
 /// ([`UiConfig::compose_bar`]).
 ///
-/// Three-way rather than a boolean. [`Self::Auto`] asks the browser whether touch
-/// is the primary pointing device (`pointer: coarse`), which is the right
-/// question: the compose bar exists because a soft keyboard's autocorrect, swipe
-/// and IME have nothing to correct when keystrokes go straight into a terminal.
+/// Three-way. Under [`Self::Auto`] every device, a phone included, types straight
+/// into the terminal (the user's decision, 2026-11-24) until it picks the bar from
+/// the web UI's top menu: a soft keyboard's autocorrect, swipe and IME have
+/// nothing to correct when keystrokes go straight into a terminal.
 ///
-/// A capability gate cannot finish the job. Measured on an Android tablet, with
+/// Why no capability gate picks the default: Measured on an Android tablet, with
 /// and without a physical keyboard attached, every interaction media query is
 /// identical (`pointer: coarse` true, `any-pointer: fine` true, `any-hover: hover`
 /// false). A keyboard case is invisible to the browser, so the two situations that
@@ -1890,7 +1890,7 @@ impl WebDragDropPaste {
 /// open-and-close cycles, so there is nothing to detect after the fact either.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ComposeBarMode {
-    /// Show it when the browser reports touch as the primary pointer. The
+    /// Hide it until a device asks for it from the web UI's top menu. The
     /// default, and what the old `compose_bar = true` migrates to.
     #[default]
     Auto,

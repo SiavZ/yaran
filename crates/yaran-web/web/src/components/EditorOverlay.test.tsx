@@ -414,7 +414,7 @@ function installBootStubs() {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: false,
+      matches: /max-width/.test(query) && window.innerWidth < 768,
       media: query,
       onchange: null,
       addEventListener: () => {},

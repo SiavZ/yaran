@@ -143,29 +143,16 @@ export function composeBarMode(raw: string | undefined): ComposeBarMode {
 export type TypingSurfaceChoice = "compose" | "direct"
 
 /**
- * What the pointer says the typing surface should be, and nothing more. A finger
- * wants a buffer where autocorrect, swipe and IMEs have something to work with.
- * Only ever a default: a tablet with and without a keyboard case report
- * identical interaction media queries, so the guess loses to the person.
- */
-export function detectedTypingSurface(
-  coarsePointer: boolean
-): TypingSurfaceChoice {
-  return coarsePointer ? "compose" : "direct"
-}
-
-/**
  * The one resolved answer to "where does typing go in this pane".
  *
  * `always`/`never` are configuration and win outright, so a per-device toggle
- * cannot defeat what the operator set up. Under `auto` the person comes first
- * and the browser second: an explicit choice, else the pointer's default. The
- * choice wins in both directions on every device and persists until the user
- * changes it; a change of pointer moves only the default.
+ * cannot defeat what the operator set up. Under `auto` the person's explicit
+ * choice wins in both directions on every device and persists until they change
+ * it; with none, typing goes straight into the terminal, a phone included (the
+ * user's decision, 2026-11-24), and the message box is one menu row away.
  */
 export function resolvedTypingSurface(
   mode: ComposeBarMode,
-  coarsePointer: boolean,
   choice: TypingSurfaceChoice | null
 ): TypingSurfaceChoice {
   switch (mode) {
@@ -174,22 +161,20 @@ export function resolvedTypingSurface(
     case "never":
       return "direct"
     case "auto":
-      return choice ?? detectedTypingSurface(coarsePointer)
+      return choice ?? "direct"
   }
 }
 
 /**
- * Is the buffered message box the typing surface right now? The capability
- * argument is "is touch the primary pointer" (`pointer: coarse`, see
- * `hooks/use-coarse-pointer.ts`) and never a viewport width: the bar is a
- * decision about the input method, so rotating a tablet must not change it.
+ * Is the buffered message box the typing surface right now? Never a viewport
+ * width: the bar is a decision about the input method, so rotating a tablet
+ * must not change it.
  */
 export function composeBarShown(
   mode: ComposeBarMode,
-  coarsePointer: boolean,
   choice: TypingSurfaceChoice | null
 ): boolean {
-  return resolvedTypingSurface(mode, coarsePointer, choice) === "compose"
+  return resolvedTypingSurface(mode, choice) === "compose"
 }
 
 /**
@@ -209,7 +194,7 @@ export function terminalKeysApply(
   coarsePointer: boolean,
   choice: TypingSurfaceChoice | null
 ): boolean {
-  return coarsePointer || composeBarShown(mode, coarsePointer, choice)
+  return coarsePointer || composeBarShown(mode, choice)
 }
 
 /**

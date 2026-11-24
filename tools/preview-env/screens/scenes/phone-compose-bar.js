@@ -16,6 +16,10 @@ module.exports = {
   viewport: "phone",
   async shoot(page) {
     const by = await agents()
+    // A phone starts typing directly; this device has picked the message box.
+    await page.evaluateOnNewDocument(() =>
+      localStorage.setItem("yaran:typing-surface", "compose"),
+    )
     await goto(page, `#/agent/${by["fix-login-redirect"].id}`)
     await sleep(1500)
     await page.evaluate(() => document.querySelector("textarea")?.focus())

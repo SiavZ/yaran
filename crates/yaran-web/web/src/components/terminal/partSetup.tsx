@@ -167,11 +167,7 @@ function terminalTouchSettings(
   const composeMode = composeBarMode(yaranState.bootstrap?.compose_bar)
   return {
     composeMode,
-    composeBarEnabled: composeBarShown(
-      composeMode,
-      isCoarsePointer,
-      typingSurface,
-    ),
+    composeBarEnabled: composeBarShown(composeMode, typingSurface),
     keysApply: terminalKeysApply(
       composeMode,
       isCoarsePointer,

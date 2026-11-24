@@ -18,7 +18,7 @@ import {
 import type { YaranState } from "@/lib/store"
 import { setStatusClearSeconds } from "@/lib/notify"
 import { notifyPtyOwner, resetPtyOwnerEpochs } from "@/lib/ptyOwnership"
-import { stubCoarsePointer, type MatchMediaStub } from "@/test/matchMedia"
+import { setTypingSurface } from "@/lib/typingSurface"
 import { toastText } from "@/test/toastText"
 
 /// The same xterm stand-in the drop suite uses: `paste()` does what xterm's
@@ -699,26 +699,22 @@ describe("when an image paste cannot be taken", () => {
 })
 
 describe("pasting an image while the mobile compose bar is the typing surface", () => {
-  // Two signals, because the compose bar needs both: `useIsMobile` reads
-  // `window.innerWidth` for the mobile SHELL, and the bar inside it is gated on
-  // `pointer: coarse` (see `hooks/use-coarse-pointer.ts`). A real phone reports
-  // both, so these set both for the duration.
+  // `useIsMobile` reads `window.innerWidth` for the mobile SHELL; the message
+  // box is up because this device chose it, whatever the pointer.
   const desktopWidth = window.innerWidth
-  let pointerStub: MatchMediaStub | null = null
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 420,
     })
-    pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
   })
   afterEach(() => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: desktopWidth,
     })
-    pointerStub?.restore()
-    pointerStub = null
+    setTypingSurface(null)
   })
 
   it("puts the path in the DRAFT and sends nothing", async () => {
@@ -960,7 +956,7 @@ describe("pasting a very long text onto an agent", () => {
     // better than either dumping the text into the message or refusing it: the
     // user can still write around the path before pressing Send.
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 420 })
-    const pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
     try {
       uploadDroppedFile.mockResolvedValue(saved("pasted-x.txt"))
       render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
@@ -991,7 +987,7 @@ describe("pasting a very long text onto an agent", () => {
         configurable: true,
         value: 1024,
       })
-      pointerStub.restore()
+      setTypingSurface(null)
     }
   })
 
@@ -1001,7 +997,7 @@ describe("pasting a very long text onto an agent", () => {
     // its path to your message" with no message box on screen would be a lie
     // about where the text went.
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 420 })
-    const pointerStub = stubCoarsePointer()
+    setTypingSurface("compose")
     try {
       let release: (v: unknown) => void = () => {}
       uploadDroppedFile.mockReturnValue(
@@ -1039,7 +1035,7 @@ describe("pasting a very long text onto an agent", () => {
         configurable: true,
         value: 1024,
       })
-      pointerStub.restore()
+      setTypingSurface(null)
     }
   })
 })

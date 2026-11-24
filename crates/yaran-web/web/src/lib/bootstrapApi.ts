@@ -110,7 +110,7 @@ export interface Bootstrap {
   /** Mirrors `config.ui.compose_bar`: when the terminal shows the compose bar and
    * redirects a tap into it. With the bar down, a tap focuses xterm directly.
    *
-   * One of "auto" (the browser decides from the primary pointer), "always" or
+   * One of "auto" (direct until this device picks the box), "always" or
    * "never"; an absent or unrecognized value reads as "auto" via `composeBarMode`. */
   compose_bar?: string;
   /** Mirrors `config.ui.mobile_accessory_bar`: whether the touch terminal screens

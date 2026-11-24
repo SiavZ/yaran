@@ -34,6 +34,13 @@ ignore = [
   # `notify` to migrate; the advisory has no patched version.
   # Reviewed: 2026-07-11. Next review: 2026-08-01.
   { id = "RUSTSEC-2024-0384", reason = "transitive via notify; waiting upstream migration to web-time" },
+  # RUSTSEC-2026-0594 — `cookie` private-cookie nonces can repeat after a
+  # fork; fixed in 0.18.3, which the direct 0.18 line now uses. The 0.16
+  # copy comes from `webdriver` (even 0.54) → `fantoccini` → `yaran-journeys`,
+  # the unpublished browser-test harness, with default features off, so the
+  # private-cookie code is not compiled. Drop once webdriver moves off 0.16.
+  # Reviewed: 2026-11-24. Next review: 2027-02-24.
+  { id = "RUSTSEC-2026-0594", reason = "cookie 0.16 via webdriver in the test harness only; private cookies not compiled" },
 ]
 
 # ---------------------------------------------------------------------------

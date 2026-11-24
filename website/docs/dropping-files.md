@@ -472,7 +472,7 @@ Two `[server]` settings. See [Server mode overview](/docs/server-mode) for the r
 Dropping a file onto a terminal window is your terminal emulator's job, with the file already
 on the machine the agent runs on. This feature closes the gap that only a browser has.
 
-There is no drag gesture on a phone, so dropping is a desktop gesture. Pasting is not: on a
-phone the compose bar is your typing surface (see
-[The workspace in the browser](/docs/web-workspace)), and pasting an image into it puts the
-saved file's path into your draft. Neither is **Attach a file…**, which works everywhere.
+There is no drag gesture on a phone, so dropping is a desktop gesture. Pasting is not: pasting
+an image into the terminal saves it and pastes its path, and if you have switched a phone to the
+compose bar (see [The workspace in the browser](/docs/web-workspace)), the path goes into your
+draft instead. Neither is **Attach a file…**, which works everywhere.

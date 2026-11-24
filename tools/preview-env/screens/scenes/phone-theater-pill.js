@@ -19,6 +19,10 @@ module.exports = {
     const by = await agents()
     const id = by["fix-login-redirect"].id
     after(await dockTerminals(id, 1))
+    // The caption names the message box: this device has picked it.
+    await page.evaluateOnNewDocument(() =>
+      localStorage.setItem("yaran:typing-surface", "compose"),
+    )
     await goto(page, `#/agent/${id}`)
     await sleep(1000)
     await showAgent(page)

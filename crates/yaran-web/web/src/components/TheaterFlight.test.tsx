@@ -42,7 +42,7 @@ function installBootStubs() {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: query.includes("prefers-reduced-motion") ? reducedMotion : false,
+      matches: query.includes("prefers-reduced-motion") ? reducedMotion : (/max-width/.test(query) && window.innerWidth < 768),
       media: query,
       onchange: null,
       addEventListener: () => {},
