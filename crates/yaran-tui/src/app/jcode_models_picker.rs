@@ -32,17 +32,14 @@ impl ModelsPrompt {
                     )
                 })
                 .collect(),
-            ModelsPickerKind::Reasoning => self
-                .chosen()
-                .map(|choice| {
-                    choice
-                        .reasoning_levels
-                        .iter()
-                        .enumerate()
-                        .map(|(index, level)| (index, level.label.clone(), true))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            ModelsPickerKind::Reasoning => self.chosen().map_or_else(Vec::new, |choice| {
+                choice
+                    .reasoning_levels
+                    .iter()
+                    .enumerate()
+                    .map(|(index, level)| (index, level.label.clone(), true))
+                    .collect()
+            }),
         };
         rows.into_iter()
             .filter(|(_, label, _)| label.to_lowercase().contains(&filter))
