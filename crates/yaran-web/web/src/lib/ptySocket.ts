@@ -194,6 +194,7 @@ export class PtySocket extends ReconnectingSocket {
     // Read at each open, so a reconnect names the pane's visibility as it is
     // then rather than as it was at mount.
     if (!this.onScreen()) params.push("viewed=0")
+    if (this.independentView) params.push("independent_view=1")
     const separator = this.url.includes("?") ? "&" : "?"
     return `${this.url}${separator}${params.join("&")}`
   }
@@ -209,6 +210,8 @@ export class PtySocket extends ReconnectingSocket {
   /// Whether the pane this socket feeds is on screen, read at every open. A
   /// pane kept mounted off screen is not looking at its tab.
   onScreen: () => boolean = () => true
+  /// The phone reflows decoded text locally and never sets the shared PTY grid.
+  independentView = false
 
   private bytesCb: (bytes: Uint8Array) => void = () => {}
   // This socket's server-assigned connection id, from the `connected` frame on
@@ -469,6 +472,7 @@ export class PtySocket extends ReconnectingSocket {
   // A grid outside the PTY's bounds is not sent either: the server would drop
   // it without a word.
   sendResize(rows: number, cols: number): boolean {
+    if (this.independentView) return false
     if (!ptyGridInBounds(rows, cols)) return false
     // Refused, and reported as refused: the resize coordinator re-asserts the
     // size once the page is signed in again (`authResync.ts`), through its own

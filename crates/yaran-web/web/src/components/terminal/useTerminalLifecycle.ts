@@ -30,6 +30,10 @@ import { createHeartbeat, type Heartbeat } from "@/lib/heartbeat"
 import { onServerRunUnconfirmed } from "@/lib/serverRun"
 import { registerPageLifecycle } from "@/lib/pageLifecycle"
 import { registerLayoutGestureHolder } from "@/lib/layoutGesture"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
+import { activateLinkAtPoint, linkifierElement } from "@/lib/termlink"
+import { dispatchMouseReplay, rectCenter, tapReplaySteps, wheelReplaySteps } from "@/lib/termmouse"
+import type { FlowInteractions } from "./FlowTerminal"
 import type { ConnState } from "@/lib/types"
 import type { TerminalOwnerRef } from "@/lib/store"
 import { ownerSessionId } from "@/lib/terminalOwner"
@@ -138,12 +142,14 @@ export type TerminalLifecyclePorts = {
   /// Installed here over this mount's socket and coordinator: the pane calls it
   /// when it comes on screen (true) or goes off screen (false).
   onScreenChangeRef: RefObject<((onScreen: boolean) => void) | null>
+  flowInteractionsRef: RefObject<FlowInteractions | null>
 }
 
 export function useTerminalLifecycle(
   target: TerminalTarget,
   ports: TerminalLifecyclePorts,
 ): void {
+  const independentView = useIsMobile()
   const { kind, id } = target
   // The owning session id, when there is one: the agent's own session, or a
   // session-owned terminal's parent. A PROJECT or STANDALONE terminal has none.
@@ -194,6 +200,7 @@ export function useTerminalLifecycle(
     isOwnerRendered,
     readRowConfirmed,
     onScreenChangeRef,
+    flowInteractionsRef,
   } = ports
 
   // This mount's heartbeat, so the cadence can be retimed from outside the big
@@ -211,12 +218,16 @@ export function useTerminalLifecycle(
     const container = containerRef.current
     if (!host || !container) return
 
-    const terminalSetup = createTerminalSetup({ host, id, live, ownership })
+    const terminalSetup = createTerminalSetup({
+      host, id, live,
+      ownership: { ...ownership, read: () => !independentView && ownership.read() },
+    })
     const { term, links, isMac } = terminalSetup
     // Opening the socket is the subscription: it launches the tab if it is not
     // running, with resume decided server-side. A dormant tab is never
     // auto-mounted, so reaching here for one is an intentional launch.
     const pty = new PtySocket(ptyUrl)
+    pty.independentView = independentView
     pty.onScreen = () => live.current.onScreen !== false
     ptyRef.current = pty
     // Constructed before the addon so the coordinator below can be given the
@@ -229,7 +240,7 @@ export function useTerminalLifecycle(
       term,
       fit,
       sendResize: (rows, cols) => pty.sendResize(rows, cols),
-      isOwner: () => ownership.read(),
+      isOwner: () => !independentView && ownership.read(),
       naturalGrid: () => naturalGridRef.current?.() ?? null,
       onViewerLayout: () => viewerRelayoutRef.current?.(),
       onScreen: () => live.current.onScreen !== false,
@@ -247,6 +258,32 @@ export function useTerminalLifecycle(
       fitAddonRef,
       noteLocalGrid,
     })
+    flowInteractionsRef.current = {
+      tap(row, col) {
+        const previous = term.buffer.active.viewportY
+        term.scrollToLine(Math.max(0, row - Math.floor(term.rows / 2)))
+        const screen = linkifierElement(term.element)
+        const rect = screen?.getBoundingClientRect()
+        if (!rect) {
+          term.scrollToLine(previous)
+          return false
+        }
+        const x = rect.left + (col + 0.5) * rect.width / term.cols
+        const y = rect.top + (row - term.buffer.active.viewportY + 0.5) * rect.height / term.rows
+        const opened = activateLinkAtPoint(screen, x, y, links.activations)
+        if (!opened && row >= term.buffer.active.baseY && term.modes.mouseTrackingMode !== "none") {
+          dispatchMouseReplay(term.element, tapReplaySteps(), x, y)
+        }
+        term.scrollToLine(previous)
+        return opened
+      },
+      scroll(lines) {
+        const screen = linkifierElement(term.element)
+        if (!screen) return
+        const point = rectCenter(screen.getBoundingClientRect())
+        dispatchMouseReplay(term.element, wheelReplaySteps(lines), point.clientX, point.clientY)
+      },
+    }
 
     const inputWiring = registerTerminalInputWiring({
       term,
@@ -267,7 +304,7 @@ export function useTerminalLifecycle(
     // doc has the reasons for the phase and the press-time decision.
     links.attach(container)
 
-    const touchWiring = registerTerminalTouchWiring({
+    const touchWiring = independentView ? { dispose() {} } : registerTerminalTouchWiring({
       term,
       host,
       container,
@@ -404,6 +441,7 @@ export function useTerminalLifecycle(
     })
 
     return () => {
+      flowInteractionsRef.current = null
       if (onScreenChangeRef.current !== null) onScreenChangeRef.current = null
       stopAuthResync()
       unregisterLayoutGesture()
@@ -432,5 +470,5 @@ export function useTerminalLifecycle(
     // its closures through a stable container, channel or port, and listing a
     // component-body function here would rebuild the terminal every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, id, sessionId, ptyUrl])
+  }, [kind, id, sessionId, ptyUrl, independentView])
 }

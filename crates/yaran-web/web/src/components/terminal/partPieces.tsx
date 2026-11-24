@@ -31,6 +31,7 @@ type TerminalPaneSurfaceProps = {
   input: InputSurface
   providerName?: string
   ptyRef: RefObject<PtySocket | null>
+  flowView?: ReactNode
 }
 
 export function TerminalPaneSurface({
@@ -51,6 +52,7 @@ export function TerminalPaneSurface({
   input,
   providerName,
   ptyRef,
+  flowView,
 }: TerminalPaneSurfaceProps) {
   // The pane's box is not itself the clip: the terminal, its covers and the
   // drop overlay are clipped by an inner layer, while the stack's overlay
@@ -104,6 +106,7 @@ export function TerminalPaneSurface({
             pointerTypeRef.current = event.pointerType
           }}
           onContextMenu={(event) => {
+            if (flowView) return
             if (pointerTypeRef.current === "touch") {
               event.preventDefault()
               return
@@ -115,8 +118,9 @@ export function TerminalPaneSurface({
           <div
             ref={containerRef}
             data-testid="terminal-container"
-            className="h-full w-full [-webkit-touch-callout:none]"
+            className={flowView ? "pointer-events-none absolute inset-0 opacity-0 [&_.xterm-helper-textarea]:!left-0 [&_.xterm-helper-textarea]:!top-0" : "h-full w-full [-webkit-touch-callout:none]"}
           />
+          {flowView}
         </div>
         {pickerInput}
         <TerminalCover

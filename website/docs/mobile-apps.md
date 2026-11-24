@@ -133,6 +133,13 @@ browser. Downloads are not supported in the app: open the file in the yaran web 
 your computer. Inside a machine, the cog menu adds
 **Switch machine** and **Phone app settings**.
 
+Inside an agent, output wraps at the phone's width even while the desktop is open.
+Tap to type directly; long-press text to select and copy it. Opening, reopening and
+phone typing do not resize the desktop terminal. This presentation is served by the
+machine's yaran binary, so updating and reloading that binary updates an installed
+phone app without replacing its APK.
+
+
 The `⋯` on a row has **Remove…**, which asks first and then unpairs that machine, so
 yaran on it stops its cloud connection.
 

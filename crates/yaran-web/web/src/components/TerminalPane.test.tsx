@@ -1562,15 +1562,37 @@ describe.each([
 // container (jsdom accepts plain {clientX, clientY} objects in the touch
 // lists). touchend must be read via `changedTouches` (the `touches` list is
 // empty once the finger lifts).
+it("a phone uses independently wrapped output, leaves native selection available and focuses direct terminal input", () => {
+  const width = window.innerWidth
+  Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
+  const pointer = stubCoarsePointer()
+  try {
+    render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    const flow = screen.getByTestId("flow-terminal")
+    expect((last() as FakePtySocket & { independentView: boolean }).independentView).toBe(true)
+    fireEvent.pointerDown(flow, { pointerType: "touch" })
+    expect(fireEvent.contextMenu(flow)).toBe(true)
+    expect(fireEvent(flow, new Event("selectstart", { bubbles: true, cancelable: true }))).toBe(true)
+    const term = TermStub.instances.at(-1)!
+    const focus = vi.spyOn(term, "focus")
+    fireEvent.click(flow)
+    expect(focus).toHaveBeenCalledOnce()
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull()
+  } finally {
+    cleanup()
+    pointer.restore()
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true })
+  }
+})
+
 describe("TerminalPane tap-to-focus redirect", () => {
   const desktopWidth = window.innerWidth
-  // `goMobile` means a phone: its shell (width), a finger (`pointer: coarse`),
-  // and the message box chosen on this device, since typing goes straight into
-  // the terminal until somebody picks the box. The gate suite pulls them apart.
+  // Wider touch devices keep the terminal grid and its mouse replay path.
+  // Phones exercise the independent flow view below.
   let pointerStub: MatchMediaStub | null = null
-  const goMobile = () => {
+  const goTouchTablet = () => {
     Object.defineProperty(window, "innerWidth", {
-      value: 500,
+      value: 1024,
       configurable: true,
     })
     pointerStub = stubCoarsePointer()
@@ -1601,7 +1623,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   }
 
   it("a tap preventDefaults and focuses the compose textarea (owner, pref on)", () => {
-    goMobile()
+    goTouchTablet()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     const prevented = tap(container())
     expect(prevented).toBe(true)
@@ -1609,7 +1631,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   })
 
   it("does not intercept the tap when the preference is off", () => {
-    goMobile()
+    goTouchTablet()
     const state = makeState()
     ;(state.bootstrap as unknown as { compose_bar?: string }).compose_bar =
       "never"
@@ -1662,7 +1684,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   }
 
   it("forwards a tap to a mouse-tracking app AND focuses compose", () => {
-    goMobile()
+    goTouchTablet()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     // The app in the PTY has grabbed the mouse: the swallowed tap must still
     // reach it as a left click (press + release) at the tapped cell, or
@@ -1680,7 +1702,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   // ignores them ("DECSET 1005 not supported (see #2507)"), so it has no such
   // state to be in and yaran can never owe an app those bytes.
   it("sends the DEFAULT (X10 byte) encoding on onBinary when the app never asked for SGR", () => {
-    goMobile()
+    goTouchTablet()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     armed("VT200", "DEFAULT")
     expect(tapAt(at(4, 3))).toBe(true)
@@ -1691,7 +1713,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   })
 
   it("sends SGR_PIXELS in pixels, not cells, when the app asked for ?1016", () => {
-    goMobile()
+    goTouchTablet()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     armed("VT200", "SGR_PIXELS")
     expect(tapAt(at(4, 3))).toBe(true)
@@ -1700,7 +1722,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   })
 
   it("sends NO release under the X10 protocol, which reports presses only", () => {
-    goMobile()
+    goTouchTablet()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     armed("X10", "DEFAULT")
     expect(tapAt(at(4, 3))).toBe(true)
@@ -1711,7 +1733,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   // out-of-grid cell, so a tap in the padding resolves to the edge cell exactly
   // as a desktop click there does, and nothing lands outside 1..cols / 1..rows.
   it("resolves the first cell, the last cell, and each far edge", () => {
-    goMobile()
+    goTouchTablet()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     armed("VT200", "SGR")
     const press = () => sent()[0]
@@ -1738,7 +1760,7 @@ describe("TerminalPane tap-to-focus redirect", () => {
   })
 
   it("forwards nothing when the app has no mouse tracking on", () => {
-    goMobile()
+    goTouchTablet()
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
     expect(tapAt(at(4, 3))).toBe(true)
     expect(sent()).toEqual([])
@@ -3564,7 +3586,7 @@ describe("TerminalPane long-press text selection", () => {
   // raising the soft keyboard over the text the user is selecting takes half
   // the screen away mid-gesture.
   it("does not raise the soft keyboard", () => {
-    Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
+    Object.defineProperty(window, "innerWidth", { value: 1024, configurable: true })
     const pointer = stubCoarsePointer()
     setTypingSurface("compose")
     try {
@@ -3598,7 +3620,7 @@ describe("TerminalPane long-press text selection", () => {
   // guard then redirected that focus into the box, the soft keyboard rose,
   // the terminal lost rows, and xterm cleared the highlight on the resize.
   it("moves no focus when Android follows the long press with a contextmenu", async () => {
-    Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
+    Object.defineProperty(window, "innerWidth", { value: 1024, configurable: true })
     const pointer = stubCoarsePointer()
     setTypingSurface("compose")
     try {

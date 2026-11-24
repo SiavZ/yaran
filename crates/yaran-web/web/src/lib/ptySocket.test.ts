@@ -159,6 +159,22 @@ describe("ptySocket URL builders", () => {
 })
 
 describe("PtySocket", () => {
+  it("keeps independent views on reconnect, sends input and never sends a shared resize", () => {
+    vi.useFakeTimers()
+    const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
+    sock.independentView = true
+    sock.connect()
+    expect(new URL(last().url).searchParams.get("independent_view")).toBe("1")
+    last().open()
+    expect(sock.sendResize(20, 40)).toBe(false)
+    expect(sock.sendInput(new Uint8Array([65]))).toBe(true)
+    expect(last().sent).toHaveLength(1)
+    last().triggerClose(1006)
+    vi.advanceTimersByTime(600)
+    expect(new URL(last().url).searchParams.get("independent_view")).toBe("1")
+    sock.dispose()
+  })
+
   it("connects to the given URL and requests arraybuffer framing", () => {
     const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
     sock.connect()

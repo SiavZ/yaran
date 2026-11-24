@@ -129,6 +129,7 @@
  * ├── web:src/components/cloud/CloudDialog.tsx
  * ├── web:src/components/cloud/CloudLogoutDialog.tsx
  * ├── web:src/components/cloud/CloudRotateDialog.tsx
+ * ├── web:src/components/terminal/FlowTerminal.tsx
  * ├── web:src/components/terminal/partPieces.tsx
  * ├── web:src/components/ui/input-group.tsx
  * ├── web:src/components/ui/sidebar.tsx

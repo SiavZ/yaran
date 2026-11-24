@@ -23,6 +23,7 @@ import { useTerminalLiveSettings } from "@/components/terminal/liveValues"
 import { useTerminalLifecycle } from "@/components/terminal/useTerminalLifecycle"
 import { useTerminalRelayout } from "@/components/terminal/useTerminalRelayout"
 import { useTerminalOwnership } from "@/components/terminal/ownership"
+import { FlowTerminal, type FlowInteractions } from "@/components/terminal/FlowTerminal"
 import { useViewerGrid } from "@/components/terminal/viewerGrid"
 import { REPLAY_WAIT_POLL_MS } from "@/components/terminal/constants"
 import { suspendTerminalTabStop } from "@/components/terminal/inputWiring"
@@ -341,7 +342,7 @@ function TerminalPart(props: TerminalPartProps) {
   // So does a part off screen whose row the server has not named this page's
   // driver for yet: it renders at the pty's own grid and sends nothing until
   // the part on screen has claimed the row.
-  const faithfulWatcher = !isOwner || (!onScreen && !rowConfirmed)
+  const faithfulWatcher = !isMobile && (!isOwner || (!onScreen && !rowConfirmed))
   // The grid to render, broken out so the relayout effect depends on the
   // NUMBERS rather than on the object identity the machine hands back.
   const remoteRows = viewerGrid.remoteGrid?.rows ?? 0
@@ -357,6 +358,7 @@ function TerminalPart(props: TerminalPartProps) {
   const naturalGridRef = useRef<
     (() => { rows: number; cols: number } | null) | null
   >(null)
+  const flowInteractionsRef = useRef<FlowInteractions | null>(null)
 
   // THE INPUT SURFACE: the compose Send, the accessory sends, the sticky
   // modifier latches and the draft splice.
@@ -507,6 +509,7 @@ function TerminalPart(props: TerminalPartProps) {
     isOwnerRendered: isOwner,
     readRowConfirmed,
     onScreenChangeRef,
+    flowInteractionsRef,
   })
 
   // Coming on screen and going off it, after mount: the socket opened naming
@@ -682,6 +685,13 @@ function TerminalPart(props: TerminalPartProps) {
       input={input}
       providerName={providerName}
       ptyRef={ptyRef}
+      flowView={isMobile ? <FlowTerminal
+        termRef={termRef}
+        interactionsRef={flowInteractionsRef}
+        focusInput={focusTypingSurface}
+        fontFamily={terminalFontFamilySetting}
+        fontSize={terminalFontSizeSetting}
+      /> : null}
     />
   )
 

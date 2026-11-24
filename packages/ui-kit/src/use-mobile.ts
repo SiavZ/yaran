@@ -33,6 +33,7 @@
  * ├── web:src/components/StandaloneEditor.tsx
  * ├── web:src/components/TaskManagerDialog.tsx
  * ├── web:src/components/terminal/partSetup.tsx
+ * ├── web:src/components/terminal/useTerminalLifecycle.ts
  * ├── web:src/components/ui/sidebar.tsx
  * └── web:src/lib/store.ts
  * <module-headers:end>
