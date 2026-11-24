@@ -386,6 +386,7 @@ export function planListDrop(
   sessions: readonly SessionView[],
   terminals: readonly TerminalView[],
   grouped = false,
+  key: FlatSortKey = "manual",
 ): ListDropPlan | null {
   const from = baseline.findIndex((row) => flatRowKey(row) === activeKey)
   const to = baseline.findIndex((row) => flatRowKey(row) === overKey)
@@ -400,6 +401,10 @@ export function planListDrop(
       || workspaceProjectId(source.session.workspace) !== workspaceProjectId(target.session.workspace)) {
       return null
     }
+    // Group projection decides eligibility; the TUI's flat baseline persists
+    // the move without rewriting unrelated projects' saved interleaving.
+    const plan = planListDrop(listDragBaseline(sessions, terminals, key), activeKey, overKey, sessions, terminals)
+    return { agentOrder: plan?.agentOrder ?? null, placements: {}, terminalOrder: null }
   }
   const next = baseline.slice()
   const [moved] = next.splice(from, 1)
@@ -409,10 +414,6 @@ export function planListDrop(
   const stored = sessions.map((session) => session.id)
   const agentsMoved =
     agentOrder.length !== stored.length || agentOrder.some((id, i) => id !== stored[i])
-
-  if (grouped) {
-    return agentsMoved ? { agentOrder, placements: {}, terminalOrder: null } : null
-  }
 
   const placements: Record<string, string | null> = {}
   const listOrder: string[] = []

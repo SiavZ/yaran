@@ -263,7 +263,7 @@ describe("the grouped TUI's order without project headers", () => {
       (row) => row.kind === "agent" && row.session.id === id,
     )!)
     const plan = planListDrop(baseline, rowKey("first-hot"), rowKey("first-idle"), sessions, terminals, true)
-    expect(plan?.agentOrder).toEqual(["first-hot", "first-idle", "first-quiet", "other-hot", "orphan-z", "orphan-a", "alone"])
+    expect(plan?.agentOrder).toEqual(["other-hot", "first-hot", "first-idle", "orphan-z", "first-quiet", "alone", "orphan-a"])
     expect(plan?.placements).toEqual({})
     expect(plan?.terminalOrder).toBeNull()
     expect(planListDrop(baseline, rowKey("first-hot"), rowKey("first-quiet"), sessions, terminals, true)).toBeNull()
