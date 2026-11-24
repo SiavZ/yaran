@@ -7,6 +7,7 @@
 //! app/input.rs
 //! ├── app
 //! ├── app::attachment_presence
+//! ├── app::command_palette
 //! ├── app::components
 //! ├── app::components::wrap_lines
 //! ├── app::debug_input
@@ -94,6 +95,7 @@
 //! <module-headers:end>
 
 use super::CompletionAnswer;
+use super::command_palette::PaletteEntry;
 use super::components::wrap_lines::cluster_width;
 use super::components::{ButtonPressedTarget, FocusStep, PressedButton, next_focus};
 use super::human_board::{CardExit, ReplyDone};
@@ -2261,7 +2263,7 @@ impl App {
         match &mut self.prompt {
 
             // Type-immediately: the palette query.
-            PromptState::Command { input, selected } => {
+            PromptState::Command { input, selected, .. } => {
                 input.insert_str(text);
                 *selected = 0;
             }
@@ -3205,6 +3207,7 @@ impl App {
     /// when no macros are defined for the surface.
     fn open_command_palette(&mut self) {
         self.prompt = PromptState::Command {
+            category: None,
             input: TextInput::new(),
             selected: 0,
         };
@@ -4473,8 +4476,11 @@ impl App {
             PromptState::Command {
                 input, selected, ..
             } => self
-                .palette_command_at(&input.text, *selected)
-                .and_then(|binding| binding.palette_name)
+                .palette_entry_at(&input.text, *selected)
+                .and_then(|entry| match entry {
+                    PaletteEntry::Command(binding) => binding.palette_name,
+                    _ => None,
+                })
                 .map(str::to_string),
             _ => None,
         }
@@ -4504,7 +4510,7 @@ impl App {
 
         self.clamp_command_palette_selection();
 
-        // The palette is always searchable, so close dismisses it immediately.
+        // Close goes up one category; at the root it dismisses the palette.
         // Plain characters belong to its text field, not navigation bindings.
         let is_plain_char =
             matches!(key.code, KeyCode::Char(_)) && !key.modifiers.contains(KeyModifiers::CONTROL);
@@ -4516,13 +4522,11 @@ impl App {
 
         match action {
             Some(Action::CloseOverlay) => {
-                self.prompt = PromptState::None;
+                self.palette_back();
             }
             Some(Action::MoveDown) => {
                 let count = match &self.prompt {
-                    PromptState::Command { input, .. } => {
-                        self.filtered_palette_commands(&input.text).len()
-                    }
+                    PromptState::Command { input, .. } => self.palette_entries(&input.text).len(),
                     _ => 0,
                 };
                 if let PromptState::Command { selected, .. } = &mut self.prompt
@@ -8753,48 +8757,6 @@ impl App {
         false
     }
 
-    /// The command the palette's cursor is actually ON, which is the row the
-    /// renderer highlights.
-    ///
-    /// `selected` is stored state and the match list is recomputed on every read,
-    /// so availability can shrink the list out from under it. The renderer clamps
-    /// the highlight, so resolving the raw index instead would run a different
-    /// command than the one the user can see selected.
-    fn palette_command_at(
-        &self,
-        input: &str,
-        selected: usize,
-    ) -> Option<&crate::keybindings::RuntimeBinding> {
-        let commands = self.filtered_palette_commands(input);
-        let index = selected.min(commands.len().saturating_sub(1));
-        commands.get(index).copied()
-    }
-
-    /// Pull a stale `selected` back onto the list as it stands now, so the
-    /// stored cursor and the drawn highlight cannot disagree.
-    fn clamp_command_palette_selection(&mut self) {
-        let count = match &self.prompt {
-            PromptState::Command { input, .. } => self.filtered_palette_commands(&input.text).len(),
-            _ => return,
-        };
-        if let PromptState::Command { selected, .. } = &mut self.prompt {
-            *selected = (*selected).min(count.saturating_sub(1));
-        }
-    }
-
-    fn set_command_palette_selection(&mut self, index: usize) {
-        let count = match &self.prompt {
-            PromptState::Command { input, .. } => self.filtered_palette_commands(&input.text).len(),
-            _ => 0,
-        };
-        if count == 0 {
-            return;
-        }
-        if let PromptState::Command { selected, .. } = &mut self.prompt {
-            *selected = index.min(count.saturating_sub(1));
-        }
-    }
-
     fn set_command_palette_cursor_from_mouse(&mut self, column: u16) {
         let OverlayMouseLayout::Command {
             input: input_area, ..
@@ -8811,28 +8773,6 @@ impl App {
                 prefix_width,
                 column,
             );
-        }
-    }
-
-    fn execute_selected_command_palette(&mut self) {
-        let command = if let PromptState::Command {
-            input, selected, ..
-        } = &self.prompt
-        {
-            if let Some(binding) = self.palette_command_at(&input.text, *selected) {
-                binding
-                    .palette_name
-                    .expect("the palette lists only bindings that carry a palette name")
-                    .to_string()
-            } else {
-                input.text.trim().to_string()
-            }
-        } else {
-            String::new()
-        };
-        self.prompt = PromptState::None;
-        if let Err(e) = self.execute_command(&command) {
-            self.set_error(format!("{e:#}"));
         }
     }
 
@@ -23705,6 +23645,7 @@ not_a_real_action = ["x"]
 
         // Something opens a modal mid-drag (a worker event, a key path).
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::new(),
             selected: 0,
         };
@@ -25718,6 +25659,7 @@ not_a_real_action = ["x"]
     fn command_palette_jk_keys_insert_text_instead_of_navigating() {
         let mut app = test_app(default_bindings());
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::new(),
             selected: 0,
         };
@@ -25750,6 +25692,7 @@ not_a_real_action = ["x"]
     fn palette_app(filter: &str, selected: usize) -> App {
         let mut app = test_app(default_bindings());
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::with_text(filter.to_string()),
             selected,
         };
@@ -26022,36 +25965,30 @@ not_a_real_action = ["x"]
                 list_after: None,
             },
         );
-        let with_terminal = app.filtered_palette_commands("terminal").len();
+        let with_terminal = app.palette_entries("terminal").len();
         let last = with_terminal - 1;
         app.set_command_palette_selection(last);
         assert_eq!(palette_selection(&app), last);
 
         app.engine.companion_terminals.clear();
-        let commands = app.filtered_palette_commands("terminal");
+        let commands = app.palette_entries("terminal");
         assert!(
             commands.len() < with_terminal,
             "the fixture must actually shrink the list"
         );
-        let highlighted = commands[commands.len() - 1].palette_name.unwrap();
+        let highlighted = commands[commands.len() - 1].name();
 
-        assert_eq!(highlighted, "kill-running");
+        assert_eq!(highlighted, "Terminals");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
 
-        // Enter must resolve against the clamped list, not the stale index,
-        // or it falls back to running the typed text as a command name.
-        let status = app.status.most_recent_tui().expect("a status");
-        assert!(
-            !status.1.contains("Unknown command"),
-            "Enter must not report the query as a command: {status:?}"
-        );
-        assert!(
-            status
-                .1
-                .contains("No running agents or companion terminals"),
-            "the highlighted command is what must have run: {status:?}"
-        );
+        assert!(matches!(
+            app.prompt,
+            PromptState::Command {
+                category: Some(super::super::command_palette::PaletteCategory::Terminals),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -26257,6 +26194,7 @@ not_a_real_action = ["x"]
             (Action::CloseOverlay, &["ctrl-q"]),
         ]));
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::new(),
             selected: 0,
         };
@@ -26285,11 +26223,18 @@ not_a_real_action = ["x"]
         let mut app = test_app(default_bindings());
         let mut input = TextInput::new();
         input.set_text("resource-mon".to_string());
-        app.prompt = PromptState::Command { input, selected: 0 };
+        app.prompt = PromptState::Command {
+            input,
+            selected: 0,
+            category: None,
+        };
 
         tap(&mut app, KeyCode::Tab);
 
-        let PromptState::Command { input, selected } = &app.prompt else {
+        let PromptState::Command {
+            input, selected, ..
+        } = &app.prompt
+        else {
             panic!("expected command palette");
         };
         assert_eq!(input.text, "resource-monitor");
@@ -27162,6 +27107,7 @@ not_a_real_action = ["x"]
     fn mouse_click_command_palette_row_selects_then_double_click_executes() {
         let mut app = test_app(default_bindings());
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::with_text("help".to_string()),
             selected: 0,
         };
@@ -27182,6 +27128,7 @@ not_a_real_action = ["x"]
     fn mouse_click_command_palette_input_moves_cursor_and_keyboard_inserts_there() {
         let mut app = test_app(default_bindings());
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::with_text("help".to_string()),
             selected: 0,
         };
@@ -34287,6 +34234,7 @@ cyan = "#00ffff"
         let mut app = test_app(default_bindings());
         app.focus = FocusPane::Left;
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::with_text("help".to_string()),
             selected: 0,
         };
@@ -36990,6 +36938,7 @@ cyan = "#00ffff"
         let mut app = app_with_minimized_typeable_agent();
         let slot_tab = app.engine.sessions[0].slot_tab_id().to_string();
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::new(),
             selected: 0,
         };
@@ -40247,13 +40196,17 @@ cyan = "#00ffff"
     fn paste_into_the_palette_filter_types_and_reaims_the_selection() {
         let mut app = test_app(default_bindings());
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::new(),
             selected: 3,
         };
 
         app.handle_paste("reload-config\n");
 
-        let PromptState::Command { input, selected } = &app.prompt else {
+        let PromptState::Command {
+            input, selected, ..
+        } = &app.prompt
+        else {
             panic!("palette must stay open");
         };
         assert_eq!(input.text, "reload-config");
@@ -43250,6 +43203,7 @@ cyan = "#00ffff"
     fn the_palette_and_the_macro_bar_still_close_on_one_press() {
         let mut app = test_app(default_bindings());
         app.prompt = PromptState::Command {
+            category: None,
             input: TextInput::with_text("chan".to_string()),
             selected: 0,
         };

@@ -707,9 +707,19 @@ whichever way it is set.
 Rather than memorizing hotkeys, reach most actions through the terminal UI's command
 palette. It is the fastest way to discover what yaran can do.
 
+The palette opens on categories: **Agents**, **Projects**, **Terminals**,
+**Git & files**, **View & appearance**, **Input & macros**, **Connections**, and
+**Tools & configuration**. Each category contains its actions and preferences together:
+agent defaults are in Agents, project startup and environment settings in Projects,
+and themes and icons in View & appearance.
+The title shows your category; the close key or the **Back** row returns to the root.
+Project preferences apply to the selected project. Agent defaults apply to new agents,
+and session preferences to the selected agent.
+
 The palette matches on names and descriptions. Exact phrase matches lead the list, and
 anything that matched only loosely follows them, so a half-remembered phrase still finds
-the command.
+the command. Typing at the palette's root searches every command, including preferences,
+so you can still go straight to a setting by name.
 
 ![The command palette with new tab typed and new-agent-tab as the first result.](/screens/tui-palette-matches.png)
 

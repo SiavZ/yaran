@@ -21,6 +21,7 @@
 //! ├── app
 //! ├── app::background_server
 //! ├── app::changes_tree
+//! ├── app::command_palette
 //! ├── app::confirm_dialog
 //! ├── app::debug_input
 //! ├── app::diff_comment_view

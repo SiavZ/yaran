@@ -1004,6 +1004,7 @@ pub(super) mod tests {
             (
                 "Command",
                 PromptState::Command {
+                    category: None,
                     input: TextInput::new(),
                     selected: 0,
                 },

@@ -204,6 +204,7 @@ fn a_completed_configuration_save_does_not_close_a_replacement_modal() {
     app.prompt = configure_prompt(&app, false);
     app.apply_configure_modal().unwrap();
     app.prompt = PromptState::Command {
+        category: None,
         input: TextInput::with_text("new-agent".into()),
         selected: 0,
     };

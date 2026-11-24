@@ -33,6 +33,7 @@
 //! ├── crate
 //! ├── palette::search
 //! ├── yaran-tui::app
+//! ├── yaran-tui::app::command_palette::tests
 //! └── yaran-tui::keybindings
 //! ```
 //! <module-headers:end>

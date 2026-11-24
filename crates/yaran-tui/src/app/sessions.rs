@@ -7609,6 +7609,7 @@ mod tests {
 
         app.open_worktree_editor_picker();
         app.prompt = PromptState::Command {
+            category: None,
             input: crate::app::text_input::TextInput::new(),
             selected: 0,
         };
