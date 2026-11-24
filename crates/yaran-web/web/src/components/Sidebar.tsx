@@ -522,6 +522,7 @@ export function AppSidebar() {
     listInputs.sessions,
     listInputs.terminals,
     agentSortValue(yaran),
+    bootstrap?.sidebar_style === "grouped" ? projects.map((project) => project.id) : undefined,
   ).main.map((row): RailEntry => {
     if (row.kind === "terminal") {
       return { kind: "terminal", entry: decorated.get(row.terminal.id)! }

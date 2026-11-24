@@ -247,6 +247,8 @@ pub struct BootstrapView {
     /// survives restarts and is shared across clients. Older servers omit it, so
     /// the web treats a missing value as "active".
     pub agent_sort: String,
+    /// The TUI's list style; the web keeps its flat layout but matches this order.
+    pub sidebar_style: String,
     /// Mirrors `config.ui.agent_scrollback_lines`. The web sizes each xterm.js
     /// instance's scrollback to this so it can retain the full history the
     /// reconnect repaint replays. Without it, xterm.js silently caps at its
@@ -1942,6 +1944,12 @@ impl Engine {
             )
             .to_string(),
             agent_scrollback_lines: self.config.ui.agent_scrollback_lines,
+            sidebar_style: if self.config.ui.sidebar_style == "flat" {
+                "flat"
+            } else {
+                "grouped"
+            }
+            .to_string(),
             show_changes_pane: self.config.ui.show_changes_pane,
             global_env: self.config.env.clone(),
             global_env_version: crate::wire::global_env_version(&self.config.env),
@@ -3433,6 +3441,16 @@ mod tests {
         // and a saved manual order stays visible across restarts.
         engine.config.ui.agent_sort = "manual".to_string();
         assert_eq!(engine.bootstrap().agent_sort, "manual");
+    }
+
+    #[test]
+    fn sidebar_style_is_projected_from_config() {
+        let (mut engine, _tmp) = test_engine();
+        assert_eq!(engine.bootstrap().sidebar_style, "grouped");
+        engine.config.ui.sidebar_style = "flat".to_string();
+        assert_eq!(engine.bootstrap().sidebar_style, "flat");
+        engine.config.ui.sidebar_style = "unknown".to_string();
+        assert_eq!(engine.bootstrap().sidebar_style, "grouped");
     }
 
     #[test]

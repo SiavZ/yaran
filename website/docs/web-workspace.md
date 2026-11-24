@@ -15,9 +15,9 @@ On a desktop-width screen it is three panes.
 
 ![The yaran web workspace on a desktop screen: the sidebar of agents and terminals on the left, the running agent's terminal in the middle, and the list of changed files on the right.](/screens/web-workspace-layout.png#full)
 
-**The collapsible left sidebar** lists your agents and your project and standalone terminals in one list, titled **Agents & Terminals**, with the dormant agents tucked into a collapsible Inactive tail. Toggle it with `Ctrl-b` (`Cmd-b` on a Mac). It carries:
+**The collapsible left sidebar** lists your agents and your project and standalone terminals in one list, titled **Agents & Terminals**. The browser and phone keep a flat list but follow the TUI's order. With the TUI's default grouped list, projects follow the order you set there; each project's agents follow the shared sort, with its dormant agents and then its terminals after them. Standalone agents and terminals come last. With `sidebar_style = "flat"`, sorting applies across projects and dormant agents sit in a collapsible Inactive tail. Toggle the browser sidebar with `Ctrl-b` (`Cmd-b` on a Mac). It carries:
 
-- A sort control (Active first by default, or by recently updated, recently created, name, or a manual drag order). Drag rows to arrange them by hand.
+- A sort control (Active first by default, or by recently updated, recently created, name, or a manual drag order). Drag rows to arrange them by hand; with the TUI's grouped list, agents move within their own project and project terminals stay after its agents.
 - A search box that filters the list.
 - The launcher at the bottom: **New agent…**, with a **▾** beside it that lists every other way to create something, grouped into agents, terminals and projects. See [Agents from the browser](/docs/web-agents#creating-an-agent).
 

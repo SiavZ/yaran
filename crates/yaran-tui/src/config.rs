@@ -1178,7 +1178,7 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "sidebar_style",
             comment: Some(CommentSource::Static(
-                "# Shape of the TUI's agent list. One of:\n#   \"grouped\" (default) one collapsible header per project, with every\n#             agent in that project (each harness sharing one checkout\n#             included) listed as its own row underneath. Space or Enter on\n#             a header collapses/expands it.\n#   \"flat\"    one list of every agent ordered by agent_sort, the project\n#             named on each row, with detached/exited agents folded under a\n#             collapsible \"Inactive\" tail.\n# agent_sort orders the rows inside each project in \"grouped\" mode.\n# Unknown values fall back to \"grouped\". The web UI keeps its own layout.",
+                "# Shape of the TUI's agent list. One of:\n#   \"grouped\" (default) one collapsible header per project, with every\n#             agent in that project (each harness sharing one checkout\n#             included) listed as its own row underneath. Space or Enter on\n#             a header collapses/expands it.\n#   \"flat\"    one list of every agent ordered by agent_sort, the project\n#             named on each row, with detached/exited agents folded under a\n#             collapsible \"Inactive\" tail.\n# agent_sort orders the rows inside each project in \"grouped\" mode.\n# Unknown values fall back to \"grouped\". The web and phone keep a flat\n# list but follow the same project and agent order. In grouped mode,\n# agents drag within their own project and project order is set in the TUI.",
             )),
             value_fn: |c| FieldValue::Str(c.ui.sidebar_style.clone()),
         },

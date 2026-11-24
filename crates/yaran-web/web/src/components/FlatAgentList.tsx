@@ -846,6 +846,7 @@ function flatAgentListModel(
     | "pendingTerminalPlacement"
   >,
   agentSort: FlatSortKey,
+  grouped: boolean,
 ) {
   const { spine, agentSearch: rawAgentSearch } = yaran
   const query = rawAgentSearch ?? ""
@@ -861,7 +862,8 @@ function flatAgentListModel(
     pendingTerminalOrder: yaran.pendingTerminalOrder,
     pendingTerminalPlacement: yaran.pendingTerminalPlacement,
   })
-  const { main, inactive } = orderFlatRows(sessions, terminals, agentSort)
+  const projectOrder = grouped ? rawProjects.map((project) => project.id) : undefined
+  const { main, inactive } = orderFlatRows(sessions, terminals, agentSort, projectOrder)
   const decorated = new Map(
     assembleFlatTerminals(terminals, sessions, rawProjects, projectName).map(
       (entry) => [entry.terminal.id, entry],
@@ -896,6 +898,7 @@ function flatAgentListModel(
     hasRows: agentCount + terminalCount > 0,
     query,
     manual: agentSort === "manual",
+    projectOrder,
     emptyVerbIsAddProject,
     nothing,
     nothingMatches,
@@ -918,6 +921,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     pendingTerminalPlacement,
   } = yaran
   const agentSort = agentSortValue(yaran)
+  const grouped = yaran.bootstrap?.sidebar_style === "grouped"
   const {
     sessions,
     terminals,
@@ -928,6 +932,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     hasRows,
     query,
     manual,
+    projectOrder,
     emptyVerbIsAddProject,
     nothing,
     nothingMatches,
@@ -941,6 +946,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
         pendingTerminalPlacement,
       },
       agentSort,
+      grouped,
     ),
     [
       spine,
@@ -949,6 +955,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
       pendingTerminalOrder,
       pendingTerminalPlacement,
       agentSort,
+      grouped,
     ],
   )
   const agentSearch = query
@@ -1014,11 +1021,12 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     const { active, over } = event
     if (!over) return
     const plan = planListDrop(
-      listDragBaseline(sessions, terminals, agentSort),
+      listDragBaseline(sessions, terminals, agentSort, projectOrder),
       String(active.id),
       String(over.id),
       sessions,
       terminals,
+      grouped,
     )
     if (!plan) return
     if (!manual) setAgentSort("manual")
@@ -1176,7 +1184,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
                           selectedTarget.terminalId === row.terminal.id
                         }
                         onSelect={handlers.onSelectTerminal}
-                        sortable
+                        sortable={!grouped}
                         query={query}
                         pickId={searchPick.rowId(key)}
                         picked={searchPick.activeKey === key}

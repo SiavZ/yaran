@@ -248,6 +248,29 @@ function drop(handler: (event: DragEndEvent) => void, active: string, over: stri
 }
 
 describe("FlatAgentList list derivations", () => {
+  it("keeps the phone list flat while following live TUI project order and style changes", () => {
+    mockState = makeState("active")
+    mockState.bootstrap = { sidebar_style: "grouped" } as YaranState["bootstrap"]
+    mockState.spine!.projects.push({ ...mockState.spine!.projects[0], id: "p2", name: "Other" })
+    mockState.spine!.sessions.unshift(makeSession({ id: "other", project_id: "p2", working: true }))
+    const view = render(<FlatAgentList handlers={handlers} />)
+    const rows = () => [...view.container.querySelectorAll("[data-sidebar-row]")].map(
+      (row) => row.getAttribute("data-sidebar-row"),
+    )
+    expect(rows()).toEqual([
+      "agent:zeta", "agent:alpha", "agent:mike", "agent:gone",
+      "terminal:t-z", "terminal:t-a", "agent:other",
+    ])
+    expect(screen.queryByText("Inactive")).toBeNull()
+
+    mockState = { ...mockState, spine: { ...mockState.spine!, projects: [...mockState.spine!.projects].reverse() } }
+    view.rerender(<FlatAgentList handlers={handlers} />)
+    expect(rows()[0]).toBe("agent:other")
+    mockState = { ...mockState, bootstrap: { sidebar_style: "flat" } as YaranState["bootstrap"] }
+    view.rerender(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByText("Inactive")).toBeTruthy()
+  })
+
   it("reuses list derivations on selection changes and rebuilds them when the workspace changes", async () => {
     const flatList = await import("@/lib/flatList")
     const sort = vi.spyOn(flatList, "orderFlatRows")

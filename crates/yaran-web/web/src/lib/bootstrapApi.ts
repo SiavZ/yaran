@@ -153,6 +153,8 @@ export interface Bootstrap {
   /** Mirrors `config.ui.agent_sort`: the agent-list sort mode, persisted server-side
    * so every client agrees. Falls back to "active". */
   agent_sort?: FlatSortKey;
+  /** The TUI's list style. The web stays flat but follows its project order when grouped. */
+  sidebar_style?: "grouped" | "flat";
   /** Mirrors `config.ui.agent_scrollback_lines`; sizes each xterm.js instance. */
   agent_scrollback_lines: number;
   /** Mirrors `config.ui.show_changes_pane`; the desktop Changes-pane default. */
