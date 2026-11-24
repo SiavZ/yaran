@@ -393,7 +393,10 @@ export function planListDrop(
   if (grouped) {
     const source = baseline[from]
     const target = baseline[to]
+    const withTerminal = sessionsWithOwnTerminal(terminals)
     if (source.kind !== "agent" || target.kind !== "agent"
+      || inInactiveTail(source.session, withTerminal.has(source.session.id))
+      || inInactiveTail(target.session, withTerminal.has(target.session.id))
       || workspaceProjectId(source.session.workspace) !== workspaceProjectId(target.session.workspace)) {
       return null
     }
@@ -406,6 +409,10 @@ export function planListDrop(
   const stored = sessions.map((session) => session.id)
   const agentsMoved =
     agentOrder.length !== stored.length || agentOrder.some((id, i) => id !== stored[i])
+
+  if (grouped) {
+    return agentsMoved ? { agentOrder, placements: {}, terminalOrder: null } : null
+  }
 
   const placements: Record<string, string | null> = {}
   const listOrder: string[] = []

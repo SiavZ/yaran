@@ -972,12 +972,12 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/FirstLoadDialog.test.tsx (580 lines after rebrand 0956be7ac) with the fork's 550-line copy at c626621cd into 580 lines at 7e4a9c0f1; module: tests for FirstLoadDialog"
   },
   "crates/yaran-web/web/src/components/FlatAgentList.test.tsx": {
-    "lines": 2418,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/FlatAgentList.test.tsx (2341 lines after rebrand 0956be7ac) with the fork's 1793-line copy at c626621cd into 2395 lines at 7e4a9c0f1; module: tests for FlatAgentList; Phone/TUI order parity: exercise live project reorder and layout-mode updates using the existing list/DnD test harness."
+    "lines": 2419,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/FlatAgentList.test.tsx (2341 lines after rebrand 0956be7ac) with the fork's 1793-line copy at c626621cd into 2395 lines at 7e4a9c0f1; module: tests for FlatAgentList; Phone/TUI order parity: exercise live project reorder and layout-mode updates using the existing list/DnD test harness.; Review fix: one assertion in the grouped mounted-list fixture pins inactive rows as non-sortable."
   },
   "crates/yaran-web/web/src/components/FlatAgentList.tsx": {
-    "lines": 1268,
-    "reason": "baseline 2026-11-14; Phone/TUI order parity: pass the existing project order into shared ordering and drag helpers; restrict grouped-mode terminal dragging."
+    "lines": 1271,
+    "reason": "baseline 2026-11-14; Phone/TUI order parity: pass the existing project order into shared ordering and drag helpers; restrict grouped-mode terminal dragging.; Review fix: derive quiet-row drag eligibility from the same terminal-aware inactive predicate as the TUI."
   },
   "crates/yaran-web/web/src/components/InsetHeader.test.tsx": {
     "lines": 951,

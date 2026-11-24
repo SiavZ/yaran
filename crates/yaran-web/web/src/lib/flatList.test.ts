@@ -258,12 +258,19 @@ describe("the grouped TUI's order without project headers", () => {
     expect(ids(listDragBaseline(sessions, terminals, "manual", projects))).toEqual(
       ids(orderFlatRows(sessions, terminals, "manual", projects).main),
     )
-    const baseline = listDragBaseline(sessions, [], "manual", projects)
+    const baseline = listDragBaseline(sessions, terminals, "manual", projects)
     const rowKey = (id: string) => flatRowKey(baseline.find(
       (row) => row.kind === "agent" && row.session.id === id,
     )!)
-    expect(planListDrop(baseline, rowKey("first-hot"), rowKey("first-idle"), sessions, [], true)?.agentOrder)
-      .toEqual(["first-hot", "first-idle", "first-quiet", "other-hot", "orphan-z", "orphan-a", "alone"])
+    const plan = planListDrop(baseline, rowKey("first-hot"), rowKey("first-idle"), sessions, terminals, true)
+    expect(plan?.agentOrder).toEqual(["first-hot", "first-idle", "first-quiet", "other-hot", "orphan-z", "orphan-a", "alone"])
+    expect(plan?.placements).toEqual({})
+    expect(plan?.terminalOrder).toBeNull()
+    expect(planListDrop(baseline, rowKey("first-hot"), rowKey("first-quiet"), sessions, terminals, true)).toBeNull()
+    expect(planListDrop(baseline, rowKey("first-quiet"), rowKey("first-hot"), sessions, terminals, true)).toBeNull()
+    const running = [...terminals, ownTerminal("running", "first-quiet")]
+    const runningBaseline = listDragBaseline(sessions, running, "manual", projects)
+    expect(planListDrop(runningBaseline, rowKey("first-quiet"), rowKey("first-hot"), sessions, running, true)?.agentOrder).toContain("first-quiet")
     expect(planListDrop(baseline, rowKey("first-hot"), rowKey("other-hot"), sessions, [], true))
       .toBeNull()
   })
@@ -273,6 +280,8 @@ describe("the grouped TUI's order without project headers", () => {
       sessions, sessions.filter((s) => s.id !== "first-idle"), "first-idle", "active", [], projects,
     )).toBe("other-hot")
   })
+
+
 })
 
 // The baseline a drop is made against, and what the drop then asks for.

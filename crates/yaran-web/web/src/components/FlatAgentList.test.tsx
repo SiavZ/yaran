@@ -262,6 +262,7 @@ describe("FlatAgentList list derivations", () => {
       "terminal:t-z", "terminal:t-a", "agent:other",
     ])
     expect(screen.queryByText("Inactive")).toBeNull()
+    expect(screen.getByText("Gone").closest("button")?.getAttribute("aria-roledescription")).toBeNull()
 
     mockState = { ...mockState, spine: { ...mockState.spine!, projects: [...mockState.spine!.projects].reverse() } }
     view.rerender(<FlatAgentList handlers={handlers} />)
