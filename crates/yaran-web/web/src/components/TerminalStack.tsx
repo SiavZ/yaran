@@ -476,7 +476,7 @@ function TerminalPart(props: TerminalPartProps) {
   const onScreenChangeRef = useRef<((onScreen: boolean) => void) | null>(null)
   // The one lifecycle owner: it creates and tears down the terminal and socket,
   // re-running only when the streamed target changes.
-  useTerminalLifecycle(props, {
+  const decoderIdentity = useTerminalLifecycle(props, {
     hostRef,
     containerRef,
     termRef,
@@ -689,6 +689,7 @@ function TerminalPart(props: TerminalPartProps) {
       providerName={providerName}
       ptyRef={ptyRef}
       flowView={independentView ? <FlowTerminal
+        key={decoderIdentity}
         termRef={termRef}
         interactionsRef={flowInteractionsRef}
         focusInput={focusTypingSurface}

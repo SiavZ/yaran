@@ -100,6 +100,22 @@ it("keeps real text that soft-wraps after a full source-grid decorative rule", a
   expect(screen.getByTestId("flow-terminal").querySelector("hr")).toBeNull()
 })
 
+it("subscribes to the replacement decoder and clears the previous target on a keyed switch", async () => {
+  const view = mount()
+  await act(() => write(view.term, "OLD_TARGET_MARKER"))
+  await screen.findByText("OLD_TARGET_MARKER")
+  const next = new Terminal({ cols: 120, rows: 24, allowProposedApi: true })
+  terms.push(next)
+  view.props.termRef.current = next
+  view.props.interactionsRef.current.cursorVisible = trackFlowCursor(next).visible
+  view.rerender(<FlowTerminal key="next-decoder" {...view.props} />)
+  await act(() => write(next, "NEW_TARGET_MARKER"))
+  await screen.findByText("NEW_TARGET_MARKER")
+  expect(screen.queryByText("OLD_TARGET_MARKER")).toBeNull()
+  await act(() => write(next, " updated"))
+  await screen.findByText("NEW_TARGET_MARKER updated")
+})
+
 it("maps both halves of a glyph to the same cell rather than the next caret boundary", async () => {
   const view = mount()
   await act(() => write(view.term, "abcd"))

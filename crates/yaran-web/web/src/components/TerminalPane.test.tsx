@@ -1602,6 +1602,26 @@ it.each([500, 900])("a native phone keeps independent output and input at %i CSS
   }
 })
 
+it("a reused phone part replaces its flow view when the streamed target changes", () => {
+  const width = window.innerWidth
+  Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
+  const pointer = stubCoarsePointer()
+  try {
+    const view = render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    const oldFlow = screen.getByTestId("flow-terminal")
+    const host = oldFlow.parentElement
+    const oldTerm = TermStub.instances.at(-1)
+    view.rerender(<TerminalPane kind="terminal" id="t1" owner={{ kind: "session", sessionId: "s1" }} />)
+    expect(TermStub.instances.at(-1)).not.toBe(oldTerm)
+    expect(screen.getByTestId("flow-terminal").parentElement).toBe(host)
+    expect(screen.getByTestId("flow-terminal")).not.toBe(oldFlow)
+  } finally {
+    cleanup()
+    pointer.restore()
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true })
+  }
+})
+
 describe("TerminalPane tap-to-focus redirect", () => {
   const desktopWidth = window.innerWidth
   // Wider touch devices keep the terminal grid and its mouse replay path.

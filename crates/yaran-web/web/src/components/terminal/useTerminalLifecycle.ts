@@ -149,7 +149,7 @@ export type TerminalLifecyclePorts = {
 export function useTerminalLifecycle(
   target: TerminalTarget,
   ports: TerminalLifecyclePorts,
-): void {
+): string {
   const { kind, id } = target
   // The owning session id, when there is one: the agent's own session, or a
   // session-owned terminal's parent. A PROJECT or STANDALONE terminal has none.
@@ -203,6 +203,7 @@ export function useTerminalLifecycle(
     flowInteractionsRef,
     independentView,
   } = ports
+  const decoderIdentity = JSON.stringify([kind, id, sessionId, ptyUrl, independentView])
 
   // This mount's heartbeat, so the cadence can be retimed from outside the big
   // attach effect. Null whenever no socket is wired.
@@ -474,5 +475,6 @@ export function useTerminalLifecycle(
     // its closures through a stable container, channel or port, and listing a
     // component-body function here would rebuild the terminal every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, id, sessionId, ptyUrl, independentView])
+  }, [decoderIdentity])
+  return decoderIdentity
 }
