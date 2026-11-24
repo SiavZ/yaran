@@ -30,7 +30,7 @@ import { createHeartbeat, type Heartbeat } from "@/lib/heartbeat"
 import { onServerRunUnconfirmed } from "@/lib/serverRun"
 import { registerPageLifecycle } from "@/lib/pageLifecycle"
 import { registerLayoutGestureHolder } from "@/lib/layoutGesture"
-import { useIsMobile } from "@yaran/ui-kit/use-mobile"
+import { trackFlowCursor } from "@/lib/terminalFlow"
 import { activateLinkAtPoint, linkifierElement } from "@/lib/termlink"
 import { dispatchMouseReplay, rectCenter, tapReplaySteps, wheelReplaySteps } from "@/lib/termmouse"
 import type { FlowInteractions } from "./FlowTerminal"
@@ -143,13 +143,13 @@ export type TerminalLifecyclePorts = {
   /// when it comes on screen (true) or goes off screen (false).
   onScreenChangeRef: RefObject<((onScreen: boolean) => void) | null>
   flowInteractionsRef: RefObject<FlowInteractions | null>
+  independentView: boolean
 }
 
 export function useTerminalLifecycle(
   target: TerminalTarget,
   ports: TerminalLifecyclePorts,
 ): void {
-  const independentView = useIsMobile()
   const { kind, id } = target
   // The owning session id, when there is one: the agent's own session, or a
   // session-owned terminal's parent. A PROJECT or STANDALONE terminal has none.
@@ -201,6 +201,7 @@ export function useTerminalLifecycle(
     readRowConfirmed,
     onScreenChangeRef,
     flowInteractionsRef,
+    independentView,
   } = ports
 
   // This mount's heartbeat, so the cadence can be retimed from outside the big
@@ -223,6 +224,7 @@ export function useTerminalLifecycle(
       ownership: { ...ownership, read: () => !independentView && ownership.read() },
     })
     const { term, links, isMac } = terminalSetup
+    const cursor = trackFlowCursor(term)
     // Opening the socket is the subscription: it launches the tab if it is not
     // running, with resume decided server-side. A dormant tab is never
     // auto-mounted, so reaching here for one is an intentional launch.
@@ -259,6 +261,7 @@ export function useTerminalLifecycle(
       noteLocalGrid,
     })
     flowInteractionsRef.current = {
+      cursorVisible: cursor.visible,
       tap(row, col) {
         const previous = term.buffer.active.viewportY
         term.scrollToLine(Math.max(0, row - Math.floor(term.rows / 2)))
@@ -441,6 +444,7 @@ export function useTerminalLifecycle(
     })
 
     return () => {
+      cursor.dispose()
       flowInteractionsRef.current = null
       if (onScreenChangeRef.current !== null) onScreenChangeRef.current = null
       stopAuthResync()

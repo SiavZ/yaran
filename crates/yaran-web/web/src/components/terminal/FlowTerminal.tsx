@@ -7,6 +7,7 @@ import { clampTerminalFontSize, terminalFontFamily } from "@/lib/terminalFont"
 import { flowColumn, terminalFlowScreen, type FlowRow, type FlowScreen } from "@/lib/terminalFlow"
 
 export type FlowInteractions = {
+  cursorVisible?: () => boolean
   tap: (row: number, col: number) => boolean
   scroll: (lines: number) => void
 }
@@ -28,7 +29,27 @@ function pointOffset(event: React.MouseEvent, element: HTMLElement): number | nu
   const prefix = doc.createRange()
   prefix.selectNodeContents(element)
   prefix.setEnd(range.startContainer, range.startOffset)
-  return prefix.toString().length
+  const text = prefix.toString()
+  // Caret hit-testing rounds to the nearest boundary. A tap on a glyph's right
+  // half still belongs to that glyph, including wide and combining sequences.
+  const previous = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].at(-1)
+  if (previous) {
+    const glyph = prefix.cloneRange()
+    const walker = doc.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    let offset = previous.index
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const length = node.textContent?.length ?? 0
+      if (offset < length) {
+        glyph.setStart(node, offset)
+        break
+      }
+      offset -= length
+    }
+    if ([...(glyph.getClientRects?.() ?? [])].some((rect) =>
+      event.clientX >= rect.left && event.clientX < rect.right && event.clientY >= rect.top && event.clientY < rect.bottom,
+    )) return previous.index
+  }
+  return text.length
 }
 
 function logicalRows(rows: FlowRow[]): FlowRow[][] {
@@ -58,7 +79,7 @@ export function FlowTerminal({ termRef, interactionsRef, focusInput, fontFamily,
       if (!term || !root || disposed) return
       const selection = root.ownerDocument.getSelection()
       if (selection && !selection.isCollapsed && root.contains(selection.anchorNode)) return
-      setScreen(terminalFlowScreen(term, historyRows))
+      setScreen(terminalFlowScreen(term, historyRows, interactionsRef.current?.cursorVisible?.() ?? true))
     }
     const schedule = () => {
       if (timer === undefined) timer = setTimeout(update, 50)
@@ -83,7 +104,7 @@ export function FlowTerminal({ termRef, interactionsRef, focusInput, fontFamily,
       stop?.()
       document.removeEventListener("selectionchange", schedule)
     }
-  }, [termRef, historyRows])
+  }, [termRef, interactionsRef, historyRows])
 
   useLayoutEffect(() => {
     const root = rootRef.current
@@ -172,7 +193,7 @@ export function FlowTerminal({ termRef, interactionsRef, focusInput, fontFamily,
         ) : (
           <div key={rows[0].row} className="min-h-[1.5em] whitespace-pre-wrap [overflow-wrap:anywhere]">
             {rows.map((row) => <span key={row.row} data-flow-row={row.row}>{row.runs.map((run, index) => (
-              <span key={index} style={run.cursor ? { ...run.style, color: "oklch(var(--background))", backgroundColor: "oklch(var(--foreground))" } : run.style}>{run.text}</span>
+              <span key={index} style={run.cursor ? { ...run.style, color: "var(--background)", backgroundColor: "var(--foreground)" } : run.style}>{run.text}</span>
             ))}</span>)}
           </div>
         ))}

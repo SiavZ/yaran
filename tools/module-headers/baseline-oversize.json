@@ -1048,20 +1048,20 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.clipboard.test.tsx (1072 lines after rebrand 0956be7ac) with the fork's 1069-line copy at c626621cd into 1072 lines at 7e4a9c0f1; module: tests for TerminalPane.clipboard"
   },
   "crates/yaran-web/web/src/components/TerminalPane.filedrop.test.tsx": {
-    "lines": 1552,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.filedrop.test.tsx (1556 lines after rebrand 0956be7ac) with the fork's 1439-line copy at c626621cd into 1556 lines at 7e4a9c0f1; module: tests for TerminalPane.filedrop"
+    "lines": 1554,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.filedrop.test.tsx (1556 lines after rebrand 0956be7ac) with the fork's 1439-line copy at c626621cd into 1556 lines at 7e4a9c0f1; module: tests for TerminalPane.filedrop; Review fix: two parser-hook stubs mirror cursor visibility subscriptions used by the mounted terminal."
   },
   "crates/yaran-web/web/src/components/TerminalPane.test.tsx": {
-    "lines": 5118,
-    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.test.tsx (6025 lines after rebrand 0956be7ac) with the fork's 5438-line copy at c626621cd into 6025 lines at 7e4a9c0f1; module: tests for TerminalPane; Phone view: exercise native selection and direct focus using the existing mounted-pane fixture; keep legacy touch encoding checks on tablet width."
+    "lines": 5125,
+    "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalPane.test.tsx (6025 lines after rebrand 0956be7ac) with the fork's 5438-line copy at c626621cd into 6025 lines at 7e4a9c0f1; module: tests for TerminalPane; Phone view: exercise native selection and direct focus using the existing mounted-pane fixture; keep legacy touch encoding checks on tablet width.; Review fix: mounted native-phone viewport cases and cursor-parser stubs retain independent input in landscape."
   },
   "crates/yaran-web/web/src/components/TerminalPaneLinks.test.tsx": {
     "lines": 740,
     "reason": "baseline 2026-11-14; Phone view: exercise cell-mapped OSC links through the existing real-xterm mounted pane fixture."
   },
   "crates/yaran-web/web/src/components/TerminalStack.tsx": {
-    "lines": 718,
-    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalStack.tsx (794 lines; 794 after rebrand 0956be7ac); module: TerminalStack (no header comment); Phone view: wire the separate renderer and interaction ref into the existing terminal pane."
+    "lines": 721,
+    "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-web/web/src/components/TerminalStack.tsx (794 lines; 794 after rebrand 0956be7ac); module: TerminalStack (no header comment); Phone view: wire the separate renderer and interaction ref into the existing terminal pane.; Review fix: derive one phone-identity/viewport verdict and pass it to both renderer and socket lifecycle."
   },
   "crates/yaran-web/web/src/components/TheaterFlight.test.tsx": {
     "lines": 550,

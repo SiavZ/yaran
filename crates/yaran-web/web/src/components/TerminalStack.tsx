@@ -24,6 +24,7 @@ import { useTerminalLifecycle } from "@/components/terminal/useTerminalLifecycle
 import { useTerminalRelayout } from "@/components/terminal/useTerminalRelayout"
 import { useTerminalOwnership } from "@/components/terminal/ownership"
 import { FlowTerminal, type FlowInteractions } from "@/components/terminal/FlowTerminal"
+import { nativeShell } from "@/lib/native/nativeShell"
 import { useViewerGrid } from "@/components/terminal/viewerGrid"
 import { REPLAY_WAIT_POLL_MS } from "@/components/terminal/constants"
 import { suspendTerminalTabStop } from "@/components/terminal/inputWiring"
@@ -342,7 +343,8 @@ function TerminalPart(props: TerminalPartProps) {
   // So does a part off screen whose row the server has not named this page's
   // driver for yet: it renders at the pty's own grid and sends nothing until
   // the part on screen has claimed the row.
-  const faithfulWatcher = !isMobile && (!isOwner || (!onScreen && !rowConfirmed))
+  const independentView = isMobile || nativeShell()?.form === "phone"
+  const faithfulWatcher = !independentView && (!isOwner || (!onScreen && !rowConfirmed))
   // The grid to render, broken out so the relayout effect depends on the
   // NUMBERS rather than on the object identity the machine hands back.
   const remoteRows = viewerGrid.remoteGrid?.rows ?? 0
@@ -510,6 +512,7 @@ function TerminalPart(props: TerminalPartProps) {
     readRowConfirmed,
     onScreenChangeRef,
     flowInteractionsRef,
+    independentView,
   })
 
   // Coming on screen and going off it, after mount: the socket opened naming
@@ -685,7 +688,7 @@ function TerminalPart(props: TerminalPartProps) {
       input={input}
       providerName={providerName}
       ptyRef={ptyRef}
-      flowView={isMobile ? <FlowTerminal
+      flowView={independentView ? <FlowTerminal
         termRef={termRef}
         interactionsRef={flowInteractionsRef}
         focusInput={focusTypingSurface}

@@ -45,6 +45,8 @@ class TermStub {
     bracketedPasteMode: false,
   }
   parser = {
+    registerCsiHandler: () => ({ dispose() {} }),
+    registerEscHandler: () => ({ dispose() {} }),
     registerOscHandler() {
       return { dispose() {} }
     },

@@ -2,7 +2,7 @@
 import { Terminal } from "@xterm/xterm"
 import { Unicode11Addon } from "@xterm/addon-unicode11"
 import { afterEach, expect, it } from "vitest"
-import { flowColumn, terminalFlowScreen } from "./terminalFlow"
+import { flowColumn, terminalFlowScreen, trackFlowCursor } from "./terminalFlow"
 
 const terminals: Terminal[] = []
 function terminal(cols = 120, rows = 24) {
@@ -15,6 +15,22 @@ function terminal(cols = 120, rows = 24) {
 const write = (term: Terminal, text: string) => new Promise<void>((done) => term.write(text, done))
 const texts = (term: Terminal) => terminalFlowScreen(term).rows.map((row) => row.runs.map((run) => run.text).join(""))
 afterEach(() => { terminals.splice(0).forEach((term) => term.dispose()) })
+
+it("respects cursor hide/show and reset commands without swallowing terminal modes", async () => {
+  const term = terminal()
+  const cursor = trackFlowCursor(term)
+  const runs = () => terminalFlowScreen(term, 200, cursor.visible()).rows.flatMap((row) => row.runs)
+  await write(term, "prompt\x1b[?25l")
+  expect(runs().some((run) => run.cursor)).toBe(false)
+  await write(term, "\x1b[?25;1000h")
+  expect(runs().some((run) => run.cursor)).toBe(true)
+  expect(term.modes.mouseTrackingMode).toBe("vt200")
+  await write(term, "\x1b[?25l\x1b[!p")
+  expect(cursor.visible()).toBe(true)
+  await write(term, "\x1b[?25l\x1bc")
+  expect(cursor.visible()).toBe(true)
+  cursor.dispose()
+})
 
 it("decodes desktop cursor redraws at the source grid without resizing or appending stale text", async () => {
   const term = terminal()

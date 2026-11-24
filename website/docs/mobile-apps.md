@@ -134,6 +134,7 @@ your computer. Inside a machine, the cog menu adds
 **Switch machine** and **Phone app settings**.
 
 Inside an agent, output wraps at the phone's width even while the desktop is open.
+Rotating a phone keeps this independent presentation.
 Tap to type directly; long-press text to select and copy it. Opening, reopening and
 phone typing do not resize the desktop terminal. This presentation is served by the
 machine's yaran binary, so updating and reloading that binary updates an installed

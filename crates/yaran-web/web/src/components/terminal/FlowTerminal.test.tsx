@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
 import { FlowTerminal } from "./FlowTerminal"
+import { trackFlowCursor } from "@/lib/terminalFlow"
 
 const terms: Terminal[] = []
 afterEach(() => { cleanup(); terms.splice(0).forEach((term) => term.dispose()); vi.restoreAllMocks() })
@@ -11,7 +12,7 @@ function mount() {
   const term = new Terminal({ cols: 120, rows: 24, allowProposedApi: true })
   terms.push(term)
   const focus = vi.fn()
-  const interactions = { tap: vi.fn(() => false), scroll: vi.fn() }
+  const interactions = { cursorVisible: trackFlowCursor(term).visible, tap: vi.fn(() => false), scroll: vi.fn() }
   const props = { termRef: { current: term }, interactionsRef: { current: interactions }, focusInput: focus, fontFamily: "monospace", fontSize: 16 }
   return { term, focus, interactions, props, ...render(<FlowTerminal {...props} />) }
 }
@@ -78,4 +79,37 @@ it("scrolls wrapped output locally, forwarding only one wheel notch at the alter
   await screen.findByText("alt screen")
   fireEvent.wheel(root, { deltaY: 80 })
   await waitFor(() => expect(view.interactions.scroll).toHaveBeenCalledWith(1))
+})
+
+it("uses theme colors for a visible cursor and removes it when the app hides it", async () => {
+  const view = mount()
+  await act(() => write(view.term, "prompt"))
+  const caret = () => screen.getByTestId("flow-terminal").querySelector<HTMLElement>('span[style*="background-color: var(--foreground)"]')
+  await waitFor(() => expect(caret()).not.toBeNull())
+  expect(caret()!.style.color).toBe("var(--background)")
+  await act(() => write(view.term, "\x1b[?25l"))
+  await waitFor(() => expect(caret()).toBeNull())
+  await act(() => write(view.term, "\x1b[?25h"))
+  await waitFor(() => expect(caret()).not.toBeNull())
+})
+
+it("maps both halves of a glyph to the same cell rather than the next caret boundary", async () => {
+  const view = mount()
+  await act(() => write(view.term, "abcd"))
+  const text = await screen.findByText("abcd")
+  const caret = document.createRange()
+  caret.setStart(text.firstChild!, 2)
+  const rects = Object.getOwnPropertyDescriptor(Range.prototype, "getClientRects")
+  Object.defineProperty(document, "caretRangeFromPoint", { configurable: true, value: () => caret })
+  Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [{ left: 10, right: 20, top: 0, bottom: 20 }] })
+  try {
+    fireEvent.click(text, { clientX: 12.5, clientY: 10 })
+    fireEvent.click(text, { clientX: 17.5, clientY: 10 })
+    fireEvent.click(text, { clientX: 21, clientY: 10 })
+    expect(view.interactions.tap.mock.calls).toEqual([[0, 1], [0, 1], [0, 2]])
+  } finally {
+    delete (document as Partial<Document>).caretRangeFromPoint
+    if (rects) Object.defineProperty(Range.prototype, "getClientRects", rects)
+    else delete (Range.prototype as Partial<Range>).getClientRects
+  }
 })

@@ -6,7 +6,7 @@
  * module wraps its parser rather than carrying a second one.
  *
  * - Pure apart from one memoised read of `navigator.userAgent`.
- * - The token is spoofable: it gates labels and menu entries only, never anything a browser
+ * - The token is spoofable: it selects presentation only, never anything a browser
  *   could abuse (the native entries merely navigate to a scheme a browser cannot handle).
  *
  * <module-headers:begin>
@@ -20,6 +20,8 @@
  * ├── src/components/AuthGate.tsx
  * ├── src/components/AuthGateNative.test.tsx
  * ├── src/components/OfflineOverlay.tsx
+ * ├── src/components/TerminalPane.test.tsx
+ * ├── src/components/TerminalStack.tsx
  * ├── src/lib/deviceLabel.ts
  * ├── src/lib/native/nativeShell.test.ts
  * └── src/lib/useAppMenuContext.ts

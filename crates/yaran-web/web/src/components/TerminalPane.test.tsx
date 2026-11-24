@@ -28,6 +28,7 @@ import {
 import { GLYPH_SPINNER_CLASS, SPINNER_FRAMES } from "@/lib/spinnerFrames"
 import { usePaneInputGroup } from "@/lib/paneInputGroup"
 import { setTypingSurface } from "@/lib/typingSurface"
+import { resetNativeShellForTest } from "@/lib/native/nativeShell"
 import {
   paneCoverOwnedFor,
   resetPaneCovers,
@@ -153,6 +154,8 @@ class TermStub {
   // hyperlink on/off gate), so the stub must expose registerOscHandler.
   oscHandlerDispose = vi.fn()
   parser = {
+    registerCsiHandler: () => ({ dispose() {} }),
+    registerEscHandler: () => ({ dispose() {} }),
     registerOscHandler: () => {
       return { dispose: this.oscHandlerDispose }
     },
@@ -1562,9 +1565,11 @@ describe.each([
 // container (jsdom accepts plain {clientX, clientY} objects in the touch
 // lists). touchend must be read via `changedTouches` (the `touches` list is
 // empty once the finger lifts).
-it("a phone uses independently wrapped output, leaves native selection available and focuses direct terminal input", () => {
+it.each([500, 900])("a native phone keeps independent output and input at %i CSS pixels", (phoneWidth) => {
   const width = window.innerWidth
-  Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })
+  Object.defineProperty(window, "innerWidth", { value: phoneWidth, configurable: true })
+  const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("YaranApp/1.2.0 (android; phone)")
+  resetNativeShellForTest()
   const pointer = stubCoarsePointer()
   try {
     render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
@@ -1581,6 +1586,8 @@ it("a phone uses independently wrapped output, leaves native selection available
   } finally {
     cleanup()
     pointer.restore()
+    userAgent.mockRestore()
+    resetNativeShellForTest()
     Object.defineProperty(window, "innerWidth", { value: width, configurable: true })
   }
 })
