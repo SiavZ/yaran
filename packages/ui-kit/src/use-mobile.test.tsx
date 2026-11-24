@@ -6,6 +6,15 @@
  * Pins that the answer comes from the breakpoint media query, the same one the CSS reads.
  *
  * - Runs in jsdom with a stubbed matchMedia.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/use-mobile.test.tsx
+ * └── src/use-mobile.ts
+ * External: @testing-library/react, vitest
+ *
+ * Used by: entry point (vitest, via npm test in packages/ui-kit)
+ * <module-headers:end>
  */
 import { renderHook } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
