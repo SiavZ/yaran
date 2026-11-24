@@ -1627,6 +1627,12 @@ and everything else is blocked. On Android file and content access are
 off, mixed content is never allowed, and multiple windows are off. WebView
 debugging and iOS inspection are on only in debug and end-to-end builds.
 The iOS WebView was not compiled with Xcode.
+The independent phone terminal renderer inserts decoded cells as React text, never
+HTML, and masks terminal-invisible cells. Links reuse the existing protocol allowlist
+and user-gesture opener. Its `independent_view` socket flag changes only sizing:
+authentication, seated input rights and query-reply filtering still apply. Renderer
+and socket checks cover this path; a live machine view in the APK remains unverified.
+
 
 **Residual risk.** A WebView engine vulnerability is the platform's to fix.
 

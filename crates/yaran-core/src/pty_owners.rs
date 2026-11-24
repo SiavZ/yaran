@@ -289,6 +289,12 @@ pub struct PtySizeOwners {
     pub owners: std::sync::Mutex<OwnersState>,
 }
 
+#[derive(Clone, Copy)]
+enum WriteSizing {
+    FollowWriter,
+    Preserve,
+}
+
 /// The source of every connection id in the process.
 ///
 /// Process-global, not per-registry: the background-server toggle can build
@@ -735,6 +741,39 @@ impl PtySizeOwners {
         conn_id: u64,
         kind: crate::pty::PtyWriteKind,
         device: Option<&str>,
+        apply: impl FnMut(&StampedGrid),
+    ) -> WriteVerdict {
+        self.note_write_sizing(
+            pty_id,
+            conn_id,
+            kind,
+            device,
+            WriteSizing::FollowWriter,
+            apply,
+        )
+    }
+
+    /// Input from an independently rendered view must not change the shared grid.
+    /// Query replies retain the same single-holder gate as ordinary terminal input.
+    ///
+    /// # Panics
+    /// Panics when the owners lock is poisoned by an earlier panic while it was held.
+    pub fn note_write_preserving_size(
+        &self,
+        pty_id: &str,
+        conn_id: u64,
+        kind: crate::pty::PtyWriteKind,
+    ) -> WriteVerdict {
+        self.note_write_sizing(pty_id, conn_id, kind, None, WriteSizing::Preserve, |_| {})
+    }
+
+    fn note_write_sizing(
+        &self,
+        pty_id: &str,
+        conn_id: u64,
+        kind: crate::pty::PtyWriteKind,
+        device: Option<&str>,
+        sizing: WriteSizing,
         mut apply: impl FnMut(&StampedGrid),
     ) -> WriteVerdict {
         use crate::pty::PtyWriteKind;
@@ -758,6 +797,10 @@ impl PtySizeOwners {
             };
         }
         match kind {
+            PtyWriteKind::Typing if matches!(sizing, WriteSizing::Preserve) => WriteVerdict {
+                forward: true,
+                ..WriteVerdict::default()
+            },
             PtyWriteKind::Typing => {
                 owners.activity += 1;
                 let active = owners.activity;

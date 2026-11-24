@@ -210,6 +210,80 @@ describe("orderFlatRows", () => {
   })
 })
 
+describe("the grouped TUI's order without project headers", () => {
+  const agent = (id: string, project: string | null, extra: Partial<SessionView> = {}) =>
+    makeSession({
+      id,
+      workspace: project === null
+        ? { kind: "folder", folder_path: `/tmp/${id}`, folder_label: `/tmp/${id}`, repo_status: "no_repo", quiet_reason: "" }
+        : { ...makeSession({ id }).workspace, project_id: project } as SessionView["workspace"],
+      ...extra,
+    })
+  const sessions = [
+    agent("other-hot", "p2", { working: true }),
+    agent("first-idle", "p1"),
+    agent("orphan-z", "missing-z"),
+    agent("first-quiet", "p1", { status: "exited" }),
+    agent("alone", null),
+    agent("first-hot", "p1", { working: true }),
+    agent("orphan-a", "missing-a"),
+  ]
+  const terminals = [
+    makeTerminal({ id: "other-terminal", owner: { kind: "project", project_id: "p2" } }),
+    makeTerminal({ id: "first-terminal", owner: { kind: "project", project_id: "p1" } }),
+    ownTerminal("own", "first-hot"),
+    makeTerminal({ id: "standalone-terminal", owner: { kind: "standalone", cwd_label: "~" } }),
+  ]
+  const projects = ["p1", "p2"]
+
+  it("follows project order, sorts each project's agents, then lists its terminals", () => {
+    const rows = orderFlatRows(sessions, terminals, "active", projects)
+    expect(ids(rows.main)).toEqual([
+      "first-hot", "first-idle", "first-quiet", "first-terminal",
+      "other-hot", "other-terminal", "orphan-z", "orphan-a",
+      "alone", "standalone-terminal",
+    ])
+    expect(rows.inactive).toEqual([])
+  })
+
+  it("reflects a TUI project move without changing the saved agent order", () => {
+    expect(ids(orderFlatRows(sessions, [], "manual", ["p2", "p1"]).main)).toEqual([
+      "other-hot", "first-idle", "first-hot", "first-quiet", "orphan-z", "orphan-a", "alone",
+    ])
+    expect(sessions[0].id).toBe("other-hot")
+    expect(sessions[1].id).toBe("first-idle")
+  })
+
+  it("uses the displayed group order as the drag baseline, including quiet agents", () => {
+    expect(ids(listDragBaseline(sessions, terminals, "manual", projects))).toEqual(
+      ids(orderFlatRows(sessions, terminals, "manual", projects).main),
+    )
+    const baseline = listDragBaseline(sessions, terminals, "manual", projects)
+    const rowKey = (id: string) => flatRowKey(baseline.find(
+      (row) => row.kind === "agent" && row.session.id === id,
+    )!)
+    const plan = planListDrop(baseline, rowKey("first-hot"), rowKey("first-idle"), sessions, terminals, true)
+    expect(plan?.agentOrder).toEqual(["other-hot", "first-hot", "first-idle", "orphan-z", "first-quiet", "alone", "orphan-a"])
+    expect(plan?.placements).toEqual({})
+    expect(plan?.terminalOrder).toBeNull()
+    expect(planListDrop(baseline, rowKey("first-hot"), rowKey("first-quiet"), sessions, terminals, true)).toBeNull()
+    expect(planListDrop(baseline, rowKey("first-quiet"), rowKey("first-hot"), sessions, terminals, true)).toBeNull()
+    const running = [...terminals, ownTerminal("running", "first-quiet")]
+    const runningBaseline = listDragBaseline(sessions, running, "manual", projects)
+    expect(planListDrop(runningBaseline, rowKey("first-quiet"), rowKey("first-hot"), sessions, running, true)?.agentOrder).toContain("first-quiet")
+    expect(planListDrop(baseline, rowKey("first-hot"), rowKey("other-hot"), sessions, [], true))
+      .toBeNull()
+  })
+
+  it("chooses the next active agent from the same order the list shows", () => {
+    expect(nextActiveSessionId(
+      sessions, sessions.filter((s) => s.id !== "first-idle"), "first-idle", "active", [], projects,
+    )).toBe("other-hot")
+  })
+
+
+})
+
 // The baseline a drop is made against, and what the drop then asks for.
 describe("listDragBaseline and planListDrop", () => {
   const sessions = [

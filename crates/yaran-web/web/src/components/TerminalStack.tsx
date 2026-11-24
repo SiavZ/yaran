@@ -23,6 +23,8 @@ import { useTerminalLiveSettings } from "@/components/terminal/liveValues"
 import { useTerminalLifecycle } from "@/components/terminal/useTerminalLifecycle"
 import { useTerminalRelayout } from "@/components/terminal/useTerminalRelayout"
 import { useTerminalOwnership } from "@/components/terminal/ownership"
+import { FlowTerminal, type FlowInteractions } from "@/components/terminal/FlowTerminal"
+import { nativeShell } from "@/lib/native/nativeShell"
 import { useViewerGrid } from "@/components/terminal/viewerGrid"
 import { REPLAY_WAIT_POLL_MS } from "@/components/terminal/constants"
 import { suspendTerminalTabStop } from "@/components/terminal/inputWiring"
@@ -341,7 +343,8 @@ function TerminalPart(props: TerminalPartProps) {
   // So does a part off screen whose row the server has not named this page's
   // driver for yet: it renders at the pty's own grid and sends nothing until
   // the part on screen has claimed the row.
-  const faithfulWatcher = !isOwner || (!onScreen && !rowConfirmed)
+  const independentView = isMobile || nativeShell()?.form === "phone"
+  const faithfulWatcher = !independentView && (!isOwner || (!onScreen && !rowConfirmed))
   // The grid to render, broken out so the relayout effect depends on the
   // NUMBERS rather than on the object identity the machine hands back.
   const remoteRows = viewerGrid.remoteGrid?.rows ?? 0
@@ -357,6 +360,7 @@ function TerminalPart(props: TerminalPartProps) {
   const naturalGridRef = useRef<
     (() => { rows: number; cols: number } | null) | null
   >(null)
+  const flowInteractionsRef = useRef<FlowInteractions | null>(null)
 
   // THE INPUT SURFACE: the compose Send, the accessory sends, the sticky
   // modifier latches and the draft splice.
@@ -472,7 +476,7 @@ function TerminalPart(props: TerminalPartProps) {
   const onScreenChangeRef = useRef<((onScreen: boolean) => void) | null>(null)
   // The one lifecycle owner: it creates and tears down the terminal and socket,
   // re-running only when the streamed target changes.
-  useTerminalLifecycle(props, {
+  const decoderIdentity = useTerminalLifecycle(props, {
     hostRef,
     containerRef,
     termRef,
@@ -507,6 +511,8 @@ function TerminalPart(props: TerminalPartProps) {
     isOwnerRendered: isOwner,
     readRowConfirmed,
     onScreenChangeRef,
+    flowInteractionsRef,
+    independentView,
   })
 
   // Coming on screen and going off it, after mount: the socket opened naming
@@ -682,6 +688,14 @@ function TerminalPart(props: TerminalPartProps) {
       input={input}
       providerName={providerName}
       ptyRef={ptyRef}
+      flowView={independentView ? <FlowTerminal
+        key={decoderIdentity}
+        termRef={termRef}
+        interactionsRef={flowInteractionsRef}
+        focusInput={focusTypingSurface}
+        fontFamily={terminalFontFamilySetting}
+        fontSize={terminalFontSizeSetting}
+      /> : null}
     />
   )
 

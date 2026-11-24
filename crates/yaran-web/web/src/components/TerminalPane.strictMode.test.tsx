@@ -42,6 +42,8 @@ class TermStub {
     },
   }
   parser = {
+    registerCsiHandler: () => ({ dispose() {} }),
+    registerEscHandler: () => ({ dispose() {} }),
     registerOscHandler: () => ({ dispose: () => {} }),
   }
   constructor() {

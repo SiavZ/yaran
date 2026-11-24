@@ -1,7 +1,38 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { xtermScrollbarWidth } from "./constants"
+import { writeInputWithLandingEffects, xtermScrollbarWidth } from "./constants"
+import type { Terminal } from "@xterm/xterm"
+import type { PtySocket } from "@/lib/ptySocket"
+
+it("compose and accessory writes land at the visible flow prompt and clear only its stale selection", () => {
+  const pane = document.createElement("div")
+  pane.setAttribute("data-terminal-pane", "")
+  const element = document.createElement("div")
+  const flow = document.createElement("div")
+  flow.setAttribute("data-terminal-flow", "")
+  flow.textContent = "selected history"
+  pane.append(element, flow)
+  document.body.append(pane)
+  Object.defineProperty(flow, "scrollHeight", { value: 1200 })
+  const term = { element, scrollToBottom: vi.fn(), clearSelection: vi.fn() } as unknown as Terminal
+  const pty = { sendInput: vi.fn() } as unknown as PtySocket
+  const selection = document.getSelection()!
+  const range = document.createRange()
+  range.selectNodeContents(flow)
+  selection.addRange(range)
+  try {
+    const bytes = new TextEncoder().encode("hello")
+    writeInputWithLandingEffects(term, pty, bytes)
+    expect(flow.scrollTop).toBe(1200)
+    expect(selection.isCollapsed).toBe(true)
+    expect(pty.sendInput).toHaveBeenCalledWith(bytes)
+    expect(term.scrollToBottom).toHaveBeenCalledOnce()
+  } finally {
+    selection.removeAllRanges()
+    pane.remove()
+  }
+})
 
 // The one behavior worth pinning here is the fallback boundary: 8 is for a
 // variable that is MISSING or unparsable, never for one that says 0. The old

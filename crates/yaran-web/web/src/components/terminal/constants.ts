@@ -4,6 +4,7 @@ import type { Terminal } from "@xterm/xterm"
 
 import type { PtySocket } from "@/lib/ptySocket"
 import { LF } from "@/lib/termkeys"
+import { scrollFlowToBottom } from "@/lib/terminalFlow"
 
 /// The pointer must move at least this many CSS px between mousedown and
 /// mouseup to count as a drag (a selection attempt) rather than a click.
@@ -69,6 +70,7 @@ export function writeInputWithLandingEffects(
   bytes: Uint8Array,
 ): void {
   term?.scrollToBottom()
+  if (term) scrollFlowToBottom(term)
   term?.clearSelection()
   pty?.sendInput(bytes)
 }

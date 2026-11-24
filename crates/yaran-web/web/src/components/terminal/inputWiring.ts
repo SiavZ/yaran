@@ -9,6 +9,7 @@ import {
   softNewlineAction,
 } from "@/lib/termkeys"
 import { isFocusReport } from "@/lib/suppressViewerReports"
+import { scrollFlowToBottom } from "@/lib/terminalFlow"
 import type { PtySocket } from "@/lib/ptySocket"
 import { latin1Bytes } from "@/lib/termmouse"
 
@@ -42,6 +43,7 @@ function registerTerminalStreams(
   const encoder = new TextEncoder()
   const dataSub = options.term.onData((input) => {
     if (options.replayInFlight() && isFocusReport(input)) return
+    if (options.term.buffer.active.type === "normal" && !isFocusReport(input)) scrollFlowToBottom(options.term)
     const latch = options.mods.read()
     const modified =
       latch.ctrl || latch.alt ? applyModifiers(input, latch) : input
