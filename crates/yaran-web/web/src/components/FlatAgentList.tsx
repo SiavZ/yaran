@@ -1030,6 +1030,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
       sessions,
       terminals,
       grouped,
+      agentSort,
     )
     if (!plan) return
     if (!manual) setAgentSort("manual")
