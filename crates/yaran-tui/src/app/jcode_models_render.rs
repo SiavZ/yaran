@@ -7,6 +7,7 @@ use super::components::button::{
 use super::components::checkbox::{Checkbox, CheckboxState};
 use super::components::hint_bar::{Hint, modal_hint_line};
 use super::components::picker_list::PickerList;
+use super::components::{render_scroll_view, wrap_styled_lines};
 use super::jcode_models::ModelsFocus;
 use super::render::{centered_rect_exact, render_single_line_field};
 use super::{App, OverlayMouseLayout, PromptState};
@@ -15,6 +16,7 @@ use crate::theme::FocusState;
 use ratatui::{
     Frame,
     layout::Rect,
+    text::Line,
     widgets::{ListItem, Paragraph, Widget},
 };
 
@@ -27,6 +29,10 @@ impl App {
         let PromptState::JcodeModels(prompt) = &self.prompt else {
             return;
         };
+        if prompt.busy || prompt.outcomes.is_some() {
+            self.render_jcode_models_results(frame);
+            return;
+        }
         let prompt = prompt.clone();
         let area = centered_rect_exact(78, 24, frame.area());
         let inner = self
@@ -41,6 +47,8 @@ impl App {
             .render(Rect::new(x, inner.y, width, 1), frame.buffer_mut());
         Paragraph::new("Conversations and drafts stay in place; jcode control must be enabled.")
             .render(Rect::new(x, inner.y + 1, width, 1), frame.buffer_mut());
+        Paragraph::new("jcode's model indicator may need a tab reconnect to refresh.")
+            .render(Rect::new(x, inner.y + 2, width, 1), frame.buffer_mut());
         let input = Rect::new(x, inner.y + 3, width, 1);
         Paragraph::new(render_single_line_field(
             "Model ID: ",
@@ -134,6 +142,89 @@ impl App {
             items: layout.items,
             offset: layout.offset,
             apply,
+            cancel,
+        };
+    }
+
+    fn render_jcode_models_results(&mut self, frame: &mut Frame<'_>) {
+        let PromptState::JcodeModels(prompt) = &self.prompt else {
+            return;
+        };
+        let prompt = prompt.clone();
+        let area = centered_rect_exact(78, 24, frame.area());
+        let inner = self
+            .open_modal_frame(frame, "jcode model results", area)
+            .inner;
+        let list = Rect::new(
+            inner.x + 1,
+            inner.y,
+            inner.width.saturating_sub(2),
+            inner.height.saturating_sub(5),
+        );
+        let mut lines = vec![Line::from(if prompt.busy {
+            "Changing the selected jcode models..."
+        } else {
+            "Conversations and drafts are preserved."
+        })];
+        if let Some(outcomes) = &prompt.outcomes {
+            for outcome in outcomes {
+                let style = ratatui::style::Style::default().fg(if outcome.error.is_some() {
+                    self.theme.status_error_fg
+                } else {
+                    self.theme.text_fg
+                });
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    format!(
+                        "{}  {}: {}",
+                        outcome.label,
+                        outcome.tab_id,
+                        outcome.error.as_deref().unwrap_or("Model changed.")
+                    ),
+                    style,
+                ));
+            }
+        }
+        let lines = wrap_styled_lines(&lines, usize::from(list.width));
+        let scroll =
+            render_scroll_view(frame, area, list, lines, prompt.scroll.offset, &self.theme);
+        let buttons = Rect::new(inner.x, inner.bottom().saturating_sub(4), inner.width, 3);
+        let width = shared_button_width(&["Close"]);
+        let cancel = Rect::new(
+            buttons.x + buttons.width.saturating_sub(width) / 2,
+            buttons.y,
+            width,
+            3,
+        );
+        Button::new("Close")
+            .state(button_state_for(
+                ButtonPressedTarget::JcodeModelsCancel,
+                self.pressed_button,
+                if prompt.busy {
+                    ButtonState::Disabled
+                } else {
+                    ButtonState::Focused
+                },
+            ))
+            .render(frame, cancel, &self.theme);
+        let hints = [
+            Hint::key(self.bindings.label_for(Action::MoveDown), "scroll"),
+            Hint::key(self.bindings.label_for(Action::CloseOverlay), "close").pinned(),
+        ];
+        Paragraph::new(modal_hint_line(&self.theme, &hints, inner.width)).render(
+            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+            frame.buffer_mut(),
+        );
+        if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+            prompt.scroll = scroll;
+        }
+        self.overlay_layout.active = OverlayMouseLayout::JcodeModels {
+            input: Rect::default(),
+            all: Rect::default(),
+            list,
+            items: 0,
+            offset: 0,
+            apply: Rect::default(),
             cancel,
         };
     }

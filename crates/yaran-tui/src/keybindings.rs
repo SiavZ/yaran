@@ -31,6 +31,7 @@
 //! ├── app::hint_lines
 //! ├── app::input
 //! ├── app::jcode_models
+//! ├── app::jcode_models_mouse
 //! ├── app::jcode_models_render
 //! ├── app::modal
 //! ├── app::pr_clone

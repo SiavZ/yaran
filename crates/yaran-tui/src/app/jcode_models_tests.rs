@@ -1,3 +1,4 @@
+use super::super::OverlayMouseLayout;
 use super::super::test_support::{default_bindings, test_app};
 use super::*;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
@@ -98,6 +99,93 @@ fn model_entry_and_escape_do_not_change_agents() {
     assert!(
         matches!(app.prompt, PromptState::JcodeModels(_)),
         "no targets means no work"
+    );
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(app.prompt, PromptState::None));
+}
+
+#[test]
+fn mouse_reaches_hidden_targets_and_results_keep_each_tab_failure_readable() {
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        crossterm::event::{MouseEvent, MouseEventKind},
+    };
+    let mut app = test_app(default_bindings());
+    let tmp = tempfile::tempdir().unwrap();
+    seed_running_jcodes(&mut app, tmp.path());
+    app.open_jcode_models();
+    let PromptState::JcodeModels(prompt) = &mut app.prompt else {
+        panic!("models form");
+    };
+    let first = prompt.targets[0].clone();
+    prompt.targets = (0..30)
+        .map(|i| {
+            let mut target = first.clone();
+            target.tab_id = format!("tab-{i}");
+            target
+        })
+        .collect();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let OverlayMouseLayout::JcodeModels { list, .. } = app.overlay_layout.active else {
+        panic!("models layout");
+    };
+    let wheel = |kind| MouseEvent {
+        kind,
+        column: list.x + 1,
+        row: list.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    for _ in 0..20 {
+        app.handle_prompt_mouse(wheel(MouseEventKind::ScrollDown));
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let OverlayMouseLayout::JcodeModels { offset, .. } = app.overlay_layout.active else {
+        panic!("models layout");
+    };
+    assert!(offset > 0, "mouse-only users reach hidden rows");
+    app.handle_prompt_mouse(wheel(MouseEventKind::Down(
+        ratatui::crossterm::event::MouseButton::Left,
+    )));
+    let PromptState::JcodeModels(prompt) = &app.prompt else {
+        panic!("models form");
+    };
+    assert!(prompt.selected.contains(&format!("tab-{offset}")));
+    let outcomes = (0..30)
+        .map(|i| ModelChange {
+            tab_id: format!("tab-{i}"),
+            label: "same agent".into(),
+            error: Some(format!("failure-{i} {}", "details ".repeat(20))),
+        })
+        .collect();
+    app.finish_jcode_models(Some(Ok(outcomes)));
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(
+        super::super::modal::modal_spec(&app.prompt).unwrap().family,
+        super::super::modal::ModalFamily::Report
+    );
+    app.handle_jcode_models_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    let PromptState::JcodeModels(prompt) = &app.prompt else {
+        panic!("models report");
+    };
+    assert!(
+        prompt.scroll.offset > 0,
+        "report paging uses the shared scroll bindings"
+    );
+    for _ in 0..100 {
+        app.handle_prompt_mouse(wheel(MouseEventKind::ScrollDown));
+    }
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let text: String = buffer
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(
+        text.contains("tab-29: failure-29"),
+        "the final failure and its tab id can be read"
     );
     app.handle_jcode_models_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(matches!(app.prompt, PromptState::None));

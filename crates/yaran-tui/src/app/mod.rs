@@ -34,6 +34,7 @@
 //! ├── app::human_board_relay
 //! ├── app::input
 //! ├── app::jcode_models
+//! ├── app::jcode_models_mouse
 //! ├── app::jcode_models_render
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
@@ -165,6 +166,8 @@
 //! ├── app::human_board_relay
 //! ├── app::input
 //! ├── app::jcode_models
+//! ├── app::jcode_models::tests
+//! ├── app::jcode_models_mouse
 //! ├── app::jcode_models_render
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
@@ -5916,6 +5919,7 @@ mod ellipsis_rows;
 #[cfg(test)]
 mod hint_lines;
 mod jcode_models;
+mod jcode_models_mouse;
 mod jcode_models_render;
 #[cfg(test)]
 mod name_chip_dialogs;

@@ -3,14 +3,13 @@
 use std::collections::HashSet;
 
 use ratatui::crossterm::event::KeyEvent;
-use yaran_core::engine::{Final, status_op};
 use yaran_core::jcode_models::{ModelChange, ModelTarget, change_models};
 
-use super::components::FocusStep;
-use super::input::cursor_from_single_line_click;
+use super::components::{FocusStep, ScrollViewRender};
 use super::modal::{ModalKeyStep, TextFieldFocus, binding_lookup_is_suppressed, modal_key_step};
 use super::text_input::TextInput;
-use super::{App, OverlayMouseLayout, PromptState};
+use super::ui_jobs::UiJob;
+use super::{App, PromptState};
 use crate::keybindings::{Action, BindingScope};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +27,9 @@ pub(crate) struct ModelsPrompt {
     pub(super) selected: HashSet<String>,
     pub(super) model: TextInput,
     pub(super) focus: ModelsFocus,
+    pub(super) busy: bool,
+    pub(super) outcomes: Option<Vec<ModelChange>>,
+    pub(super) scroll: ScrollViewRender,
 }
 
 impl ModelsPrompt {
@@ -77,11 +79,14 @@ impl App {
             selected: HashSet::new(),
             model: TextInput::new(),
             focus: ModelsFocus::Model,
+            busy: false,
+            outcomes: None,
+            scroll: ScrollViewRender::default(),
         });
     }
 
     fn apply_jcode_models(&mut self) {
-        let PromptState::JcodeModels(prompt) = &self.prompt else {
+        let PromptState::JcodeModels(prompt) = &mut self.prompt else {
             return;
         };
         if prompt.selected.is_empty() || prompt.model.text.trim().is_empty() {
@@ -91,30 +96,66 @@ impl App {
             return;
         }
         let targets = self.engine.jcode_model_targets();
-        let selected = prompt.selected.iter().cloned().collect::<Vec<_>>();
+        let selected = prompt
+            .targets
+            .iter()
+            .filter(|target| prompt.selected.contains(&target.tab_id))
+            .map(|target| (target.tab_id.clone(), target.run_id.clone()))
+            .collect();
         let model = prompt.model.text.clone();
-        let op = status_op("Changing the selected jcode models...")
-            .on_success(|outcomes: &Vec<ModelChange>| {
-                let changed = outcomes.iter().filter(|outcome| outcome.error.is_none()).count();
-                let errors = outcomes.iter().filter_map(|outcome| outcome.error.as_ref().map(|e| format!("{}: {e}", outcome.label))).collect::<Vec<_>>();
-                if errors.is_empty() {
-                    Final::info(format!("Changed the model of {changed} jcode tabs. Conversations and drafts are preserved."))
+        prompt.busy = true;
+        self.spawn_ui_job(
+            UiJob {
+                busy: "Changing the selected jcode models...".into(),
+                stopped: "The model worker stopped. Check models in jcode before retrying.".into(),
+            },
+            move || change_models(&targets, &selected, &model),
+            App::finish_jcode_models,
+        );
+    }
+
+    pub(super) fn finish_jcode_models(&mut self, answer: Option<anyhow::Result<Vec<ModelChange>>>) {
+        if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+            prompt.busy = false;
+        }
+        match answer {
+            Some(Ok(outcomes)) => {
+                let changed = outcomes
+                    .iter()
+                    .filter(|outcome| outcome.error.is_none())
+                    .count();
+                let summary = format!(
+                    "Changed {changed} jcode models; {} failed.",
+                    outcomes.len() - changed
+                );
+                if changed == outcomes.len() {
+                    self.set_info(summary);
                 } else {
-                    Final::error(format!("Changed {changed} jcode models; {} failed. {}", errors.len(), errors.join("; ")))
+                    self.set_error(summary);
                 }
-            })
-            .on_failure(|error: &anyhow::Error| Final::error(error.to_string()));
-        let reaction = self
-            .engine
-            .spawn_status_op(op, move || change_models(&targets, &selected, &model));
-        self.prompt = PromptState::None;
-        self.apply_reaction(reaction);
+                if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+                    prompt.outcomes = Some(outcomes);
+                    prompt.focus = ModelsFocus::Cancel;
+                }
+            }
+            Some(Err(error)) => self.set_error(error.to_string()),
+            None => {}
+        }
     }
 
     fn activate_jcode_models_focus(&mut self) {
         let PromptState::JcodeModels(prompt) = &mut self.prompt else {
             return;
         };
+        if prompt.busy {
+            return;
+        }
+        if prompt.outcomes.is_some() {
+            if prompt.focus == ModelsFocus::Cancel {
+                self.prompt = PromptState::None;
+            }
+            return;
+        }
         match prompt.focus {
             ModelsFocus::Model | ModelsFocus::Apply => self.apply_jcode_models(),
             ModelsFocus::Cancel => self.prompt = PromptState::None,
@@ -127,6 +168,12 @@ impl App {
         let PromptState::JcodeModels(prompt) = &mut self.prompt else {
             return false;
         };
+        if prompt.busy {
+            return false;
+        }
+        if prompt.outcomes.is_some() {
+            return self.handle_jcode_models_results_key(key);
+        }
         let field = if prompt.focus == ModelsFocus::Model {
             TextFieldFocus::Field
         } else {
@@ -155,22 +202,6 @@ impl App {
             },
         }
         false
-    }
-
-    pub(super) fn click_jcode_models_input(&mut self, column: u16) {
-        let OverlayMouseLayout::JcodeModels { input, .. } = self.overlay_layout.active else {
-            return;
-        };
-        if let PromptState::JcodeModels(prompt) = &mut self.prompt {
-            prompt.focus = ModelsFocus::Model;
-            prompt.model.cursor = cursor_from_single_line_click(
-                &prompt.model.text,
-                prompt.model.cursor,
-                input,
-                10,
-                column,
-            );
-        }
     }
 
     pub(super) fn press_jcode_models_focus(&mut self, focus: ModelsFocus) {

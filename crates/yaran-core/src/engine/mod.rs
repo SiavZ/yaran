@@ -199,7 +199,6 @@
 //! ├── yaran-tui::app::dock
 //! ├── yaran-tui::app::first_load
 //! ├── yaran-tui::app::input
-//! ├── yaran-tui::app::jcode_models
 //! ├── yaran-tui::app::name_chip_dialogs
 //! ├── yaran-tui::app::new_agent_settings
 //! ├── yaran-tui::app::picker_lists

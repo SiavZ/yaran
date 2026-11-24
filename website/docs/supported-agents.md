@@ -119,6 +119,8 @@ you want, or select all running jcodes, then apply. Use `jcode model list` to fi
 model IDs. Conversations and drafts stay in place, and each failed change is reported.
 Stopped tabs are not changed.
 
+jcode's model indicator may need a tab reconnect to refresh after a bulk change.
+
 > [!IMPORTANT]
 > Enable `debug_socket = true` under `[display]` in jcode's configuration, then reload
 > its server. This enables jcode's local control commands for other programs running

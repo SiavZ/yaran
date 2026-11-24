@@ -85,7 +85,7 @@
 //! ├── app::dock
 //! ├── app::input::host_click_regression_tests
 //! ├── app::input::host_selection_regression_tests
-//! ├── app::jcode_models
+//! ├── app::jcode_models_mouse
 //! ├── app::modal
 //! ├── app::new_agent_settings
 //! ├── app::overlay_dismiss
@@ -2266,7 +2266,10 @@ impl App {
     )]
     fn handle_prompt_paste(&mut self, text: &str) {
         if let PromptState::JcodeModels(prompt) = &mut self.prompt {
-            if prompt.focus == super::jcode_models::ModelsFocus::Model {
+            if !prompt.busy
+                && prompt.outcomes.is_none()
+                && prompt.focus == super::jcode_models::ModelsFocus::Model
+            {
                 prompt.model.insert_str(text);
             }
             return;
@@ -11174,6 +11177,9 @@ impl App {
     }
 
     fn dispatch_prompt_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if let Some(result) = self.handle_jcode_models_wheel(mouse) {
+            return result;
+        }
         if let Some(result) = self.handle_cloud_mouse(mouse) {
             return result;
         }

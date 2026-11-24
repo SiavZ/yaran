@@ -1,6 +1,6 @@
 //! Bulk model changes through jcode's own CLI, without writing into its composer.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
@@ -20,6 +20,8 @@ pub struct ModelTarget {
     pub tab_id: String,
     /// The owning agent's display name.
     pub label: String,
+    /// Identity of the running client, so a restarted tab is never substituted.
+    pub run_id: String,
     #[serde(skip_serializing)]
     process: crate::process_sessions::ProcessSession,
     #[serde(skip_serializing)]
@@ -28,10 +30,12 @@ pub struct ModelTarget {
     args: Vec<String>,
     #[serde(skip_serializing)]
     command: String,
+    #[serde(skip_serializing)]
+    directory: PathBuf,
 }
 
 /// Each target gets its own outcome, including partial failures.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ModelChange {
     /// The tab whose change was attempted.
     pub tab_id: String,
@@ -73,7 +77,9 @@ impl Engine {
                 targets.push(ModelTarget {
                     tab_id: tab_id.as_str().to_string(),
                     label: session.display_label(),
+                    run_id: format!("{}:{}:{}", process.boot, process.sid, process.started_at),
                     process,
+                    directory: pty.spawn_dir().to_path_buf(),
                     env: self.session_env(session),
                     args: config.args.clone(),
                     command: config.command.clone(),
@@ -86,7 +92,7 @@ impl Engine {
 }
 
 fn jcode_home(target: &ModelTarget) -> Result<PathBuf> {
-    target
+    let path = target
         .env
         .iter()
         .rev()
@@ -94,7 +100,8 @@ fn jcode_home(target: &ModelTarget) -> Result<PathBuf> {
         .map(|(_, value)| PathBuf::from(value))
         .or_else(|| std::env::var_os("JCODE_HOME").map(PathBuf::from))
         .or_else(|| home::home_dir().map(|home| home.join(".jcode")))
-        .context("Could not locate jcode's client registrations.")
+        .context("Could not locate jcode's client registrations.")?;
+    Ok(target.directory.join(path))
 }
 
 fn registered_session(target: &ModelTarget, registry: &Path) -> Result<String> {
@@ -148,8 +155,10 @@ fn debug(
         );
     }
     let mut cmd = Command::new(&target.command);
+    cmd.current_dir(&target.directory);
     cmd.envs(target.env.iter().cloned());
-    cmd.args(["--no-update", "debug"]);
+    // Wrappers dispatch on the first argument to bypass interactive registration.
+    cmd.args(["debug", "--no-update"]);
     for (index, arg) in target.args.iter().enumerate() {
         if arg == "--socket" {
             let socket = target
@@ -166,7 +175,7 @@ fn debug(
     }
     cmd.arg(verb);
     if let Some(arg) = arg {
-        cmd.arg(arg);
+        cmd.arg("--").arg(arg);
     }
     match run_command_with_timeout(
         cmd,
@@ -193,30 +202,31 @@ fn debug(
     }
 }
 
-/// Runs off the UI/engine thread. An empty or stale selection changes nothing.
+/// Runs off the UI/engine thread, checking each selected client's identity.
 ///
 /// # Errors
 ///
-/// Refuses an invalid model id or an empty/stale tab selection before doing work.
+/// Refuses an invalid model id or an empty selection before doing work.
 /// Individual control failures are returned beside each tab in the outcomes.
 pub fn change_models(
     all: &[ModelTarget],
-    selected: &[String],
+    selected: &BTreeMap<String, String>,
     model: &str,
 ) -> Result<Vec<ModelChange>> {
     let model = model.trim();
     if model.is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
         bail!("Enter a model id of at most 256 bytes, without control characters.");
     }
-    let ids: HashSet<_> = selected.iter().collect();
-    if ids.is_empty() || ids.iter().any(|id| !all.iter().any(|t| &t.tab_id == *id)) {
-        bail!(
-            "Select running jcode tabs. A selected tab may have stopped; reopen the model switcher and try again."
-        );
+    if selected.is_empty() {
+        bail!("Select running jcode tabs.");
     }
     let mut outcomes = Vec::new();
-    for target in all.iter().filter(|t| ids.contains(&t.tab_id)) {
+    for (id, run_id) in selected {
+        let target = all.iter().find(|t| &t.tab_id == id);
         let result = (|| {
+            let target = target.filter(|target| &target.run_id == run_id).context(
+                "This tab stopped or restarted. Reopen the model switcher to select its current client.",
+            )?;
             let registry = jcode_home(target)?.join("client_sessions");
             let session = registered_session(target, &registry)?;
             let native: Vec<NativeSession> =
@@ -227,12 +237,21 @@ pub fn change_models(
                     "This tab's jcode conversation is no longer connected. Focus it and try again."
                 );
             }
-            debug(target, Some(&session), "set_model", Some(model))?;
+            let acknowledgement: serde_json::Value =
+                serde_json::from_str(&debug(target, Some(&session), "set_model", Some(model))?)
+                    .context("jcode did not acknowledge a model change.")?;
+            if acknowledgement
+                .get("model")
+                .and_then(|value| value.as_str())
+                .is_none_or(str::is_empty)
+            {
+                bail!("jcode did not acknowledge a model change.");
+            }
             Ok::<_, anyhow::Error>(())
         })();
         outcomes.push(ModelChange {
-            tab_id: target.tab_id.clone(),
-            label: target.label.clone(),
+            tab_id: id.clone(),
+            label: target.map_or_else(|| id.clone(), |target| target.label.clone()),
             error: result.err().map(|e| e.to_string()),
         });
     }

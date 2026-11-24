@@ -48,7 +48,8 @@ function Body({ busy, setBusy }: { busy: boolean; setBusy: (busy: boolean) => vo
     setError(null)
     setOutcomes([])
     try {
-      setOutcomes(await jcodeModelsApi.change([...selected], model.trim()))
+      const runs = Object.fromEntries(targets?.filter(target => selected.has(target.tab_id)).map(target => [target.tab_id, target.run_id]) ?? [])
+      setOutcomes(await jcodeModelsApi.change(runs, model.trim()))
     } catch (error) {
       setError(String(error))
     } finally {
@@ -59,7 +60,7 @@ function Body({ busy, setBusy }: { busy: boolean; setBusy: (busy: boolean) => vo
   return <form onSubmit={event => { void submit(event) }} className="grid gap-4">
     <DialogHeader>
       <DialogTitle>Change jcode models</DialogTitle>
-      <DialogDescription>Choose running jcodes and enter one model ID. Conversations and drafts stay in place. Jcode control must be enabled. Find model IDs with <InlineCode>jcode model list</InlineCode>.</DialogDescription>
+      <DialogDescription>Choose running jcodes and enter one model ID. Conversations and drafts stay in place. Jcode control must be enabled. Its model indicator may need a tab reconnect to refresh. Find model IDs with <InlineCode>jcode model list</InlineCode>.</DialogDescription>
     </DialogHeader>
     <label className="grid gap-2 text-sm">Model ID
       <Input value={model} onChange={event => setModel(event.target.value)} disabled={busy} maxLength={256} autoFocus required />
@@ -78,7 +79,7 @@ function Body({ busy, setBusy }: { busy: boolean; setBusy: (busy: boolean) => vo
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     {outcomes.length ? <div aria-live="polite" className="max-h-48 space-y-2 overflow-y-auto text-sm">
       <p>{outcomes.filter(outcome => !outcome.error).length} changed, {outcomes.filter(outcome => outcome.error).length} failed.</p>
-      {outcomes.map(outcome => <p key={outcome.tab_id}><InlineCode>{outcome.label}</InlineCode>: {outcome.error ?? "Model changed."}</p>)}
+      {outcomes.map(outcome => <p key={outcome.tab_id}><InlineCode>{outcome.label}</InlineCode> <InlineCode>{outcome.tab_id}</InlineCode>: {outcome.error ?? "Model changed."}</p>)}
     </div> : null}
     <DialogFooter>
       <Button type="button" variant="outline" disabled={busy} onClick={closeJcodeModels}>Close</Button>

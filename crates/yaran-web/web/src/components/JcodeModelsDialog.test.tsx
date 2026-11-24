@@ -16,9 +16,9 @@ import { jcodeModelsApi } from "@/lib/jcodeModelsApi"
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(jcodeModelsApi.targets).mockResolvedValue([
-    { tab_id: "a", label: "Agent A" }, { tab_id: "b", label: "Agent B" },
+    { tab_id: "a", label: "Agent A", run_id: "run-a" }, { tab_id: "b", label: "Agent B", run_id: "run-b" },
   ])
-  vi.mocked(jcodeModelsApi.change).mockImplementation(async ids => ids.map(tab_id => ({ tab_id, label: tab_id, error: tab_id === "b" ? "Model unavailable" : null })))
+  vi.mocked(jcodeModelsApi.change).mockImplementation(async runs => Object.keys(runs).map(tab_id => ({ tab_id, label: tab_id, error: tab_id === "b" ? "Model unavailable" : null })))
 })
 afterEach(cleanup)
 
@@ -28,11 +28,11 @@ it("switches selected jcodes, supports select-all, and shows partial failures", 
   fireEvent.change(screen.getByRole("textbox", { name: "Model ID" }), { target: { value: "my-model" } })
   fireEvent.click(boxes[0])
   fireEvent.click(screen.getByRole("button", { name: "Change 1 jcode" }))
-  await waitFor(() => expect(jcodeModelsApi.change).toHaveBeenCalledWith(["a"], "my-model"))
+  await waitFor(() => expect(jcodeModelsApi.change).toHaveBeenCalledWith({ a: "run-a" }, "my-model"))
   await screen.findByText("1 changed, 0 failed.")
   fireEvent.click(screen.getByRole("button", { name: "Select all running jcodes" }))
   fireEvent.click(screen.getByRole("button", { name: "Change 2 jcodes" }))
-  await waitFor(() => expect(jcodeModelsApi.change).toHaveBeenLastCalledWith(["a", "b"], "my-model"))
+  await waitFor(() => expect(jcodeModelsApi.change).toHaveBeenLastCalledWith({ a: "run-a", b: "run-b" }, "my-model"))
   await screen.findByText("1 changed, 1 failed.")
   expect(screen.getByText(/Model unavailable/)).toBeTruthy()
 })

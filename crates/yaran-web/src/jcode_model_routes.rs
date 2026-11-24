@@ -8,6 +8,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use yaran_core::jcode_models::change_models;
 
 use crate::server::AppState;
@@ -29,7 +30,7 @@ async fn targets(State(state): State<AppState>) -> Response {
 
 #[derive(Deserialize)]
 struct ChangeBody {
-    tab_ids: Vec<String>,
+    runs: BTreeMap<String, String>,
     model: String,
 }
 
@@ -41,7 +42,7 @@ async fn change(State(state): State<AppState>, Json(body): Json<ChangeBody>) -> 
         )
             .into_response();
     };
-    match tokio::task::spawn_blocking(move || change_models(&targets, &body.tab_ids, &body.model))
+    match tokio::task::spawn_blocking(move || change_models(&targets, &body.runs, &body.model))
         .await
     {
         Ok(Ok(outcomes)) => Json(outcomes).into_response(),
