@@ -8,6 +8,7 @@
 //! ├── app
 //! ├── app::background_server
 //! ├── app::changes_tree
+//! ├── app::command_palette
 //! ├── app::components
 //! ├── app::components::button
 //! ├── app::components::ellipsis
@@ -7930,33 +7931,30 @@ impl App {
     }
 
     fn render_command_prompt(&mut self, frame: &mut Frame<'_>) {
-        let PromptState::Command { input, selected } = &self.prompt else {
+        let PromptState::Command {
+            input,
+            selected,
+            category,
+        } = &self.prompt
+        else {
             return;
         };
         self.render_dim_overlay(frame);
         let popup = centered_rect(72, 40, frame.area());
         self.clear_overlay_area(frame, popup);
-        let commands = self.filtered_palette_commands(&input.text);
+        let commands = self.palette_entries(&input.text);
         let items = {
             let name_col = commands
                 .iter()
-                .map(|binding| {
-                    display_width(
-                        binding
-                            .palette_name
-                            .expect("the palette lists only bindings that carry a palette name"),
-                    )
-                })
+                .map(|entry| display_width(entry.name()))
                 .max()
                 .unwrap_or(0);
             let inner_width = usize::from(popup.width.saturating_sub(3));
             let gap = 2usize;
             commands
                 .iter()
-                .map(|binding| {
-                    let name = binding
-                        .palette_name
-                        .expect("the palette lists only bindings that carry a palette name");
+                .map(|entry| {
+                    let name = entry.name();
                     let name_padded = pad_to_width(name, name_col);
                     let mut spans = vec![Span::styled(
                         name_padded,
@@ -7965,7 +7963,7 @@ impl App {
                             .add_modifier(Modifier::BOLD),
                     )];
                     let description_width = inner_width.saturating_sub(name_col + gap);
-                    let description = binding.palette_description.unwrap_or("");
+                    let description = entry.description();
                     let description_display =
                         format!("  {}", fit_to_width(description, description_width));
                     spans.push(Span::styled(
@@ -7992,13 +7990,19 @@ impl App {
                 // Completion is the literal Tab key in the palette's filter
                 // (`selected_command_palette_completion`), not a binding.
                 Hint::fixed("Tab", "complete"),
-                Hint::key(close_key, "cancel").pinned(),
+                Hint::key(
+                    close_key,
+                    if category.is_some() { "back" } else { "cancel" },
+                )
+                .pinned(),
             ],
             popup.width.saturating_sub(2),
         );
-        let input_block = self
-            .themed_overlay_block("Command Palette")
-            .title_bottom(hints);
+        let title = category.map_or_else(
+            || "Command Palette".to_string(),
+            super::command_palette::PaletteCategory::title,
+        );
+        let input_block = self.themed_overlay_block(&title).title_bottom(hints);
         let input_inner = input_block.inner(input_area);
         Paragraph::new(render_single_line_field(
             "> ",
@@ -27606,7 +27610,11 @@ mod tests {
         for ch in filter.chars() {
             input.insert_char(ch);
         }
-        app.prompt = PromptState::Command { input, selected };
+        app.prompt = PromptState::Command {
+            input,
+            selected,
+            category: None,
+        };
         let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).expect("terminal");
         terminal
             .draw(|frame| app.render(frame))
@@ -27681,7 +27689,7 @@ mod tests {
     fn the_command_palette_marker_tracks_the_item_offset() {
         // The palette is a LIST: its offset counts whole items, not rows of
         // wrapped text, and that is the unit the marker must be fed.
-        let (app, buf) = palette_frame((120, 40), "", 0);
+        let (app, buf) = palette_frame((120, 40), "agent", 0);
         let (list, border_column) = palette_rects(&app);
         let OverlayMouseLayout::Command { items, .. } = app.overlay_layout.active else {
             unreachable!()
@@ -27701,12 +27709,12 @@ mod tests {
 
         // Selecting an item just past the viewport scrolls the list by one, which
         // is the middle.
-        let (app, buf) = palette_frame((120, 40), "", usize::from(list.height));
+        let (app, buf) = palette_frame((120, 40), "agent", usize::from(list.height));
         let (_, border_column) = palette_rects(&app);
         assert_eq!(marker_in(&buf, border_column).as_deref(), Some("↕"));
 
         // Selecting the last command scrolls to the end.
-        let (app, buf) = palette_frame((120, 40), "", items - 1);
+        let (app, buf) = palette_frame((120, 40), "agent", items - 1);
         let (_, border_column) = palette_rects(&app);
         assert_eq!(marker_in(&buf, border_column).as_deref(), Some("↑"));
     }

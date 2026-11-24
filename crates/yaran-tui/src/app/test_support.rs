@@ -54,6 +54,7 @@
 //! ├── app::cloud_crumb
 //! ├── app::cloud_mode
 //! ├── app::cloud_tests
+//! ├── app::command_palette::tests
 //! ├── app::confirm_dialog
 //! ├── app::debug_input
 //! ├── app::diff_comments::tests
