@@ -70,7 +70,7 @@ function stubMatchMedia(coarse = false) {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: coarse && query === "(pointer: coarse)",
+      matches: (coarse && query === "(pointer: coarse)") || (/max-width/.test(query) && window.innerWidth < 768),
       media: query,
       onchange: null,
       addEventListener: () => {},

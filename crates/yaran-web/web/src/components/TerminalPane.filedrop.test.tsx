@@ -10,7 +10,7 @@ import { act, cleanup, createEvent, fireEvent, render, screen } from "@testing-l
 import type { YaranState } from "@/lib/store"
 import { notifyPtyOwner, resetPtyOwnerEpochs } from "@/lib/ptyOwnership"
 import { toastChips, toastText } from "@/test/toastText"
-import { stubCoarsePointer } from "@/test/matchMedia"
+import { setTypingSurface } from "@/lib/typingSurface"
 
 /// A stand-in for xterm that does what xterm's `paste()` REALLY does.
 ///
@@ -1503,7 +1503,7 @@ describe("a stack of two parts", () => {
 
   it("hears a paste into the message box for whichever part is the target", async () => {
     uploadDroppedFile.mockImplementation(async (f: File) => saved(f.name))
-    const pointer = stubCoarsePointer(true)
+    setTypingSurface("compose")
     try {
       render(<TerminalStack parts={parts} />)
       fireEvent.pointerDown(partBox(1))
@@ -1525,7 +1525,7 @@ describe("a stack of two parts", () => {
       fireEvent.pointerDown(partBox(0))
       expect(box().value).toBe("")
     } finally {
-      pointer.restore()
+      setTypingSurface(null)
     }
   })
 

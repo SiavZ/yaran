@@ -229,7 +229,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         key: "ui.compose_bar",
         label: "Touch compose bar",
         description:
-          "On a touch device, adds a compose box below the terminal keys: type with your keyboard's autocorrect and swipe input, then Send delivers the message and presses Enter. Without it, tapping the terminal types directly into it. Automatic follows your browser's report of whether you point with a finger, which (unlike a screen-size rule) does not change when you rotate a tablet. It cannot tell a tablet with a keyboard case from one without, so choose Always or Never if your device is one yaran guesses wrong.",
+          "On a touch device, adds a compose box below the terminal keys: type with your keyboard's autocorrect and swipe input, then Send delivers the message and presses Enter. Without it, tapping the terminal types directly into it. Automatic starts every device typing directly and lets each one turn the box on from the Input group of the pane's ⋯ menu, remembered on that device; Always and Never decide for every device.",
         surface: "web",
         control: {
           kind: "enum",

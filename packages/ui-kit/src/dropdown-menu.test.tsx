@@ -43,17 +43,20 @@ import {
 // The responsive presentation contract of the shared menu primitive: at md+
 // every menu is the anchored popup it has always been, and under md it is a
 // full-width bottom sheet (backdrop, internal scroll, drill-down submenus).
-// The split is driven by useIsMobile, whose snapshot reads window.innerWidth,
-// so these tests flip the presentation by resizing jsdom's window.
+// The split is driven by useIsMobile, whose snapshot reads its width media
+// query, so these tests flip the presentation by resizing jsdom's window.
 
-// useIsMobile's resize subscription wants matchMedia, which jsdom lacks; the
-// hook degrades to no subscription, and the snapshot still reads innerWidth.
-// The stub here only exercises the "matchMedia exists" subscribe path too.
+// jsdom lacks matchMedia (the hook then reads innerWidth); the stub answers the
+// max-width query from innerWidth the way a browser would, so the
+// "matchMedia exists" path is exercised too.
 function stubMatchMedia() {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: false,
+      get matches() {
+        const max = /max-width:\s*(\d+)px/.exec(query)
+        return max ? window.innerWidth <= Number(max[1]) : false
+      },
       media: query,
       onchange: null,
       addEventListener: () => {},

@@ -47,15 +47,34 @@ describe("copying the terminal selection", () => {
     }
   })
 
-  it("reports a failed copy the same way, and still with no id", async () => {
+  // A refused copy carries an id only so its own button can replace it, and a
+  // fresh one each time, so two refusals never share a clock either.
+  it("reports each failed copy on an id of its own", async () => {
     copyToClipboard.mockImplementation(async () => false)
     const term = fakeTerm("hello")
     await copyTermSelection(term, () => {})
     await copyTermSelection(term, () => {})
 
     expect(notifyError).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(notifyError).mock.calls[0][1]?.id).toBeUndefined()
+    const [first, second] = vi.mocked(notifyError).mock.calls
+    expect(first[1]?.id).toBeTruthy()
+    expect(first[1]?.id).not.toBe(second[1]?.id)
     expect(notifySuccess).not.toHaveBeenCalled()
+  })
+
+  // The browser refuses a copy with no user activation behind it, which is
+  // what a phone's long-press drag ends as; a tap on the button is one.
+  it("offers a Copy button that copies the same text and replaces its toast", async () => {
+    copyToClipboard.mockImplementation(async () => false)
+    await copyTermSelection(fakeTerm("selected text"), () => {})
+    const [, opts] = vi.mocked(notifyError).mock.calls[0]
+    expect(opts?.action?.label).toBe("Copy")
+
+    copyToClipboard.mockImplementation(async () => true)
+    opts?.action?.onClick()
+    await vi.waitFor(() => expect(notifySuccess).toHaveBeenCalled())
+    expect(copyToClipboard).toHaveBeenLastCalledWith("selected text")
+    expect(vi.mocked(notifySuccess).mock.calls[0][1]?.id).toBe(opts?.id)
   })
 
   it("says nothing at all when there is no selection", async () => {

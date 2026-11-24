@@ -24,7 +24,10 @@ export interface MatchMediaStub {
  * Install a `window.matchMedia` stub whose answers come from `initial`.
  *
  * An unlisted query answers `false`, which matches jsdom's practical default
- * and keeps an unrelated media query from accidentally reading as true.
+ * and keeps an unrelated media query from accidentally reading as true, except
+ * an unlisted `max-width` query, which answers from `window.innerWidth` the way
+ * a browser would, so a test that resizes the window still moves the phone
+ * breakpoint.
  */
 export function stubMatchMedia(
   initial: Record<string, boolean> = {}
@@ -38,7 +41,7 @@ export function stubMatchMedia(
     listeners.set(query, set)
     return {
       get matches() {
-        return state.get(query) ?? false
+        return state.get(query) ?? widthAnswer(query)
       },
       media: query,
       addEventListener: (_: string, cb: Listener) => set.add(cb),
@@ -76,4 +79,9 @@ export const COARSE_POINTER_QUERY = "(pointer: coarse)"
 /** Install a stub reporting touch as the primary pointer. */
 export function stubCoarsePointer(coarse = true): MatchMediaStub {
   return stubMatchMedia({ [COARSE_POINTER_QUERY]: coarse })
+}
+
+function widthAnswer(query: string): boolean {
+  const max = /max-width:\s*(\d+)px/.exec(query)
+  return max ? window.innerWidth <= Number(max[1]) : false
 }

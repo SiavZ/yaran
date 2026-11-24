@@ -37,10 +37,33 @@ export async function copyTermSelection(
   try {
     const ok = await copyToClipboard(sel)
     if (ok) notifySuccess("Copied to clipboard")
-    else notifyError("Couldn't copy to clipboard")
+    else notifyCopyRefused(sel)
   } finally {
     refocus()
   }
+}
+
+let refusals = 0
+
+/// A refused copy offers to try again from a button. The browser refuses a copy
+/// that has no user activation behind it, which is what a phone's long-press
+/// drag ends as (a touch drag grants none), and a tap on the button is one. The
+/// id is fresh per refusal, so it only lets the press replace its own toast.
+/// Not sticky: nothing is lost, and the selection is still on screen to copy.
+function notifyCopyRefused(text: string): void {
+  const id = `copy-refused-${++refusals}`
+  notifyError("Couldn't copy to clipboard", {
+    id,
+    action: {
+      label: "Copy",
+      onClick: () => {
+        void copyToClipboard(text).then((ok) => {
+          if (ok) notifySuccess("Copied to clipboard", { id })
+          else notifyError("Couldn't copy to clipboard", { id })
+        })
+      },
+    },
+  })
 }
 
 /// Paste the BROWSER clipboard into the terminal via the async Clipboard API.
