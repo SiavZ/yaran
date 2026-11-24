@@ -7,6 +7,7 @@ use super::components::checkbox::{Checkbox, CheckboxState};
 use super::components::ellipsis::ellipsize_end;
 use super::components::hint_bar::{Hint, modal_hint_line};
 use super::components::picker_list::PickerList;
+use super::components::wrap_styled_lines;
 use super::jcode_models::{ModelsFocus, ModelsPickerKind};
 use super::render::{centered_rect_exact, render_single_line_field};
 use super::{App, OverlayMouseLayout, PromptState};
@@ -15,7 +16,8 @@ use crate::theme::FocusState;
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{ListItem, Paragraph, Widget, Wrap},
+    text::Text,
+    widgets::{ListItem, Paragraph, Widget},
 };
 
 impl App {
@@ -46,10 +48,12 @@ impl App {
         let width = inner.width.saturating_sub(2);
         let x = inner.x + 1;
         if let Some(error) = &prompt.error {
-            Paragraph::new(error.as_str())
-                .wrap(Wrap { trim: false })
-                .style(ratatui::style::Style::default().fg(self.theme.status_error_fg))
-                .render(Rect::new(x, inner.y, width, 3), frame.buffer_mut());
+            Paragraph::new(wrap_styled_lines(
+                &Text::raw(error.as_str()).lines,
+                usize::from(width),
+            ))
+            .style(ratatui::style::Style::default().fg(self.theme.status_error_fg))
+            .render(Rect::new(x, inner.y, width, 3), frame.buffer_mut());
         } else {
             Paragraph::new("Select jcodes, then choose from their native /models catalog.")
                 .render(Rect::new(x, inner.y, width, 1), frame.buffer_mut());
@@ -205,16 +209,18 @@ impl App {
             .error
             .as_deref()
             .unwrap_or("Native /models choices shared by the selected jcodes.");
-        Paragraph::new(message)
-            .wrap(Wrap { trim: false })
-            .style(
-                ratatui::style::Style::default().fg(if prompt.error.is_some() {
-                    self.theme.status_error_fg
-                } else {
-                    self.theme.text_fg
-                }),
-            )
-            .render(Rect::new(x, inner.y, width, 3), frame.buffer_mut());
+        Paragraph::new(wrap_styled_lines(
+            &Text::raw(message).lines,
+            usize::from(width),
+        ))
+        .style(
+            ratatui::style::Style::default().fg(if prompt.error.is_some() {
+                self.theme.status_error_fg
+            } else {
+                self.theme.text_fg
+            }),
+        )
+        .render(Rect::new(x, inner.y, width, 3), frame.buffer_mut());
         let input = Rect::new(x, inner.y + 3, width, 1);
         Paragraph::new(render_single_line_field(
             "Filter: ",
