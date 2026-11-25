@@ -10,6 +10,16 @@
 - **Three release trains, one repository.** `yaran-vX.Y.Z` is the `yaran` binary and the only train with binary archives. `yaran-cloud-vX.Y.Z` is the protocol, the org control-plane Worker, the publisher push relay and the generated `cloud-deploy` branch the Deploy to Cloudflare button targets. `yaran-mobile-vX.Y.Z` is the phone apps. Each has its own workflow, and they stay compatible by protocol version negotiation, never by lockstep version numbers. Three rules keep `install.sh` installing the binary: new-train releases are created with `--latest=false`, `release.yml` skips every tag that is not `yaran-v*`, and `install.sh` resolves only `yaran-v*` tags. Never use a `dux-` name for the new trains.
 - **No invented hostnames, in docs or code.** Cloud Connect values that someone else supplies are written as `<zone>`, `<org-control-plane>`, `<publisher-relay>` and `<publisher-domain>` (the app's verified sign-in callback domain). The real publisher values come from build config and never appear in the repo; `website/src/lib/cloud-docs-domains.test.ts` enforces this on the Cloud Connect docs pages.
 
+## Deployment completion
+
+A request to deploy Yaran includes publishing and verifying its matching GitHub
+release, without a separate publish request. Follow the
+[deployment release checklist](docs/operations/release-trains.md#deployment-completion).
+Binary deployments include the desktop archives, development APK and unsigned
+iOS archive by default. Cloud and distribution mobile deployments retain their
+own release trains, signing and approval gates. Finish with the verified release
+link and the mobile signing limits; keep tracking builds until the downloads exist.
+
 ## Design Tenets
 
 Principles that guide every decision in yaran. If a change conflicts with a tenet, the tenet wins.
