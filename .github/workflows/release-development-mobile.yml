@@ -1,0 +1,128 @@
+# GitHub-only development downloads. PRs build without publishing; a manual run
+# attaches both files to an existing binary release. No store credentials.
+name: Development mobile downloads
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing yaran-vX.Y.Z[-rc.N] release to attach downloads to.
+        type: string
+        required: true
+  pull_request:
+    paths: [".github/workflows/release-development-mobile.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: development-mobile-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      TAG: ${{ inputs.release_tag || 'yaran-v0.0.0-rc.1' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - name: Validate the binary release version
+        id: version
+        run: |
+          set -euo pipefail
+          [[ "$TAG" == yaran-v* ]] || { echo "Expected a yaran-v tag" >&2; exit 1; }
+          node tools/release-trains/versions.mjs "yaran-mobile-${TAG#yaran-}" > "$RUNNER_TEMP/version"
+          sed -n '/^version=/p' "$RUNNER_TEMP/version" >> "$GITHUB_OUTPUT"
+      - name: The destination release exists
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release view "$TAG" --json tagName
+
+  build:
+    name: Development ${{ matrix.platform }} build
+    needs: metadata
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            runner: ubuntu-24.04
+          - platform: ios
+            runner: macos-26-intel
+    env:
+      V: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - name: Set the download's version
+        run: node tools/release-trains/bump.mjs "yaran-mobile-v$V"
+      - uses: ./.github/actions/android-setup
+        if: matrix.platform == 'android'
+      - uses: ./.github/actions/ios-setup
+        if: matrix.platform == 'ios'
+      - name: Build the debug-signed FOSS APK with a separate app ID
+        if: matrix.platform == 'android'
+        run: |
+          set -euo pipefail
+          (cd mobile/android && ./gradlew --no-daemon -PappIdOverride=io.github.siavz.yaran.dev assembleFossDebug)
+          mkdir dist
+          cp mobile/android/app/build/outputs/apk/foss/debug/app-foss-debug.apk "dist/yaran-mobile-$V-development-foss.apk"
+      - name: Archive iOS without signing, with a separate app ID
+        if: matrix.platform == 'ios'
+        run: |
+          set -euo pipefail
+          xcodebuild archive -project mobile/ios/App/App.xcodeproj -scheme App \
+            -configuration Release -destination generic/platform=iOS \
+            -archivePath "$RUNNER_TEMP/Yaran.xcarchive" CODE_SIGNING_ALLOWED=NO \
+            APP_ID=io.github.siavz.yaran.dev
+          mkdir dist
+          ditto -c -k --keepParent "$RUNNER_TEMP/Yaran.xcarchive" "dist/yaran-mobile-$V-ios-unsigned.xcarchive.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: development-mobile-${{ matrix.platform }}
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: Attach development downloads
+    if: github.event_name == 'workflow_dispatch'
+    needs: [metadata, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      V: ${{ needs.metadata.outputs.version }}
+      TAG: ${{ inputs.release_tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: development-mobile-*
+          merge-multiple: true
+          path: dist
+      - name: Checksum and publish both downloads
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          files=("yaran-mobile-$V-development-foss.apk" "yaran-mobile-$V-ios-unsigned.xcarchive.zip")
+          sha256sum "${files[@]}" > yaran-mobile-development-checksums.txt
+          sha256sum -c yaran-mobile-development-checksums.txt
+          gh release upload "$TAG" --clobber -- "${files[@]}" yaran-mobile-development-checksums.txt

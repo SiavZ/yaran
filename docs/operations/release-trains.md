@@ -66,6 +66,27 @@ without running the build and Xcode reads them from the project.
 The first job of both workflows is `check-versions.mjs`, so a tag that disagrees
 with the committed literals fails before anything is built.
 
+## Development mobile downloads on a binary release
+
+When distribution signing is not configured, `release-development-mobile.yml`
+can attach a debug-signed FOSS APK and an unsigned iOS `.xcarchive.zip` to an
+existing binary release:
+
+```bash
+gh workflow run release-development-mobile.yml --repo SiavZ/yaran -f release_tag=yaran-v0.2.0
+```
+
+Both downloads carry that release's version and are built from its tag. They use
+the separate app ID `io.github.siavz.yaran.dev`. The iOS archive needs signing
+and export in Xcode before installing on a phone. The Android debug signing key
+belongs to that build's runner, so these downloads do not promise in-place
+updates across builds. They are development downloads, not the mobile train's
+distribution-signed releases. No store uploads run. A checksum file accompanies
+both files, and neither is published if either build fails.
+
+Pull requests that change this workflow build both files without publishing, so
+the archive and APK steps are exercised before the workflow is merged.
+
 ## The cloud train
 
 1. **check**: the literals, plus the publisher domain on stable tags. Then the
