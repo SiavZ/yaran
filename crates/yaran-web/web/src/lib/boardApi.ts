@@ -31,6 +31,11 @@ export interface BoardCard {
   resolved_by?: string
   resolution?: string
   thread?: BoardMessage[]
+  summary?: { text: string; revision: string; at: string }
+  /** Content digest used to reject a summary written from an older card. */
+  summary_revision?: string
+  summary_current?: boolean
+  summary_agent?: string | null
   /** `#12`, or `#12 [4812]`. */
   label: string
   /** The poster cannot carry on until a person answers. */
@@ -65,6 +70,8 @@ const cardPath = (id: BoardCard["id"], action: string) =>
 
 export const boardApi = {
   get: () => request<BoardView>("GET", "/api/v1/board"),
+  requestSummary: (id: BoardCard["id"]) =>
+    request<{ requested: boolean }>("POST", cardPath(id, "summary")),
   resolve: (id: BoardCard["id"]) =>
     request<{ changed: boolean }>("POST", cardPath(id, "resolve")),
   reopen: (id: BoardCard["id"]) =>

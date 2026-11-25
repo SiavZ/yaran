@@ -309,6 +309,7 @@ export function useTerminalPaneSetup(props: TerminalPartProps) {
     fitAddonRef,
     ptyRef,
     isMobile,
+    isCoarsePointer,
     pickerInput,
     openFilePicker,
     dragActive,

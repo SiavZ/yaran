@@ -41,8 +41,9 @@ use jiff::tz::TimeZone;
 
 use super::id::CardId;
 use super::{
-    Card, CardKind, MAX_DETAIL_CHARS, MAX_FROM_CHARS, MAX_MESSAGE_CHARS, MAX_NOTE_CHARS,
-    MAX_THREAD_MESSAGES, Message, Priority, clean_line, clean_text, normalize_ticket,
+    Card, CardKind, CardSummary, MAX_DETAIL_CHARS, MAX_FROM_CHARS, MAX_MESSAGE_CHARS,
+    MAX_NOTE_CHARS, MAX_THREAD_MESSAGES, Message, Priority, clean_line, clean_text,
+    normalize_ticket,
 };
 
 use crate::timefmt::Rfc3339;
@@ -77,6 +78,11 @@ pub fn render(card: &Card) -> String {
     text(&mut out, "title", Some(&card.title));
     text(&mut out, "ticket", card.ticket.as_deref());
     text(&mut out, "from", card.from.as_deref());
+    if let Some(summary) = &card.summary {
+        text(&mut out, "summary", Some(&summary.text));
+        text(&mut out, "summary_revision", Some(&summary.revision));
+        word(&mut out, "summary_at", &precise_timestamp(summary.at));
+    }
     word(&mut out, "created", &timestamp(card.created_at));
     word(&mut out, "updated", &timestamp(card.updated_at));
     if let Some(resolved_at) = card.resolved_at {
@@ -291,6 +297,14 @@ pub fn parse(text: &str, file_stem: &str, modified: Timestamp) -> Result<Option<
         relayed_at: time("relayed")?,
         thread,
         detail,
+        summary: match (
+            text_prop("summary", MAX_NOTE_CHARS, clean_text),
+            text_prop("summary_revision", 64, clean_line),
+            time("summary_at")?,
+        ) {
+            (Some(text), Some(revision), Some(at)) => Some(CardSummary { text, revision, at }),
+            _ => None,
+        },
         from: text_prop("from", MAX_FROM_CHARS, clean_line),
         created_at,
         updated_at,
@@ -681,6 +695,7 @@ mod tests {
             ticket: Some("4812".to_string()),
             title: "Check the \"signup\" page: it moved".to_string(),
             detail: Some("Line one.\n\n- a list item\n---\nnot a property block".to_string()),
+            summary: None,
             from: Some("orchestrator".to_string()),
             created_at: at(1),
             updated_at: at(2),

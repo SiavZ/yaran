@@ -85,6 +85,49 @@ async fn an_empty_board_reads_as_no_cards() {
 }
 
 #[tokio::test]
+async fn summaries_are_exposed_with_freshness_and_need_a_running_agent_to_refresh() {
+    let (tmp, app) = crate::test_support::router_no_auth();
+    let id = post_card(tmp.path(), "Ship the fix?");
+    let uri = format!("/api/v1/board/cards/{id}/summary");
+    let (status, _) = json(&app, request("POST", &uri, "")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let store = BoardStore::new(tmp.path());
+    store
+        .update(|board| {
+            let revision = board.card(&id).unwrap().summary_revision();
+            board.summarize(&id, &revision, "Approved; ship after CI.", Timestamp::now())
+        })
+        .unwrap();
+    let (_, body) = json(&app, request("GET", "/api/v1/board", "")).await;
+    assert_eq!(
+        body["cards"][0]["summary"]["text"],
+        "Approved; ship after CI."
+    );
+    assert_eq!(body["cards"][0]["summary_current"], true);
+    assert!(body["cards"][0]["summary_revision"].as_str().is_some());
+    let (status, body) = json(&app, request("POST", &uri, "")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["requested"], false,
+        "an existing summary needs no agent"
+    );
+    let reply = format!("/api/v1/board/cards/{id}/reply");
+    json(
+        &app,
+        request("POST", &reply, r#"{"text":"Wait; CI failed"}"#),
+    )
+    .await;
+    let (_, body) = json(&app, request("GET", "/api/v1/board", "")).await;
+    assert_eq!(body["cards"][0]["summary_current"], false);
+    assert_eq!(
+        body["cards"][0]["summary"]["text"],
+        "Approved; ship after CI."
+    );
+    let (status, _) = json(&app, request("POST", "/api/v1/board/cards/999/summary", "")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn a_card_is_marked_done_reopened_and_replied_to() {
     let (tmp, app) = crate::test_support::router_no_auth();
     let id = post_card(tmp.path(), "Merge the auth fix?");

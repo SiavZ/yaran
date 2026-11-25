@@ -23,6 +23,7 @@ const api = {
   reply: vi.fn(),
   assign: vi.fn(),
   priority: vi.fn(),
+  requestSummary: vi.fn(),
 }
 vi.mock("@/lib/boardApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/boardApi")>()
@@ -89,6 +90,22 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe("BoardDialog", () => {
+  it("puts the whole-card TL;DR before the detail and conversation", async () => {
+    api.get.mockResolvedValue(board([card({
+      id: 10, title: "Ship the fix?", detail: "Original request",
+      summary_current: true,
+      summary: { text: "Approved; waiting for CI.", revision: "v1", at: "2026-11-25T00:00:00Z" },
+      thread: [{ at: "2026-11-25T00:00:00Z", from: "Sam", text: "Please check CI first" }],
+    })]))
+    render(<BoardDialog />)
+    fireEvent.click(await screen.findByText("Ship the fix?"))
+    expect(screen.getByRole("region", { name: "TL;DR" }).textContent).toContain("Approved; waiting for CI.")
+    const text = screen.getByRole("dialog").textContent!
+    expect(text.indexOf("Approved; waiting for CI.")).toBeLessThan(text.indexOf("Original request"))
+    expect(text.indexOf("Original request")).toBeLessThan(text.indexOf("Please check CI first"))
+    expect(api.requestSummary).not.toHaveBeenCalled()
+  })
+
   it("opens on my queue, grouped by kind, and All shows the other queues too", async () => {
     api.get.mockResolvedValue(
       board([

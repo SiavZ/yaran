@@ -11,6 +11,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Textarea } from "@/components/ui/textarea"
+import { BoardCardSummary } from "./BoardCardSummary"
 import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
@@ -116,6 +117,7 @@ function BoardBody() {
   if (card !== null) {
     return (
       <CardView
+        key={String(card.id)}
         card={card}
         people={view?.people ?? []}
         onBack={() => setOpenId(null)}
@@ -416,7 +418,8 @@ function CardView({
       ) : null}
 
       <div className="max-h-[50vh] overflow-y-auto pr-2 text-sm [scrollbar-gutter:stable]">
-        {card.detail ? <p className="whitespace-pre-wrap">{card.detail}</p> : null}
+        <BoardCardSummary card={card} busy={busy} />
+        {card.detail ? <p className="mt-3 whitespace-pre-wrap">{card.detail}</p> : null}
         {(card.thread ?? []).length > 0 ? (
           <ol className="mt-3 flex flex-col gap-2 border-t pt-3">
             {(card.thread ?? []).map((m) => (

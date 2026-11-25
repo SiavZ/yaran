@@ -70,6 +70,7 @@
 //! ├── yaran-core::activity
 //! ├── yaran-core::attachments
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::protocol::ua
 //! ├── yaran-core::config
 //! ├── yaran-core::config_effective
 //! ├── yaran-core::config_resources
@@ -93,6 +94,7 @@
 //! ├── auth::socket
 //! ├── background
 //! ├── board_routes
+//! ├── board_routes::summary
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes
@@ -456,6 +458,17 @@ impl SocketClient {
         let query = axum::extract::Query::<SocketLinkQuery>::try_from_uri(&parts.uri)
             .ok()
             .map(|axum::extract::Query(query)| query);
+        // Cached mobile clients may omit the flag; they still cannot set the shared grid.
+        let mobile_device = parts
+            .headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|ua| {
+                yaran_core::cloud::protocol::ua::parse_yaran_app_ua(ua).is_some()
+                    || ["Android", "iPhone", "iPad", "iPod"]
+                        .iter()
+                        .any(|token| ua.contains(token))
+            });
         let bounded = |id: Option<String>| id.filter(|id| crate::rest_common::id_within_bound(id));
         let (link, after, browser, page, viewed, independent_view) = match query {
             Some(query) => (
@@ -499,7 +512,7 @@ impl SocketClient {
             browser,
             page,
             viewed,
-            independent_view,
+            independent_view: independent_view || mobile_device,
             address: verified.or(peer),
             verified: verified.is_some(),
         }

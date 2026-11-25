@@ -1641,8 +1641,11 @@ The iOS WebView was not compiled with Xcode.
 The independent phone terminal renderer inserts decoded cells as React text, never
 HTML, and masks terminal-invisible cells. Links reuse the existing protocol allowlist
 and user-gesture opener. Its `independent_view` socket flag changes only sizing:
-authentication, seated input rights and query-reply filtering still apply. Renderer
-and socket checks cover this path; a live machine view in the APK remains unverified.
+authentication, seated input rights and query-reply filtering still apply.
+Native app and recognizable mobile browser User-Agents also force independent
+sizing on the server, even if the socket flag is absent or disabled. The UA is a
+presentation hint, not an authentication or input-rights exemption. Renderer and socket checks cover this
+path; a live machine view in the APK remains unverified.
 
 
 **Residual risk.** A WebView engine vulnerability is the platform's to fix.
@@ -2642,9 +2645,19 @@ a send that fails adds nothing to the card. The browser renders card text
 and conversations as text, never as HTML. Tests: `board_routes.rs`,
 `BoardDialog.test.tsx`.
 
+The card's TL;DR refresh is a same-origin POST under the same guards. The server
+chooses the card's running local poster or the configured running `relay_to`,
+never an agent handle supplied by the browser. It sends a fixed summary request
+through the bounded peer transport; the agent reads the board as source material
+and is told to save only a summary. Summaries are sanitized, bounded to 1,000
+characters and rendered as text. Their content digest excludes relay bookkeeping;
+the locked store refuses a write based on a card that has since changed. New
+content marks the old summary stale, including after a shared-board merge.
+
 **Residual risk.** Anyone signed in to the web UI can answer for the
 person running yaran, exactly as they could type into that agent's
-terminal.
+terminal. The existing trust in agent and shared-folder content still applies:
+a summary can be inaccurate, and requesting one can consume the agent's provider usage.
 
 **Detection.** Every reply is kept in the card's conversation under the
 writer's name (`[board] me`, or `human`), and `yaran board show` prints it.
