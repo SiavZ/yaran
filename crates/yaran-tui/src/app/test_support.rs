@@ -67,6 +67,7 @@
 //! ├── app::input
 //! ├── app::input::host_click_regression_tests
 //! ├── app::input::host_selection_regression_tests
+//! ├── app::jcode_models::tests
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings

@@ -38,6 +38,7 @@
 //! ├── yaran-core::gh
 //! ├── yaran-core::git
 //! ├── yaran-core::ids
+//! ├── yaran-core::jcode_models
 //! ├── yaran-core::leftover_folders
 //! ├── yaran-core::logger
 //! ├── yaran-core::model
@@ -487,6 +488,7 @@ pub(crate) enum EngineRequest {
     /// pid. Instant map iteration only: the blocking sysinfo walk runs off both
     /// the engine thread and the reactor, in [`crate::resource_routes::ResourceService`].
     ResourceTargets(oneshot::Sender<Vec<yaran_core::worker::ResourceTarget>>),
+    JcodeModelTargets(oneshot::Sender<Vec<yaran_core::jcode_models::ModelTarget>>),
     /// Snapshot the build-/config-static bootstrap projection (providers, macros,
     /// palette commands, welcome tips, version, `ui.*` flags, gh availability,
     /// global env) served by `GET /api/v1/bootstrap`. Instant clone off engine
@@ -2148,6 +2150,16 @@ impl EngineHandle {
         rx.await.ok()
     }
 
+    /// Snapshot running jcode tabs without consulting the daemon on the engine thread.
+    pub async fn jcode_model_targets(&self) -> Option<Vec<yaran_core::jcode_models::ModelTarget>> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::JcodeModelTargets(tx))
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
     /// Snapshot the build-/config-static bootstrap projection for
     /// `GET /api/v1/bootstrap`. `None` if the engine is gone (the handler then
     /// returns 503), distinguishing a dead engine from a real empty payload.
@@ -2828,6 +2840,7 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         | EngineRequest::Session(..)
         | EngineRequest::Bootstrap(..)
         | EngineRequest::ResourceTargets(..)
+        | EngineRequest::JcodeModelTargets(..)
         | EngineRequest::CreatedSessionForOp(..)
 
         // Lookups: each arm is an `iter().find()` or a `HashMap::get` followed by
@@ -5276,6 +5289,7 @@ fn handle_request(
             answer(reply, project_path(engine, &project_id));
         }
         EngineRequest::ResourceTargets(reply) => answer(reply, engine.resource_monitor_targets()),
+        EngineRequest::JcodeModelTargets(reply) => answer(reply, engine.jcode_model_targets()),
         EngineRequest::Bootstrap(reply) => answer(reply, engine.bootstrap()),
         EngineRequest::Spine(reply) => answer(reply, owned_spine(engine, input_owners)),
         // SpineJson is handled inline in the loop (it serves the loop-local cache).

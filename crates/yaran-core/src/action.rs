@@ -46,6 +46,8 @@ pub enum Action {
     ForkAgent,
     /// Swap the selected agent worktree to a different provider.
     ChangeAgentProvider,
+    /// Change the model of selected running jcode tabs.
+    ChangeJcodeModels,
     /// Change the global default provider used for new agent sessions in projects without an
     /// explicit project override.
     ChangeDefaultProvider,
@@ -476,6 +478,7 @@ impl Action {
             Action::FilterAgents => "filter_agents",
             Action::ForkAgent => "fork_agent",
             Action::ChangeAgentProvider => "change_agent_provider",
+            Action::ChangeJcodeModels => "change_jcode_models",
             Action::ChangeDefaultProvider => "change_default_provider",
             Action::ChangeProjectDefaultProvider => "change_project_default_provider",
             Action::FocusAgent => "focus_agent",
@@ -661,6 +664,7 @@ impl Action {
             Action::ChangeAgentProvider => {
                 "Swap the selected agent worktree to a different provider."
             }
+            Action::ChangeJcodeModels => "Change the model of selected or all running jcode tabs.",
             Action::ChangeDefaultProvider => {
                 "Change the global default provider used for new agent sessions in projects without an explicit project override."
             }
@@ -1025,6 +1029,7 @@ impl Action {
             | Action::FilterAgents
             | Action::ForkAgent
             | Action::ChangeAgentProvider
+            | Action::ChangeJcodeModels
             | Action::FocusAgent
             | Action::OpenProjectBrowser
             | Action::CopyPath

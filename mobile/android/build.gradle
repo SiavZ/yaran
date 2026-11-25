@@ -27,6 +27,10 @@ allprojects {
         google()
         mavenCentral()
     }
+    // Robolectric fetches SDKs outside Gradle repositories; use its upstream-supported Central mirror.
+    tasks.withType(Test).configureEach {
+        systemProperty 'robolectric.dependency.repo.url', 'https://maven-central.storage-download.googleapis.com/maven2'
+    }
 }
 
 // Style and static analysis on yaran's own Kotlin modules (not Capacitor's).

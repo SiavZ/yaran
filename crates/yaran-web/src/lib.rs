@@ -60,6 +60,7 @@
 //! ├── handoff_consent_page
 //! ├── handoff_csrf
 //! ├── host_guard
+//! ├── jcode_model_routes
 //! ├── operation_routes
 //! ├── origin_match
 //! ├── ownership_publish
@@ -179,6 +180,7 @@ pub mod pty_log;
 pub(crate) mod pty_owners {
     pub(crate) use yaran_core::pty_owners::*;
 }
+mod jcode_model_routes;
 pub(crate) mod pty_sizes;
 pub(crate) mod rate_window;
 pub(crate) mod reload_signal;

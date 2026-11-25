@@ -31,6 +31,7 @@
 //! ├── app::hint_lines
 //! ├── app::human_board_dialog
 //! ├── app::input
+//! ├── app::jcode_models_render
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::no_branch_notice
