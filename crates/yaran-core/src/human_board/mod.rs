@@ -52,6 +52,9 @@ pub use id::CardId;
 pub use settings::BoardSettings;
 pub use store::{BoardSnapshot, BoardStore, BoardWatcher};
 
+mod summary;
+pub use summary::CardSummary;
+
 /// The board document, in the yaran home.
 pub const BOARD_FILE: &str = "human_board.json";
 /// The lock every writer holds for its whole read-modify-write.
@@ -316,6 +319,9 @@ pub struct Card {
     /// What the poster said beyond the title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// A concise account of the whole card, tied to the content it covers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<CardSummary>,
     /// Who posted it: an agent handle, or whatever `--from` said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
@@ -699,6 +705,7 @@ impl Board {
             ticket,
             title,
             detail,
+            summary: None,
             from,
             created_at: now,
             updated_at: now,

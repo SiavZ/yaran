@@ -9,6 +9,7 @@
 //! - `POST /api/v1/board/cards/{id}/assign`: hand an open task to a person's
 //!   queue (or to nobody's in particular).
 //! - `POST /api/v1/board/cards/{id}/priority`: change how urgent a card is.
+//! - `POST /api/v1/board/cards/{id}/summary`: ask its agent for an updated TL;DR.
 //!
 //! The board is a file or a folder of notes (`yaran_core::human_board`), so
 //! every read and write runs off the reactor, under the store's own lock.
@@ -37,6 +38,9 @@ use yaran_core::human_board::{
 };
 
 use crate::server::AppState;
+
+#[path = "board_summary.rs"]
+mod summary;
 
 /// Who the board records as resolving a card from the browser, the same
 /// name the terminal UI records.
@@ -105,6 +109,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/board/cards/{id}/reply", post(reply_card))
         .route("/api/v1/board/cards/{id}/assign", post(assign_card))
         .route("/api/v1/board/cards/{id}/priority", post(set_priority))
+        .route(
+            "/api/v1/board/cards/{id}/summary",
+            post(summary::request_summary),
+        )
 }
 
 /// One card as the browser reads it.
@@ -119,6 +127,10 @@ struct CardView {
     /// The running agent a reply goes to, by label; `None` when a reply only
     /// joins the conversation.
     reply_agent: Option<String>,
+    summary_revision: String,
+    summary_current: bool,
+    /// The existing agent that can summarize this card.
+    summary_agent: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -137,6 +149,9 @@ fn board_view(board: &Board, inputs: &BoardInputs) -> BoardView {
         label: card.label(),
         waiting: card.waits_for_answer(&inputs.settings.people),
         reply_agent: inputs.poster_here(card).map(|(_, label)| label.clone()),
+        summary_revision: card.summary_revision(),
+        summary_current: card.summary_current(),
+        summary_agent: inputs.summary_agent(card).map(|(_, label)| label.clone()),
     };
     let cards = board
         .open_cards()

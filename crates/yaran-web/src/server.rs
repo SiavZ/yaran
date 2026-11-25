@@ -93,6 +93,7 @@
 //! ├── auth::socket
 //! ├── background
 //! ├── board_routes
+//! ├── board_routes::summary
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes

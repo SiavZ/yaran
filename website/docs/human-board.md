@@ -144,6 +144,17 @@ Open a card to read it and its conversation, then:
   **Anyone**). As in the terminal UI, news, validations and confirmations stay where they
   were posted.
 
+Each card opens with a **TL;DR** of the whole discussion, including the current
+decision, blockers and next action. The card asks its running agent to update it
+when you open it or when the content changes while it is open. If the poster is
+not running, the board's configured `relay_to` agent can do the update instead.
+Without either agent running, the last summary stays readable and the card explains
+how to update it.
+
+**Up to date** means the summary covers the card's current content. New replies,
+edits or a change of status mark it **Needs updating** until a fresh summary arrives.
+A failed request keeps the old summary and offers **Retry TL;DR**.
+
 When the agent that posted the card is running in this yaran, your reply is also sent to it
 with `yaran peer send`, in the words of `human_board_reply_template`, and the card view
 names that agent before you send. If that send fails, nothing is added to the card and
@@ -160,6 +171,8 @@ yaran board post --kind confirm --blocking "Can I drop the old audit table?"
 yaran board reply 12 "The audit_2019 table; nothing reads it since March."
 yaran board reply 12 --done "Dropped; the backup is in the bucket."
 yaran board show 12
+yaran board show 12 --json
+yaran board summarize 12 --revision <summary_revision> "Approved; waiting for green CI."
 yaran board resolve --ticket 4812
 yaran board resolve 12 --note "shipped"
 yaran board list --all --json
@@ -178,6 +191,10 @@ yaran board list --all --json
   posts and replies are signed with its handle, also when it runs without one in its
   environment (yaran recognises the agent by the folder it works in).
   `yaran board show` prints one card whole, conversation included.
+- `yaran board summarize` saves a short TL;DR without adding a conversation reply.
+  Read the whole card with `show --json` first and pass its `summary_revision`.
+  If the card changes before the summary is saved, the write is refused so an older
+  reading cannot be presented as current. `-` reads the summary from standard input.
 - `yaran board list --all` shows the resolved cards too, so an agent can see what you
   confirmed and carry on. Cards you clear here are recorded as resolved by `human` (by your
   name, when `[board] me` is set).

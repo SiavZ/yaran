@@ -18,6 +18,9 @@ use super::{
 };
 use crate::config::YaranPaths;
 
+#[path = "card_cli.rs"]
+mod card;
+
 /// The help text of `yaran board`.
 pub const BOARD_HELP: &str = "\
 yaran board - cards for the people running yaran
@@ -49,6 +52,10 @@ Subcommands:
                        from standard input.
   yaran board show <id> [--json]
                        Print one card whole: its fields, detail and conversation.
+  yaran board summarize <id> --revision <summary_revision> [--] <text...>|-
+                       Save a TL;DR of the whole card. Read show --json first
+                       for summary_revision; a changed card must be read again.
+                       - reads the summary from standard input.
   yaran board blocking <id> <yes|no>
                        Say whether a card holds you up.
   yaran board assign <id> <person|anyone>
@@ -158,7 +165,8 @@ pub fn run_with(
         }
         "resolve" | "done" => run_resolve(rest, store, out),
         "reply" | "answer" => run_reply(rest, settings, stdin, out),
-        "show" | "view" => run_show(rest, settings, out),
+        "show" | "view" => card::run_show(rest, settings, out),
+        "summarize" => card::run_summarize(rest, settings, stdin, out),
         "blocking" => {
             let [id, value] = rest else {
                 bail!("`yaran board blocking` needs a card id and yes or no");
@@ -451,82 +459,6 @@ fn run_reply(
     Ok(())
 }
 
-/// `yaran board show <id> [--json]`.
-fn run_show(args: &[String], settings: &BoardSettings, out: &mut dyn std::io::Write) -> Result<()> {
-    let mut json = false;
-    let mut query: Option<&String> = None;
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json = true,
-            "-h" | "--help" => {
-                writeln!(out, "{BOARD_HELP}")?;
-                return Ok(());
-            }
-            flag if flag.starts_with('-') && flag.len() > 1 => bail!("unknown flag: {flag}"),
-            _ if query.is_none() => query = Some(arg),
-            _ => bail!("`yaran board show` takes one card id"),
-        }
-    }
-    let Some(query) = query else {
-        bail!("`yaran board show` needs a card id");
-    };
-    let board = settings.store.load()?;
-    let id = board.find(query)?;
-    let Some(card) = board.card(&id) else {
-        bail!("there is no card #{id} on the board");
-    };
-    if json {
-        writeln!(out, "{}", serde_json::to_string_pretty(card)?)?;
-        return Ok(());
-    }
-    let now = Timestamp::now();
-    writeln!(out, "{} {}", card.label(), card.title)?;
-    let status = if card.is_open() { "open" } else { "done" };
-    let mut facts = vec![
-        format!("kind {}", card.kind),
-        format!("priority {}", card.priority),
-        status.to_string(),
-    ];
-    if card.blocking {
-        facts.push("blocking".to_string());
-    }
-    if let Some(assignee) = &card.assignee {
-        facts.push(format!("for {assignee}"));
-    }
-    if let Some(from) = &card.from {
-        facts.push(format!("from {from}"));
-    }
-    if let Some(origin) = settings.origin_of(card) {
-        facts.push(format!("posted on {origin}'s board"));
-    }
-    facts.push(format!("posted {} ago", compact_age(card.created_at, now)));
-    writeln!(out, "{}", facts.join(", "))?;
-    if let Some(detail) = &card.detail {
-        writeln!(out, "\n{detail}")?;
-    }
-    if let Some(resolution) = &card.resolution {
-        writeln!(out, "\nResolved: {resolution}")?;
-    }
-    if !card.thread.is_empty() {
-        writeln!(out, "\nConversation:")?;
-        for message in &card.thread {
-            let done = if message.done {
-                " (marked it done)"
-            } else {
-                ""
-            };
-            writeln!(
-                out,
-                "- {} ({} ago){done}: {}",
-                message.from,
-                compact_age(message.at, now),
-                message.text
-            )?;
-        }
-    }
-    Ok(())
-}
-
 fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -> Result<()> {
     let mut queries: Vec<&String> = Vec::new();
     let mut ticket: Option<String> = None;
@@ -781,6 +713,42 @@ mod tests {
 
     fn run(store: &BoardStore, words: &[&str]) -> Result<String> {
         run_stdin(store, words, "")
+    }
+
+    #[test]
+    fn summaries_use_the_read_revision_and_survive_the_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = BoardStore::new(tmp.path());
+        run(&store, &["post", "--kind", "task", "Ship the fix"]).unwrap();
+        let shown: serde_json::Value =
+            serde_json::from_str(&run(&store, &["show", "1", "--json"]).unwrap()).unwrap();
+        let revision = shown["summary_revision"].as_str().unwrap();
+        assert_eq!(shown["summary_current"], false);
+        run_stdin(
+            &store,
+            &["summarize", "1", "--revision", revision, "-"],
+            "Approved. Awaiting green CI.",
+        )
+        .unwrap();
+        assert!(
+            run(&store, &["show", "1"])
+                .unwrap()
+                .contains("TL;DR (current): Approved.")
+        );
+        run(&store, &["reply", "1", "--from", "Alex", "CI failed."]).unwrap();
+        assert!(
+            run(
+                &store,
+                &["summarize", "1", "--revision", revision, "--", "Ship now"]
+            )
+            .is_err()
+        );
+        assert!(
+            run(&store, &["show", "1"])
+                .unwrap()
+                .contains("TL;DR (needs updating): Approved.")
+        );
+        assert!(run(&store, &["summarize", "1"]).is_err());
     }
 
     fn settings(store: &BoardStore) -> BoardSettings {

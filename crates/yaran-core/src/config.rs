@@ -170,6 +170,7 @@
 //! ├── yaran-web::auth::cookie
 //! ├── yaran-web::auth::routes
 //! ├── yaran-web::background
+//! ├── yaran-web::board_routes::summary
 //! ├── yaran-web::board_routes::tests
 //! ├── yaran-web::bootstrap
 //! ├── yaran-web::browse_routes
