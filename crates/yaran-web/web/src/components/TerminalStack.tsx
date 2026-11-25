@@ -244,6 +244,7 @@ function TerminalPart(props: TerminalPartProps) {
     fitAddonRef,
     ptyRef,
     isMobile,
+    isCoarsePointer,
     pickerInput,
     openFilePicker,
     dragActive,
@@ -334,16 +335,15 @@ function TerminalPart(props: TerminalPartProps) {
   const focusTypingSurface = () =>
     focusTypingSurfaceIn({ live, composeInputRef, termRef })
 
-  // One PTY has one authoritative grid, the size holder's.
   const viewerGrid = useViewerGrid()
-  // A page that does not hold the size renders at the PTY's grid, with no
-  // preference behind it. The coordinator derives the same answer off the
-  // verdict channel, synchronously.
-  //
-  // So does a part off screen whose row the server has not named this page's
-  // driver for yet: it renders at the pty's own grid and sends nothing until
-  // the part on screen has claimed the row.
-  const independentView = isMobile || nativeShell()?.form === "phone"
+  // Device identity survives rotation, desktop-site mode, and attaching a mouse.
+  const mobileDevice = useLatched(nativeShell() !== null || (
+    typeof navigator !== "undefined" && (
+      /Android|iPhone|iPad|iPod/.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints > 1 && (navigator.platform === "MacIntel" || isCoarsePointer))
+    )
+  ))
+  const independentView = isMobile || mobileDevice
   const faithfulWatcher = !independentView && (!isOwner || (!onScreen && !rowConfirmed))
   // The grid to render, broken out so the relayout effect depends on the
   // NUMBERS rather than on the object identity the machine hands back.

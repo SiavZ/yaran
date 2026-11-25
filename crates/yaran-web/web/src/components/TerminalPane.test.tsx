@@ -1602,6 +1602,48 @@ it.each([500, 900])("a native phone keeps independent output and input at %i CSS
   }
 })
 
+it.each([
+  ["Android browser", "Mozilla/5.0 (Linux; Android 17) AppleWebKit/537.36 Mobile Safari/537.36", "Linux armv8l", 5],
+  ["iPhone browser", "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) Mobile/15E148 Safari/604.1", "iPhone", 5],
+  ["iPad desktop browser", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15", "MacIntel", 5],
+  ["Android desktop browser", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/143.0.0.0 Safari/537.36", "Linux x86_64", 5],
+  ["native tablet", "YaranApp/1.2.0 (android; tablet)", "Linux armv8l", 5],
+] as const)("a %s keeps its independent view in landscape and across rotation", (_name, ua, platform, touchPoints) => {
+  const width = window.innerWidth
+  const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ua)
+  const platformSpy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform)
+  const touches = Object.getOwnPropertyDescriptor(navigator, "maxTouchPoints")
+  Object.defineProperty(navigator, "maxTouchPoints", { value: touchPoints, configurable: true })
+  Object.defineProperty(window, "innerWidth", { value: 900, configurable: true })
+  resetNativeShellForTest()
+  const pointer = stubCoarsePointer()
+  try {
+    const view = render(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+    expect(screen.getByTestId("flow-terminal")).toBeTruthy()
+    const socket = last() as FakePtySocket & { independentView: boolean }
+    expect(socket.independentView).toBe(true)
+    for (const nextWidth of [500, 900]) {
+      Object.defineProperty(window, "innerWidth", { value: nextWidth, configurable: true })
+      act(() => pointer.set("(max-width: 767px)", nextWidth < 768))
+      view.rerender(<TerminalPane kind="agent" id="s1" sessionId="s1" />)
+      expect(last()).toBe(socket)
+      expect(screen.getByTestId("flow-terminal")).toBeTruthy()
+    }
+    act(() => pointer.set(COARSE_POINTER_QUERY, false))
+    expect(last()).toBe(socket)
+    expect(screen.getByTestId("flow-terminal")).toBeTruthy()
+  } finally {
+    cleanup()
+    pointer.restore()
+    userAgent.mockRestore()
+    platformSpy.mockRestore()
+    if (touches) Object.defineProperty(navigator, "maxTouchPoints", touches)
+    else delete (navigator as Partial<Navigator>).maxTouchPoints
+    resetNativeShellForTest()
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true })
+  }
+})
+
 it("a reused phone part replaces its flow view when the streamed target changes", () => {
   const width = window.innerWidth
   Object.defineProperty(window, "innerWidth", { value: 500, configurable: true })

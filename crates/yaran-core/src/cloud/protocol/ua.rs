@@ -1,8 +1,9 @@
 //! The phone app's User-Agent token (Design §11): `YaranApp/<version> (<os>; <form>)`,
 //! appended to the `WebView` UA in machine-view and sent alone on native HTTP calls.
 //!
-//! yaran parses it to label a connected device (Phase 13 owns the visible wording, which
-//! must fit `device_label::SHORT_LABEL_MAX_CHARS`). Pinned by `fixtures/ua/ua.json`.
+//! yaran parses it to label a connected device and keep its terminal sizing independent.
+//! Phase 13 owns the visible wording, which must fit `device_label::SHORT_LABEL_MAX_CHARS`.
+//! Pinned by `fixtures/ua/ua.json`.
 //!
 //! - Pure.
 //!
@@ -17,7 +18,8 @@
 //! cloud/protocol/ua.rs
 //! ├── cloud::protocol
 //! ├── device_label
-//! └── yaran-web::handoff_consent_page
+//! ├── yaran-web::handoff_consent_page
+//! └── yaran-web::server
 //! ```
 //! <module-headers:end>
 

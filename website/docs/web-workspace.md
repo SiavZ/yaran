@@ -310,7 +310,8 @@ On a computer the top bar comes back the same way, with the **Theater** button i
 
 Every device connected to a terminal sees its live output and can type into it.
 The phone wraps decoded text at its own width, using your chosen terminal font size.
-Opening, reopening or typing on the phone leaves the desktop terminal's size alone.
+Opening, reopening or typing on a phone or tablet leaves the desktop terminal's size
+alone, including in landscape and when the mobile browser uses its desktop layout.
 Long-press text to select it and use the phone's Copy action. Tap the output to type
 directly, or choose the optional message box from the pane's Input menu.
 

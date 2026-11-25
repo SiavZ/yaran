@@ -1641,8 +1641,11 @@ The iOS WebView was not compiled with Xcode.
 The independent phone terminal renderer inserts decoded cells as React text, never
 HTML, and masks terminal-invisible cells. Links reuse the existing protocol allowlist
 and user-gesture opener. Its `independent_view` socket flag changes only sizing:
-authentication, seated input rights and query-reply filtering still apply. Renderer
-and socket checks cover this path; a live machine view in the APK remains unverified.
+authentication, seated input rights and query-reply filtering still apply.
+Native app and recognizable mobile browser User-Agents also force independent
+sizing on the server, even if the socket flag is absent or disabled. The UA is a
+presentation hint, not an authentication or input-rights exemption. Renderer and socket checks cover this
+path; a live machine view in the APK remains unverified.
 
 
 **Residual risk.** A WebView engine vulnerability is the platform's to fix.
