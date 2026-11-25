@@ -45,8 +45,8 @@ without running the build and Xcode reads them from the project.
 
 A deployment request includes release publication for the affected train. Publish
 one release for the reviewed, merged batch actually deployed, without waiting for
-a separate publish request. Reuse an existing release of that commit when all its
-required downloads are already published and verified.
+a separate publish request. Reuse an existing release of that commit, finishing
+its publication if needed and verifying all its required downloads.
 
 For a binary deployment:
 
