@@ -3,7 +3,7 @@
 Maintainer-facing. This page covers the two release trains the phone app added
 (D15), the secrets they use and who holds them, the one-time Android signing
 ceremony (D23), and how to check what a release published. The binary train
-(`yaran-vX.Y.Z`, `release.yml`) is unchanged and not covered here.
+(`yaran-vX.Y.Z`, `release.yml`) has its deployment completion checklist below.
 
 ## Trains and tags
 
@@ -40,6 +40,41 @@ ceremony (D23), and how to check what a release published. The binary train
 
 The versions are written into the files themselves, because F-Droid reads them
 without running the build and Xcode reads them from the project.
+
+## Deployment completion
+
+A deployment request includes release publication for the affected train. Publish
+one release for the reviewed, merged batch actually deployed, without waiting for
+a separate publish request. Reuse an existing release of that commit when all its
+required downloads are already published and verified.
+
+For a binary deployment:
+
+1. Choose the next unused `yaran-vX.Y.Z` version and tag the reviewed merge commit
+   on `main` with an annotated tag. Push that tag without moving an existing tag.
+2. Create the matching GitHub release using `gh release create` with `--verify-tag`,
+   `--latest` and release notes. The release creation event starts `release.yml`.
+3. Dispatch `release-development-mobile.yml` at that release tag, passing the same
+   tag as `release_tag`. This attaches the development FOSS APK and unsigned iOS
+   archive from the same source and version to the binary release.
+4. Wait for both publication workflows. Download and verify the four desktop
+   archives, their checksums, SBOMs and provenance, plus the mobile files and their
+   checksums. Confirm embedded versions, binary architectures and mobile app IDs
+   against the selected tag and workflow.
+5. Confirm the release is public, is the intended latest binary release and holds
+   every expected download. Report its release link and mobile signing limits.
+   Keep tracking pending or failed publication instead of reporting it complete.
+
+The release workflow stamps Cargo's version before building. The current version
+label can therefore include `-dirty` from those controlled manifest edits; verify
+the release version and tagged source commit through the build provenance.
+
+Development mobile downloads are the default GitHub artifacts until a signed
+distribution release is explicitly requested and configured. The unsigned iOS
+archive needs signing and export before phone installation, and debug APK keys
+do not promise upgrades across builds. Cloud and distribution mobile deployments
+use their own tag-driven workflows below, with their existing approval and
+signing gates; this checklist does not add store uploads to a binary deployment.
 
 ## Cutting a release
 
