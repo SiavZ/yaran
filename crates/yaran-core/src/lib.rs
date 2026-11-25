@@ -68,6 +68,7 @@
 //! ├── human_board
 //! ├── ids
 //! ├── io_retry
+//! ├── jcode_models
 //! ├── leftover_folders
 //! ├── lockfile
 //! ├── logger
@@ -226,6 +227,7 @@ pub mod home_path;
 pub mod human_board;
 pub mod ids;
 pub mod io_retry;
+pub mod jcode_models;
 pub mod leftover_folders;
 pub mod lockfile;
 pub mod logger;

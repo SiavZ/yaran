@@ -88,6 +88,10 @@ pub(crate) enum ButtonState {
 /// machinery cannot arm a list row, text input, or checkbox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ButtonPressedTarget {
+    JcodeModelsApply,
+    JcodeModelsCancel,
+    JcodeModelsModel,
+    JcodeModelsReasoning,
     RuntimeKillCancel,
     RuntimeKillHovered,
     RuntimeKillSelected,

@@ -18,6 +18,7 @@
 //! ├── app::human_board_dialog
 //! ├── app::input::host_click_regression_tests
 //! ├── app::input::host_selection_regression_tests
+//! ├── app::jcode_models
 //! ├── app::modal
 //! ├── app::orphan_worktrees
 //! ├── app::pr_clone
@@ -84,6 +85,7 @@
 //! ├── app::dock
 //! ├── app::input::host_click_regression_tests
 //! ├── app::input::host_selection_regression_tests
+//! ├── app::jcode_models_mouse
 //! ├── app::modal
 //! ├── app::new_agent_settings
 //! ├── app::overlay_dismiss
@@ -380,6 +382,13 @@ enum MouseTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PromptMouseTarget {
+    JcodeModelsInput,
+    JcodeModelsModel,
+    JcodeModelsReasoning,
+    JcodeModelsAll,
+    JcodeModelsItem(usize),
+    JcodeModelsApply,
+    JcodeModelsCancel,
     CommandInput,
     CommandItem(usize),
     BrowseProjectInput,
@@ -679,7 +688,16 @@ impl ButtonPressedTarget {
             PromptMouseTarget::StartupCommandLogsClose => {
                 Some(ButtonPressedTarget::StartupCommandLogsClose)
             }
-            PromptMouseTarget::CommandInput
+            PromptMouseTarget::JcodeModelsApply => Some(ButtonPressedTarget::JcodeModelsApply),
+            PromptMouseTarget::JcodeModelsCancel => Some(ButtonPressedTarget::JcodeModelsCancel),
+            PromptMouseTarget::JcodeModelsModel => Some(ButtonPressedTarget::JcodeModelsModel),
+            PromptMouseTarget::JcodeModelsReasoning => {
+                Some(ButtonPressedTarget::JcodeModelsReasoning)
+            }
+            PromptMouseTarget::JcodeModelsInput
+            | PromptMouseTarget::JcodeModelsAll
+            | PromptMouseTarget::JcodeModelsItem(_)
+            | PromptMouseTarget::CommandInput
             | PromptMouseTarget::CommandItem(_)
             | PromptMouseTarget::BrowseProjectInput
             | PromptMouseTarget::PickProjectInput
@@ -904,7 +922,7 @@ fn relative_point_clamped(rect: Rect, column: u16, row: u16) -> (u16, u16) {
 /// caret: the click is mapped through the same offset
 /// (`render::single_line_scroll`) the field was drawn at, for the caret the
 /// field held when it was drawn.
-fn cursor_from_single_line_click(
+pub(super) fn cursor_from_single_line_click(
     text: &str,
     cursor: usize,
     text_area: Rect,
@@ -2253,6 +2271,13 @@ impl App {
         reason = "one short arm per prompt kind, each pasting into that prompt's own field"
     )]
     fn handle_prompt_paste(&mut self, text: &str) {
+        if let PromptState::JcodeModels(prompt) = &mut self.prompt {
+            if let Some(picker) = &mut prompt.picking {
+                picker.filter.insert_str(text);
+                picker.selected = 0;
+            }
+            return;
+        }
         // Follow-ups that need `&mut self` after the prompt borrow ends.
         let mut refresh_path_completions = false;
         let mut select_startup_log: Option<usize> = None;
@@ -2421,7 +2446,8 @@ impl App {
             | PromptState::ProjectInfo(_)
             | PromptState::ConfirmChangeBaseBranch(_)
             // Handled above: it needs `&mut self` for the engage state.
-            | PromptState::SessionSettings(_) => {}
+            | PromptState::SessionSettings(_)
+            | PromptState::JcodeModels(_) => {}
 
             PromptState::ChangeBaseBranch(prompt) => {
                 if prompt.list.searching {
@@ -6941,6 +6967,9 @@ impl App {
         if matches!(self.prompt, PromptState::SessionSettings(_)) {
             return Ok(self.handle_session_settings_key(key));
         }
+        if matches!(self.prompt, PromptState::JcodeModels(_)) {
+            return Ok(self.handle_jcode_models_key(key));
+        }
 
         if let Some(should_exit) = self.handle_notice_prompt_key(key) {
             return Ok(should_exit);
@@ -7835,6 +7864,10 @@ impl App {
     )]
     fn prompt_mouse_target(&self, column: u16, row: u16) -> Option<PromptMouseTarget> {
         match self.overlay_layout.active {
+            OverlayMouseLayout::JcodeModels { input, model, reasoning, all, list, items, offset, apply, cancel } => {
+                super::modal::click_target(&[(input, PromptMouseTarget::JcodeModelsInput), (model, PromptMouseTarget::JcodeModelsModel), (reasoning, PromptMouseTarget::JcodeModelsReasoning), (all, PromptMouseTarget::JcodeModelsAll), (apply, PromptMouseTarget::JcodeModelsApply), (cancel, PromptMouseTarget::JcodeModelsCancel)], column, row)
+                    .or_else(|| Self::overlay_row_at(list, offset, items, column, row).map(PromptMouseTarget::JcodeModelsItem))
+            }
             OverlayMouseLayout::Command {
                 input,
                 list,
@@ -11148,6 +11181,9 @@ impl App {
     }
 
     fn dispatch_prompt_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if let Some(result) = self.handle_jcode_models_wheel(mouse) {
+            return result;
+        }
         if let Some(result) = self.handle_cloud_mouse(mouse) {
             return result;
         }
@@ -11401,6 +11437,19 @@ impl App {
         mouse: MouseEvent,
     ) -> bool {
         match target {
+            PromptMouseTarget::JcodeModelsInput => self.click_jcode_models_input(mouse.column),
+            PromptMouseTarget::JcodeModelsAll => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::All);
+            }
+            PromptMouseTarget::JcodeModelsItem(i) => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Target(i));
+            }
+            PromptMouseTarget::JcodeModelsApply
+            | PromptMouseTarget::JcodeModelsCancel
+            | PromptMouseTarget::JcodeModelsModel
+            | PromptMouseTarget::JcodeModelsReasoning => {
+                unreachable!("buttons use the release dispatcher")
+            }
             PromptMouseTarget::CommandInput => {
                 self.set_command_palette_cursor_from_mouse(mouse.column);
             }
@@ -11668,6 +11717,22 @@ impl App {
     )]
     fn activate_button(&mut self, button: ButtonPressedTarget) -> bool {
         match button {
+            ButtonPressedTarget::JcodeModelsModel => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Model);
+                false
+            }
+            ButtonPressedTarget::JcodeModelsReasoning => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Reasoning);
+                false
+            }
+            ButtonPressedTarget::JcodeModelsApply => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Apply);
+                false
+            }
+            ButtonPressedTarget::JcodeModelsCancel => {
+                self.press_jcode_models_focus(super::jcode_models::ModelsFocus::Cancel);
+                false
+            }
             // The take-over card is not a modal and never rides
             // `App::pressed_button`, so this dispatch cannot be reached for it;
             // its own press field and handler own that gesture end to end.

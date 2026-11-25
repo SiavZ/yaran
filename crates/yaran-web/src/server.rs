@@ -48,6 +48,7 @@
 //! ├── first_load_routes
 //! ├── git_routes
 //! ├── host_guard
+//! ├── jcode_model_routes
 //! ├── operation_routes
 //! ├── origin_match
 //! ├── ownership_publish
@@ -108,6 +109,7 @@
 //! ├── file_routes
 //! ├── first_load_routes
 //! ├── git_routes
+//! ├── jcode_model_routes
 //! ├── operation_routes
 //! ├── ownership_publish
 //! ├── peer_routes
@@ -1179,6 +1181,7 @@ fn gated_routes(
         .merge(crate::file_routes::routes())
         .merge(crate::changes_routes::routes())
         .merge(crate::resource_routes::routes())
+        .merge(crate::jcode_model_routes::routes())
         .merge(crate::bootstrap_routes::routes())
         .merge(crate::cloud_mode_routes::routes())
         .merge(crate::build_routes::routes())

@@ -39,6 +39,7 @@
  * ├── src/components/FirstLoadDialog.tsx
  * ├── src/components/GlobalEnvDialog.tsx
  * ├── src/components/InsetHeader.tsx
+ * ├── src/components/JcodeModelsDialog.tsx
  * ├── src/components/MacrosDialog.tsx
  * ├── src/components/MobileShell.tsx
  * ├── src/components/NewAgentPickerDialog.tsx
@@ -110,6 +111,7 @@ import { ConfirmForceStopAgentDialog } from "@/components/ConfirmForceStopAgentD
 import { ConfirmRecreateWorkingCopyDialog } from "@/components/ConfirmRecreateWorkingCopyDialog"
 import { ConfirmUseExistingBranchDialog } from "@/components/ConfirmUseExistingBranchDialog"
 import { TaskManagerDialog } from "@/components/TaskManagerDialog"
+import { JcodeModelsDialog } from "@/components/JcodeModelsDialog"
 import { BoardDialog } from "@/components/BoardDialog"
 import { CloudDialog } from "@/components/cloud/CloudDialog"
 import { ConnectPhoneDialog } from "@/components/ConnectPhoneDialog"
@@ -199,6 +201,7 @@ function GlobalOverlays() {
       <ConfirmRecreateWorkingCopyDialog />
       <ConfirmUseExistingBranchDialog />
       <TaskManagerDialog />
+      <JcodeModelsDialog />
       <BoardDialog />
       <CloudDialog />
       <ConnectPhoneDialog />

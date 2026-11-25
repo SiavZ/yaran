@@ -129,6 +129,12 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // Per-session: web exposes the provider picker from the session menu.
     },
     PaletteCommand {
+        action: Action::ChangeJcodeModels,
+        name: "change-jcode-models",
+        description: "Change the model of selected or all running jcodes",
+        // Global: the web app menu opens the same bulk action.
+    },
+    PaletteCommand {
         action: Action::NewTab,
         name: "new-agent-tab",
         description: "Add a tab to the selected agent, choosing its provider",

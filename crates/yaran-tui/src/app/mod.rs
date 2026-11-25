@@ -33,6 +33,11 @@
 //! ├── app::human_board_dialog
 //! ├── app::human_board_relay
 //! ├── app::input
+//! ├── app::jcode_models
+//! ├── app::jcode_models_mouse
+//! ├── app::jcode_models_picker
+//! ├── app::jcode_models_render
+//! ├── app::jcode_models_results
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
@@ -162,6 +167,12 @@
 //! ├── app::human_board_dialog
 //! ├── app::human_board_relay
 //! ├── app::input
+//! ├── app::jcode_models
+//! ├── app::jcode_models::tests
+//! ├── app::jcode_models_mouse
+//! ├── app::jcode_models_picker
+//! ├── app::jcode_models_render
+//! ├── app::jcode_models_results
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
@@ -3746,6 +3757,7 @@ pub(crate) enum PromptState {
         return_prompt: Box<PromptState>,
     },
     ChangeAgentProvider(ChangeAgentProviderPrompt),
+    JcodeModels(jcode_models::ModelsPrompt),
     AgentInfo(AgentInfoPrompt),
     /// One of the two first-load screens (first-run welcome, or what's-new after
     /// a version change). They share one modal frame; see
@@ -4982,6 +4994,17 @@ pub(crate) enum OverlayMouseLayout {
         items: usize,
         offset: usize,
     },
+    JcodeModels {
+        input: Rect,
+        model: Rect,
+        reasoning: Rect,
+        all: Rect,
+        list: Rect,
+        items: usize,
+        offset: usize,
+        apply: Rect,
+        cancel: Rect,
+    },
     ChangeDefaultProvider {
         list: Rect,
         items: usize,
@@ -5901,6 +5924,11 @@ pub(crate) use redraw::RedrawGate;
 mod ellipsis_rows;
 #[cfg(test)]
 mod hint_lines;
+mod jcode_models;
+mod jcode_models_mouse;
+mod jcode_models_picker;
+mod jcode_models_render;
+mod jcode_models_results;
 #[cfg(test)]
 mod name_chip_dialogs;
 mod new_agent_settings;
@@ -7884,6 +7912,10 @@ impl App {
             }
             "change-agent-provider" => {
                 self.open_change_agent_provider_prompt();
+                Ok(())
+            }
+            "change-jcode-models" => {
+                self.open_jcode_models();
                 Ok(())
             }
             // The tab commands act on the strip with focus: with the dock

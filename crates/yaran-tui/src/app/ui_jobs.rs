@@ -46,6 +46,8 @@ pub(crate) struct UiJobs {
 /// A kind of request of which only the newest may act when it answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum RequestKind {
+    /// Shared native model choices for the currently selected jcode clients.
+    JcodeModels,
     /// Opening an agent's directory in an editor, or the editor picker.
     Editor,
 }

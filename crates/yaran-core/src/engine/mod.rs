@@ -177,6 +177,7 @@
 //! ├── engine::watch_tick
 //! ├── engine::worktree_link
 //! ├── engine::worktree_removal_race_tests
+//! ├── jcode_models
 //! ├── leftover_folders
 //! ├── operations
 //! ├── poller_status

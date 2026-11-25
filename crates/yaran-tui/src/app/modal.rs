@@ -75,6 +75,8 @@
 //! ├── app::diff_comments::tests
 //! ├── app::hint_lines
 //! ├── app::input
+//! ├── app::jcode_models
+//! ├── app::jcode_models_picker
 //! ├── app::picker_lists
 //! └── app::project_actions
 //! ```
@@ -326,6 +328,13 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // editor, radios and checkboxes, and Cancel/Save. The Save button is
         // what keeps it dual-mode compliant.
         PromptState::SessionSettings(_) => ModalSpec { family: Form, multiline_field: true, confirm_button: true },
+        PromptState::JcodeModels(prompt) => if prompt.busy || prompt.loading || prompt.outcomes.is_some() {
+            ModalSpec { family: Report, multiline_field: false, confirm_button: false }
+        } else if prompt.picking.is_some() {
+            ModalSpec { family: Picker, multiline_field: false, confirm_button: false }
+        } else {
+            ModalSpec { family: Form, multiline_field: false, confirm_button: true }
+        },
 
         // ── Yaran Cloud: one variant, five modals ───────────────────────
         // Login: one single-line field at a time (the org address, then the
@@ -458,6 +467,16 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         PromptState::SessionSettings(prompt) => {
             vec![&prompt.draft_title, &prompt.draft_system_prompt]
         }
+        PromptState::JcodeModels(prompt) => {
+            if prompt.busy || prompt.loading || prompt.outcomes.is_some() {
+                vec![]
+            } else {
+                prompt
+                    .picking
+                    .as_ref()
+                    .map_or_else(Vec::new, |picker| vec![&picker.filter])
+            }
+        }
         PromptState::PickProject { list, .. } => vec![&list.filter],
         PromptState::KillRunning(prompt) => vec![&prompt.list.filter],
         PromptState::ConfirmKillRunning(prompt) => vec![&prompt.previous.list.filter],
@@ -544,6 +563,7 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
 
         // A button that commits.
         OverlayMouseLayout::KillRunning { .. }
+        | OverlayMouseLayout::JcodeModels { .. }
         | OverlayMouseLayout::ConfirmKillRunning { .. }
         | OverlayMouseLayout::ConfirmDeleteAgent { .. }
         | OverlayMouseLayout::ConfirmDeleteWorktree { .. }
@@ -1001,6 +1021,10 @@ pub(super) mod tests {
     pub(in crate::app) fn every_prompt(app: &App) -> Vec<(&'static str, PromptState)> {
         let project = app.engine.projects[0].clone();
         let mut prompts = vec![
+            (
+                "JcodeModels",
+                PromptState::JcodeModels(super::super::jcode_models::ModelsPrompt::new(Vec::new())),
+            ),
             (
                 "Command",
                 PromptState::Command {

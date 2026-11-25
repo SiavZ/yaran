@@ -226,6 +226,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::CloneProject { .. }
         | PromptState::KillRunning(_)
         | PromptState::SessionSettings(_)
+        | PromptState::JcodeModels(_)
         | PromptState::Cloud(CloudPrompt::Login(_)) => Blink,
     }
 }
@@ -476,7 +477,8 @@ impl App {
             | PromptState::NameNewAgent { .. }
             | PromptState::CloneProject { .. }
             | PromptState::KillRunning(_)
-            | PromptState::SessionSettings(_) => return false,
+            | PromptState::SessionSettings(_)
+            | PromptState::JcodeModels(_) => return false,
         }
         true
     }
